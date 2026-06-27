@@ -17,7 +17,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
 
-const version = "PIG-v0.8.1"
+const version = "PIG-v0.8.2"
 
 const maxQoSQueueWait = 500 * time.Millisecond
 

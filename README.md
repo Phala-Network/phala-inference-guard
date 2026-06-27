@@ -178,7 +178,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.8.1
+    image: ghcr.io/phala-network/phala-inference-guard:v0.8.2
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia
@@ -266,9 +266,12 @@ priority without adding another body read. Set `BACKEND_PRIORITY_MODE=premium_on
 only when basic/provider request bodies must be left unchanged. Backend priority
 requires the runtime to have compatible priority scheduling enabled; otherwise
 the field is simply forwarded as part of the OpenAI-compatible JSON request.
-By default, PIG forwards admitted requests unchanged when backend priority
-cannot be normalized because the body is oversized, unknown-length, non-JSON, or
-the rewrite slots are busy. Set `BACKEND_PRIORITY_FAIL_OPEN=false` for strict
+By default, PIG forwards admitted requests when backend priority cannot be
+normalized because the body is oversized, unknown-length, non-JSON, malformed,
+or the rewrite slots are busy. Known-length bodies that fit within
+`BACKEND_PRIORITY_STREAM_BUFFER_BYTES` are safety-buffered, so rewrite failures
+restore the original body. Larger bodies keep the optimized streaming path to
+avoid unbounded memory growth. Set `BACKEND_PRIORITY_FAIL_OPEN=false` for strict
 deployments that prefer rejecting those requests.
 
 Set this header only at a trusted gateway or HAProxy layer. Remove any client

@@ -200,7 +200,21 @@ func (p *PriorityInjector) shouldBufferRewrite(options requestclass.JSONRewriteO
 	if options.InjectPriority && p.cfg.Strategy != requestclass.PriorityRewriteStrategyAppendLast && p.shouldBuffer(contentLength) {
 		return true
 	}
+	if p.shouldSafetyBufferFailOpen(options, contentLength) {
+		return true
+	}
 	return contentLength >= 0 && ((options.InjectPriority && !p.cfg.FailOpen) || (options.StripEmptyToolCalls && !p.cfg.CompatFailOpen))
+}
+
+func (p *PriorityInjector) shouldSafetyBufferFailOpen(options requestclass.JSONRewriteOptions, contentLength int64) bool {
+	if contentLength < 0 {
+		return false
+	}
+	if !(options.InjectPriority && p.cfg.FailOpen) && !(options.StripEmptyToolCalls && p.cfg.CompatFailOpen) {
+		return false
+	}
+	limit := p.streamBufferBytes(contentLength)
+	return limit > 0 && contentLength <= int64(limit)
 }
 
 func (p *PriorityInjector) streamBufferBytes(contentLength int64) int {

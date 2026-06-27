@@ -184,6 +184,27 @@ func TestPriorityInjectorBufferedFailOpenPreservesBody(t *testing.T) {
 	}
 }
 
+func TestPriorityInjectorFailOpenSafetyBuffersKnownSmallBody(t *testing.T) {
+	injector := newTestPriorityInjector(PriorityConfig{
+		Mode:              requestclass.PriorityModeAll,
+		StreamBufferBytes: 2 * 1024 * 1024,
+	})
+	req := newPriorityRequest(`{"model":"m","messages":[}`)
+
+	if !injector.Inject(req, requestclass.Premium) {
+		t.Fatalf("Inject returned false for fail-open invalid JSON")
+	}
+	if got := readRequestBody(t, req); got != `{"model":"m","messages":[}` {
+		t.Fatalf("body = %s, want original invalid JSON", got)
+	}
+	if req.ContentLength != int64(len(`{"model":"m","messages":[}`)) {
+		t.Fatalf("ContentLength = %d, want original length", req.ContentLength)
+	}
+	if injector.Stats().Failed != 1 {
+		t.Fatalf("Failed = %d, want 1", injector.Stats().Failed)
+	}
+}
+
 func TestPriorityInjectorStreamingRewriteErrorReleasesSlot(t *testing.T) {
 	injector := newTestPriorityInjector(PriorityConfig{
 		Mode:  requestclass.PriorityModeAll,

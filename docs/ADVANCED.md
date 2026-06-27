@@ -154,8 +154,11 @@ that have already reached the serving backend or its queue.
 
 `OPENAI_COMPAT_FAIL_OPEN`
 : Default: `true`. When `true`, JSON scan or rewrite failures skip the
-  compatibility rewrite and forward the original body. When `false`, such
-  failures are rejected with PIG's normal OpenAI-compatible HTTP 429 body.
+  compatibility rewrite and forward the request. Known-length bodies that fit
+  within `BACKEND_PRIORITY_STREAM_BUFFER_BYTES` are safety-buffered, so failures
+  restore the original body. Larger bodies keep the streaming path to avoid
+  unbounded memory growth. When `false`, such failures are rejected with PIG's
+  normal OpenAI-compatible HTTP 429 body.
 
 ## ATTESTATION
 
@@ -540,7 +543,10 @@ not a client-supplied JSON `priority` value.
   for the optimized streaming rewrite path. Set a positive value only when a
   deployment has measured that full-body buffering helps its workload.
   Streaming rewrites remove the original `Content-Length`, so the backend
-  receives chunked transfer encoding.
+  receives chunked transfer encoding. In fail-open mode, PIG still
+  safety-buffers known-length bodies that fit within
+  `BACKEND_PRIORITY_STREAM_BUFFER_BYTES` so malformed or otherwise unrewritable
+  small requests are forwarded with their original body.
 
 `BACKEND_PRIORITY_STREAM_BUFFER_BYTES`
 : Default: `2097152` (`2 MiB`). Maximum internal buffer size for the streaming
@@ -563,11 +569,12 @@ not a client-supplied JSON `priority` value.
 : Default: `true`. When `true`, PIG forwards requests that cannot be rewritten
   because the body is too large, unknown-size, non-JSON, or the rewrite slots
   are busy. When `false`, those requests are rejected with PIG's normal
-  OpenAI-compatible HTTP 429 body. Priority rewrite assumes admitted
-  OpenAI-compatible request bodies are valid JSON objects; malformed JSON can
-  fail while the streaming body is being forwarded. Set `false` for strict
-  deployments that prefer rejecting synchronously unrewritable requests over
-  possibly forwarding a client-supplied priority value.
+  OpenAI-compatible HTTP 429 body. Known-length malformed JSON bodies at or
+  below `BACKEND_PRIORITY_STREAM_BUFFER_BYTES` are restored to their original
+  bytes before forwarding. Larger malformed bodies can still fail while the
+  streaming body is being forwarded; set `false` for strict deployments that
+  prefer rejecting synchronously unrewritable requests over possibly forwarding
+  a client-supplied priority value.
 
 ## OPTIONAL ADAPTIVE OUTPUT CLASSIFICATION
 
