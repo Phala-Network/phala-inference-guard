@@ -18,7 +18,11 @@ func FromHeader(r *http.Request) Tier {
 	if r == nil {
 		return Basic
 	}
-	switch strings.ToLower(strings.TrimSpace(r.Header.Get(Header))) {
+	values := r.Header.Values(Header)
+	if len(values) != 1 {
+		return Basic
+	}
+	switch strings.ToLower(strings.TrimSpace(values[0])) {
 	case "premium":
 		return Premium
 	default:

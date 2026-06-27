@@ -18,16 +18,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.metrics(w, r)
 		return
 	}
-	if r.URL.Path == "/pvc-qos/metrics" {
-		http.NotFound(w, r)
-		return
-	}
 	if r.URL.Path == "/v1/metrics" {
 		s.combinedMetrics(w, r)
-		return
-	}
-	if signaturePath(r.URL.Path) {
-		http.NotFound(w, r)
 		return
 	}
 	if attestationReportPath(r.URL.Path) {

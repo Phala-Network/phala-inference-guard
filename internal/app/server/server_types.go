@@ -14,11 +14,10 @@ import (
 	infrabackend "github.com/Phala-Network/phala-inference-guard/internal/infra/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/observability/histogram"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
-	runtimebackend "github.com/Phala-Network/phala-inference-guard/internal/runtime/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
 
-const version = "PIG-v0.8.0"
+const version = "PIG-v0.8.1"
 
 const maxQoSQueueWait = 500 * time.Millisecond
 
@@ -38,7 +37,6 @@ var bodyBucketsBytes = []int64{16 * 1024, 64 * 1024, 128 * 1024, 512 * 1024, 102
 
 type config = pigconfig.Config
 type backendConfig = pigconfig.Backend
-type backendRuntime = runtimebackend.Runtime
 type backendProxy = infrabackend.Proxy
 type durationHistogram = histogram.DurationHistogram
 type qosLane = domainlane.Lane

@@ -2,7 +2,7 @@
 
 This report explains how Phala Inference Guard (PIG) reacts when backend metrics
 show waiting requests. It is based on the current implementation around
-`PIG-v0.8.0`.
+`PIG-v0.8.1`.
 
 ## Scope
 
@@ -81,7 +81,7 @@ Second, it blocks upward learning. In the capacity learner, `waiting > 0` is
 classified as pressure. PIG avoids probing upward while this pressure exists,
 even if short-term generation throughput looks acceptable.
 
-Third, `PIG-v0.8.0` closes new-request intake while backend waiting is present.
+Third, `PIG-v0.8.1` closes new-request intake while backend waiting is present.
 The dynamic global limit, pressure limit, and prefill limit are set to `0` for
 new QoS intake:
 
@@ -97,7 +97,7 @@ running=80 waiting=1
 
 causes newly arriving model requests to enter PIG's short-wait queue rather than
 being forwarded directly to the backend. If waiting clears during the short
-window, the request can proceed. If not, PIG returns a vLLM-compatible HTTP 429.
+window, the request can proceed. If not, PIG returns an OpenAI-compatible HTTP 429.
 
 This does not interrupt already running requests. It only limits newly arriving
 requests.
@@ -170,7 +170,7 @@ shrink:
 | Backend unavailable | `0ms` |
 
 If capacity recovers during that short window, the request is forwarded. If not,
-PIG returns a vLLM-compatible HTTP 429 response.
+PIG returns an OpenAI-compatible HTTP 429 response.
 
 Relevant implementation:
 
@@ -204,8 +204,8 @@ Use these fields in `pig_status` logs:
 
 | Field | Meaning |
 | --- | --- |
-| `vllm.waiting` | Backend waiting requests from vLLM or SGLang metrics. |
-| `vllm.state` | PIG dynamic load state plus reasons such as `yellow:waiting`. |
+| `backend.waiting` | Backend waiting requests from vLLM or SGLang metrics. |
+| `backend.state` | PIG dynamic load state plus reasons such as `yellow:waiting`. |
 | `pig.limit` | Effective dynamic global limit applied to new requests. |
 | `pig.pressure` | Pressure-derived cap. |
 | `pig.queue` | PIG short-wait queue depth, not backend waiting. |

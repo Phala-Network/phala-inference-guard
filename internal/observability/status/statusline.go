@@ -41,13 +41,13 @@ type Input struct {
 func Format(input Input) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "pig_status v=%s", input.Version)
-	writeVLLM(&b, input.Snapshot)
+	writeBackendSummary(&b, input.Snapshot)
 	writePIG(&b, input)
 	writeBackendDetail(&b, input.Backends)
 	return b.String()
 }
 
-func writeVLLM(b *strings.Builder, snapshot dynamic.Snapshot) {
+func writeBackendSummary(b *strings.Builder, snapshot dynamic.Snapshot) {
 	state := snapshot.DecisionState()
 	if state == "" {
 		state = "unknown"
@@ -57,7 +57,7 @@ func writeVLLM(b *strings.Builder, snapshot dynamic.Snapshot) {
 	if len(reasons) > 0 {
 		level += ":" + strings.Join(reasons, ",")
 	}
-	fmt.Fprintf(b, " vllm={state=%s backend=%d/%d running=%d waiting=%d prefill=%d decode=%d", level, snapshot.BackendCount-snapshot.BackendFailed, snapshot.BackendCount, snapshot.Running, snapshot.Waiting, snapshot.PrefillProtected, snapshot.DecodeRunning)
+	fmt.Fprintf(b, " backend={state=%s backend=%d/%d running=%d waiting=%d prefill=%d decode=%d", level, snapshot.BackendCount-snapshot.BackendFailed, snapshot.BackendCount, snapshot.Running, snapshot.Waiting, snapshot.PrefillProtected, snapshot.DecodeRunning)
 	if snapshot.PrefillTransition {
 		fmt.Fprintf(b, " prefill_transition=1")
 	}

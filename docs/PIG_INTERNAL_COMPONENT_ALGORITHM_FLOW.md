@@ -13,13 +13,18 @@ flowchart LR
 
     Server --> Health{"Path is /healthz?"}
     Health -->|yes| HealthOK["Return ok"]
-    Health -->|no| Metrics{"Path is /pig/metrics?"}
+    Health -->|no| Metrics{"Path is /pig/metrics or /v1/metrics?"}
 
     Metrics -->|yes| MetricsAuth{"Bearer token valid?"}
     MetricsAuth -->|no| Metrics401["Return 401"]
     MetricsAuth -->|yes| MetricsWriter["Write protected runtime, dynamic, backend, classifier, lane metrics"]
 
-    Metrics -->|no| Admitted{"Path admitted by PIG_PATHS?"}
+    Metrics -->|no| Attestation{"Path is /v1/attestation/report?"}
+    Attestation -->|yes| AttestationAuth{"Bearer token valid?"}
+    AttestationAuth -->|no| Attestation401["Return 401"]
+    AttestationAuth -->|yes| AttestationReport["Generate attestation report"]
+
+    Attestation -->|no| Admitted{"Path admitted by PIG_PATHS?"}
     Admitted -->|no| DirectProxy["Choose backend and proxy without QoS gate"]
     Admitted -->|yes| RequestClassifier["Classify request lane and output-token hints"]
 
@@ -55,11 +60,15 @@ flowchart LR
 
 ```mermaid
 flowchart TD
-    Start["Request arrives"] --> HealthMetrics{"Health or metrics path?"}
+    Start["Request arrives"] --> HealthMetrics{"Health, metrics, or attestation path?"}
     HealthMetrics -->|health| ReturnHealth["Return /healthz ok"]
     HealthMetrics -->|metrics| MetricsAuth{"Authorization matches TOKEN?"}
     MetricsAuth -->|no| Return401["Return 401"]
-    MetricsAuth -->|yes| ReturnMetrics["Return /pig/metrics"]
+    MetricsAuth -->|yes| ReturnMetrics["Return /pig/metrics or /v1/metrics"]
+
+    HealthMetrics -->|attestation| AttestationAuth{"Authorization matches TOKEN?"}
+    AttestationAuth -->|no| Return401
+    AttestationAuth -->|yes| ReturnAttestation["Return /v1/attestation/report"]
 
     HealthMetrics -->|model path| InScope{"Path in PIG_PATHS?"}
     InScope -->|no| ChooseDirect["Choose backend"]
@@ -207,7 +216,7 @@ the long-term learned capacity with zero.
   KV pressure, preemption, or backend unavailability.
 - `waiting > 0` closes current new intake but does not force the long-term
   throughput learned capacity to zero.
-- Client-facing rejects remain OpenAI/vLLM-compatible `429`; internal reasons
+- Client-facing rejects remain OpenAI-compatible `429`; internal reasons
   are exposed through protected metrics and status logs.
 - Final cap composition is an ordered `min()` over hard global, state, TTFT,
   throughput, pressure, prefill, and availability components.

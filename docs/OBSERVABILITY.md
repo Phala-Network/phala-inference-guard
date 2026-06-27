@@ -10,13 +10,13 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.8.0 vllm={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
+pig_status v=PIG-v0.8.1 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
 ```
 
 The log line has three parts:
 
 - `v`: PIG version.
-- `vllm`: current backend load snapshot.
+- `backend`: current backend load snapshot from vLLM or SGLang metrics.
 - `pig`: current PIG limits and counters.
 
 The log is intentionally compact. Per-lane counters, queue totals, dynamic

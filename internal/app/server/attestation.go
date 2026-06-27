@@ -11,12 +11,12 @@ import (
 )
 
 func (s *proxyServer) attestationReport(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	if !s.authorized(r) {
 		openai.WriteUnauthorized(w)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
 	if s.attestation == nil {

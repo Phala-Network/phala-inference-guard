@@ -129,7 +129,7 @@ func CleanLearnCap(input CleanLearnInput) LearnResult {
 
 	badPressure := input.Waiting > 0 || input.PreemptionDelta > 0 || KVPressureActive(cfg, input.KVCacheUsage)
 	if badPressure {
-		return cleanPressureResult(cfg, input, baseLimit, learned, target, targetReason, projected, projectedReason)
+		return cleanPressureResult(cfg, input, baseLimit, learned, target, targetReason, projected)
 	}
 
 	if !hasDecodeSignal {
@@ -254,24 +254,23 @@ func cleanLowConfidenceEstimate(estimate EstimateResult) bool {
 	}
 }
 
-func cleanPressureResult(cfg Config, input CleanLearnInput, baseLimit, learned, target int, targetReason string, projected int, projectedReason string) LearnResult {
+func cleanPressureResult(cfg Config, input CleanLearnInput, baseLimit, learned, target int, targetReason string, projected int) LearnResult {
 	severe := SeverePressure(cfg, input.Waiting, input.KVCacheUsage, input.PreemptionDelta) &&
 		(input.PreemptionDelta > 0 || input.Running >= cfg.PressureLearnMinRun)
 	if !severe {
 		return cleanLearnResult(learned, target, "pressure_hold", "pressure_not_representative", targetReason, projected, 0)
 	}
 	pressureTarget, limited := OverloadPressureTarget(cfg, baseLimit, input.Running, input.DecodeRunning, input.Waiting, input.KVCacheUsage, input.PreemptionDelta, input.UserTPS, input.QOSRedReady)
+	pressureTargetReason := "pressure_target"
 	if !limited {
 		pressureTarget = target
-		projectedReason = targetReason
-	} else {
-		projectedReason = "pressure_target"
+		pressureTargetReason = targetReason
 	}
 	pressureTarget = num.ClampInt(pressureTarget, 1, baseLimit)
 	if pressureTarget >= learned {
 		return cleanLearnResult(learned, learned, "pressure_hold", "pressure_no_lower_target", "learned_limit", projected, 0)
 	}
-	return cleanLearnResult(pressureTarget, pressureTarget, "pressure_down", "severe_pressure", projectedReason, projected, 0)
+	return cleanLearnResult(pressureTarget, pressureTarget, "pressure_down", "severe_pressure", pressureTargetReason, projected, 0)
 }
 
 func cleanStepUp(cfg Config, value int) int {

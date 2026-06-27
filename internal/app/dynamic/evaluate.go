@@ -8,10 +8,6 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
 
-func (c *Controller) updateFromMetricSamples(samples []telemetry.Sample) runtimedynamic.Snapshot {
-	return c.updateFromMetricSamplesWithFailed(samples, 0)
-}
-
 func (c *Controller) updateFromMetricSamplesWithFailed(samples []telemetry.Sample, backendFailed int) runtimedynamic.Snapshot {
 	now := time.Now()
 	prefillProtected := 0

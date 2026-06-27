@@ -2,10 +2,9 @@ package dynamic
 
 import "github.com/Phala-Network/phala-inference-guard/internal/domain/decision"
 
-func composeCleanFinalLimit(input Input, signals cleanSignals, ttft cleanTTFTStage, throughput cleanThroughputStage, pressure cleanPressureStage, prefill cleanPrefillStage, builder decision.Builder, stateLimit, qosLimit, capacityLimit int) (cleanLimitStage, cleanPressureStage, cleanPrefillStage) {
+func composeCleanFinalLimit(input Input, signals cleanSignals, ttft cleanTTFTStage, throughput cleanThroughputStage, pressure cleanPressureStage, prefill cleanPrefillStage, builder decision.Builder, stateLimit, capacityLimit int) (cleanLimitStage, cleanPressureStage, cleanPrefillStage) {
 	hardGlobalLimit := input.GlobalLimit
-	intake := evaluateCleanIntakeGuard(signals, builder.State(), input.BackendFailed, qosLimit, pressure, prefill, stateLimit)
-	qosLimit = intake.QOSLimit
+	intake := evaluateCleanIntakeGuard(signals, builder.State(), input.BackendFailed, pressure, prefill, stateLimit)
 	pressure = intake.Pressure
 	prefill = intake.Prefill
 	availabilityLimit := intake.AvailabilityLimit
@@ -23,7 +22,7 @@ func composeCleanFinalLimit(input Input, signals cleanSignals, ttft cleanTTFTSta
 		{Reason: "availability", Limit: availabilityLimit},
 	}
 	finalLimit := decision.EnforceFinalLimitComponents(intake.FinalLimitReasonOverride, components[:])
-	qosLimit = finalLimit.Limit
+	qosLimit := finalLimit.Limit
 
 	limits := cleanLimitStage{
 		HardGlobalLimit:   hardGlobalLimit,

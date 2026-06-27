@@ -54,10 +54,6 @@ func (s *appendLastPriorityReadCloser) Close() error {
 	return s.err
 }
 
-func appendLastPriorityStream(reader *bufio.Reader, writer io.Writer, field, priority string) error {
-	return appendLastPriorityStreamWithBuffer(reader, writer, field, priority, priorityStreamBufferSize)
-}
-
 func appendLastPriorityStreamWithBuffer(reader *bufio.Reader, writer io.Writer, field, priority string, bufferSize int) error {
 	bufferSize = normalizedPriorityStreamBufferSize(bufferSize)
 	buffered := acquirePriorityWriter(writer, bufferSize)

@@ -5,6 +5,10 @@ backed by vLLM or SGLang. It sits between HAProxy and the serving backend, reads
 backend metrics, and decides whether new model requests should be forwarded,
 given a very short recovery window, or rejected.
 
+This repository is the canonical source for Phala Inference Guard. Treat PIG as
+a standalone Phala serving component with its own versioning, image, deployment
+rules, and documentation.
+
 PIG is designed for production model compose stacks where user-visible
 generation speed matters. The default policy targets `25 tok/s/user` and treats
 sustained performance below `20 tok/s/user` as degraded.
@@ -34,17 +38,15 @@ sustained performance below `20 tok/s/user` as degraded.
   call delta reaches the client.
 - Can add low-load SSE keep-alive comments and early bridge comments for
   streaming responses when explicitly enabled.
-- Returns vLLM-compatible HTTP 429 errors while metrics still separate QoS
+- Returns OpenAI-compatible HTTP 429 errors while metrics still separate QoS
   pressure from backend-unavailable failures.
 - Protects `/pig/metrics` and `/v1/metrics` with
   `Authorization: Bearer $TOKEN`.
 - Can protect OpenAI generation routes with the same Bearer token when `TOKEN`
   is set.
-- Provides `/v1/attestation/report` directly from PIG so the extra Python proxy
-  hop is no longer required.
-- PIG images do not include Python or a built-in NVIDIA evidence collector.
-- Intentionally does not implement E2EE request/response encryption or the
-  upstream `/v1/signature/{chat_id}` route.
+- Provides `/v1/attestation/report` as a first-class PIG endpoint.
+- Accepts NVIDIA evidence through configured payloads, payload files, or an
+  explicitly mounted collector command.
 
 ## Architecture
 
@@ -106,7 +108,6 @@ internal/runtime/              backend observations, aggregation-friendly teleme
 internal/observability/        histogram, status-line, and Prometheus metrics rendering
 internal/support/              small pure helper packages
 Dockerfile                     lean Go production image build
-Dockerfile.attestation         GPU-attestation-capable image build
 docs/ADVANCED.md               optional runtime knobs
 docs/OBSERVABILITY.md          logs and metrics reference
 docs/REQUEST_TIER_PRIORITY.md  direct/provider request priority guide
@@ -128,12 +129,12 @@ evaluates an explicit ordered component list.
 
 ## Minimal Configuration
 
-PIG needs a serving upstream, a backend metrics endpoint, and a token for its
-protected metrics endpoints.
+Production dynamic QoS deployments need a serving upstream, a backend metrics
+endpoint, and a token for protected PIG endpoints.
 
 ```text
-UPSTREAM=http://vllm:8000
-DYNAMIC_METRICS_URL=http://vllm:8000/metrics
+UPSTREAM=http://backend:8000
+DYNAMIC_METRICS_URL=http://backend:8000/metrics
 TOKEN=<bearer token for PIG-protected routes>
 ```
 
@@ -150,29 +151,22 @@ controls:
 
 ## Production Compose Integration
 
-Build an image:
+Use the published GHCR image:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:<version>
+```
+
+For local development, build the same image shape from this repository:
 
 ```sh
 docker build -t phala-inference-guard:my_tag .
 ```
 
-For a deployment that replaces a Python proxy and must serve attestation reports
-directly from PIG, build the attestation-capable image:
-
-```sh
-docker build -f Dockerfile.attestation -t phala-inference-guard:my_tag .
-```
-
-Older production model compose files routed traffic through an extra Python proxy:
+Deploy PIG as the model-serving guard between HAProxy and the serving runtime:
 
 ```text
-dstack-ingress -> haproxy -> legacy-python-proxy -> vLLM
-```
-
-Replace that extra proxy hop with PIG:
-
-```text
-dstack-ingress -> haproxy -> phala-inference-guard -> vLLM
+dstack-ingress -> haproxy -> phala-inference-guard -> vLLM or SGLang
 ```
 
 Keep the existing `dstack-ingress` target as `http://haproxy:80`.
@@ -184,17 +178,17 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: phala-inference-guard:my_tag
+    image: ghcr.io/phala-network/phala-inference-guard:v0.8.1
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia
     privileged: true
     depends_on:
-      - vllm
+      - backend
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - TOKEN=${TOKEN}
-      - BACKENDS=a=http://vllm:8000|http://vllm:8000/metrics
+      - BACKENDS=backend=http://backend:8000|http://backend:8000/metrics
       - PROXY_TIMEOUT_SECONDS=1800
       - TLS_CERT_PATH=/evidences/cert-example.pem
       - ATTESTATION_NVIDIA_PAYLOAD_FILE=/evidences/nvidia-payload.json
@@ -204,14 +198,15 @@ services:
       - /var/volatile/dstack/evidences:/evidences:ro
 ```
 
+For SGLang deployments, use the SGLang service name and metrics endpoint in
+`depends_on` and `BACKENDS`.
+
 Mount `/var/run/dstack.sock` when `/v1/attestation/report` is enabled. Mount the
 custom-domain certificate and set `TLS_CERT_PATH` when attestation version `2`
-must bind the TLS SPKI fingerprint into `report_data`. When PIG replaces a
-Python attestation proxy, give the PIG container the same GPU access that proxy
-used to have: `runtime: nvidia`, `privileged: true`, and
-`NVIDIA_VISIBLE_DEVICES=all` if an external collector needs GPU access. PIG no
-longer ships CUDA runtime libraries, Python, NVIDIA SDK packages, or a built-in
-NVIDIA collector in any image. Real GPU evidence must be supplied with
+must bind the TLS SPKI fingerprint into `report_data`. Give the PIG container
+GPU access when an external collector needs it, for example `runtime: nvidia`,
+`privileged: true`, and `NVIDIA_VISIBLE_DEVICES=all`. Real GPU evidence must be
+supplied with
 `ATTESTATION_NVIDIA_PAYLOAD`, `ATTESTATION_NVIDIA_PAYLOAD_FILE`, or an
 explicitly mounted external `ATTESTATION_NVIDIA_COMMAND` together with whatever
 runtime dependencies that command needs. Enable
@@ -221,7 +216,7 @@ rejects configured payloads whose normalized `evidence_list` is empty.
 
 ### Point HAProxy At PIG
 
-Change `haproxy.depends_on` from the legacy proxy service to `phala-inference-guard`:
+Make HAProxy depend on `phala-inference-guard`:
 
 ```yaml
 services:
@@ -230,13 +225,7 @@ services:
       - phala-inference-guard
 ```
 
-Replace the model backend server line:
-
-```haproxy
-server model legacy-python-proxy:8000 check maxconn 60
-```
-
-with:
+Point the model backend at PIG:
 
 ```haproxy
 server model phala-inference-guard:8000 check maxconn 512
@@ -251,17 +240,15 @@ Also review the backend runtime concurrency limits, such as vLLM
 high enough that PIG, rather than the backend runtime, makes the first QoS
 decision.
 
-Route `/v1/attestation/report` to PIG. Remove any HAProxy rule that points
-`/v1/signature/{chat_id}` to a legacy proxy; PIG intentionally returns 404 for
-that route because request/response signature lookup is not part of the direct
-vLLM path.
+Route `/v1/attestation/report` to PIG when attestation is enabled.
 
 ### Mark Request Tier
 
 PIG reads only the `X-User-Tier` request header for tier priority. It treats
 `premium` as direct traffic and treats `basic`, missing, or unknown values as
 provider traffic. The check is intentionally lightweight: PIG does not parse the
-request body for tier selection.
+request body for tier selection. If multiple `X-User-Tier` headers are present,
+PIG treats the request as `basic`.
 
 PIG also injects backend JSON request priority after a request passes QoS
 admission. The mapping uses lower number means higher backend priority:
@@ -279,6 +266,10 @@ priority without adding another body read. Set `BACKEND_PRIORITY_MODE=premium_on
 only when basic/provider request bodies must be left unchanged. Backend priority
 requires the runtime to have compatible priority scheduling enabled; otherwise
 the field is simply forwarded as part of the OpenAI-compatible JSON request.
+By default, PIG forwards admitted requests unchanged when backend priority
+cannot be normalized because the body is oversized, unknown-length, non-JSON, or
+the rewrite slots are busy. Set `BACKEND_PRIORITY_FAIL_OPEN=false` for strict
+deployments that prefer rejecting those requests.
 
 Set this header only at a trusted gateway or HAProxy layer. Remove any client
 supplied value before setting the tier:
@@ -321,11 +312,11 @@ with a Prometheus comment describing the failure.
 ## Failure Semantics
 
 PIG protects provider-facing performance by keeping queue waits short,
-returning vLLM-compatible 429 errors when QoS capacity is full or no backend is
+returning OpenAI-compatible 429 errors when QoS capacity is full or no backend is
 usable. This favors fast successful requests and early overload signals over
 slow queued successes.
 
-PIG-generated failure bodies use the vLLM/OpenAI error shape:
+PIG-generated failure bodies use an OpenAI-compatible error shape:
 
 ```json
 {"error":{"message":"Too many requests","type":"TooManyRequestsError","param":null,"code":429}}

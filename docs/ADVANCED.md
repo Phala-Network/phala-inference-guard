@@ -1,16 +1,15 @@
-# PHALA-VLLM-CUSTOMS(1)
+# PHALA-INFERENCE-GUARD(1)
 
 ## NAME
 
-phala-inference-guard - dynamic QoS proxy for vLLM or SGLang backed model serving
-serving.
+phala-inference-guard - dynamic QoS proxy for vLLM or SGLang backed model serving.
 
 ## SYNOPSIS
 
 ```text
 phala-inference-guard
 
-Required:
+Common production configuration:
   UPSTREAM=<url>
   DYNAMIC_METRICS_URL=<url>
   TOKEN=<bearer-token>
@@ -89,7 +88,7 @@ that have already reached the serving backend or its queue.
 ## REQUIRED ENVIRONMENT
 
 `UPSTREAM`
-: Default: `http://vllm:8000`. Upstream URL used when `BACKENDS` or
+: Default: `http://backend:8000`. Upstream URL used when `BACKENDS` or
   `UPSTREAMS` is not provided.
 
 `DYNAMIC_METRICS_URL`
@@ -156,7 +155,7 @@ that have already reached the serving backend or its queue.
 `OPENAI_COMPAT_FAIL_OPEN`
 : Default: `true`. When `true`, JSON scan or rewrite failures skip the
   compatibility rewrite and forward the original body. When `false`, such
-  failures are rejected with PIG's normal vLLM-compatible HTTP 429 body.
+  failures are rejected with PIG's normal OpenAI-compatible HTTP 429 body.
 
 ## ATTESTATION
 
@@ -177,7 +176,7 @@ that have already reached the serving backend or its queue.
 
 `ATTESTATION_GPU_ARCH`
 : Default: `HOPPER`. GPU architecture label written into the NVIDIA payload
-  fallback shape.
+  fallback shape used when local test evidence is allowed.
 
 `ATTESTATION_REQUIRE_NVIDIA_EVIDENCE`
 : Default: `false`. When `true`, `/v1/attestation/report` fails unless NVIDIA
@@ -189,7 +188,7 @@ that have already reached the serving backend or its queue.
 : Default: empty. Optional raw NVIDIA payload JSON. `${nonce}` is replaced with
   the attestation request nonce before the response is returned. Payloads with
   `evidence_list`, `evidences`, or a single `evidence` field are normalized to
-  the upstream `nvidia_payload` shape.
+  the `nvidia_payload` response shape.
 
 `ATTESTATION_NVIDIA_PAYLOAD_FILE`
 : Default: empty. Optional file containing raw NVIDIA payload JSON. Used when
@@ -197,12 +196,10 @@ that have already reached the serving backend or its queue.
 
 `ATTESTATION_NVIDIA_COMMAND`
 : Default: empty. Optional externally supplied command used to collect NVIDIA
-  GPU evidence. PIG images do not include CUDA runtime libraries, Python,
-  `nv-ppcie-verifier`, `pynvml`, or a built-in NVIDIA collector. If a deployment
-  uses this option, mount the collector executable and any runtime dependencies
-  it needs into the container explicitly, and give the container the GPU access
-  that collector requires, for example `runtime: nvidia`, `privileged: true`,
-  and `NVIDIA_VISIBLE_DEVICES=all`.
+  GPU evidence. If a deployment uses this option, mount the collector executable
+  and any runtime dependencies it needs into the container explicitly, and give
+  the container the GPU access that collector requires, for example
+  `runtime: nvidia`, `privileged: true`, and `NVIDIA_VISIBLE_DEVICES=all`.
 
 `ATTESTATION_NVIDIA_COMMAND_ARGS`
 : Default: `--nonce,{nonce},--arch,<ATTESTATION_GPU_ARCH>`.
@@ -212,11 +209,8 @@ that have already reached the serving backend or its queue.
 `ATTESTATION_NVIDIA_COMMAND_TIMEOUT_SECONDS`
 : Default: `30`. Timeout for the NVIDIA evidence command.
 
-PIG intentionally does not implement the E2EE protocol from upstream
-`docs/e2ee_protocol.md`: no ECDH/X25519/AES-GCM request decryption, response
-encryption, E2EE headers, AAD construction, or replay cache is present. PIG
-also intentionally does not implement `/v1/signature/{chat_id}` or the
-request/response signature cache.
+PIG's attestation surface is `/v1/attestation/report`; it is the only
+attestation HTTP endpoint exposed by the service.
 
 If no NVIDIA payload source is configured and
 `ATTESTATION_REQUIRE_NVIDIA_EVIDENCE=false`, PIG still returns a syntactically
@@ -244,7 +238,7 @@ for local tests but is not a complete production GPU attestation.
   tail-latency guard. Healthy TTFT does not immediately reset the learned cap to
   `GLOBAL_LIMIT`; PIG probes upward in small steps after enough healthy samples
   arrive. It can also recover a stale TTFT cap from healthy low-load samples
-  instead of staying yellow forever just because traffic is below the old
+  instead of staying yellow forever just because traffic is below a
   representative-load threshold.
 
 `DYNAMIC_METRICS_URLS`
@@ -264,7 +258,7 @@ for local tests but is not a complete production GPU attestation.
 `DYNAMIC_FAILSAFE_STATE`
 : Default: `yellow`. State label used when metrics polling fails. Metrics
   failure sets the effective dynamic global limit to `0`, so new admitted-path
-  requests return a vLLM-compatible HTTP 429 immediately when no backend is
+  requests return an OpenAI-compatible HTTP 429 immediately when no backend is
   usable.
 
 `DYNAMIC_GLOBAL_GREEN_LIMIT`
@@ -409,7 +403,7 @@ labels through `pig_dynamic_capacity_projected_limit` and
   about `0.1s` under severe KV/preemption pressure, and does not queue when no
   backend is usable. When backend metrics report any waiting request, PIG closes
   new-request backend intake and uses this short queue window; if waiting does
-  not clear quickly, the request receives a vLLM-compatible 429. Set to `0` to
+  not clear quickly, the request receives an OpenAI-compatible 429. Set to `0` to
   reject immediately when no slot is available.
 
 `PIG_QUEUE_POLL_MS`
@@ -533,7 +527,10 @@ not a client-supplied JSON `priority` value.
 : Default: `33554432` (`32 MiB`). Maximum known `Content-Length` eligible for
   rewrite. This default is intended to cover long-context premium requests,
   including roughly 1M-token text prompts in typical OpenAI-compatible JSON
-  bodies. Larger, chunked, or unknown-size bodies are skipped in fail-open mode.
+  bodies. Larger, chunked, or unknown-size bodies are forwarded unchanged by
+  default for compatibility. Set `BACKEND_PRIORITY_FAIL_OPEN=false` when strict
+  backend priority normalization is more important than accepting unusual
+  request shapes.
 
 `BACKEND_PRIORITY_BUFFER_BYTES`
 : Default: `0`. Maximum known `Content-Length` that PIG rewrites fully in
@@ -566,11 +563,11 @@ not a client-supplied JSON `priority` value.
 : Default: `true`. When `true`, PIG forwards requests that cannot be rewritten
   because the body is too large, unknown-size, non-JSON, or the rewrite slots
   are busy. When `false`, those requests are rejected with PIG's normal
-  vLLM-compatible HTTP 429 body. Priority rewrite assumes admitted
+  OpenAI-compatible HTTP 429 body. Priority rewrite assumes admitted
   OpenAI-compatible request bodies are valid JSON objects; malformed JSON can
-  fail while the streaming body is being forwarded. Use `false` only when strict
-  prevention of untrusted body priority is more important than preserving
-  compatibility with unusual request shapes.
+  fail while the streaming body is being forwarded. Set `false` for strict
+  deployments that prefer rejecting synchronously unrewritable requests over
+  possibly forwarding a client-supplied priority value.
 
 ## OPTIONAL ADAPTIVE OUTPUT CLASSIFICATION
 

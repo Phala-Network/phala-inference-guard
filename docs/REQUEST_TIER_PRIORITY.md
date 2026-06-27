@@ -135,7 +135,8 @@ original `Content-Length`, so the backend receives chunked transfer encoding.
 In the default fail-open mode, PIG forwards requests skipped by size, content
 type, unknown length, or rewrite-slot pressure unchanged. Priority rewrite
 assumes admitted OpenAI-compatible request bodies are valid JSON objects;
-malformed JSON is forwarded unchanged in buffered fail-open mode. Set
+malformed JSON can be forwarded unchanged in buffered fail-open paths or fail
+while the streaming body is being forwarded. Set
 `BACKEND_PRIORITY_FAIL_OPEN=false` only for strict deployments that prefer
 rejecting synchronously unrewritable requests over possibly forwarding a
 client-supplied priority value.
@@ -155,7 +156,7 @@ when PIG uses the default `premium=-100` and `basic=0` mapping.
 
 ## Failure Behavior
 
-PIG-generated rejects still return the vLLM-compatible HTTP 429 body:
+PIG-generated rejects still return an OpenAI-compatible HTTP 429 body:
 
 ```json
 {"error":{"message":"Too many requests","type":"TooManyRequestsError","param":null,"code":429}}

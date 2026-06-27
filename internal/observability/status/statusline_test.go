@@ -62,6 +62,7 @@ func TestFormatExposesCleanLearningReasons(t *testing.T) {
 		},
 	})
 
+	assertStatusContains(t, got, `backend={state=red`)
 	assertStatusContains(t, got, `winner=backend_waiting`)
 	assertStatusContains(t, got, `estimate=representative/24`)
 	assertStatusContains(t, got, `projected=24`)

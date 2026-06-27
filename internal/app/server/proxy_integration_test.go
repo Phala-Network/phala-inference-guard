@@ -12,13 +12,13 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/config/pigconfig"
 )
 
-func TestE2EEHeadersDoNotTriggerRequestMutation(t *testing.T) {
+func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
 	var seenBody string
-	var seenModelKey string
+	var seenGatewayTrace string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		seenBody = string(body)
-		seenModelKey = r.Header.Get("X-Model-Pub-Key")
+		seenGatewayTrace = r.Header.Get("X-Gateway-Trace")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","choices":[{"message":{"content":"ok"}}]}`))
 	}))
@@ -32,12 +32,7 @@ func TestE2EEHeadersDoNotTriggerRequestMutation(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer secret")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Signing-Algo", "ecdsa")
-	request.Header.Set("X-Client-Pub-Key", strings.Repeat("ab", 64))
-	request.Header.Set("X-Model-Pub-Key", strings.Repeat("cd", 64))
-	request.Header.Set("X-E2EE-Version", "2")
-	request.Header.Set("X-E2EE-Nonce", strings.Repeat("ef", 16))
-	request.Header.Set("X-E2EE-Timestamp", "1700000000")
+	request.Header.Set("X-Gateway-Trace", "trace-123")
 	recorder := httptest.NewRecorder()
 
 	srv.ServeHTTP(recorder, request)
@@ -48,62 +43,8 @@ func TestE2EEHeadersDoNotTriggerRequestMutation(t *testing.T) {
 	if seenBody != body {
 		t.Fatalf("backend body=%s want %s", seenBody, body)
 	}
-	if seenModelKey == "" {
-		t.Fatalf("E2EE header was not forwarded")
-	}
-	for _, header := range []string{"X-E2EE-Applied", "X-E2EE-Version", "X-E2EE-Alg"} {
-		if got := recorder.Header().Get(header); got != "" {
-			t.Fatalf("%s=%q want empty", header, got)
-		}
-	}
-}
-
-func TestSignaturePathIsNotProxied(t *testing.T) {
-	proxied := false
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxied = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
-	if err != nil {
-		t.Fatalf("newProxyServer: %v", err)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/v1/signature/chatcmpl-test", nil)
-	request.Header.Set("Authorization", "Bearer secret")
-	recorder := httptest.NewRecorder()
-
-	srv.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status=%d want 404", recorder.Code)
-	}
-	if proxied {
-		t.Fatalf("signature path was proxied")
-	}
-}
-
-func TestLegacyMetricsPathIsNotServedOrProxied(t *testing.T) {
-	proxied := false
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		proxied = true
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
-	if err != nil {
-		t.Fatalf("newProxyServer: %v", err)
-	}
-	request := httptest.NewRequest(http.MethodGet, "/pvc-qos/metrics", nil)
-	recorder := httptest.NewRecorder()
-
-	srv.ServeHTTP(recorder, request)
-
-	if recorder.Code != http.StatusNotFound {
-		t.Fatalf("status=%d want 404", recorder.Code)
-	}
-	if proxied {
-		t.Fatalf("legacy metrics path was proxied")
+	if seenGatewayTrace != "trace-123" {
+		t.Fatalf("gateway trace header = %q, want forwarded trace", seenGatewayTrace)
 	}
 }
 
@@ -163,6 +104,51 @@ func TestAPIAuthRejectsCompletionAndResponsesWithoutBearer(t *testing.T) {
 		if _, ok := body["error"]; !ok {
 			t.Fatalf("%s missing OpenAI error body: %s", path, recorder.Body.String())
 		}
+	}
+	if backendCalls != 0 {
+		t.Fatalf("backend calls=%d want 0", backendCalls)
+	}
+}
+
+func TestProtectedPIGRoutesRequireBearerAndDoNotProxy(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+
+	for _, path := range []string{"/pig/metrics", "/v1/metrics", "/v1/attestation/report"} {
+		request := httptest.NewRequest(http.MethodGet, path, nil)
+		recorder := httptest.NewRecorder()
+
+		srv.ServeHTTP(recorder, request)
+
+		if recorder.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status=%d want 401", path, recorder.Code)
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/attestation/report", nil)
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("POST /v1/attestation/report status=%d want 401 before method handling", recorder.Code)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/pig/metrics", nil)
+	request.Header.Add("Authorization", "Bearer secret")
+	request.Header.Add("Authorization", "Bearer attacker")
+	recorder = httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusUnauthorized {
+		t.Fatalf("duplicate Authorization status=%d want 401", recorder.Code)
 	}
 	if backendCalls != 0 {
 		t.Fatalf("backend calls=%d want 0", backendCalls)

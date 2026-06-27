@@ -93,17 +93,6 @@ func TestApplyCleanPressureLimitPreservesCurrentSeverity(t *testing.T) {
 	}
 }
 
-func TestApplyCleanPrefillLimitKeepsSoftPrefillCapOutOfStateReasons(t *testing.T) {
-	limit, builder := applyCleanPrefillLimit(cleanPrefillStage{Limit: 9}, decision.NewBuilder(nil, nil), 20)
-
-	if limit != 9 {
-		t.Fatalf("prefill limit = %d, want 9", limit)
-	}
-	if containsString(builder.YellowReasons(), "prefill_pressure_capacity") {
-		t.Fatalf("yellow reasons = %v, want no prefill_pressure_capacity for a soft cap", builder.YellowReasons())
-	}
-}
-
 func TestEnforceCleanUserTPSCapacityLimitRecomputesStateLimit(t *testing.T) {
 	cfg := cleanEvaluateConfig()
 	cfg.GlobalGreen = 50

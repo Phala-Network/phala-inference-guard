@@ -13,7 +13,7 @@ func loadBackendRoutingConfig(cfg *Config) {
 	if os.Getenv("DYNAMIC_METRICS_URLS") != "" {
 		dynamicMetricsURLs = normalizeDynamicMetricsURLs(env.CSV("DYNAMIC_METRICS_URLS", ""))
 	}
-	upstream := strings.TrimRight(env.String("UPSTREAM", "http://vllm:8000"), "/")
+	upstream := strings.TrimRight(env.String("UPSTREAM", "http://backend:8000"), "/")
 	backendRouting := strings.TrimSpace(os.Getenv("BACKENDS")) != "" || strings.TrimSpace(os.Getenv("UPSTREAMS")) != ""
 	backends := parseBackends(env.String("BACKENDS", ""), upstream, dynamicMetricsURLs)
 	if backendRouting {

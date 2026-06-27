@@ -77,9 +77,7 @@ func (o *Observer) processLine() bool {
 		return false
 	}
 	value := strings.TrimPrefix(line, "data:")
-	if strings.HasPrefix(value, " ") {
-		value = value[1:]
-	}
+	value = strings.TrimPrefix(value, " ")
 	o.eventData = append(o.eventData, value)
 	return false
 }

@@ -17,8 +17,12 @@ func (s *proxyServer) authorized(r *http.Request) bool {
 	if s.cfg.Token == "" {
 		return false
 	}
+	values := r.Header.Values("Authorization")
+	if len(values) != 1 {
+		return false
+	}
 	expected := "Bearer " + s.cfg.Token
-	got := r.Header.Get("Authorization")
+	got := values[0]
 	return subtle.ConstantTimeCompare([]byte(got), []byte(expected)) == 1
 }
 
@@ -38,7 +42,7 @@ func (s *proxyServer) combinedMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	s.writeLocalMetrics(w)
-	_, _ = io.WriteString(w, "\n# --- vLLM Backend Metrics ---\n")
+	_, _ = io.WriteString(w, "\n# --- Backend Metrics ---\n")
 	s.writeBackendMetricsRaw(w)
 }
 

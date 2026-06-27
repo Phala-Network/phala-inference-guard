@@ -26,6 +26,6 @@ jobs:
       - uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.attestation
+          file: Dockerfile
           push: true
           tags: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}

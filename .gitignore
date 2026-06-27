@@ -10,3 +10,7 @@
 
 # Go unit test source belongs in the repository.
 !**/*_test.go
+
+# Local go build outputs from the repository root.
+/phala-inference-guard
+/phala-inference-guard.exe

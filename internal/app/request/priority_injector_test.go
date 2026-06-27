@@ -301,6 +301,14 @@ func TestPriorityInjectorOversizedBodyFailOpenAndFailClosed(t *testing.T) {
 	if injector.Inject(req, requestclass.Basic) {
 		t.Fatalf("fail-closed oversized request returned true")
 	}
+
+	req = newPriorityRequest(`{"model":"m","priority":-100}`)
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	injector = newTestPriorityInjectorFailClosed(PriorityConfig{})
+	if injector.Inject(req, requestclass.Basic) {
+		t.Fatalf("fail-closed unknown-length request returned true")
+	}
 }
 
 func TestPriorityInjectorStatsExposeDurationBucketsAndMax(t *testing.T) {

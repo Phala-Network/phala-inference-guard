@@ -31,8 +31,8 @@ func TestLoadOpenAIConfigDefaults(t *testing.T) {
 			t.Fatalf("AttestationNVIDIACommandArgs[%d]=%q want %q", i, cfg.AttestationNVIDIACommandArgs[i], wantArgs[i])
 		}
 	}
-	if cfg.Upstream != "http://vllm:8000" {
-		t.Fatalf("Upstream = %q, want http://vllm:8000", cfg.Upstream)
+	if cfg.Upstream != "http://backend:8000" {
+		t.Fatalf("Upstream = %q, want http://backend:8000", cfg.Upstream)
 	}
 }
 

@@ -1325,15 +1325,11 @@ func TestCleanIntakeGuardSeparatesWaitingFromAvailability(t *testing.T) {
 		},
 		"green",
 		0,
-		12,
 		cleanPressureStage{Limit: 12, Reason: "inactive", TargetReason: "current_limit"},
 		cleanPrefillStage{Limit: 12, Reason: "inactive", TargetReason: "current_limit"},
 		50,
 	)
 
-	if stage.QOSLimit != 0 {
-		t.Fatalf("qos limit = %d, want 0", stage.QOSLimit)
-	}
 	if stage.AvailabilityLimit != 50 {
 		t.Fatalf("availability limit = %d, want unchanged 50", stage.AvailabilityLimit)
 	}
@@ -1356,14 +1352,13 @@ func TestCleanIntakeGuardUnavailableOverridesWaiting(t *testing.T) {
 		},
 		"green",
 		2,
-		12,
 		cleanPressureStage{Limit: 12, Reason: "inactive", TargetReason: "current_limit"},
 		cleanPrefillStage{Limit: 12, Reason: "inactive", TargetReason: "current_limit"},
 		50,
 	)
 
-	if stage.QOSLimit != 0 || stage.AvailabilityLimit != 0 {
-		t.Fatalf("qos/availability limits = %d/%d, want 0/0", stage.QOSLimit, stage.AvailabilityLimit)
+	if stage.AvailabilityLimit != 0 {
+		t.Fatalf("availability limit = %d, want 0", stage.AvailabilityLimit)
 	}
 	if stage.FinalLimitReasonOverride != "backend_unavailable" {
 		t.Fatalf("final override = %q, want backend_unavailable", stage.FinalLimitReasonOverride)

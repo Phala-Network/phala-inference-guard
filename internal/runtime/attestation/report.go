@@ -134,23 +134,23 @@ func parseNonce(raw string) ([]byte, error) {
 	}
 	nonce, err := hex.DecodeString(raw)
 	if err != nil {
-		return nil, fmt.Errorf("Nonce must be hex-encoded")
+		return nil, fmt.Errorf("nonce must be hex-encoded")
 	}
 	if len(nonce) != 32 {
-		return nil, fmt.Errorf("Nonce must be 32 bytes")
+		return nil, fmt.Errorf("nonce must be 32 bytes")
 	}
 	return nonce, nil
 }
 
 func buildReportData(signingAddressBytes []byte, nonce []byte, certFingerprint []byte) ([]byte, error) {
 	if len(signingAddressBytes) == 0 {
-		return nil, fmt.Errorf("Signing address must be provided")
+		return nil, fmt.Errorf("signing address must be provided")
 	}
 	if len(signingAddressBytes) > 32 {
-		return nil, fmt.Errorf("Signing address exceeds 32 bytes")
+		return nil, fmt.Errorf("signing address exceeds 32 bytes")
 	}
 	if len(nonce) != 32 {
-		return nil, fmt.Errorf("Nonce must be 32 bytes")
+		return nil, fmt.Errorf("nonce must be 32 bytes")
 	}
 	reportData := make([]byte, 64)
 	if certFingerprint != nil {

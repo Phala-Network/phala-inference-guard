@@ -23,10 +23,3 @@ func applyCleanPressureLimit(pressure cleanPressureStage, builder decision.Build
 	}
 	return pressure.Limit, builder
 }
-
-func applyCleanPrefillLimit(prefill cleanPrefillStage, builder decision.Builder, qosLimit int) (int, decision.Builder) {
-	if prefill.Limit >= qosLimit {
-		return qosLimit, builder
-	}
-	return prefill.Limit, builder
-}

@@ -27,6 +27,8 @@ type priorityStreamPool struct {
 	buffers sync.Pool
 }
 
+type priorityScratch []byte
+
 type priorityObjectKey int
 
 const (
@@ -854,7 +856,7 @@ func acquirePriorityScratch(bufferSize int) []byte {
 	bufferSize = normalizedPriorityStreamBufferSize(bufferSize)
 	pool := priorityPool(bufferSize)
 	if value := pool.buffers.Get(); value != nil {
-		buffer := value.([]byte)
+		buffer := *value.(*priorityScratch)
 		return buffer[:bufferSize]
 	}
 	return make([]byte, bufferSize)
@@ -865,5 +867,6 @@ func releasePriorityScratch(buffer []byte, bufferSize int) {
 	if cap(buffer) < bufferSize {
 		return
 	}
-	priorityPool(bufferSize).buffers.Put(buffer[:bufferSize])
+	scratch := priorityScratch(buffer[:bufferSize])
+	priorityPool(bufferSize).buffers.Put(&scratch)
 }
