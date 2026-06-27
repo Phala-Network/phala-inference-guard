@@ -1,0 +1,12 @@
+# Local scratch files are kept out of this release repository.
+/tmp/
+
+# Ad hoc test scripts and generated test artifacts must stay out of git.
+[Tt]est*
+*_[Tt]est*
+*-[Tt]est*
+*.[Tt]est
+*.[Tt]est.*
+
+# Go unit test source belongs in the repository.
+!**/*_test.go

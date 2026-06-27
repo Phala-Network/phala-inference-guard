@@ -1,0 +1,2 @@
+# Keep repository text files normalized to LF across platforms.
+* text=auto eol=lf
