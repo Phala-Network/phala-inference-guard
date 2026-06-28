@@ -16,6 +16,7 @@ type Int64Loader interface {
 
 type DynamicConfig struct {
 	TTFTEnabled               bool
+	TTFTPolicy                latency.Policy
 	PressureEnabled           bool
 	PressureHeadroom          int
 	PressureMinLimit          int
@@ -40,6 +41,7 @@ type DynamicConfig struct {
 }
 
 func WriteDynamic(w io.Writer, snapshot dynamic.Snapshot, cfg DynamicConfig, pressureCap Int64Loader) {
+	ttftPolicy := cfg.TTFTPolicy.Normalize()
 	fmt.Fprintf(w, "pig_dynamic_state_info{state=%q,source=%q} 1\n", snapshot.DecisionState(), snapshot.Source)
 	fmt.Fprintf(w, "pig_dynamic_last_update_seconds %d\n", snapshot.Updated.Unix())
 	if snapshot.Error != "" {
@@ -63,9 +65,10 @@ func WriteDynamic(w io.Writer, snapshot dynamic.Snapshot, cfg DynamicConfig, pre
 	fmt.Fprintf(w, "pig_dynamic_observed_ttft_smoothed_avg_seconds %.6f\n", snapshot.TTFTSmoothedAvg)
 	fmt.Fprintf(w, "pig_dynamic_observed_ttft_smoothed_p95_seconds %.6f\n", snapshot.TTFTSmoothedP95)
 	fmt.Fprintf(w, "pig_dynamic_observed_ttft_smoothed_p99_seconds %.6f\n", snapshot.TTFTSmoothedP99)
-	fmt.Fprintf(w, "pig_dynamic_ttft_target_seconds %.6f\n", latency.TargetSeconds)
-	fmt.Fprintf(w, "pig_dynamic_ttft_p99_target_seconds %.6f\n", latency.P99TargetSeconds)
-	fmt.Fprintf(w, "pig_dynamic_ttft_p99_red_seconds %.6f\n", latency.P99RedSeconds)
+	fmt.Fprintf(w, "pig_dynamic_ttft_target_seconds %.6f\n", ttftPolicy.TargetSeconds)
+	fmt.Fprintf(w, "pig_dynamic_ttft_red_seconds %.6f\n", ttftPolicy.RedSeconds)
+	fmt.Fprintf(w, "pig_dynamic_ttft_p99_target_seconds %.6f\n", ttftPolicy.P99TargetSeconds)
+	fmt.Fprintf(w, "pig_dynamic_ttft_p99_red_seconds %.6f\n", ttftPolicy.P99RedSeconds)
 	fmt.Fprintf(w, "pig_dynamic_ttft_enabled %d\n", num.BoolAsInt(cfg.TTFTEnabled))
 	fmt.Fprintf(w, "pig_dynamic_ttft_learned_limit %d\n", snapshot.TTFTLearnedLimit)
 	fmt.Fprintf(w, "pig_dynamic_ttft_target_limit %d\n", snapshot.TTFTTargetLimit)

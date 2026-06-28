@@ -11,6 +11,7 @@ type LearnInput struct {
 	PreviousLearnedLimit int
 	PreviousTargetLimit  int
 	BaseLimit            int
+	Policy               Policy
 	Running              int
 	StepUpRatio          float64
 	Observation          Observation
@@ -34,6 +35,7 @@ type LearnResult struct {
 }
 
 func LearnCap(input LearnInput) LearnResult {
+	policy := input.Policy.Normalize()
 	assessment := input.Assessment
 	result := LearnResult{
 		LearnedLimit:  input.BaseLimit,
@@ -92,7 +94,7 @@ func LearnCap(input LearnInput) LearnResult {
 		}
 		ratio := RecoveryStepRatio
 		reason := "recovery_probe"
-		if input.Observation.SmoothedP95 > 0 && input.Observation.SmoothedP95 <= TargetSeconds*FastRecoverySignalRatio {
+		if input.Observation.SmoothedP95 > 0 && input.Observation.SmoothedP95 <= policy.TargetSeconds*FastRecoverySignalRatio {
 			ratio = FastRecoveryStepRatio
 			reason = "fast_recovery_probe"
 		}
@@ -127,8 +129,8 @@ func LearnCap(input LearnInput) LearnResult {
 			if assessment.RedReady {
 				reason = "ttft_red_latency"
 			}
-			targetReason = ttftLatencyTargetReason(assessment)
-			ratio := downRatio(assessment.Signal)
+			targetReason = ttftLatencyTargetReason(assessment, policy)
+			ratio := downRatio(assessment.Signal, policy)
 			learningLoad := input.Running
 			if learningLoad < minRunning {
 				learningLoad = minRunning
@@ -203,9 +205,9 @@ func newLearnResult(learned, target int, state, reason, targetReason string, lim
 	}
 }
 
-func ttftLatencyTargetReason(assessment Assessment) string {
-	tailSignal := assessment.P99Signal * P99SignalWeight
-	if assessment.RedReady && assessment.TailHigh && assessment.P99Signal >= P99RedSeconds {
+func ttftLatencyTargetReason(assessment Assessment, policy Policy) string {
+	tailSignal := assessment.P99Signal * policy.P99SignalWeight
+	if assessment.RedReady && assessment.TailHigh && assessment.P99Signal >= policy.P99RedSeconds {
 		tailSignal = assessment.P99Signal
 	}
 	switch {
@@ -220,13 +222,13 @@ func ttftLatencyTargetReason(assessment Assessment) string {
 	}
 }
 
-func downRatio(signal float64) float64 {
+func downRatio(signal float64, policy Policy) float64 {
 	switch {
-	case signal >= 8*TargetSeconds:
+	case signal >= 8*policy.TargetSeconds:
 		return 0.70
-	case signal >= 4*TargetSeconds:
+	case signal >= 4*policy.TargetSeconds:
 		return 0.78
-	case signal >= 2*TargetSeconds:
+	case signal >= 2*policy.TargetSeconds:
 		return 0.86
 	default:
 		return 0.92

@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/env"
 )
 
@@ -101,6 +102,23 @@ func loadDynamicConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	defaultTTFTPolicy := latency.DefaultPolicy()
+	dynamicTTFTTargetSeconds, err := env.Float("DYNAMIC_TTFT_TARGET_SECONDS", defaultTTFTPolicy.TargetSeconds)
+	if err != nil {
+		return err
+	}
+	dynamicTTFTRedSeconds, err := env.Float("DYNAMIC_TTFT_RED_SECONDS", defaultTTFTPolicy.RedSeconds)
+	if err != nil {
+		return err
+	}
+	dynamicTTFTP99TargetSeconds, err := env.Float("DYNAMIC_TTFT_P99_TARGET_SECONDS", defaultTTFTPolicy.P99TargetSeconds)
+	if err != nil {
+		return err
+	}
+	dynamicTTFTP99RedSeconds, err := env.Float("DYNAMIC_TTFT_P99_RED_SECONDS", defaultTTFTPolicy.P99RedSeconds)
+	if err != nil {
+		return err
+	}
 	dynamicUserTPSGraceMinSeconds, err := env.Float("DYNAMIC_SINGLE_USER_TPS_PREFILL_GRACE_MIN_SECONDS", 2)
 	if err != nil {
 		return err
@@ -180,6 +198,12 @@ func loadDynamicConfig(cfg *Config) error {
 	cfg.DynamicUserTPSMinRun = dynamicUserTPSMinRun
 	cfg.DynamicUserTPSYellowN = dynamicUserTPSYellowN
 	cfg.DynamicUserTPSRedN = dynamicUserTPSRedN
+	cfg.DynamicTTFTPolicy = latency.Policy{
+		TargetSeconds:    dynamicTTFTTargetSeconds,
+		RedSeconds:       dynamicTTFTRedSeconds,
+		P99TargetSeconds: dynamicTTFTP99TargetSeconds,
+		P99RedSeconds:    dynamicTTFTP99RedSeconds,
+	}.Normalize()
 	cfg.DynamicUserTPSGraceMin = time.Duration(dynamicUserTPSGraceMinSeconds * float64(time.Second))
 	cfg.DynamicUserTPSGraceMax = time.Duration(dynamicUserTPSGraceMaxSeconds * float64(time.Second))
 	cfg.DynamicUserTPSGraceBps = dynamicUserTPSGraceBps

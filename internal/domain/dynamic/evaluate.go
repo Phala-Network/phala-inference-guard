@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/capacity"
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/tier"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/dynamic"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
@@ -26,6 +27,7 @@ type Config struct {
 	UserTPSMinRun  int
 	UserTPSYellowN int
 	UserTPSRedN    int
+	TTFTPolicy     latency.Policy
 	CapacityRatio  float64
 	CapacityStepUp float64
 	GlobalGreen    int

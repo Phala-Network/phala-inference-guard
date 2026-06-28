@@ -25,6 +25,44 @@ const FastRecoverySignalRatio = 0.25
 const FastRecoveryStepRatio = 0.10
 const ProbeLoadRatio = 0.50
 
+type Policy struct {
+	TargetSeconds    float64
+	RedSeconds       float64
+	P99TargetSeconds float64
+	P99RedSeconds    float64
+	P99SignalWeight  float64
+}
+
+func DefaultPolicy() Policy {
+	return Policy{
+		TargetSeconds:    TargetSeconds,
+		RedSeconds:       RedSeconds,
+		P99TargetSeconds: P99TargetSeconds,
+		P99RedSeconds:    P99RedSeconds,
+		P99SignalWeight:  P99SignalWeight,
+	}
+}
+
+func (p Policy) Normalize() Policy {
+	defaults := DefaultPolicy()
+	if p.TargetSeconds <= 0 {
+		p.TargetSeconds = defaults.TargetSeconds
+	}
+	if p.RedSeconds <= 0 {
+		p.RedSeconds = defaults.RedSeconds
+	}
+	if p.P99TargetSeconds <= 0 {
+		p.P99TargetSeconds = defaults.P99TargetSeconds
+	}
+	if p.P99RedSeconds <= 0 {
+		p.P99RedSeconds = defaults.P99RedSeconds
+	}
+	if p.P99SignalWeight <= 0 {
+		p.P99SignalWeight = defaults.P99SignalWeight
+	}
+	return p
+}
+
 type Observation struct {
 	Valid       bool
 	Count       uint64
@@ -121,6 +159,7 @@ func ObserveWindow(current telemetry.HistogramSample, previous WindowState, opti
 
 type AssessInput struct {
 	Previous           WindowState
+	Policy             Policy
 	Running            int
 	Waiting            int
 	KVCacheUsage       float64
@@ -132,6 +171,7 @@ type AssessInput struct {
 }
 
 func Assess(input AssessInput, observation Observation) Assessment {
+	policy := input.Policy.Normalize()
 	assessment := Assessment{
 		HighCount:     input.Previous.HighCount,
 		TailHighCount: input.Previous.TailHighCount,
@@ -141,13 +181,13 @@ func Assess(input AssessInput, observation Observation) Assessment {
 	}
 	pressureFree := input.Waiting == 0 && input.Preemptions == 0 && (input.KVCacheUsage <= 0 || input.KVCacheUsage < HealthyMaxKVCacheUsage)
 	p99Reliable := observation.Valid && observation.Count >= P99MinWindowCount
-	p99Healthy := observation.SmoothedP99 <= 0 || observation.SmoothedP99 <= P99TargetSeconds || (!p99Reliable && input.Previous.TailHighCount == 0)
-	smoothedHealthy := pressureFree && observation.SmoothedP95 > 0 && observation.SmoothedP95 <= TargetSeconds && observation.SmoothedAvg <= TargetSeconds && p99Healthy
+	p99Healthy := observation.SmoothedP99 <= 0 || observation.SmoothedP99 <= policy.P99TargetSeconds || (!p99Reliable && input.Previous.TailHighCount == 0)
+	smoothedHealthy := pressureFree && observation.SmoothedP95 > 0 && observation.SmoothedP95 <= policy.TargetSeconds && observation.SmoothedAvg <= policy.TargetSeconds && p99Healthy
 	highSignalQualified := !input.RequireLoadSignal || input.RepresentativeLoad || input.DemandPressure || input.Waiting > 0 || input.Preemptions > 0
 	if input.Running < effectiveMinRunning(input.RecoveryLoadLimit) {
 		if observation.Valid && observation.Count > 0 {
 			fillSignals(&assessment, observation)
-			if highSignalQualified && applyHighSignal(&assessment, p99Reliable) {
+			if highSignalQualified && applyHighSignal(&assessment, p99Reliable, policy) {
 				return assessment
 			}
 		}
@@ -164,7 +204,7 @@ func Assess(input AssessInput, observation Observation) Assessment {
 	if !observation.Valid || observation.Count < MinWindowCount {
 		if observation.Valid && observation.Count > 0 {
 			fillSignals(&assessment, observation)
-			if highSignalQualified && applyHighSignal(&assessment, p99Reliable) {
+			if highSignalQualified && applyHighSignal(&assessment, p99Reliable, policy) {
 				return assessment
 			}
 		}
@@ -180,7 +220,7 @@ func Assess(input AssessInput, observation Observation) Assessment {
 		return assessment
 	}
 	fillSignals(&assessment, observation)
-	if highSignalQualified && applyHighSignal(&assessment, p99Reliable) {
+	if highSignalQualified && applyHighSignal(&assessment, p99Reliable, policy) {
 		return assessment
 	}
 	assessment.Healthy = smoothedHealthy
@@ -191,7 +231,7 @@ func Assess(input AssessInput, observation Observation) Assessment {
 	}
 	assessment.HealthyCount = 0
 	decayUnhealthyCounts(&assessment)
-	assessment.Signal = math.Max(assessment.P95Signal, assessment.P99Signal*P99SignalWeight)
+	assessment.Signal = math.Max(assessment.P95Signal, assessment.P99Signal*policy.P99SignalWeight)
 	return assessment
 }
 
@@ -204,9 +244,9 @@ func fillSignals(assessment *Assessment, observation Observation) {
 	}
 }
 
-func applyHighSignal(assessment *Assessment, p99Reliable bool) bool {
-	assessment.High = assessment.P95Signal > TargetSeconds
-	assessment.TailHigh = p99Reliable && assessment.P99Signal > P99TargetSeconds
+func applyHighSignal(assessment *Assessment, p99Reliable bool, policy Policy) bool {
+	assessment.High = assessment.P95Signal > policy.TargetSeconds
+	assessment.TailHigh = p99Reliable && assessment.P99Signal > policy.P99TargetSeconds
 	if !assessment.High && !assessment.TailHigh {
 		return false
 	}
@@ -223,10 +263,10 @@ func applyHighSignal(assessment *Assessment, p99Reliable bool) bool {
 	p95Ready := assessment.HighCount >= HighConsecutive
 	tailReady := assessment.TailHighCount >= P99HighConsecutive
 	assessment.YellowReady = p95Ready || tailReady
-	assessment.RedReady = (p95Ready && assessment.P95Signal >= RedSeconds) || (tailReady && assessment.P99Signal >= P99RedSeconds)
+	assessment.RedReady = (p95Ready && assessment.P95Signal >= policy.RedSeconds) || (tailReady && assessment.P99Signal >= policy.P99RedSeconds)
 	assessment.Signal = assessment.P95Signal
-	tailSignal := assessment.P99Signal * P99SignalWeight
-	if assessment.RedReady && tailReady && assessment.P99Signal >= P99RedSeconds {
+	tailSignal := assessment.P99Signal * policy.P99SignalWeight
+	if assessment.RedReady && tailReady && assessment.P99Signal >= policy.P99RedSeconds {
 		tailSignal = assessment.P99Signal
 	}
 	if tailSignal > assessment.Signal {

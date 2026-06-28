@@ -64,13 +64,14 @@ func observeTTFTWindowFromCumulative(current, previousCumulative telemetry.Histo
 	})
 }
 
-func assessTTFT(previous dynamic.Snapshot, observation latency.Observation, running, waiting int, kvValue float64, preemptionDelta uint64, recoveryLoadLimit int, representativeLoad, demandPressure bool) latency.Assessment {
+func assessTTFT(policy latency.Policy, previous dynamic.Snapshot, observation latency.Observation, running, waiting int, kvValue float64, preemptionDelta uint64, recoveryLoadLimit int, representativeLoad, demandPressure bool) latency.Assessment {
 	return latency.Assess(latency.AssessInput{
 		Previous: latency.WindowState{
 			HighCount:     previous.TTFTHighCount,
 			TailHighCount: previous.TTFTP99HighCount,
 			HealthyCount:  previous.TTFTHealthyCount,
 		},
+		Policy:             policy,
 		Running:            running,
 		Waiting:            waiting,
 		KVCacheUsage:       kvValue,

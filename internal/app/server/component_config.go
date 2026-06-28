@@ -92,6 +92,7 @@ func dynamicQoSConfig(cfg config) dynamic.Config {
 		UserTPSMinRun:             cfg.DynamicUserTPSMinRun,
 		UserTPSYellowN:            cfg.DynamicUserTPSYellowN,
 		UserTPSRedN:               cfg.DynamicUserTPSRedN,
+		TTFTPolicy:                cfg.DynamicTTFTPolicy,
 		UserTPSGraceMin:           cfg.DynamicUserTPSGraceMin,
 		UserTPSGraceMax:           cfg.DynamicUserTPSGraceMax,
 		UserTPSGraceBps:           cfg.DynamicUserTPSGraceBps,

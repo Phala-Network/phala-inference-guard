@@ -51,6 +51,11 @@ func validateDynamicConfig(cfg Config) error {
 			return err
 		}
 	}
+	if cfg.DynamicTTFTEnabled {
+		if err := validateDynamicTTFTConfig(cfg); err != nil {
+			return err
+		}
+	}
 	for name, value := range map[string]int{
 		"DYNAMIC_GLOBAL_GREEN_LIMIT":  cfg.DynamicGlobalGreen,
 		"DYNAMIC_GLOBAL_YELLOW_LIMIT": cfg.DynamicGlobalYellow,
@@ -62,6 +67,20 @@ func validateDynamicConfig(cfg Config) error {
 	}
 	if cfg.DynamicEnabled {
 		return validateDynamicMetricsConfig(cfg)
+	}
+	return nil
+}
+
+func validateDynamicTTFTConfig(cfg Config) error {
+	policy := cfg.DynamicTTFTPolicy.Normalize()
+	if policy.TargetSeconds <= 0 || policy.RedSeconds <= 0 || policy.P99TargetSeconds <= 0 || policy.P99RedSeconds <= 0 {
+		return fmt.Errorf("dynamic TTFT thresholds must be > 0 when DYNAMIC_TTFT_ENABLED=true")
+	}
+	if policy.RedSeconds < policy.TargetSeconds {
+		return fmt.Errorf("DYNAMIC_TTFT_RED_SECONDS must be >= DYNAMIC_TTFT_TARGET_SECONDS")
+	}
+	if policy.P99RedSeconds < policy.P99TargetSeconds {
+		return fmt.Errorf("DYNAMIC_TTFT_P99_RED_SECONDS must be >= DYNAMIC_TTFT_P99_TARGET_SECONDS")
 	}
 	return nil
 }

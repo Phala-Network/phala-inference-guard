@@ -279,6 +279,18 @@ must restrict PIG to a specific GPU.
   instead of staying yellow forever just because traffic is below a
   representative-load threshold.
 
+`DYNAMIC_TTFT_TARGET_SECONDS`
+: Default: `1`. P95 and average semantic TTFT target used by the TTFT learner.
+
+`DYNAMIC_TTFT_RED_SECONDS`
+: Default: `3`. P95 semantic TTFT red threshold.
+
+`DYNAMIC_TTFT_P99_TARGET_SECONDS`
+: Default: `3`. P99 semantic TTFT target used by the tail-latency guard.
+
+`DYNAMIC_TTFT_P99_RED_SECONDS`
+: Default: `8`. P99 semantic TTFT red threshold.
+
 `DYNAMIC_METRICS_URLS`
 : Default: empty. Comma-separated metrics URLs. For a single upstream that
   already load-balances backend traffic, PIG aggregates running, waiting,

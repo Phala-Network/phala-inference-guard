@@ -1,6 +1,10 @@
 package pigconfig
 
-import "time"
+import (
+	"time"
+
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
+)
 
 type Backend struct {
 	Name       string
@@ -89,6 +93,7 @@ type Config struct {
 	DynamicUserTPSMinRun             int
 	DynamicUserTPSYellowN            int
 	DynamicUserTPSRedN               int
+	DynamicTTFTPolicy                latency.Policy
 	DynamicUserTPSGraceMin           time.Duration
 	DynamicUserTPSGraceMax           time.Duration
 	DynamicUserTPSGraceBps           float64

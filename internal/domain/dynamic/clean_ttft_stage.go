@@ -43,7 +43,7 @@ func observeCleanTTFTStage(cfg Config, input Input, signals cleanSignals) cleanT
 	stage.RecoveryLimit = ttftRecoveryLoadLimit(stage.PreviousSnapshot, input.GlobalLimit, input.GlobalLimit)
 	stage.DemandPressure = ttftDemandPressure(input, signals)
 	stage.RepresentativeLoad = ttftRepresentativeLoad(stage.PreviousSnapshot, input.GlobalLimit, signals.Running, signals.DecodeRunning, signals.PrefillFreeze)
-	stage.Assessment = assessTTFT(stage.PreviousSnapshot, stage.Observation, signals.Running, signals.Waiting, signals.KVCacheUsage, signals.PreemptionDelta, stage.RecoveryLimit, stage.RepresentativeLoad, stage.DemandPressure)
+	stage.Assessment = assessTTFT(cfg.TTFTPolicy, stage.PreviousSnapshot, stage.Observation, signals.Running, signals.Waiting, signals.KVCacheUsage, signals.PreemptionDelta, stage.RecoveryLimit, stage.RepresentativeLoad, stage.DemandPressure)
 	return stage
 }
 
@@ -63,6 +63,7 @@ func learnCleanTTFTStage(cfg Config, input Input, signals cleanSignals, stage cl
 		PreviousLearnedLimit: stage.PreviousSnapshot.TTFTLearnedLimit,
 		PreviousTargetLimit:  stage.PreviousSnapshot.TTFTTargetLimit,
 		BaseLimit:            baseGlobalLimit,
+		Policy:               cfg.TTFTPolicy,
 		Running:              signals.Running,
 		StepUpRatio:          cfg.CapacityStepUp,
 		Observation:          stage.Observation,

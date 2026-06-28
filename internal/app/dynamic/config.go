@@ -5,6 +5,7 @@ import (
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/capacity"
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/dynamic"
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
 )
 
 type Config struct {
@@ -33,6 +34,7 @@ type Config struct {
 	UserTPSMinRun             int
 	UserTPSYellowN            int
 	UserTPSRedN               int
+	TTFTPolicy                latency.Policy
 	UserTPSGraceMin           time.Duration
 	UserTPSGraceMax           time.Duration
 	UserTPSGraceBps           float64
@@ -91,6 +93,7 @@ func (cfg Config) policyConfig() dynamic.Config {
 		UserTPSMinRun:  cfg.UserTPSMinRun,
 		UserTPSYellowN: cfg.UserTPSYellowN,
 		UserTPSRedN:    cfg.UserTPSRedN,
+		TTFTPolicy:     cfg.TTFTPolicy,
 		CapacityRatio:  cfg.UserTPSCapacityRatio,
 		CapacityStepUp: cfg.UserTPSCapacityStepUp,
 		GlobalGreen:    cfg.GlobalGreen,

@@ -176,6 +176,7 @@ func (s *proxyServer) writeDynamicMetrics(w io.Writer) {
 	snapshot := s.dynamicController.Snapshot()
 	metrics.WriteDynamic(w, snapshot, metrics.DynamicConfig{
 		TTFTEnabled:               s.cfg.DynamicTTFTEnabled,
+		TTFTPolicy:                s.cfg.DynamicTTFTPolicy,
 		PressureEnabled:           s.cfg.DynamicPressureEnabled,
 		PressureHeadroom:          s.cfg.DynamicPressureHeadroom,
 		PressureMinLimit:          s.cfg.DynamicPressureMinLimit,
