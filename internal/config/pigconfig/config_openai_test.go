@@ -22,6 +22,9 @@ func TestLoadOpenAIConfigDefaults(t *testing.T) {
 	if cfg.AttestationNVIDIACommandTimeout <= 0 {
 		t.Fatalf("AttestationNVIDIACommandTimeout = %s, want > 0", cfg.AttestationNVIDIACommandTimeout)
 	}
+	if !cfg.AttestationRequireNVIDIAEvidence {
+		t.Fatalf("AttestationRequireNVIDIAEvidence = false, want true")
+	}
 	wantArgs := []string{"--nonce", "{nonce}", "--arch", "HOPPER"}
 	if len(cfg.AttestationNVIDIACommandArgs) != len(wantArgs) {
 		t.Fatalf("AttestationNVIDIACommandArgs len=%d want %d: %#v", len(cfg.AttestationNVIDIACommandArgs), len(wantArgs), cfg.AttestationNVIDIACommandArgs)
@@ -33,6 +36,17 @@ func TestLoadOpenAIConfigDefaults(t *testing.T) {
 	}
 	if cfg.Upstream != "http://backend:8000" {
 		t.Fatalf("Upstream = %q, want http://backend:8000", cfg.Upstream)
+	}
+}
+
+func TestLoadOpenAIConfigCanDisableRequiredNVIDIAEvidenceForTests(t *testing.T) {
+	t.Setenv("ATTESTATION_REQUIRE_NVIDIA_EVIDENCE", "false")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.AttestationRequireNVIDIAEvidence {
+		t.Fatalf("AttestationRequireNVIDIAEvidence = true, want false")
 	}
 }
 
@@ -92,14 +106,14 @@ func TestValidateOpenAIConfigRejectsAPIAuthWithoutToken(t *testing.T) {
 	}
 }
 
-func TestValidateOpenAIConfigRejectsRequiredNVIDIAEvidenceWithoutSource(t *testing.T) {
+func TestValidateOpenAIConfigAcceptsRequiredNVIDIAEvidenceWithoutExternalSource(t *testing.T) {
 	cfg := Config{
 		AttestationEnabled:               true,
 		AttestationRequireNVIDIAEvidence: true,
 		AttestationNVIDIACommandTimeout:  1,
 	}
-	if err := validateOpenAIConfig(cfg); err == nil {
-		t.Fatalf("validateOpenAIConfig accepted required NVIDIA evidence without source")
+	if err := validateOpenAIConfig(cfg); err != nil {
+		t.Fatalf("validateOpenAIConfig rejected native collector default: %v", err)
 	}
 }
 

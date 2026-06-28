@@ -34,6 +34,7 @@ type Service struct {
 	cfg     Config
 	signers Signers
 	dstack  Dstack
+	nvidia  nvidiaCollector
 }
 
 type ReportRequest struct {
@@ -53,7 +54,7 @@ func NewService(cfg Config, dstack Dstack) (*Service, error) {
 	if cfg.NVIDIACommandTimeout <= 0 {
 		cfg.NVIDIACommandTimeout = 30 * time.Second
 	}
-	return &Service{cfg: cfg, signers: signers, dstack: dstack}, nil
+	return &Service{cfg: cfg, signers: signers, dstack: dstack, nvidia: newNativeNVIDIACollector()}, nil
 }
 
 func (s *Service) Generate(ctx context.Context, req ReportRequest) (map[string]any, error) {
@@ -172,12 +173,22 @@ func buildReportData(signingAddressBytes []byte, nonce []byte, certFingerprint [
 func (s *Service) nvidiaPayload(ctx context.Context, nonceHex string) (string, error) {
 	payload := s.cfg.NVIDIAPayload
 	if payload == "" && s.cfg.NVIDIAPayloadFile != "" {
-		if body, err := os.ReadFile(s.cfg.NVIDIAPayloadFile); err == nil {
-			payload = strings.TrimSpace(string(body))
+		body, err := os.ReadFile(s.cfg.NVIDIAPayloadFile)
+		if err != nil {
+			return "", fmt.Errorf("read nvidia payload file: %w", err)
 		}
+		payload = strings.TrimSpace(string(body))
 	}
 	if payload != "" {
 		return s.normalizeNVIDIAPayload(strings.ReplaceAll(payload, "${nonce}", nonceHex), nonceHex)
+	}
+	var nativeErr error
+	if s.nvidia != nil {
+		output, err := s.nvidia.Collect(ctx, nonceHex, s.cfg.GPUArch)
+		if err == nil {
+			return s.normalizeNVIDIAPayload(output, nonceHex)
+		}
+		nativeErr = err
 	}
 	if s.cfg.NVIDIAPayloadURL != "" {
 		output, err := s.fetchNVIDIAPayload(ctx, nonceHex)
@@ -194,13 +205,12 @@ func (s *Service) nvidiaPayload(ctx context.Context, nonceHex string) (string, e
 		return s.normalizeNVIDIAPayload(output, nonceHex)
 	}
 	if s.cfg.RequireNVIDIAEvidence {
-		return "", fmt.Errorf("nvidia evidence is required but no payload or command is configured")
+		if nativeErr != nil {
+			return "", fmt.Errorf("nvidia evidence is required but native collector failed and no fallback source succeeded: %w", nativeErr)
+		}
+		return "", fmt.Errorf("nvidia evidence is required but no native collector, payload, URL, or command source is available")
 	}
-	body, _ := json.Marshal(map[string]any{
-		"nonce":         nonceHex,
-		"evidence_list": []any{},
-		"arch":          s.cfg.GPUArch,
-	})
+	body, _ := json.Marshal(emptyNVIDIAPayload(nonceHex, s.cfg.GPUArch))
 	return string(body), nil
 }
 

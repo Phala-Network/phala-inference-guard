@@ -36,7 +36,7 @@ func loadOpenAIConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	requireNVIDIAEvidence, err := env.Bool("ATTESTATION_REQUIRE_NVIDIA_EVIDENCE", false)
+	requireNVIDIAEvidence, err := env.Bool("ATTESTATION_REQUIRE_NVIDIA_EVIDENCE", true)
 	if err != nil {
 		return err
 	}

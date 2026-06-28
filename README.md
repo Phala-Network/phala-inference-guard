@@ -45,8 +45,8 @@ sustained performance below `20 tok/s/user` as degraded.
 - Can protect OpenAI generation routes with the same Bearer token when `TOKEN`
   is set.
 - Provides `/v1/attestation/report` as a first-class PIG endpoint.
-- Accepts NVIDIA evidence through configured payloads, payload files, or an
-  explicitly mounted collector command.
+- Collects NVIDIA GPU evidence directly through NVML on GPU deployments and
+  returns the standard `nonce/evidence_list/arch` NVIDIA payload shape.
 
 ## Architecture
 
@@ -178,7 +178,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.8.3
+    image: ghcr.io/phala-network/phala-inference-guard:v0.8.5
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia
@@ -186,13 +186,9 @@ services:
     depends_on:
       - backend
     environment:
-      - NVIDIA_VISIBLE_DEVICES=all
       - TOKEN=${TOKEN}
       - BACKENDS=backend=http://backend:8000|http://backend:8000/metrics
-      - PROXY_TIMEOUT_SECONDS=1800
       - TLS_CERT_PATH=/evidences/cert-example.pem
-      - ATTESTATION_NVIDIA_PAYLOAD_FILE=/evidences/nvidia-payload.json
-      - ATTESTATION_REQUIRE_NVIDIA_EVIDENCE=true
     volumes:
       - /var/run/dstack.sock:/var/run/dstack.sock
       - /var/volatile/dstack/evidences:/evidences:ro
@@ -204,19 +200,18 @@ For SGLang deployments, use the SGLang service name and metrics endpoint in
 Mount `/var/run/dstack.sock` when `/v1/attestation/report` is enabled. Mount the
 custom-domain certificate and set `TLS_CERT_PATH` when attestation version `2`
 must bind the TLS SPKI fingerprint into `report_data`. Give the PIG container
-GPU access when an external collector needs it, for example `runtime: nvidia`,
-`privileged: true`, and `NVIDIA_VISIBLE_DEVICES=all`. Real GPU evidence must be
-supplied with
-`ATTESTATION_NVIDIA_PAYLOAD`, `ATTESTATION_NVIDIA_PAYLOAD_FILE`, or an
-external `ATTESTATION_NVIDIA_PAYLOAD_URL`, or an explicitly mounted external
-`ATTESTATION_NVIDIA_COMMAND` together with whatever runtime dependencies that
-command needs. A payload URL may point to an internal collector endpoint that
-returns either a raw NVIDIA payload or an attestation report containing a
-`nvidia_payload` field; PIG appends the current `nonce` query parameter and
-normalizes the result. Enable
-`ATTESTATION_REQUIRE_NVIDIA_EVIDENCE=true` in production so an empty local
-fallback cannot be served by mistake. With that setting enabled, PIG also
-rejects configured payloads whose normalized `evidence_list` is empty.
+GPU access for native evidence collection, for example `runtime: nvidia`,
+and `privileged: true`. The image defaults `NVIDIA_VISIBLE_DEVICES=all`, so
+production compose files usually do not need to repeat it. PIG collects NVIDIA
+evidence itself through the NVML library injected by the NVIDIA runtime. Missing
+GPU evidence fails closed by default; local or test deployments that
+intentionally run without GPU evidence must set
+`ATTESTATION_REQUIRE_NVIDIA_EVIDENCE=false` explicitly.
+
+`ATTESTATION_NVIDIA_PAYLOAD`, `ATTESTATION_NVIDIA_PAYLOAD_FILE`,
+`ATTESTATION_NVIDIA_PAYLOAD_URL`, and `ATTESTATION_NVIDIA_COMMAND` remain
+available as explicit override or fallback sources. They are not required for
+normal GPU deployments.
 
 ### Point HAProxy At PIG
 

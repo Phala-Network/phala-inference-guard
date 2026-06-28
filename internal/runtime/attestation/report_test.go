@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
@@ -255,6 +256,35 @@ func TestRequiredNVIDIAEvidenceAcceptsNonEmptyEvidenceList(t *testing.T) {
 	}
 }
 
+func TestRequiredNVIDIAEvidenceUsesNativeCollector(t *testing.T) {
+	nonceHex := stringsRepeat("11", 32)
+	service, err := NewService(Config{
+		GPUArch:               "HOPPER",
+		RequireNVIDIAEvidence: true,
+	}, &mockDstack{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	service.nvidia = fakeNVIDIACollector{payload: `{"nonce":"${nonce}","evidence_list":[{"certificate":"cert","evidence":"evidence","arch":"HOPPER"}],"arch":"HOPPER"}`}
+
+	normalized, err := service.nvidiaPayload(context.Background(), nonceHex)
+
+	if err != nil {
+		t.Fatalf("nvidiaPayload: %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(normalized), &payload); err != nil {
+		t.Fatalf("normalized json: %v", err)
+	}
+	if payload["nonce"] != nonceHex {
+		t.Fatalf("nonce=%v want %s", payload["nonce"], nonceHex)
+	}
+	evidences := payload["evidence_list"].([]any)
+	if len(evidences) != 1 {
+		t.Fatalf("evidence_list len=%d want 1", len(evidences))
+	}
+}
+
 func TestNVIDIAPayloadURLExtractsPayloadFromAttestationReport(t *testing.T) {
 	nonceHex := stringsRepeat("12", 32)
 	var observedNonce string
@@ -308,6 +338,27 @@ func TestNVIDIAPayloadURLExtractsPayloadFromAttestationReport(t *testing.T) {
 	evidences := payload["evidence_list"].([]any)
 	if len(evidences) != 1 {
 		t.Fatalf("evidence_list len=%d want 1", len(evidences))
+	}
+}
+
+func TestEncodeNVIDIACertificateChainMatchesVerifierShape(t *testing.T) {
+	leaf := []byte("-----BEGIN CERTIFICATE-----\nAQID\n-----END CERTIFICATE-----\n")
+	gpuRoot := []byte("-----BEGIN CERTIFICATE-----\nBAUG\n-----END CERTIFICATE-----\n")
+
+	encoded, err := encodeNVIDIACertificateChain(append(append([]byte{}, leaf...), gpuRoot...))
+
+	if err != nil {
+		t.Fatalf("encodeNVIDIACertificateChain: %v", err)
+	}
+	decoded := mustBase64Decode(t, encoded)
+	if !bytes.Contains(decoded, leaf) {
+		t.Fatalf("encoded chain lost leaf certificate")
+	}
+	if bytes.Contains(decoded, gpuRoot) {
+		t.Fatalf("encoded chain retained GPU-supplied root certificate")
+	}
+	if !bytes.Contains(decoded, []byte(nvidiaDeviceRootCertificatePEM)) {
+		t.Fatalf("encoded chain did not append NVIDIA verifier device root")
 	}
 }
 
@@ -366,4 +417,25 @@ func (m *mockDstackWithCloudInfo) Info(context.Context) (map[string]any, error) 
 		"compose_hash":  "mock_compose_hash",
 		"tcb_info":      map[string]any{"app_compose": "compose"},
 	}, nil
+}
+
+type fakeNVIDIACollector struct {
+	payload string
+	err     error
+}
+
+func (f fakeNVIDIACollector) Collect(_ context.Context, nonceHex string, _ string) (string, error) {
+	if f.err != nil {
+		return "", f.err
+	}
+	return strings.ReplaceAll(f.payload, "${nonce}", nonceHex), nil
+}
+
+func mustBase64Decode(t *testing.T, encoded string) []byte {
+	t.Helper()
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		t.Fatalf("base64 decode: %v", err)
+	}
+	return decoded
 }

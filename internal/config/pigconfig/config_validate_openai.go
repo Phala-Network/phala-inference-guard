@@ -27,12 +27,5 @@ func validateOpenAIConfig(cfg Config) error {
 	if cfg.AttestationEnabled && cfg.AttestationNVIDIACommandTimeout <= 0 {
 		return fmt.Errorf("ATTESTATION_NVIDIA_COMMAND_TIMEOUT_SECONDS must be > 0 when ATTESTATION_ENABLED=true")
 	}
-	if cfg.AttestationEnabled && cfg.AttestationRequireNVIDIAEvidence &&
-		cfg.AttestationNVIDIAPayload == "" &&
-		cfg.AttestationNVIDIAPayloadFile == "" &&
-		cfg.AttestationNVIDIAPayloadURL == "" &&
-		cfg.AttestationNVIDIACommand == "" {
-		return fmt.Errorf("ATTESTATION_REQUIRE_NVIDIA_EVIDENCE requires ATTESTATION_NVIDIA_PAYLOAD, ATTESTATION_NVIDIA_PAYLOAD_FILE, ATTESTATION_NVIDIA_PAYLOAD_URL, or ATTESTATION_NVIDIA_COMMAND")
-	}
 	return nil
 }

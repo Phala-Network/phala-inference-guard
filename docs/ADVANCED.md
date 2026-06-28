@@ -179,14 +179,14 @@ that have already reached the serving backend or its queue.
 
 `ATTESTATION_GPU_ARCH`
 : Default: `HOPPER`. GPU architecture label written into the NVIDIA payload
-  fallback shape used when local test evidence is allowed.
+  fallback shape used when local test evidence is allowed. Native NVML
+  collection uses the architecture reported by the GPU.
 
 `ATTESTATION_REQUIRE_NVIDIA_EVIDENCE`
-: Default: `false`. When `true`, `/v1/attestation/report` fails unless NVIDIA
-  evidence is supplied by `ATTESTATION_NVIDIA_PAYLOAD`,
-  `ATTESTATION_NVIDIA_PAYLOAD_FILE`, `ATTESTATION_NVIDIA_PAYLOAD_URL`, or
-  `ATTESTATION_NVIDIA_COMMAND`, and the normalized `evidence_list` is
-  non-empty.
+: Default: `true`. `/v1/attestation/report` fails unless NVIDIA evidence is
+  collected by PIG's native NVML collector or supplied by an explicit override
+  or fallback source. The normalized `evidence_list` must be non-empty. Set this
+  to `false` only for local tests or intentionally non-GPU deployments.
 
 `ATTESTATION_NVIDIA_PAYLOAD`
 : Default: empty. Optional raw NVIDIA payload JSON. `${nonce}` is replaced with
@@ -199,23 +199,22 @@ that have already reached the serving backend or its queue.
   `ATTESTATION_NVIDIA_PAYLOAD` is empty.
 
 `ATTESTATION_NVIDIA_PAYLOAD_URL`
-: Default: empty. Optional internal collector URL used when the inline payload
-  and payload file are empty. PIG appends the current `nonce` query parameter
-  unless the URL already provides one. The response may be either a raw NVIDIA
-  payload JSON object or an attestation report containing a `nvidia_payload`
-  string field.
+: Default: empty. Optional fallback URL used when inline payload, payload file,
+  and native NVML collection do not provide evidence. PIG appends the current
+  `nonce` query parameter unless the URL already provides one. The response may
+  be either a raw NVIDIA payload JSON object or an attestation report containing
+  a `nvidia_payload` string field.
 
 `ATTESTATION_NVIDIA_PAYLOAD_AUTHORIZATION`
 : Default: empty. Optional `Authorization` header value for
-  `ATTESTATION_NVIDIA_PAYLOAD_URL`, for example `Bearer ${TOKEN}` when the
-  collector is another protected local service.
+  `ATTESTATION_NVIDIA_PAYLOAD_URL`.
 
 `ATTESTATION_NVIDIA_COMMAND`
-: Default: empty. Optional externally supplied command used to collect NVIDIA
-  GPU evidence. If a deployment uses this option, mount the collector executable
+: Default: empty. Optional fallback command used to collect NVIDIA GPU
+  evidence. If a deployment uses this option, mount the executable
   and any runtime dependencies it needs into the container explicitly, and give
-  the container the GPU access that collector requires, for example
-  `runtime: nvidia`, `privileged: true`, and `NVIDIA_VISIBLE_DEVICES=all`.
+  the container GPU access, for example `runtime: nvidia` and
+  `privileged: true`.
 
 `ATTESTATION_NVIDIA_COMMAND_ARGS`
 : Default: `--nonce,{nonce},--arch,<ATTESTATION_GPU_ARCH>`.
@@ -225,13 +224,36 @@ that have already reached the serving backend or its queue.
 `ATTESTATION_NVIDIA_COMMAND_TIMEOUT_SECONDS`
 : Default: `30`. Timeout for the NVIDIA evidence command.
 
+NVIDIA payload source order is:
+
+```text
+ATTESTATION_NVIDIA_PAYLOAD
+ATTESTATION_NVIDIA_PAYLOAD_FILE
+native NVML collector
+ATTESTATION_NVIDIA_PAYLOAD_URL
+ATTESTATION_NVIDIA_COMMAND
+empty evidence_list when ATTESTATION_REQUIRE_NVIDIA_EVIDENCE=false
+```
+
+Native NVML collection returns the same payload shape as explicit NVIDIA
+payload sources:
+
+```json
+{"nonce":"<hex>","evidence_list":[{"certificate":"<base64>","evidence":"<base64>","arch":"HOPPER"}],"arch":"HOPPER"}
+```
+
 PIG's attestation surface is `/v1/attestation/report`; it is the only
 attestation HTTP endpoint exposed by the service.
 
-If no NVIDIA payload source is configured and
-`ATTESTATION_REQUIRE_NVIDIA_EVIDENCE=false`, PIG still returns a syntactically
-compatible `nvidia_payload` with an empty `evidence_list`. That mode is useful
-for local tests but is not a complete production GPU attestation.
+If no NVIDIA payload source succeeds and `ATTESTATION_REQUIRE_NVIDIA_EVIDENCE=false`,
+PIG still returns a syntactically compatible `nvidia_payload` with an empty
+`evidence_list`. That mode is useful for local tests but is not a complete
+production GPU attestation.
+
+The image defaults `NVIDIA_VISIBLE_DEVICES=all`. This is read by the NVIDIA
+container runtime before PIG starts. Production compose files normally only need
+`runtime: nvidia`; set `NVIDIA_VISIBLE_DEVICES` explicitly when a deployment
+must restrict PIG to a specific GPU.
 
 ## DYNAMIC QOS
 
