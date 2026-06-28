@@ -178,7 +178,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.8.2
+    image: ghcr.io/phala-network/phala-inference-guard:v0.8.3
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia
@@ -208,8 +208,12 @@ GPU access when an external collector needs it, for example `runtime: nvidia`,
 `privileged: true`, and `NVIDIA_VISIBLE_DEVICES=all`. Real GPU evidence must be
 supplied with
 `ATTESTATION_NVIDIA_PAYLOAD`, `ATTESTATION_NVIDIA_PAYLOAD_FILE`, or an
-explicitly mounted external `ATTESTATION_NVIDIA_COMMAND` together with whatever
-runtime dependencies that command needs. Enable
+external `ATTESTATION_NVIDIA_PAYLOAD_URL`, or an explicitly mounted external
+`ATTESTATION_NVIDIA_COMMAND` together with whatever runtime dependencies that
+command needs. A payload URL may point to an internal collector endpoint that
+returns either a raw NVIDIA payload or an attestation report containing a
+`nvidia_payload` field; PIG appends the current `nonce` query parameter and
+normalizes the result. Enable
 `ATTESTATION_REQUIRE_NVIDIA_EVIDENCE=true` in production so an empty local
 fallback cannot be served by mistake. With that setting enabled, PIG also
 rejects configured payloads whose normalized `evidence_list` is empty.

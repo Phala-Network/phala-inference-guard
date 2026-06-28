@@ -184,8 +184,9 @@ that have already reached the serving backend or its queue.
 `ATTESTATION_REQUIRE_NVIDIA_EVIDENCE`
 : Default: `false`. When `true`, `/v1/attestation/report` fails unless NVIDIA
   evidence is supplied by `ATTESTATION_NVIDIA_PAYLOAD`,
-  `ATTESTATION_NVIDIA_PAYLOAD_FILE`, or `ATTESTATION_NVIDIA_COMMAND`, and the
-  normalized `evidence_list` is non-empty.
+  `ATTESTATION_NVIDIA_PAYLOAD_FILE`, `ATTESTATION_NVIDIA_PAYLOAD_URL`, or
+  `ATTESTATION_NVIDIA_COMMAND`, and the normalized `evidence_list` is
+  non-empty.
 
 `ATTESTATION_NVIDIA_PAYLOAD`
 : Default: empty. Optional raw NVIDIA payload JSON. `${nonce}` is replaced with
@@ -196,6 +197,18 @@ that have already reached the serving backend or its queue.
 `ATTESTATION_NVIDIA_PAYLOAD_FILE`
 : Default: empty. Optional file containing raw NVIDIA payload JSON. Used when
   `ATTESTATION_NVIDIA_PAYLOAD` is empty.
+
+`ATTESTATION_NVIDIA_PAYLOAD_URL`
+: Default: empty. Optional internal collector URL used when the inline payload
+  and payload file are empty. PIG appends the current `nonce` query parameter
+  unless the URL already provides one. The response may be either a raw NVIDIA
+  payload JSON object or an attestation report containing a `nvidia_payload`
+  string field.
+
+`ATTESTATION_NVIDIA_PAYLOAD_AUTHORIZATION`
+: Default: empty. Optional `Authorization` header value for
+  `ATTESTATION_NVIDIA_PAYLOAD_URL`, for example `Bearer ${TOKEN}` when the
+  collector is another protected local service.
 
 `ATTESTATION_NVIDIA_COMMAND`
 : Default: empty. Optional externally supplied command used to collect NVIDIA

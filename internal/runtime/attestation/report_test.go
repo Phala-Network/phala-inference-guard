@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -106,6 +108,36 @@ func TestGenerateAttestationResponseShape(t *testing.T) {
 	}
 	if payload["nonce"] != nonceHex {
 		t.Fatalf("nvidia nonce=%v want %s", payload["nonce"], nonceHex)
+	}
+}
+
+func TestGenerateAttestationFiltersCloudInfoFields(t *testing.T) {
+	service, err := NewService(Config{GPUArch: "HOPPER"}, &mockDstackWithCloudInfo{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	report, err := service.Generate(context.Background(), ReportRequest{
+		SigningAlgo: AlgoECDSA,
+		NonceHex:    stringsRepeat("ab", 32),
+		Version:     1,
+	})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	info := report["info"].(map[string]any)
+	if _, ok := info["cloud_product"]; ok {
+		t.Fatalf("cloud_product leaked into report info")
+	}
+	if _, ok := info["cloud_vendor"]; ok {
+		t.Fatalf("cloud_vendor leaked into report info")
+	}
+	attestations := report["all_attestations"].([]map[string]any)
+	nestedInfo := attestations[0]["info"].(map[string]any)
+	if _, ok := nestedInfo["cloud_product"]; ok {
+		t.Fatalf("cloud_product leaked into nested attestation info")
+	}
+	if _, ok := nestedInfo["cloud_vendor"]; ok {
+		t.Fatalf("cloud_vendor leaked into nested attestation info")
 	}
 }
 
@@ -223,6 +255,62 @@ func TestRequiredNVIDIAEvidenceAcceptsNonEmptyEvidenceList(t *testing.T) {
 	}
 }
 
+func TestNVIDIAPayloadURLExtractsPayloadFromAttestationReport(t *testing.T) {
+	nonceHex := stringsRepeat("12", 32)
+	var observedNonce string
+	collector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedNonce = r.URL.Query().Get("nonce")
+		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+			t.Fatalf("Authorization=%q want Bearer test-token", got)
+		}
+		payload := map[string]any{
+			"nonce": observedNonce,
+			"evidence_list": []map[string]any{{
+				"arch":        "HOPPER",
+				"certificate": "cert",
+				"evidence":    "evidence",
+			}},
+			"arch": "HOPPER",
+		}
+		payloadJSON, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"nvidia_payload": string(payloadJSON)})
+	}))
+	defer collector.Close()
+	service, err := NewService(Config{
+		GPUArch:               "HOPPER",
+		NVIDIAPayloadURL:      collector.URL + "/v1/attestation/report?signing_algo=ecdsa",
+		NVIDIAPayloadAuth:     "Bearer test-token",
+		NVIDIACommandTimeout:  time.Second,
+		RequireNVIDIAEvidence: true,
+	}, &mockDstack{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	normalized, err := service.nvidiaPayload(context.Background(), nonceHex)
+
+	if err != nil {
+		t.Fatalf("nvidiaPayload: %v", err)
+	}
+	if observedNonce != nonceHex {
+		t.Fatalf("collector nonce=%q want %q", observedNonce, nonceHex)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(normalized), &payload); err != nil {
+		t.Fatalf("normalized json: %v", err)
+	}
+	if payload["nonce"] != nonceHex {
+		t.Fatalf("nonce=%v want %s", payload["nonce"], nonceHex)
+	}
+	evidences := payload["evidence_list"].([]any)
+	if len(evidences) != 1 {
+		t.Fatalf("evidence_list len=%d want 1", len(evidences))
+	}
+}
+
 func writeTestCert(t *testing.T) (string, []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -264,4 +352,18 @@ func stringsRepeat(value string, count int) string {
 		buffer.WriteString(value)
 	}
 	return buffer.String()
+}
+
+type mockDstackWithCloudInfo struct {
+	mockDstack
+}
+
+func (m *mockDstackWithCloudInfo) Info(context.Context) (map[string]any, error) {
+	return map[string]any{
+		"app_id":        "mock_app",
+		"cloud_product": "h200.small",
+		"cloud_vendor":  "mock_cloud",
+		"compose_hash":  "mock_compose_hash",
+		"tcb_info":      map[string]any{"app_compose": "compose"},
+	}, nil
 }

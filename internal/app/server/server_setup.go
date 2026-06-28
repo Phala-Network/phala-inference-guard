@@ -101,6 +101,8 @@ func newAttestationService(cfg config) (*attestation.Service, error) {
 		GPUArch:               cfg.AttestationGPUArch,
 		NVIDIAPayload:         cfg.AttestationNVIDIAPayload,
 		NVIDIAPayloadFile:     cfg.AttestationNVIDIAPayloadFile,
+		NVIDIAPayloadURL:      cfg.AttestationNVIDIAPayloadURL,
+		NVIDIAPayloadAuth:     cfg.AttestationNVIDIAPayloadAuth,
 		NVIDIACommand:         cfg.AttestationNVIDIACommand,
 		NVIDIACommandArgs:     cfg.AttestationNVIDIACommandArgs,
 		NVIDIACommandTimeout:  cfg.AttestationNVIDIACommandTimeout,

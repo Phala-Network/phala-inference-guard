@@ -8,6 +8,9 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,6 +22,8 @@ type Config struct {
 	GPUArch               string
 	NVIDIAPayload         string
 	NVIDIAPayloadFile     string
+	NVIDIAPayloadURL      string
+	NVIDIAPayloadAuth     string
 	NVIDIACommand         string
 	NVIDIACommandArgs     []string
 	NVIDIACommandTimeout  time.Duration
@@ -85,6 +90,7 @@ func (s *Service) Generate(ctx context.Context, req ReportRequest) (map[string]a
 	if err != nil {
 		return nil, fmt.Errorf("get dstack info: %w", err)
 	}
+	info = normalizeReportInfo(info)
 	requestNonceHex := hex.EncodeToString(nonce)
 	nvidiaPayload, err := s.nvidiaPayload(ctx, requestNonceHex)
 	if err != nil {
@@ -173,6 +179,13 @@ func (s *Service) nvidiaPayload(ctx context.Context, nonceHex string) (string, e
 	if payload != "" {
 		return s.normalizeNVIDIAPayload(strings.ReplaceAll(payload, "${nonce}", nonceHex), nonceHex)
 	}
+	if s.cfg.NVIDIAPayloadURL != "" {
+		output, err := s.fetchNVIDIAPayload(ctx, nonceHex)
+		if err != nil {
+			return "", err
+		}
+		return s.normalizeNVIDIAPayload(output, nonceHex)
+	}
 	if s.cfg.NVIDIACommand != "" {
 		output, err := s.runNVIDIACommand(ctx, nonceHex)
 		if err != nil {
@@ -225,6 +238,47 @@ func (s *Service) runNVIDIACommand(ctx context.Context, nonceHex string) (string
 	return string(output), nil
 }
 
+func (s *Service) fetchNVIDIAPayload(ctx context.Context, nonceHex string) (string, error) {
+	payloadURL, err := url.Parse(s.cfg.NVIDIAPayloadURL)
+	if err != nil {
+		return "", fmt.Errorf("nvidia payload url is invalid: %w", err)
+	}
+	query := payloadURL.Query()
+	if query.Get("nonce") == "" {
+		query.Set("nonce", nonceHex)
+	}
+	payloadURL.RawQuery = query.Encode()
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, payloadURL.String(), nil)
+	if err != nil {
+		return "", fmt.Errorf("nvidia payload request: %w", err)
+	}
+	if s.cfg.NVIDIAPayloadAuth != "" {
+		request.Header.Set("Authorization", s.cfg.NVIDIAPayloadAuth)
+	}
+	client := &http.Client{Timeout: s.cfg.NVIDIACommandTimeout}
+	response, err := client.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("fetch nvidia payload: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", fmt.Errorf("fetch nvidia payload status %d", response.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, 32*1024*1024+1))
+	if err != nil {
+		return "", fmt.Errorf("read nvidia payload: %w", err)
+	}
+	if len(body) > 32*1024*1024 {
+		return "", fmt.Errorf("nvidia payload response exceeds 33554432 bytes")
+	}
+	payload, err := extractNVIDIAPayloadResponse(body)
+	if err != nil {
+		return "", err
+	}
+	return payload, nil
+}
+
 func normalizeNVIDIAPayload(raw string, nonceHex string, arch string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -266,6 +320,27 @@ func normalizeNVIDIAPayload(raw string, nonceHex string, arch string) (string, e
 	return "", fmt.Errorf("nvidia payload JSON must contain evidence_list, evidences, or evidence")
 }
 
+func extractNVIDIAPayloadResponse(body []byte) (string, error) {
+	raw := strings.TrimSpace(string(body))
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return "", fmt.Errorf("nvidia payload response must be JSON: %w", err)
+	}
+	if nvidiaPayload, ok := payload["nvidia_payload"].(string); ok && strings.TrimSpace(nvidiaPayload) != "" {
+		return nvidiaPayload, nil
+	}
+	if _, ok := payload["evidence_list"]; ok {
+		return raw, nil
+	}
+	if _, ok := payload["evidences"]; ok {
+		return raw, nil
+	}
+	if evidence, ok := payload["evidence"].(string); ok && evidence != "" {
+		return raw, nil
+	}
+	return "", fmt.Errorf("nvidia payload response JSON must contain nvidia_payload, evidence_list, evidences, or evidence")
+}
+
 func requireNonEmptyNVIDIAEvidence(normalized string) error {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(normalized), &payload); err != nil {
@@ -297,4 +372,11 @@ func cloneMap(input map[string]any) map[string]any {
 		output[key] = value
 	}
 	return output
+}
+
+func normalizeReportInfo(info map[string]any) map[string]any {
+	normalized := cloneMap(info)
+	delete(normalized, "cloud_product")
+	delete(normalized, "cloud_vendor")
+	return normalized
 }

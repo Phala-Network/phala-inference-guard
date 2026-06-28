@@ -52,6 +52,8 @@ func loadOpenAIConfig(cfg *Config) error {
 	cfg.AttestationGPUArch = strings.TrimSpace(env.String("ATTESTATION_GPU_ARCH", "HOPPER"))
 	cfg.AttestationNVIDIAPayload = strings.TrimSpace(os.Getenv("ATTESTATION_NVIDIA_PAYLOAD"))
 	cfg.AttestationNVIDIAPayloadFile = strings.TrimSpace(env.String("ATTESTATION_NVIDIA_PAYLOAD_FILE", ""))
+	cfg.AttestationNVIDIAPayloadURL = strings.TrimSpace(env.String("ATTESTATION_NVIDIA_PAYLOAD_URL", ""))
+	cfg.AttestationNVIDIAPayloadAuth = strings.TrimSpace(os.Getenv("ATTESTATION_NVIDIA_PAYLOAD_AUTHORIZATION"))
 	cfg.AttestationNVIDIACommand = strings.TrimSpace(env.String("ATTESTATION_NVIDIA_COMMAND", ""))
 	cfg.AttestationNVIDIACommandArgs = env.CSV("ATTESTATION_NVIDIA_COMMAND_ARGS", "--nonce,{nonce},--arch,"+cfg.AttestationGPUArch)
 	cfg.AttestationNVIDIACommandTimeout = time.Duration(nvidiaCommandTimeoutSeconds) * time.Second

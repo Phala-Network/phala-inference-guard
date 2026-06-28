@@ -67,6 +67,21 @@ func TestLoadOpenAIConfigEnablesAPIAuthWithToken(t *testing.T) {
 	}
 }
 
+func TestLoadOpenAIConfigLoadsNVIDIAPayloadURL(t *testing.T) {
+	t.Setenv("ATTESTATION_NVIDIA_PAYLOAD_URL", "http://collector:8000/v1/attestation/report")
+	t.Setenv("ATTESTATION_NVIDIA_PAYLOAD_AUTHORIZATION", "Bearer secret")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.AttestationNVIDIAPayloadURL != "http://collector:8000/v1/attestation/report" {
+		t.Fatalf("AttestationNVIDIAPayloadURL=%q", cfg.AttestationNVIDIAPayloadURL)
+	}
+	if cfg.AttestationNVIDIAPayloadAuth != "Bearer secret" {
+		t.Fatalf("AttestationNVIDIAPayloadAuth=%q", cfg.AttestationNVIDIAPayloadAuth)
+	}
+}
+
 func TestValidateOpenAIConfigRejectsAPIAuthWithoutToken(t *testing.T) {
 	cfg := Config{
 		APIAuthEnabled: true,
@@ -85,5 +100,17 @@ func TestValidateOpenAIConfigRejectsRequiredNVIDIAEvidenceWithoutSource(t *testi
 	}
 	if err := validateOpenAIConfig(cfg); err == nil {
 		t.Fatalf("validateOpenAIConfig accepted required NVIDIA evidence without source")
+	}
+}
+
+func TestValidateOpenAIConfigAcceptsRequiredNVIDIAEvidenceWithPayloadURL(t *testing.T) {
+	cfg := Config{
+		AttestationEnabled:               true,
+		AttestationRequireNVIDIAEvidence: true,
+		AttestationNVIDIACommandTimeout:  1,
+		AttestationNVIDIAPayloadURL:      "http://collector:8000/v1/attestation/report",
+	}
+	if err := validateOpenAIConfig(cfg); err != nil {
+		t.Fatalf("validateOpenAIConfig rejected payload url source: %v", err)
 	}
 }

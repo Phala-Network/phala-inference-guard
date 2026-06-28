@@ -28,6 +28,8 @@ type Config struct {
 	AttestationGPUArch               string
 	AttestationNVIDIAPayload         string
 	AttestationNVIDIAPayloadFile     string
+	AttestationNVIDIAPayloadURL      string
+	AttestationNVIDIAPayloadAuth     string
 	AttestationNVIDIACommand         string
 	AttestationNVIDIACommandArgs     []string
 	AttestationNVIDIACommandTimeout  time.Duration
