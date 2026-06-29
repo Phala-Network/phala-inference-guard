@@ -140,6 +140,18 @@ that have already reached the serving backend or its queue.
   require Bearer auth when `API_AUTH_ENABLED=true`. `/v1/models` is not
   protected by this option.
 
+`UPSTREAM_ERROR_CLASSIFICATION_ENABLED`
+: Default: `true`. Reclassifies a narrow set of upstream vLLM HTTP `500`
+  OpenAI-compatible JSON errors when the error message clearly identifies a
+  client input problem. `VLLMValidationError`, context-length validation, and
+  tool/function argument JSON decode errors become HTTP `400` with
+  `BadRequestError`. Multimodal image URL fetch failures, image URL `403`, DNS
+  failures, and image decode failures become HTTP `422` with
+  `UnprocessableEntityError`. PIG preserves the original error message. It does
+  not rewrite true backend failures such as crashes, OOMs, scheduler
+  exceptions, non-JSON responses, non-500 upstream statuses, or oversized error
+  bodies.
+
 `OPENAI_COMPAT_STRIP_EMPTY_TOOL_CALLS`
 : Default: `true`. Removes `tool_calls: []` from `messages[]` objects before
   forwarding admitted JSON requests. This preserves compatibility with vLLM

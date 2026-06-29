@@ -16,6 +16,10 @@ func loadOpenAIConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	upstreamErrorClassificationEnabled, err := env.Bool("UPSTREAM_ERROR_CLASSIFICATION_ENABLED", true)
+	if err != nil {
+		return err
+	}
 	stripEmptyToolCalls, err := env.Bool("OPENAI_COMPAT_STRIP_EMPTY_TOOL_CALLS", true)
 	if err != nil {
 		return err
@@ -43,6 +47,7 @@ func loadOpenAIConfig(cfg *Config) error {
 
 	cfg.APIAuthEnabled = apiAuthEnabled
 	cfg.APIAuthPaths = env.CSV("API_AUTH_PATHS", strings.Join(cfg.QoSPaths, ","))
+	cfg.UpstreamErrorClassificationEnabled = upstreamErrorClassificationEnabled
 	cfg.OpenAICompatStripEmptyToolCalls = stripEmptyToolCalls
 	cfg.OpenAICompatBodyBytes = int64(compatBodyBytes)
 	cfg.OpenAICompatFailOpen = compatFailOpen

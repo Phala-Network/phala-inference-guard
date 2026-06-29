@@ -31,6 +31,10 @@ sustained performance below `20 tok/s/user` as degraded.
 - Rewrites backend JSON request priority from trusted `X-User-Tier` by default:
   `premium` receives `priority=-100`; `basic`, missing, or unknown tiers are
   normalized to `priority=0`.
+- Reclassifies a narrow set of vLLM `500` JSON errors that are clearly caused
+  by client input, such as context-length validation, tool/function argument
+  JSON decoding, and multimodal image fetch/decode failures. Backend crashes,
+  OOMs, and scheduler failures remain upstream `5xx`.
 - Rejects overloaded requests early instead of letting queue time damage
   provider throughput metrics.
 - Measures semantic streaming TTFT: the delay until the first useful SSE
@@ -178,7 +182,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.8.6
+    image: ghcr.io/phala-network/phala-inference-guard:v0.8.7
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia
@@ -289,6 +293,25 @@ http-request set-header X-User-Tier premium
 ```
 
 Do not let public clients choose this header directly.
+
+### Upstream Input Error Classification
+
+PIG keeps upstream response bodies intact by default except for a narrow
+OpenAI-compatible error normalization path. When vLLM returns HTTP `500` with a
+JSON error body that clearly describes a client input problem, PIG changes the
+HTTP status and the JSON `error.type`/`error.code` to a client error:
+
+```text
+context length exceeded                 -> 400 BadRequestError
+VLLMValidationError                     -> 400 BadRequestError
+tool/function argument JSON decode      -> 400 BadRequestError
+image URL 403, DNS/fetch, decode errors -> 422 UnprocessableEntityError
+```
+
+This is enabled by default through `UPSTREAM_ERROR_CLASSIFICATION_ENABLED=true`.
+It does not rewrite broad `5xx` failures. Backend crashes, OOMs, scheduler
+exceptions, non-JSON error pages, and oversized error bodies are passed through
+with the original upstream status and body.
 
 ### Route PIG Metrics
 

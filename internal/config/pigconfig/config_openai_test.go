@@ -10,6 +10,9 @@ func TestLoadOpenAIConfigDefaults(t *testing.T) {
 	if cfg.APIAuthEnabled {
 		t.Fatalf("APIAuthEnabled = true without TOKEN, want false")
 	}
+	if !cfg.UpstreamErrorClassificationEnabled {
+		t.Fatalf("UpstreamErrorClassificationEnabled = false, want true")
+	}
 	if !cfg.OpenAICompatStripEmptyToolCalls {
 		t.Fatalf("OpenAICompatStripEmptyToolCalls = false, want true")
 	}
@@ -36,6 +39,17 @@ func TestLoadOpenAIConfigDefaults(t *testing.T) {
 	}
 	if cfg.Upstream != "http://backend:8000" {
 		t.Fatalf("Upstream = %q, want http://backend:8000", cfg.Upstream)
+	}
+}
+
+func TestLoadOpenAIConfigCanDisableUpstreamErrorClassification(t *testing.T) {
+	t.Setenv("UPSTREAM_ERROR_CLASSIFICATION_ENABLED", "false")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.UpstreamErrorClassificationEnabled {
+		t.Fatalf("UpstreamErrorClassificationEnabled = true, want false")
 	}
 }
 

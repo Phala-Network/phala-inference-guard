@@ -218,37 +218,165 @@ func TestCompletionAndResponsesProxyWithCombinedBodyRewrite(t *testing.T) {
 	}
 }
 
+func TestUpstreamErrorClassificationConvertsInputImage500(t *testing.T) {
+	const upstreamMessage = "403, message='Forbidden', url='https://halleonard-coverimages.s3.amazonaws.com/wl/02116757-wl.jpg'"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(testOpenAIErrorBody(upstreamMessage, "InternalServerError", http.StatusInternalServerError))
+	}))
+	defer backend.Close()
+	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	assertOpenAIError(t, recorder, http.StatusUnprocessableEntity, "UnprocessableEntityError", upstreamMessage)
+}
+
+func TestStreamingUpstreamErrorClassificationConvertsInputImage500(t *testing.T) {
+	const upstreamMessage = "Cannot connect to host files.teleclaw.io:443 ssl:default [Name or service not known]"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(testOpenAIErrorBody(upstreamMessage, "InternalServerError", http.StatusInternalServerError))
+	}))
+	defer backend.Close()
+	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	assertOpenAIError(t, recorder, http.StatusUnprocessableEntity, "UnprocessableEntityError", upstreamMessage)
+}
+
+func TestUpstreamErrorClassificationLeavesBackendCrash500(t *testing.T) {
+	const upstreamMessage = "Scheduler hit an exception while running the model"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(testOpenAIErrorBody(upstreamMessage, "InternalServerError", http.StatusInternalServerError))
+	}))
+	defer backend.Close()
+	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	assertOpenAIError(t, recorder, http.StatusInternalServerError, "InternalServerError", upstreamMessage)
+}
+
+func TestUpstreamErrorClassificationCanBeDisabled(t *testing.T) {
+	const upstreamMessage = "This model's maximum context length is 262144 tokens. However, you requested too many tokens."
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write(testOpenAIErrorBody(upstreamMessage, "InternalServerError", http.StatusInternalServerError))
+	}))
+	defer backend.Close()
+	cfg := testProxyConfig(backend.URL)
+	cfg.UpstreamErrorClassificationEnabled = false
+	srv, err := newProxyServer(cfg)
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[]}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	assertOpenAIError(t, recorder, http.StatusInternalServerError, "InternalServerError", upstreamMessage)
+}
+
 func testProxyConfig(upstream string) config {
 	return config{
-		Listen:                          ":0",
-		Upstream:                        upstream,
-		Backends:                        []pigconfig.Backend{{Name: "backend1", Upstream: upstream}},
-		Token:                           "secret",
-		QoSPaths:                        []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
-		APIAuthEnabled:                  true,
-		APIAuthPaths:                    []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
-		GlobalLimit:                     16,
-		OpenAICompatStripEmptyToolCalls: false,
-		OpenAICompatBodyBytes:           defaultOpenAICompatBodyBytesForTest,
-		OpenAICompatFailOpen:            true,
-		JSONClassifyBodyBytes:           2 * 1024 * 1024,
-		JSONClassifyLimit:               16,
-		MediumBodyBytes:                 60000,
-		LongBodyBytes:                   100000,
-		VeryLongBodyBytes:               524288,
-		MediumOutputTokens:              1024,
-		LongOutputTokens:                4096,
-		VeryLongOutputTokens:            8192,
-		BackendPriorityInjectionEnabled: false,
-		DynamicPollInterval:             time.Second,
-		DynamicFailsafeState:            "yellow",
-		DynamicKVYellow:                 0.70,
-		DynamicKVRed:                    0.80,
-		DynamicWaitingYellow:            1,
-		DynamicWaitingRed:               2,
-		ProxyTimeout:                    10 * time.Second,
-		QoSQueuePoll:                    10 * time.Millisecond,
+		Listen:                             ":0",
+		Upstream:                           upstream,
+		Backends:                           []pigconfig.Backend{{Name: "backend1", Upstream: upstream}},
+		Token:                              "secret",
+		QoSPaths:                           []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
+		APIAuthEnabled:                     true,
+		APIAuthPaths:                       []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
+		GlobalLimit:                        16,
+		UpstreamErrorClassificationEnabled: true,
+		OpenAICompatStripEmptyToolCalls:    false,
+		OpenAICompatBodyBytes:              defaultOpenAICompatBodyBytesForTest,
+		OpenAICompatFailOpen:               true,
+		JSONClassifyBodyBytes:              2 * 1024 * 1024,
+		JSONClassifyLimit:                  16,
+		MediumBodyBytes:                    60000,
+		LongBodyBytes:                      100000,
+		VeryLongBodyBytes:                  524288,
+		MediumOutputTokens:                 1024,
+		LongOutputTokens:                   4096,
+		VeryLongOutputTokens:               8192,
+		BackendPriorityInjectionEnabled:    false,
+		DynamicPollInterval:                time.Second,
+		DynamicFailsafeState:               "yellow",
+		DynamicKVYellow:                    0.70,
+		DynamicKVRed:                       0.80,
+		DynamicWaitingYellow:               1,
+		DynamicWaitingRed:                  2,
+		ProxyTimeout:                       10 * time.Second,
+		QoSQueuePoll:                       10 * time.Millisecond,
 	}
 }
 
 const defaultOpenAICompatBodyBytesForTest = 32 * 1024 * 1024
+
+func testOpenAIErrorBody(message, errorType string, code int) []byte {
+	body, err := json.Marshal(map[string]any{
+		"error": map[string]any{
+			"message": message,
+			"type":    errorType,
+			"param":   nil,
+			"code":    code,
+		},
+	})
+	if err != nil {
+		panic(err)
+	}
+	return body
+}
+
+func assertOpenAIError(t *testing.T, recorder *httptest.ResponseRecorder, wantStatus int, wantType, wantMessage string) {
+	t.Helper()
+	if recorder.Code != wantStatus {
+		t.Fatalf("status=%d want %d body=%s", recorder.Code, wantStatus, recorder.Body.String())
+	}
+	var payload map[string]map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("body is not json: %v; body=%s", err, recorder.Body.String())
+	}
+	errorPayload := payload["error"]
+	if errorPayload["message"] != wantMessage {
+		t.Fatalf("message=%v want %s", errorPayload["message"], wantMessage)
+	}
+	if errorPayload["type"] != wantType {
+		t.Fatalf("type=%v want %s", errorPayload["type"], wantType)
+	}
+	if int(errorPayload["code"].(float64)) != wantStatus {
+		t.Fatalf("code=%v want %d", errorPayload["code"], wantStatus)
+	}
+}

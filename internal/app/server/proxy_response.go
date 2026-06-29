@@ -59,6 +59,7 @@ func (s *proxyServer) copyResponseWithOptionalKeepAlive(w http.ResponseWriter, r
 }
 
 func (s *proxyServer) writeUpstreamResponse(w http.ResponseWriter, response *http.Response, streaming bool, semanticStarted time.Time) (int, error) {
+	s.classifyUpstreamErrorResponse(response)
 	httpx.CopyHeader(w.Header(), response.Header)
 	if streaming && s.shouldInjectSSEKeepAlive(response) {
 		w.Header().Del("Content-Length")
