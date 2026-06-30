@@ -76,7 +76,8 @@ func TestApplyCleanThroughputLimitReturnsReasonedBuilder(t *testing.T) {
 }
 
 func TestApplyCleanPressureLimitPreservesCurrentSeverity(t *testing.T) {
-	greenLimit, greenBuilder := applyCleanPressureLimit(cleanPressureStage{Limit: 7}, decision.NewBuilder(nil, nil), 20)
+	cfg := cleanEvaluateConfig()
+	greenLimit, greenBuilder := applyCleanPressureLimit(cfg, cleanSignals{}, cleanPressureStage{Limit: 7, Reason: "waiting_pressure"}, decision.NewBuilder(nil, nil), 20)
 	if greenLimit != 7 {
 		t.Fatalf("green pressure limit = %d, want 7", greenLimit)
 	}
@@ -84,12 +85,58 @@ func TestApplyCleanPressureLimitPreservesCurrentSeverity(t *testing.T) {
 		t.Fatalf("green yellow reasons = %v, want scheduler_pressure_capacity", greenBuilder.YellowReasons())
 	}
 
-	redLimit, redBuilder := applyCleanPressureLimit(cleanPressureStage{Limit: 6}, decision.NewBuilder(nil, []string{"preemptions"}), 20)
+	redLimit, redBuilder := applyCleanPressureLimit(cfg, cleanSignals{}, cleanPressureStage{Limit: 6, Reason: "severe_pressure"}, decision.NewBuilder(nil, []string{"preemptions"}), 20)
 	if redLimit != 6 {
 		t.Fatalf("red pressure limit = %d, want 6", redLimit)
 	}
 	if !containsString(redBuilder.RedReasons(), "scheduler_pressure_capacity") {
 		t.Fatalf("red reasons = %v, want scheduler_pressure_capacity", redBuilder.RedReasons())
+	}
+}
+
+func TestApplyCleanPressureLimitDoesNotMarkHistoricalLearnedCapAsYellow(t *testing.T) {
+	cfg := cleanEvaluateConfig()
+	limit, builder := applyCleanPressureLimit(cfg, cleanSignals{
+		Running:                30,
+		Waiting:                0,
+		KVCacheUsage:           0.03,
+		PreemptionDelta:        0,
+		CapacityDemandPressure: false,
+	}, cleanPressureStage{
+		Limit:        157,
+		Reason:       "learned_cap",
+		TargetReason: "learned_pressure_cap",
+	}, decision.NewBuilder(nil, nil), 159)
+
+	if limit != 157 {
+		t.Fatalf("pressure limit = %d, want retained learned cap 157", limit)
+	}
+	if got := builder.State(); got != "green" {
+		t.Fatalf("state = %q, want green for inactive learned cap", got)
+	}
+	if containsString(builder.YellowReasons(), "scheduler_pressure_capacity") {
+		t.Fatalf("yellow reasons = %v, want no scheduler pressure for inactive learned cap", builder.YellowReasons())
+	}
+}
+
+func TestApplyCleanPressureLimitMarksLearnedCapWhenDemandIsAtCap(t *testing.T) {
+	cfg := cleanEvaluateConfig()
+	limit, builder := applyCleanPressureLimit(cfg, cleanSignals{
+		Running:                157,
+		Waiting:                0,
+		KVCacheUsage:           0.03,
+		CapacityDemandPressure: true,
+	}, cleanPressureStage{
+		Limit:        157,
+		Reason:       "learned_cap",
+		TargetReason: "learned_pressure_cap",
+	}, decision.NewBuilder(nil, nil), 159)
+
+	if limit != 157 {
+		t.Fatalf("pressure limit = %d, want retained learned cap 157", limit)
+	}
+	if !containsString(builder.YellowReasons(), "scheduler_pressure_capacity") {
+		t.Fatalf("yellow reasons = %v, want scheduler pressure when learned cap is actively binding demand", builder.YellowReasons())
 	}
 }
 

@@ -136,6 +136,33 @@ func RecoverPressureCap(cap *PressureCap, cfg Config, baseLimit, running, waitin
 	}
 }
 
+func recoveredLearnedPressureCap(cfg Config, baseLimit, learned, running, waiting int, kvValue float64, preemptionDelta uint64, qosHealthy bool) bool {
+	if learned <= 0 || learned >= baseLimit {
+		return true
+	}
+	if !qosHealthy || waiting > 0 || preemptionDelta > 0 || KVPressureActive(cfg, kvValue) {
+		return false
+	}
+	if running >= learned {
+		return false
+	}
+	tolerance := learnedPressureRecoveryTolerance(cfg, baseLimit)
+	return baseLimit-learned <= tolerance
+}
+
+func learnedPressureRecoveryTolerance(cfg Config, baseLimit int) int {
+	headroom := cfg.PressureHeadroom
+	if headroom < 1 {
+		headroom = 1
+	}
+	ratioTolerance := int(math.Ceil(float64(baseLimit) * 0.02))
+	tolerance := num.MaxInt(2*headroom, ratioTolerance)
+	if tolerance < 2 {
+		tolerance = 2
+	}
+	return tolerance
+}
+
 func PressureLimit(cap *PressureCap, cfg Config, baseLimit, running, waiting, decodeRunning int, kvValue float64, preemptionDelta uint64, userTPS float64, qosHealthy, qosRedReady, prefillTransition bool) int {
 	return EvaluatePressureLimit(cap, cfg, baseLimit, running, waiting, decodeRunning, kvValue, preemptionDelta, userTPS, qosHealthy, qosRedReady, prefillTransition).Limit
 }
@@ -205,7 +232,11 @@ func EvaluatePressureLimit(cap *PressureCap, cfg Config, baseLimit, running, wai
 		}
 	}
 	if learned := int(cap.Load()); learned > 0 && !prefillTransition {
-		apply(learned, "learned_cap", "learned_pressure_cap")
+		if recoveredLearnedPressureCap(cfg, baseLimit, learned, running, waiting, kvValue, preemptionDelta, qosHealthy) {
+			cap.compareAndSwap(int64(learned), int64(baseLimit))
+		} else {
+			apply(learned, "learned_cap", "learned_pressure_cap")
+		}
 	}
 	if waiting >= cfg.WaitingYellow && waiting > 0 {
 		if !prefillTransition {

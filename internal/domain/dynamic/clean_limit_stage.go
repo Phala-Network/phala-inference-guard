@@ -42,7 +42,7 @@ func evaluateCleanLimitStage(cfg Config, input Input, signals cleanSignals, ttft
 	qosLimit, stateLimit, builder = enforceCleanUserTPSCapacityLimit(cfg, input, signals, builder, stateLimit, qosLimit, enforceQOSLimit)
 
 	pressure := evaluateCleanPressureStage(cfg, input, signals, qosLimit)
-	qosLimit, builder = applyCleanPressureLimit(pressure, builder, qosLimit)
+	qosLimit, builder = applyCleanPressureLimit(cfg, signals, pressure, builder, qosLimit)
 
 	prefill := evaluateCleanPrefillStage(cfg, input, signals, throughput, qosLimit)
 

@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.8.7 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
+pig_status v=PIG-v0.8.8 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
 ```
 
 The log line has three parts:
@@ -181,10 +181,12 @@ For production operation, watch these first:
   PIG publishes the final `pig_dynamic_global_limit`.
 - `pig_dynamic_pressure_limit_info{reason="...",target_reason="..."}`: shows
   why the pressure guard chose its current cap, for example preemption, backend
-  waiting, KV pressure, a recovered learned pressure cap, or healthy KV
+  waiting, KV pressure, retained learned pressure memory, or healthy KV
   headroom. If a backend waiting or unavailable override closes current intake,
   this reason follows that override while preserving the long-term learned
-  capacity separately.
+  capacity separately. Retained `learned_cap` can still win the final cap, but
+  it does not mark `scheduler_pressure_capacity` yellow unless it is actively
+  binding current demand or an active pressure signal is present.
 - `pig_dynamic_prefill_limit_info{reason="...",target_reason="..."}`: shows
   why the prefill guard chose its current cap, for example backend waiting,
   running at an observed decode cap, the prefill-protected threshold, a

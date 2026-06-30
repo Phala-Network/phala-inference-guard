@@ -61,6 +61,35 @@ func TestEvaluatePressureLimitKeepsLearnedCapWhenQOSHealthy(t *testing.T) {
 	}
 }
 
+func TestEvaluatePressureLimitRecoversNearBaseLearnedCapWhenHealthy(t *testing.T) {
+	cap := &PressureCap{}
+	cap.value.Store(157)
+	result := EvaluatePressureLimit(cap, cleanTestConfig(), 159, 30, 0, 28, 0.03, 0, 110, true, false, false)
+
+	if result.Limit != 159 {
+		t.Fatalf("pressure limit = %d, want base limit 159 after near-base recovery", result.Limit)
+	}
+	if result.Reason != "base_limit" {
+		t.Fatalf("pressure reason = %q, want base_limit", result.Reason)
+	}
+	if got := int(cap.Load()); got != 159 {
+		t.Fatalf("pressure cap = %d, want recovered base limit 159", got)
+	}
+}
+
+func TestEvaluatePressureLimitKeepsNearBaseLearnedCapWhenActivelyBinding(t *testing.T) {
+	cap := &PressureCap{}
+	cap.value.Store(157)
+	result := EvaluatePressureLimit(cap, cleanTestConfig(), 159, 157, 0, 156, 0.03, 0, 110, true, false, false)
+
+	if result.Limit != 157 {
+		t.Fatalf("pressure limit = %d, want learned cap 157 while running is at cap", result.Limit)
+	}
+	if result.Reason != "learned_cap" {
+		t.Fatalf("pressure reason = %q, want learned_cap", result.Reason)
+	}
+}
+
 func TestRecoverPressureCapRequiresDemandPressure(t *testing.T) {
 	cap := &PressureCap{}
 	cap.value.Store(12)

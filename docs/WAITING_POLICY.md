@@ -2,7 +2,7 @@
 
 This report explains how Phala Inference Guard (PIG) reacts when backend metrics
 show waiting requests. It is based on the current implementation around
-`PIG-v0.8.7`.
+`PIG-v0.8.8`.
 
 ## Scope
 
@@ -81,7 +81,7 @@ Second, it blocks upward learning. In the capacity learner, `waiting > 0` is
 classified as pressure. PIG avoids probing upward while this pressure exists,
 even if short-term generation throughput looks acceptable.
 
-Third, `PIG-v0.8.7` closes new-request intake while backend waiting is present.
+Third, `PIG-v0.8.8` closes new-request intake while backend waiting is present.
 The dynamic global limit, pressure limit, and prefill limit are set to `0` for
 new QoS intake:
 
@@ -138,9 +138,19 @@ PIG only recovers it when all of these are true:
 Recovery then moves upward in small steps instead of jumping back to the full
 cap.
 
+If the learned pressure cap has already recovered to within a small tolerance
+of the current base cap, and current signals are healthy, PIG treats that
+pressure memory as recovered. This prevents a stale learned cap such as
+`157/learned_cap` under a `159` base cap from keeping the backend state yellow
+when there is no current waiting, KV pressure, preemption, or demand pressure.
+Historical learned pressure caps may still participate in the final `min()`,
+but they do not add `scheduler_pressure_capacity` to the state unless the cap is
+actively binding current demand or an active pressure signal is present.
+
 Relevant implementation:
 
 - `internal/domain/capacity/pressure.go`
+- `internal/domain/dynamic/clean_cap_application.go`
 
 ## PIG Short-Wait Behavior
 
