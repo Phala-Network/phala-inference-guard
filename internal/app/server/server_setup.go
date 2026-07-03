@@ -84,6 +84,9 @@ func newProxyServer(cfg config) (*proxyServer, error) {
 	for _, backend := range srv.backends {
 		backend := backend
 		backend.SetHandlers(srv.modifyBackendResponse, func(w http.ResponseWriter, r *http.Request, err error) {
+			if srv.recordClientDisconnect(r.Context(), clientDisconnectPhaseUpstream, true) {
+				return
+			}
 			srv.recordProxyUpstreamError(backend)
 			openai.WriteTooManyRequests(w)
 		})

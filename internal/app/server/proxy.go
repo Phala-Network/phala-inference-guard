@@ -55,6 +55,9 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.decisionDuration.Observe(decisionElapsed)
 	if releaseQoS == nil {
+		if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseQueue, false) {
+			return
+		}
 		if qosReject == "backend_unavailable" {
 			s.unavailable(w, qosReject)
 			return

@@ -43,6 +43,10 @@ type ErrorSnapshot struct {
 	RequestSemanticTTFTLimited uint64
 	ProxyUpstreamErr           uint64
 	ProxyCopyErr               uint64
+	ClientDisconnectQueue      uint64
+	ClientDisconnectUpstream   uint64
+	ClientDisconnectResponse   uint64
+	ClientDisconnectCancel     uint64
 }
 
 type DynamicCounterSnapshot struct {
@@ -120,6 +124,10 @@ func writeErrorMetrics(w io.Writer, cfg RuntimeConfig, errors ErrorSnapshot) {
 	fmt.Fprintf(w, "pig_request_semantic_ttft_scan_limit_bytes %d\n", cfg.SemanticTTFTScanLimitBytes)
 	fmt.Fprintf(w, "pig_proxy_upstream_errors_total %d\n", errors.ProxyUpstreamErr)
 	fmt.Fprintf(w, "pig_proxy_body_copy_errors_total %d\n", errors.ProxyCopyErr)
+	fmt.Fprintf(w, "pig_client_disconnects_total{phase=%q} %d\n", "queue", errors.ClientDisconnectQueue)
+	fmt.Fprintf(w, "pig_client_disconnects_total{phase=%q} %d\n", "upstream", errors.ClientDisconnectUpstream)
+	fmt.Fprintf(w, "pig_client_disconnects_total{phase=%q} %d\n", "response", errors.ClientDisconnectResponse)
+	fmt.Fprintf(w, "pig_client_disconnect_upstream_cancellations_total %d\n", errors.ClientDisconnectCancel)
 }
 
 func writeDynamicCounterMetrics(w io.Writer, cfg RuntimeConfig, counters DynamicCounterSnapshot) {

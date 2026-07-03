@@ -52,22 +52,39 @@ func (s *proxyServer) chooseBackend() *backendProxy {
 	return best
 }
 
-func (s *proxyServer) proxyRequest(backend *backendProxy, w http.ResponseWriter, r *http.Request) proxyResult {
+func (s *proxyServer) proxyRequest(backend *backendProxy, w http.ResponseWriter, r *http.Request) (result proxyResult) {
 	done := backend.Begin()
 	defer done()
 	r.Header.Set("X-PIG-Backend", backend.Name())
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.ProxyTimeout)
 	defer cancel()
+	proxyCtx := attachClientContext(ctx, r.Context())
 	started := time.Now()
 	recorder := httpx.NewStatusRecorder(w)
-	backend.ServeHTTP(recorder, r.WithContext(ctx))
-	result := proxyResult{
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if recovered == http.ErrAbortHandler && s.recordClientDisconnect(proxyCtx, clientDisconnectPhaseResponse, true) {
+				result = proxyResult{status: clientClosedRequestStatus, total: time.Since(started)}
+				if firstByte, ok := recorder.FirstByteSince(started); ok {
+					result.firstByte = firstByte
+					result.firstByteOK = true
+				}
+				return
+			}
+			panic(recovered)
+		}
+	}()
+	backend.ServeHTTP(recorder, r.WithContext(proxyCtx))
+	result = proxyResult{
 		status: recorder.StatusOrOK(),
 		total:  time.Since(started),
 	}
 	if firstByte, ok := recorder.FirstByteSince(started); ok {
 		result.firstByte = firstByte
 		result.firstByteOK = true
+	}
+	if s.recordClientDisconnect(proxyCtx, clientDisconnectPhaseResponse, true) {
+		result.status = clientClosedRequestStatus
 	}
 	return result
 }

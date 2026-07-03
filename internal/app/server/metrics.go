@@ -131,6 +131,10 @@ func (s *proxyServer) runtimeMetricsInput() metrics.RuntimeInput {
 			RequestSemanticTTFTLimited: s.semanticTTFTLimited.Load(),
 			ProxyUpstreamErr:           s.proxyUpstreamErr.Load(),
 			ProxyCopyErr:               s.proxyCopyErr.Load(),
+			ClientDisconnectQueue:      s.clientDisconnectQueue.Load(),
+			ClientDisconnectUpstream:   s.clientDisconnectUpstream.Load(),
+			ClientDisconnectResponse:   s.clientDisconnectResponse.Load(),
+			ClientDisconnectCancel:     s.clientDisconnectCancel.Load(),
 		},
 		Dynamic: metrics.DynamicCounterSnapshot{
 			PollOK:             dynamicCounters.PollOK,
