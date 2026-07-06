@@ -54,7 +54,8 @@ lane-specific QoS caps.
 | PIG Overhead | `pig_decision_duration_seconds`, `pig_proxy_time_to_first_byte_seconds`, `pig_request_semantic_ttft_seconds`, `pig_proxy_total_duration_seconds`, `pig_internal_overhead_seconds` | PIG decision time, first byte, first useful streaming data, upstream/proxy wait, and PIG-only overhead. |
 | Rejections | `pig_rejected_total`, `pig_dynamic_rejected_total`, `pig_backend_unavailable_total` | QoS rejects and no-usable-backend events. |
 | SSE Keep-Alive | `pig_sse_keepalive_*`, `pig_sse_bridge_*` | Explicitly enabled streaming comment injection, early bridge streams, and bridge error counters. |
-| Proxy Errors | `pig_proxy_upstream_errors_total`, `pig_proxy_body_copy_errors_total` | Upstream connection failures and response-copy failures that can explain provider-visible errors or broken streams. |
+| Proxy Errors | `pig_proxy_upstream_errors_total`, `pig_proxy_body_copy_errors_total` | Upstream connection failures and response-copy failures that are not explained by a known client disconnect. |
+| Client Disconnects | `pig_client_disconnects_total`, `pig_client_disconnect_upstream_cancellations_total` | Client-side disconnects while waiting in queue, waiting for upstream headers, or copying the upstream response. |
 | Dynamic QoS | `pig_dynamic_*` | Load state, learned limits, pressure limits, per-user TPS observations, and TTFT learning. |
 | Backend | `pig_backend_*` | Per-backend health, in-flight count, load, KV usage, generation TPS, and TTFT. |
 | Classifier | `pig_json_*`, `pig_*output*` | Optional request body and output-token classification. |
@@ -129,10 +130,22 @@ For production operation, watch these first:
   `pig_sse_bridge_copy_errors_total`: should stay at `0`. Growth here means an
   early bridge hid an upstream status or hit a broken stream path and needs
   investigation before broad rollout.
+- `pig_client_disconnects_total{phase="queue|upstream|response"}`: separates
+  client-side aborts from real proxy/backend errors. Queue-phase growth means a
+  client disconnected while waiting for admission. Upstream-phase growth means
+  the client disappeared before upstream headers arrived. Response-phase growth
+  means the client disconnected while PIG was copying the upstream response.
+- `pig_client_disconnect_upstream_cancellations_total`: counts disconnects that
+  also canceled an in-flight upstream request or response body. It should rise
+  together with the phase-specific disconnect counter when PIG successfully
+  stops backend work after a client abort.
 - `pig_proxy_upstream_errors_total` and `pig_proxy_body_copy_errors_total`:
   should stay near `0`. Growth here points to connection failures, backend
-  resets, client disconnects, or mid-stream copy failures rather than QoS policy
-  rejects.
+  resets, or mid-stream copy failures that were not classified as client
+  disconnects.
+- Client disconnects are recorded internally as status `499` for lane/status
+  metrics. PIG does not send a synthetic `499` response to clients; the client
+  has already closed the connection.
 - `pig_dynamic_observed_single_user_tokens_per_second`: should generally stay
   at or above the target workload floor.
 - `pig_dynamic_observed_ttft_smoothed_p95_seconds`: should converge toward the

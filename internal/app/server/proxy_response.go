@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"sync"
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/http"
@@ -73,21 +72,11 @@ func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w h
 }
 
 func closeBodyOnContextDone(ctx context.Context, body io.Closer) func() {
-	if ctx == nil || body == nil {
+	if ctx == nil || body == nil || ctx.Done() == nil {
 		return func() {}
 	}
-	done := make(chan struct{})
-	var once sync.Once
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = body.Close()
-		case <-done:
-		}
-	}()
-	return func() {
-		once.Do(func() { close(done) })
-	}
+	stop := context.AfterFunc(ctx, func() { _ = body.Close() })
+	return func() { stop() }
 }
 
 func (s *proxyServer) writeUpstreamResponse(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, semanticStarted time.Time) (int, error) {

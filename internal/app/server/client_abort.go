@@ -42,6 +42,15 @@ func (s *proxyServer) recordClientDisconnect(ctx context.Context, phase string, 
 }
 
 func attachClientContext(ctx context.Context, clientCtx context.Context) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	if state, _ := clientDisconnectStateFromContext(ctx); state != nil {
+		return ctx
+	}
+	if clientCtx == nil {
+		clientCtx = ctx
+	}
 	return context.WithValue(ctx, clientContextKey{}, &clientDisconnectState{clientCtx: clientCtx})
 }
 

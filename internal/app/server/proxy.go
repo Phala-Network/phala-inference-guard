@@ -30,6 +30,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		openai.WriteUnauthorized(w)
 		return
 	}
+	r = r.WithContext(attachClientContext(r.Context(), r.Context()))
 	requestStart := time.Now()
 	admitted := s.admittedPath(r)
 	if !admitted {

@@ -21,6 +21,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 	defer done()
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.ProxyTimeout)
 	defer cancel()
+	ctx = attachClientContext(ctx, r.Context())
 	started := time.Now()
 	resultCh := make(chan upstreamRoundTripResult, 1)
 	go func() {
@@ -38,7 +39,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 	select {
 	case result := <-resultCh:
 		if result.err != nil {
-			if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseUpstream, true) {
+			if s.recordClientDisconnect(ctx, clientDisconnectPhaseUpstream, true) {
 				return proxyResult{status: clientClosedRequestStatus, total: time.Since(started)}
 			}
 			s.recordProxyUpstreamError(backend)
@@ -49,7 +50,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 		var copyErr error
 		status, copyErr = s.writeUpstreamResponse(ctx, recorder, result.response, true, requestStarted)
 		if copyErr != nil {
-			if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseResponse, true) {
+			if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 				status = clientClosedRequestStatus
 			} else {
 				s.recordProxyCopyError(backend)
@@ -66,7 +67,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 			s.sseKeepAliveStreams.Add(1)
 			if !sse.WriteComment(w, &s.sseKeepAliveComments) {
 				status = http.StatusOK
-				if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseResponse, true) {
+				if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 					status = clientClosedRequestStatus
 				} else {
 					s.sseBridgeCopyErr.Add(1)
@@ -79,7 +80,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 
 	upstream := <-resultCh
 	if upstream.err != nil {
-		if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseUpstream, true) {
+		if s.recordClientDisconnect(ctx, clientDisconnectPhaseUpstream, true) {
 			return proxyResult{status: clientClosedRequestStatus, total: time.Since(started), firstByte: firstByte, firstByteOK: wroteEarly}
 		}
 		s.recordProxyUpstreamError(backend)
@@ -95,7 +96,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 		var copyErr error
 		status, copyErr = s.writeUpstreamResponse(ctx, recorder, upstream.response, true, requestStarted)
 		if copyErr != nil {
-			if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseResponse, true) {
+			if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 				status = clientClosedRequestStatus
 			} else {
 				s.recordProxyCopyError(backend)
@@ -113,7 +114,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 	}
 	semanticTTFT := semantic.New(requestStarted)
 	if copyErr := s.copyResponseBody(ctx, w, upstream.response.Body, true, semanticTTFT); copyErr != nil {
-		if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseResponse, true) {
+		if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 			status = clientClosedRequestStatus
 		} else {
 			s.sseBridgeCopyErr.Add(1)
