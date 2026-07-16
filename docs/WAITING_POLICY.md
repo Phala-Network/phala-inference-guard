@@ -2,7 +2,7 @@
 
 This report explains how Phala Inference Guard (PIG) reacts when backend metrics
 show waiting requests. It is based on the current implementation around
-`PIG-v0.8.8`.
+`PIG-v0.8.11`.
 
 ## Scope
 
@@ -81,7 +81,7 @@ Second, it blocks upward learning. In the capacity learner, `waiting > 0` is
 classified as pressure. PIG avoids probing upward while this pressure exists,
 even if short-term generation throughput looks acceptable.
 
-Third, `PIG-v0.8.8` closes new-request intake while backend waiting is present.
+Third, `PIG-v0.8.11` closes new-request intake while backend waiting is present.
 The dynamic global limit, pressure limit, and prefill limit are set to `0` for
 new QoS intake:
 
