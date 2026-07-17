@@ -122,7 +122,7 @@ func TestProtectedPIGRoutesRequireBearerAndDoNotProxy(t *testing.T) {
 		t.Fatalf("newProxyServer: %v", err)
 	}
 
-	for _, path := range []string{"/pig/metrics", "/v1/metrics", "/v1/attestation/report"} {
+	for _, path := range []string{"/pig/metrics", "/v1/metrics", "/v1/upstream-status", "/v1/attestation/report"} {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		recorder := httptest.NewRecorder()
 
@@ -149,6 +149,37 @@ func TestProtectedPIGRoutesRequireBearerAndDoNotProxy(t *testing.T) {
 
 	if recorder.Code != http.StatusUnauthorized {
 		t.Fatalf("duplicate Authorization status=%d want 401", recorder.Code)
+	}
+	if backendCalls != 0 {
+		t.Fatalf("backend calls=%d want 0", backendCalls)
+	}
+}
+
+func TestUpstreamStatusReturnsAggregateCode(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/v1/upstream-status", nil)
+	request.Header.Set("Authorization", "Bearer secret")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d want 200 body=%s", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Fatalf("content-type=%q want text/plain; charset=utf-8", got)
+	}
+	if got := recorder.Body.String(); got != "0\n" {
+		t.Fatalf("body=%q want aggregate green status", got)
 	}
 	if backendCalls != 0 {
 		t.Fatalf("backend calls=%d want 0", backendCalls)

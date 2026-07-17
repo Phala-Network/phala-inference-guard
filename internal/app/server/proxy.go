@@ -22,6 +22,10 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.combinedMetrics(w, r)
 		return
 	}
+	if r.URL.Path == "/v1/upstream-status" {
+		s.upstreamStatus(w, r)
+		return
+	}
 	if attestationReportPath(r.URL.Path) {
 		s.attestationReport(w, r)
 		return

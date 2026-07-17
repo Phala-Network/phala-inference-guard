@@ -182,7 +182,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.8.11
+    image: ghcr.io/phala-network/phala-inference-guard:v0.8.12
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia
@@ -333,6 +333,10 @@ PIG also serves `/v1/metrics` as the combined serving-chain metrics endpoint. It
 metrics followed by backend metrics fetched from the configured backend metrics
 URLs. If backend metrics cannot be fetched, the endpoint still returns HTTP 200
 with a Prometheus comment describing the failure.
+
+For downstream gateways that only need a capacity signal, PIG serves
+`/v1/upstream-status` with the same bearer-token protection. The body is a
+single integer: `0` green, `1` yellow, `2` red, `3` unknown.
 
 ## Failure Semantics
 

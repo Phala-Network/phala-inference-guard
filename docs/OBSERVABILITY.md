@@ -29,6 +29,7 @@ Metrics are exposed at:
 
 ```text
 /pig/metrics
+/v1/metrics
 ```
 
 The endpoint requires:
@@ -39,6 +40,10 @@ Authorization: Bearer $TOKEN
 
 When PIG is deployed behind HAProxy, route `/pig/metrics` to the PIG service
 and keep the same bearer-token check in HAProxy.
+
+Downstream gateways can use `GET /v1/upstream-status` for a compact aggregate
+capacity signal. It uses the same bearer-token check and returns only one
+plain-text integer: `0` green, `1` yellow, `2` red, `3` unknown.
 
 ## Metric Groups
 
