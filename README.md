@@ -81,6 +81,15 @@ requests directly to the backend, puts them through the short recovery window,
 and only forwards them if the next healthy metrics polls show waiting has
 cleared.
 
+Long prefill is kept separate from decode capacity. For a known-length JSON
+streaming request, PIG recognizes top-level `"stream": true` even when the
+client omits `Accept: text/event-stream`. The request remains prefill-protected
+for at most the configured grace period and leaves protection as soon as the
+first semantic content, reasoning, or tool-call delta is written downstream.
+During that bounded transition, low or zero generation TPS does not lower the
+long-term throughput cap. Backend waiting, KV red pressure, preemption, and
+backend availability still apply immediately.
+
 PIG learns the capacity signal by polling backend metrics and combining recent
 load with generation throughput. TTFT learning prefers PIG's own semantic
 streaming TTFT, meaning request arrival to the first useful SSE data written
@@ -369,7 +378,9 @@ PIG keep-alive comments, so this metric is closer to what an OpenAI-compatible
 streaming client actually sees than backend `time_to_first_token_seconds` or
 proxy first-byte latency. When dynamic TTFT protection is enabled, PIG uses this
 semantic metric as the preferred TTFT learning source after it has observed
-stream samples.
+stream samples. The same semantic event also ends local prefill protection for
+requests classified as streaming from either the `Accept` header or top-level
+JSON `"stream": true`.
 
 Fast upstream errors still keep their original HTTP status. If an upstream
 connection fails after PIG has already opened an early SSE bridge, PIG records

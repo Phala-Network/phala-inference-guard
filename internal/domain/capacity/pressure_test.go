@@ -90,6 +90,29 @@ func TestEvaluatePressureLimitKeepsNearBaseLearnedCapWhenActivelyBinding(t *test
 	}
 }
 
+func TestEvaluatePressureLimitFreezesNonSeverePrefill(t *testing.T) {
+	cap := &PressureCap{}
+	result := EvaluatePressureLimit(cap, cleanTestConfig(), 100, 20, 0, 0, 0.10, 0, 0, false, false, true)
+	if result.Limit != 100 || result.Reason != "prefill_transition" {
+		t.Fatalf("result = %#v, want non-severe prefill hold at base", result)
+	}
+}
+
+func TestEvaluatePressureLimitKeepsKVRedProtectionDuringPrefill(t *testing.T) {
+	cfg := cleanTestConfig()
+	result := EvaluatePressureLimit(&PressureCap{}, cfg, 100, 20, 0, 0, cfg.KVRed+0.01, 0, 0, false, false, true)
+	if result.Limit >= 100 || result.TargetReason != "kv_red" {
+		t.Fatalf("result = %#v, want KV red to tighten during prefill", result)
+	}
+}
+
+func TestEvaluatePressureLimitKeepsPreemptionProtectionDuringPrefill(t *testing.T) {
+	result := EvaluatePressureLimit(&PressureCap{}, cleanTestConfig(), 100, 20, 0, 0, 0.10, 1, 0, false, false, true)
+	if result.Limit >= 100 || result.TargetReason != "preemption" {
+		t.Fatalf("result = %#v, want preemption to tighten during prefill", result)
+	}
+}
+
 func TestRecoverPressureCapRequiresDemandPressure(t *testing.T) {
 	cap := &PressureCap{}
 	cap.value.Store(12)

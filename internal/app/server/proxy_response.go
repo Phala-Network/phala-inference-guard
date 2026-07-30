@@ -11,7 +11,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/semantic"
 )
 
-func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWriter, body io.Reader, streaming bool, semanticTTFT *semantic.Observer) error {
+func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWriter, body io.Reader, streaming bool, semanticTTFT *semantic.Observer, onSemantic func()) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -38,6 +38,9 @@ func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWrite
 			}
 			if semanticTTFT != nil {
 				if found, limited := semanticTTFT.Observe(buffer[:n]); found {
+					if onSemantic != nil {
+						onSemantic()
+					}
 					s.observeSemanticTTFT(semanticTTFT)
 					semanticTTFT = nil
 				} else if limited {
@@ -55,7 +58,7 @@ func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWrite
 	}
 }
 
-func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, started time.Time) error {
+func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, started time.Time, onSemantic func()) error {
 	body := response.Body
 	var semanticTTFT *semantic.Observer
 	if semantic.Eligible(response, streaming) {
@@ -68,7 +71,7 @@ func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w h
 	stopClosingOnCancel := closeBodyOnContextDone(ctx, body)
 	defer stopClosingOnCancel()
 	defer body.Close()
-	return s.copyResponseBody(ctx, w, body, streaming, semanticTTFT)
+	return s.copyResponseBody(ctx, w, body, streaming, semanticTTFT, onSemantic)
 }
 
 func closeBodyOnContextDone(ctx context.Context, body io.Closer) func() {
@@ -79,7 +82,7 @@ func closeBodyOnContextDone(ctx context.Context, body io.Closer) func() {
 	return func() { stop() }
 }
 
-func (s *proxyServer) writeUpstreamResponse(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, semanticStarted time.Time) (int, error) {
+func (s *proxyServer) writeUpstreamResponse(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, semanticStarted time.Time, onSemantic func()) (int, error) {
 	s.classifyUpstreamErrorResponse(response)
 	httpx.CopyHeader(w.Header(), response.Header)
 	if streaming && s.shouldInjectSSEKeepAlive(response) {
@@ -89,7 +92,7 @@ func (s *proxyServer) writeUpstreamResponse(ctx context.Context, w http.Response
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	return response.StatusCode, s.copyResponseWithOptionalKeepAlive(ctx, w, response, streaming, semanticStarted)
+	return response.StatusCode, s.copyResponseWithOptionalKeepAlive(ctx, w, response, streaming, semanticStarted, onSemantic)
 }
 
 func (s *proxyServer) recordProxyUpstreamError(backend *backendProxy) {

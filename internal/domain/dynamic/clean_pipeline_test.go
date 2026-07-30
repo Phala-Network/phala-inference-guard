@@ -787,6 +787,7 @@ func TestCleanPipelinePrefillSettlingDoesNotClampDecodeOnlyObservedCap(t *testin
 				Source:               "metrics",
 				Updated:              now.Add(-time.Second),
 				PrefillTransition:    true,
+				PrefillProtected:     20,
 				CapacityTPS:          5000,
 				CapacityLearnedLimit: 55,
 				CapacityTargetLimit:  114,
@@ -813,6 +814,51 @@ func TestCleanPipelinePrefillSettlingDoesNotClampDecodeOnlyObservedCap(t *testin
 	}
 	if snapshot.FinalLimitReason == "prefill" {
 		t.Fatalf("final limit reason = %q, want prefill not to win without prefill evidence", snapshot.FinalLimitReason)
+	}
+	if snapshot.CapacityLearnedLimit != 55 || snapshot.CapacityLearnState != "prefill_freeze" {
+		t.Fatalf("capacity learned/state = %d/%s, want 55/prefill_freeze during settling", snapshot.CapacityLearnedLimit, snapshot.CapacityLearnState)
+	}
+	if snapshot.UserTPS != 0 || snapshot.UserTPSYellowCount != 0 || snapshot.UserTPSRedCount != 0 {
+		t.Fatalf("user TPS/counts = %.2f/%d/%d, want no observation during settling", snapshot.UserTPS, snapshot.UserTPSYellowCount, snapshot.UserTPSRedCount)
+	}
+}
+
+func TestCleanPipelineLongPrefillDoesNotLowerThroughputCapacity(t *testing.T) {
+	now := time.Unix(453, 0)
+	cfg := cleanEvaluateConfig()
+	cfg.UserTPSYellowN = 1
+	cfg.UserTPSRedN = 1
+	snapshot := Evaluate(cfg, Input{
+		Now: now,
+		Samples: []telemetry.Sample{{
+			Running:             15,
+			GenerationTPS:       0,
+			GenerationTPSDirect: true,
+		}},
+		Previous: PreviousMetrics{
+			Snapshot: runtimedynamic.Snapshot{
+				Source:               "metrics",
+				Updated:              now.Add(-time.Second),
+				CapacityTPS:          750,
+				CapacityLearnedLimit: 50,
+				CapacityTargetLimit:  50,
+				CapacityLimit:        50,
+				ThroughputLimit:      50,
+				GlobalLimit:          50,
+			},
+		},
+		PrefillProtected: 15,
+		GlobalLimit:      100,
+	})
+
+	if !snapshot.PrefillTransition || snapshot.DecodeRunning != 0 {
+		t.Fatalf("prefill transition/decode = %t/%d, want true/0", snapshot.PrefillTransition, snapshot.DecodeRunning)
+	}
+	if snapshot.CapacityLearnedLimit != 50 || snapshot.CapacityLearnState != "prefill_freeze" {
+		t.Fatalf("capacity learned/state = %d/%s, want preserved 50/prefill_freeze", snapshot.CapacityLearnedLimit, snapshot.CapacityLearnState)
+	}
+	if snapshot.CapacityLimit < 50 || snapshot.ThroughputLimit < 50 {
+		t.Fatalf("capacity/throughput limits = %d/%d, want no prefill-driven decrease below 50", snapshot.CapacityLimit, snapshot.ThroughputLimit)
 	}
 }
 

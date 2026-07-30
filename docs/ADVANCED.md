@@ -388,6 +388,23 @@ must restrict PIG to a specific GPU.
 
 PIG tracks recently admitted requests as prefill-protected for a bounded time so
 long-prompt prefill does not look like a true decode-capacity collapse.
+Known-length JSON requests within `JSON_CLASSIFY_BODY_BYTES` are scanned once by
+the request classifier for top-level `"stream": true` and, when enabled, output
+token fields. Streaming classification therefore does not depend on clients
+sending `Accept: text/event-stream`. The classifier restores the exact request
+body before backend compatibility and priority rewriting.
+
+Confirmed streaming requests use the maximum configured grace. Protection ends
+immediately when PIG observes the first non-empty semantic SSE content,
+reasoning, or tool-call delta, or at request completion. If no semantic delta is
+found, the maximum grace remains the fallback deadline.
+
+The complete prefill transition freezes throughput estimation, consecutive
+single-user TPS windows, throughput-cap learning, and non-severe pressure-cap
+learning. The post-prefill settling state is bounded to one metrics window.
+Backend waiting can still close current intake, and backend unavailability, KV
+red pressure, or preemption can still tighten protection immediately. These
+instantaneous guards do not overwrite the retained throughput learned cap.
 
 `DYNAMIC_SINGLE_USER_TPS_PREFILL_GRACE_MIN_SECONDS`
 : Default: `2`. Minimum prefill grace.
@@ -506,7 +523,9 @@ QoS.
 `CLASSIFY_OUTPUT_TOKENS`
 : Default: `false`. When enabled, PIG may read bounded JSON request bodies to
   classify output-token intent. When disabled, PIG never parses request bodies
-  for output tokens.
+  for output tokens. Independent top-level `"stream": true` detection still
+  uses the same bounded classifier read so long prefill can be protected even
+  when the client omits an SSE `Accept` header.
 
 `JSON_CLASSIFY_BODY_BYTES`
 : Default: `2097152`. Maximum known `Content-Length` eligible for JSON

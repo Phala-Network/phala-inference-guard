@@ -14,6 +14,6 @@ func evaluateCleanPressureStage(cfg Config, input Input, signals cleanSignals, c
 		pressureCap = &capacity.PressureCap{}
 	}
 	capacity.RecoverPressureCap(pressureCap, cfg.Capacity, currentLimit, signals.Running, signals.Waiting, signals.DecodeRunning, signals.GenerationTPS, signals.GenerationTPSValid, signals.CapacityDemandPressure)
-	result := capacity.EvaluatePressureLimit(pressureCap, cfg.Capacity, currentLimit, signals.Running, signals.Waiting, signals.DecodeRunning, signals.KVCacheUsage, signals.PreemptionDelta, signals.UserTPS, signals.QOSHealthy, signals.UserTPSRedReady, signals.PrefillFreeze)
+	result := capacity.EvaluatePressureLimit(pressureCap, cfg.Capacity, currentLimit, signals.Running, signals.Waiting, signals.DecodeRunning, signals.KVCacheUsage, signals.PreemptionDelta, signals.UserTPS, signals.QOSHealthy, signals.UserTPSRedReady, signals.PrefillTransition)
 	return cleanPressureStage{Limit: result.Limit, Reason: result.Reason, TargetReason: result.TargetReason}
 }

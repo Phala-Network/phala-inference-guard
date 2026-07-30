@@ -2,6 +2,7 @@ package server
 
 import (
 	"net/http"
+	"sync"
 	"time"
 
 	qospolicy "github.com/Phala-Network/phala-inference-guard/internal/domain/qos"
@@ -56,7 +57,10 @@ func (s *proxyServer) effectiveQoSQueueWait(code string) time.Duration {
 	})
 }
 
-func (s *proxyServer) prefillGraceDuration(r *http.Request) time.Duration {
+func (s *proxyServer) prefillGraceDuration(r *http.Request, streaming bool) time.Duration {
+	if streaming && s.cfg.DynamicUserTPSEnabled {
+		return s.cfg.DynamicUserTPSGraceMax
+	}
 	return qospolicy.PrefillGrace(qospolicy.PrefillGraceInput{
 		Enabled:        s.cfg.DynamicUserTPSEnabled,
 		Min:            s.cfg.DynamicUserTPSGraceMin,
@@ -67,15 +71,15 @@ func (s *proxyServer) prefillGraceDuration(r *http.Request) time.Duration {
 	})
 }
 
-func (s *proxyServer) trackActiveRequest(prefillGrace time.Duration) func() {
+func (s *proxyServer) trackActiveRequest(prefillGrace time.Duration) (markDecode func(), done func()) {
 	if s.activeRequests == nil {
-		return func() {}
+		return func() {}, func() {}
 	}
 	id := s.nextActiveID.Add(1)
 	s.activeRequests.Add(id, time.Now().Add(prefillGrace))
-	return func() {
-		s.activeRequests.Remove(id)
-	}
+	var once sync.Once
+	remove := func() { once.Do(func() { s.activeRequests.Remove(id) }) }
+	return remove, remove
 }
 
 func (s *proxyServer) unavailable(w http.ResponseWriter, code string) {

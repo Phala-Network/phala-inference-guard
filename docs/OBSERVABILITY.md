@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.8.11 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
+pig_status v=PIG-v0.8.12 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
 ```
 
 The log line has three parts:
@@ -188,6 +188,15 @@ For production operation, watch these first:
   considered representative enough for capacity estimation and user-visible TPS
   learning. These are useful when a high low-load TPS sample is intentionally
   held instead of raising the cap.
+- `pig_dynamic_prefill_protected_running`,
+  `pig_dynamic_prefill_transition_active`, and
+  `pig_dynamic_prefill_settling_active`: distinguish locally tracked prefill
+  requests from decode-running load. During a transition, capacity learning
+  should report `state="prefill_freeze"`; low generation TPS must not reduce
+  `pig_dynamic_capacity_learned_limit`. A semantic SSE delta removes the
+  corresponding request from protection, and settling is bounded to one metrics
+  window. Backend waiting may still make the current global limit `0` without
+  changing the retained learned limit.
 - `pig_dynamic_single_user_tps_capacity_ratio` and
   `pig_dynamic_single_user_tps_capacity_ratio_max`: show the configured safety
   ratio used by the clean throughput estimator and the max ratio used by

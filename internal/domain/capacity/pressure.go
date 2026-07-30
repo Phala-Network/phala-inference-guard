@@ -171,7 +171,8 @@ func EvaluatePressureLimit(cap *PressureCap, cfg Config, baseLimit, running, wai
 	if !cfg.PressureEnabled || baseLimit <= 0 || running <= 0 {
 		return PressureLimitResult{Limit: baseLimit, Reason: "disabled", TargetReason: "base_limit"}
 	}
-	if prefillTransition {
+	severePressure := SeverePressure(cfg, waiting, kvValue, preemptionDelta)
+	if prefillTransition && !severePressure {
 		return PressureLimitResult{Limit: baseLimit, Reason: "prefill_transition", TargetReason: "base_limit"}
 	}
 	limit := baseLimit
@@ -214,14 +215,14 @@ func EvaluatePressureLimit(cap *PressureCap, cfg Config, baseLimit, running, wai
 		}
 		apply(target, candidateReason, candidateTargetReason)
 	}
-	representativeSeverePressure := SeverePressure(cfg, waiting, kvValue, preemptionDelta) && (preemptionDelta > 0 || running >= cfg.PressureLearnMinRun)
-	if representativeSeverePressure {
+	representativeSeverePressure := severePressure && (preemptionDelta > 0 || running >= cfg.PressureLearnMinRun)
+	if severePressure {
 		overload := overloadPressureTarget(cfg, baseLimit, running, decodeRunning, waiting, kvValue, preemptionDelta, userTPS, qosRedReady)
 		pressureReason := overload.Reason
 		if pressureReason == "base_limit" {
 			pressureReason = primaryPressureReason(cfg, waiting, kvValue, preemptionDelta, userTPS, qosRedReady)
 		}
-		if waiting > 0 || preemptionDelta > 0 || KVPressureActive(cfg, kvValue) {
+		if representativeSeverePressure && (waiting > 0 || preemptionDelta > 0 || KVPressureActive(cfg, kvValue)) {
 			learnPressureCap("severe_pressure", pressureReason)
 		}
 		if overload.Limited {

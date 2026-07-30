@@ -33,9 +33,19 @@ func TestDeriveCleanPrefillStateSeparatesFreezeFromSettling(t *testing.T) {
 
 	settling := deriveCleanPrefillState(cfg, 20, 0, 1, runtimedynamic.Snapshot{
 		PrefillTransition: true,
+		PrefillProtected:  8,
 		Updated:           time.Unix(100, 0),
 	}, generationObservation{GenerationTPS: 200, GenerationTPSValid: true})
 	if settling.Freeze || !settling.Transition || !settling.Settling {
 		t.Fatalf("settling state = %#v, want settling transition without freeze", settling)
+	}
+
+	settled := deriveCleanPrefillState(cfg, 20, 0, 0, runtimedynamic.Snapshot{
+		PrefillTransition: true,
+		PrefillSettling:   true,
+		Updated:           time.Unix(101, 0),
+	}, generationObservation{GenerationTPS: 200, GenerationTPSValid: true})
+	if settled.Transition || settled.Freeze || settled.Settling {
+		t.Fatalf("settled state = %#v, want bounded settling to end after one window", settled)
 	}
 }

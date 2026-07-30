@@ -85,7 +85,7 @@ func deriveCleanSignals(cfg Config, input Input, now time.Time) cleanSignals {
 		QueueCurrent:       input.QueueCurrent,
 		DynamicRejected:    dynamicRejectedDelta,
 		DemandPressure:     capacityDemandPressure,
-		PrefillTransition:  prefill.Freeze,
+		PrefillTransition:  prefill.Transition,
 	})
 	capacityTPS := capacityEstimate.SmoothedTPS
 
@@ -100,7 +100,7 @@ func deriveCleanSignals(cfg Config, input Input, now time.Time) cleanSignals {
 	userTPSYellowCount := 0
 	userTPSRedCount := 0
 	representativeUserTPSLoad := aggregated.Waiting > 0 || prefill.DecodeRunning >= capacity.MinUserTPSEnforceRunning || aggregated.Running >= capacity.MinUserTPSEnforceRunning
-	if cfg.UserTPSEnabled && !prefill.Freeze && prefill.DecodeRunning >= cfg.UserTPSMinRun && prefill.DecodeRunning > 0 && qosTPSValid {
+	if cfg.UserTPSEnabled && !prefill.Transition && prefill.DecodeRunning >= cfg.UserTPSMinRun && prefill.DecodeRunning > 0 && qosTPSValid {
 		userTPS = qosTPS / float64(prefill.DecodeRunning)
 		if representativeUserTPSLoad && cfg.UserTPSYellow > 0 && userTPS < cfg.UserTPSYellow {
 			userTPSYellowCount = previousMetrics.UserTPSYellowCount + 1
@@ -172,7 +172,7 @@ func deriveCleanPrefillState(cfg Config, running, waiting, protected int, previo
 	}
 	state.Freeze = capacity.MeaningfulPrefillProtected(running, protected)
 	state.Transition = state.Freeze
-	if state.Transition || !previous.PrefillTransition || running <= 0 || !generation.GenerationTPSValid || cfg.UserTPSYellow <= 0 {
+	if state.Transition || !previous.PrefillTransition || previous.PrefillProtected <= 0 || running <= 0 || !generation.GenerationTPSValid || cfg.UserTPSYellow <= 0 {
 		return state
 	}
 	perRunningTPS := generation.GenerationTPS / float64(num.MaxInt(running, 1))

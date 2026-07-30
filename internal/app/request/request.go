@@ -22,17 +22,31 @@ func (c *Classifier) SafeForEarlySSEBridge(r *http.Request, outputTokens int, ha
 	return requestclass.SafeForEarlySSEBridge(r, c.cfg.VeryLongBodyBytes, c.cfg.VeryLongOutputTokens, outputTokens, hasOutputTokens)
 }
 
-func (c *Classifier) ClassifyRequest(r *http.Request) (*lane.Lane, int, bool) {
-	ln := c.classify(r)
-	if ln == c.lanes.UnknownBody {
-		return ln, 0, false
+type Classification struct {
+	Lane            *lane.Lane
+	OutputTokens    int
+	HasOutputTokens bool
+	Streaming       bool
+}
+
+func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
+	result := Classification{
+		Lane:      c.classify(r),
+		Streaming: c.WantsStreamingResponse(r),
 	}
-	outputTokens, ok := c.classifyOutputTokens(r)
+	fields, ok := c.classifyJSONFields(r)
 	if !ok {
-		return ln, 0, false
+		return result
 	}
-	c.observeOutputTokens(outputTokens)
-	return requestclass.MoreRestrictiveLane(ln, c.outputLane(outputTokens)), outputTokens, true
+	result.Streaming = result.Streaming || (fields.HasStream && fields.Stream)
+	if result.Lane == c.lanes.UnknownBody || !c.cfg.ClassifyOutputTokens || !fields.HasOutputTokens {
+		return result
+	}
+	result.OutputTokens = fields.OutputTokens
+	result.HasOutputTokens = true
+	c.observeOutputTokens(result.OutputTokens)
+	result.Lane = requestclass.MoreRestrictiveLane(result.Lane, c.outputLane(result.OutputTokens))
+	return result
 }
 
 func (c *Classifier) classify(r *http.Request) *lane.Lane {

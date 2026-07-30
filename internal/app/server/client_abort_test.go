@@ -24,7 +24,7 @@ func TestCopyResponseCancelsUpstreamBodyWhenClientContextCancels(t *testing.T) {
 	errCh := make(chan error, 1)
 
 	go func() {
-		errCh <- srv.copyResponseWithOptionalKeepAlive(ctx, httptest.NewRecorder(), response, true, time.Now())
+		errCh <- srv.copyResponseWithOptionalKeepAlive(ctx, httptest.NewRecorder(), response, true, time.Now(), nil)
 	}()
 
 	cancel()
@@ -150,7 +150,7 @@ func TestStreamingResponseDisconnectDoesNotCountProxyCopyError(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[],"stream":true}`)).WithContext(clientCtx)
 	writer := &disconnectingResponseWriter{header: make(http.Header), cancel: cancel}
 
-	result := srv.proxyStreamingRequest(srv.backends[0], writer, request, false, time.Now())
+	result := srv.proxyStreamingRequest(srv.backends[0], writer, request, false, time.Now(), nil)
 
 	if result.status != clientClosedRequestStatus {
 		t.Fatalf("status=%d want %d", result.status, clientClosedRequestStatus)

@@ -2,7 +2,7 @@
 
 This report explains how Phala Inference Guard (PIG) reacts when backend metrics
 show waiting requests. It is based on the current implementation around
-`PIG-v0.8.11`.
+`PIG-v0.8.12`.
 
 ## Scope
 
@@ -81,7 +81,7 @@ Second, it blocks upward learning. In the capacity learner, `waiting > 0` is
 classified as pressure. PIG avoids probing upward while this pressure exists,
 even if short-term generation throughput looks acceptable.
 
-Third, `PIG-v0.8.11` closes new-request intake while backend waiting is present.
+Third, `PIG-v0.8.12` closes new-request intake while backend waiting is present.
 The dynamic global limit, pressure limit, and prefill limit are set to `0` for
 new QoS intake:
 
@@ -112,6 +112,15 @@ Relevant implementation:
 When waiting appears, PIG treats it as an immediate hard intake signal rather
 than a slow-learning signal. Normal capacity and TTFT learners still retain
 their learned caps, but they do not probe upward while backend waiting exists.
+The current global intake limit may therefore be `0` while
+`pig_dynamic_capacity_learned_limit` remains nonzero. This is intentional: the
+temporary waiting gate must not erase long-term learned capacity.
+
+Long prefill is handled separately. A prefill transition freezes throughput
+learning even when generation TPS is zero, but it does not suppress the hard
+backend-waiting gate. If both are active, waiting still closes current intake;
+after waiting clears, PIG resumes from the retained learned cap instead of
+recovering from a false prefill-driven learn-down.
 
 For other pressure sources, PIG can still store a learned pressure cap inside
 the dynamic QoS controller. The default pressure learning ratio is:

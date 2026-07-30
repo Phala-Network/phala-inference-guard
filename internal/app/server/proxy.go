@@ -49,7 +49,10 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	decisionStart := time.Now()
-	ln, outputTokens, hasOutputTokens := s.classifyRequest(r)
+	classification := s.classifyRequest(r)
+	ln := classification.Lane
+	outputTokens := classification.OutputTokens
+	hasOutputTokens := classification.HasOutputTokens
 	tier := requesttier.FromHeader(r)
 	ln.ObserveBody(r.ContentLength)
 	s.globalLn.ObserveBody(r.ContentLength)
@@ -89,8 +92,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.globalLn.ObserveAccepted()
 	ln.ObserveAccepted()
 	s.qosGate.ObserveAccepted(tier)
-	prefillGrace := s.prefillGraceDuration(r)
-	doneActive := s.trackActiveRequest(prefillGrace)
+	prefillGrace := s.prefillGraceDuration(r, classification.Streaming)
+	markDecode, doneActive := s.trackActiveRequest(prefillGrace)
 	defer doneActive()
 	r.Header.Set("X-PIG-Lane", ln.Name())
 	r.Header.Set("X-PIG-Tier", tier.String())
@@ -99,9 +102,9 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	started := time.Now()
 	var result proxyResult
-	if s.wantsStreamingResponse(r) {
+	if classification.Streaming {
 		allowEarlyBridge := s.cfg.SSEEarlyBridgeEnabled && s.safeForEarlySSEBridge(r, outputTokens, hasOutputTokens)
-		result = s.proxyStreamingRequest(backend, w, r, allowEarlyBridge, requestStart)
+		result = s.proxyStreamingRequest(backend, w, r, allowEarlyBridge, requestStart, markDecode)
 	} else {
 		result = s.proxyRequest(backend, w, r)
 	}

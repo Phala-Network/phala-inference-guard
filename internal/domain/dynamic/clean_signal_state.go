@@ -27,14 +27,14 @@ func evaluateCleanSignalState(cfg Config, signals cleanSignals, ttft cleanTTFTSt
 		UserTPSYellowReady:        signals.UserTPSYellowReady,
 		UserTPSRedReady:           signals.UserTPSRedReady,
 		RepresentativeUserTPSLoad: signals.RepresentativeUserTPSLoad,
-		PrefillTransition:         signals.PrefillFreeze,
+		PrefillTransition:         signals.PrefillTransition,
 		TTFTYellowReady:           ttft.Assessment.YellowReady,
 		TTFTRedReady:              ttft.Assessment.RedReady,
 	})
 }
 
 func cleanEnforceQOSLimit(cfg Config, signals cleanSignals) bool {
-	if !signals.RepresentativeUserTPSLoad || !cfg.UserTPSEnabled || signals.PrefillFreeze || !signals.QOSTPSValid || signals.DecodeRunning < cfg.UserTPSMinRun || signals.DecodeRunning <= 0 {
+	if !signals.RepresentativeUserTPSLoad || !cfg.UserTPSEnabled || signals.PrefillTransition || !signals.QOSTPSValid || signals.DecodeRunning < cfg.UserTPSMinRun || signals.DecodeRunning <= 0 {
 		return false
 	}
 	if signals.UserTPS < cfg.UserTPSRed {

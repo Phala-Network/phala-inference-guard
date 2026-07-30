@@ -13,15 +13,15 @@ type readCloser struct {
 	io.Closer
 }
 
-func (c *Classifier) classifyOutputTokens(r *http.Request) (int, bool) {
-	if !c.cfg.ClassifyOutputTokens || c.cfg.JSONClassifyBodyBytes <= 0 || len(c.cfg.OutputTokenFields) == 0 {
-		return 0, false
+func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFields, bool) {
+	if c.cfg.JSONClassifyBodyBytes <= 0 {
+		return tokenclassifier.JSONFields{}, false
 	}
 	if r.Body == nil || r.ContentLength < 0 || r.ContentLength > c.cfg.JSONClassifyBodyBytes {
-		return 0, false
+		return tokenclassifier.JSONFields{}, false
 	}
 	if !c.acquire() {
-		return 0, false
+		return tokenclassifier.JSONFields{}, false
 	}
 	defer c.release()
 	originalBody := r.Body
@@ -30,15 +30,18 @@ func (c *Classifier) classifyOutputTokens(r *http.Request) (int, bool) {
 	if err != nil {
 		r.Body = readCloser{Reader: io.MultiReader(bytes.NewReader(body), originalBody), Closer: originalBody}
 		r.ContentLength = originalContentLength
-		return 0, false
+		return tokenclassifier.JSONFields{}, false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	if int64(len(body)) > c.cfg.JSONClassifyBodyBytes {
-		return 0, false
+		return tokenclassifier.JSONFields{}, false
 	}
-	tokens, ok := tokenclassifier.ParseOutputTokens(body, c.cfg.OutputTokenFields)
-	return tokens, ok
+	fields := c.cfg.OutputTokenFields
+	if !c.cfg.ClassifyOutputTokens {
+		fields = nil
+	}
+	return tokenclassifier.ParseJSONFields(body, fields)
 }
 
 func (c *Classifier) acquire() bool {
