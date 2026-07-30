@@ -4,6 +4,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/capacity"
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/decision"
 	domaintier "github.com/Phala-Network/phala-inference-guard/internal/domain/tier"
+	runtimebackend "github.com/Phala-Network/phala-inference-guard/internal/runtime/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/dynamic"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 	"github.com/Phala-Network/phala-inference-guard/internal/support/num"
@@ -77,6 +78,21 @@ func (c *Controller) PressureCap() *capacity.PressureCap {
 		return nil
 	}
 	return &c.pressureCap
+}
+
+func (c *Controller) StaticMetricRuntimes() []runtimebackend.Runtime {
+	if c == nil || c.cfg.BackendRouting {
+		return nil
+	}
+	state := c.previousStaticMetricState()
+	if len(state) == 0 {
+		return nil
+	}
+	result := make([]runtimebackend.Runtime, 0, len(c.cfg.MetricsURLs))
+	for index, metricsURL := range c.cfg.MetricsURLs {
+		result = append(result, state[staticMetricKey(index, metricsURL)])
+	}
+	return result
 }
 
 func (c *Controller) backendCount() int {

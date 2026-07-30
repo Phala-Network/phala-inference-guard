@@ -14,6 +14,12 @@ type HistogramSample struct {
 }
 
 type Sample struct {
+	BackendKind           string
+	KVCapacityTokens      int64
+	KVUsedTokens          int64
+	KVAvailableTokens     int64
+	KVEvictableTokens     int64
+	KVTokenMetricsValid   bool
 	Running               int
 	Waiting               int
 	KVCacheUsage          float64

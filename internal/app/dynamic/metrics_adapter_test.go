@@ -194,3 +194,17 @@ func TestPreviousStaticMetricStateReturnsCopy(t *testing.T) {
 		t.Fatalf("stored generation = %d, want original 100", again[key].Generation)
 	}
 }
+
+func TestStaticMetricRuntimesPreserveConfiguredURLOrder(t *testing.T) {
+	controller := New(Config{
+		MetricsURLs: []string{"http://a/metrics", "http://b/metrics"},
+	}, Dependencies{})
+	controller.storeStaticMetricState(staticMetricState{
+		staticMetricKey(0, "http://a/metrics"): {Name: "a", KVCapacityTokens: 100},
+		staticMetricKey(1, "http://b/metrics"): {Name: "b", KVCapacityTokens: 200},
+	})
+	runtimes := controller.StaticMetricRuntimes()
+	if len(runtimes) != 2 || runtimes[0].KVCapacityTokens != 100 || runtimes[1].KVCapacityTokens != 200 {
+		t.Fatalf("runtimes=%#v want ordered a/b capacities", runtimes)
+	}
+}

@@ -8,6 +8,12 @@ import (
 
 type Runtime struct {
 	Name                 string
+	BackendKind          string
+	KVCapacityTokens     int64
+	KVUsedTokens         int64
+	KVAvailableTokens    int64
+	KVEvictableTokens    int64
+	KVTokenMetricsValid  bool
 	Running              int
 	Waiting              int
 	KVCacheUsage         float64
@@ -33,6 +39,12 @@ func FromSample(name string, sample telemetry.Sample, previous Runtime, now time
 	ttftAvg, ttftP95, ttftP99, ttftValid := observeTTFT(sample.TTFT, previous.TTFTCumulative)
 	return Runtime{
 		Name:                 name,
+		BackendKind:          sample.BackendKind,
+		KVCapacityTokens:     sample.KVCapacityTokens,
+		KVUsedTokens:         sample.KVUsedTokens,
+		KVAvailableTokens:    sample.KVAvailableTokens,
+		KVEvictableTokens:    sample.KVEvictableTokens,
+		KVTokenMetricsValid:  sample.KVTokenMetricsValid,
 		Running:              sample.Running,
 		Waiting:              sample.Waiting,
 		KVCacheUsage:         sample.KVCacheUsage,
