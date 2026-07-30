@@ -1,0 +1,7 @@
+{"at_ms":0,"type":"config","control_limit":64,"decode_drift_tokens":0,"max_metrics_age_ms":2000}
+{"at_ms":0,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":100000,"used_tokens":70000,"generation_tokens":1000,"running":20}
+{"at_ms":100,"step_ms":50,"type":"request","id_prefix":"pre500-","repeat":4,"estimate_low":500,"estimate_high":1000,"expect":"fit"}
+{"at_ms":500,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":100000,"used_tokens":74000,"generation_tokens":1100,"running":24}
+{"at_ms":600,"step_ms":50,"type":"request","id_prefix":"pre1000-","repeat":4,"estimate_low":500,"estimate_high":1000,"expect":"fit"}
+{"at_ms":1000,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":100000,"used_tokens":78000,"generation_tokens":1200,"running":28}
+{"at_ms":1001,"type":"assert","expect_shadow_fit":8,"expect_hard_violations":0,"expect_decision_counts":{"fit":8}}

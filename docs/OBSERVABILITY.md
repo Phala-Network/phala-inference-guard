@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.8.12 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
+pig_status v=PIG-v0.9.0 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...} kv_shadow={last=fit backend=backend1 projected=700000/758944 ratio=0.812 reservations=4 tokens=2000}
 ```
 
 The log line has three parts:
@@ -18,6 +18,9 @@ The log line has three parts:
 - `v`: PIG version.
 - `backend`: current backend load snapshot from vLLM or SGLang metrics.
 - `pig`: current PIG limits and counters.
+- `kv_shadow`: present only in shadow mode; last hypothetical decision and the
+  current unabsorbed reservation ledger. It never describes an enforced result
+  in v0.9.0.
 
 The log is intentionally compact. Per-lane counters, queue totals, dynamic
 reasons, backend details, and classifier counters are exposed through metrics
@@ -63,6 +66,7 @@ lane-specific QoS caps.
 | Client Disconnects | `pig_client_disconnects_total`, `pig_client_disconnect_upstream_cancellations_total` | Client-side disconnects while waiting in queue, waiting for upstream headers, or copying the upstream response. |
 | Dynamic QoS | `pig_dynamic_*` | Load state, learned limits, pressure limits, per-user TPS observations, and TTFT learning. |
 | Backend | `pig_backend_*` | Per-backend health, in-flight count, load, KV usage, generation TPS, and TTFT. |
+| KV Shadow | `pig_kv_admission_*`, `pig_kv_shadow_*`, `pig_kv_estimator_*` | Shadow-only token capacity, projected budget decisions, reservations, resets, and estimator cost. |
 | Classifier | `pig_json_*`, `pig_*output*` | Optional request body and output-token classification. |
 | Backend Priority | `pig_backend_priority_*` | Trusted-tier JSON priority injection and rewrite overhead. |
 
@@ -87,6 +91,29 @@ For production operation, watch these first:
 - `pig_internal_overhead_seconds` and `pig_decision_duration_seconds`: should
   stay near zero compared with request latency. If they rise while
   `pig_queue_current` is `0`, PIG itself is adding measurable work.
+- `pig_kv_admission_mode_info` and `pig_kv_admission_shadow_enabled`: prove
+  whether the process is `off` or shadow-only. v0.9.0 has no enforce mode.
+- `pig_backend_kv_capacity_tokens`, `pig_backend_kv_active_tokens`,
+  `pig_backend_kv_available_tokens`, `pig_backend_kv_evictable_tokens`, and
+  `pig_backend_kv_token_metrics_valid`: show the backend-specific token model.
+  vLLM capacity comes from `kv_cache_size_tokens`; SGLang TP-rank duplicates are
+  deduplicated and evictable tokens are excluded from active pressure.
+- `pig_kv_shadow_decisions_total{decision="..."}` separates `fit`,
+  `over_budget`, `emergency_red`, `backend_waiting`,
+  `preemption_cooldown`, `stale_metrics`, `capacity_unknown`, and
+  `unsupported_request`. Unknown/stale/unsupported must not be read as fit.
+- `pig_kv_shadow_reservations`,
+  `pig_kv_shadow_unabsorbed_reservation_tokens`, and per-backend
+  `pig_kv_shadow_backend_unabsorbed_tokens` show blind-window protection between
+  metrics samples. They must return to zero after completion or expiry.
+- `pig_kv_shadow_backend_resets_total` and
+  `pig_kv_shadow_reservations_expired_total` expose backend counter/capacity
+  resets and timeout reconciliation. Unexpected growth should be investigated
+  before any enforcement design.
+- `pig_kv_estimator_duration_seconds` and
+  `pig_kv_shadow_decision_duration_seconds` show the bounded byte-scan cost and
+  atomic decision/reservation cost. They are separate from the existing full
+  PIG decision histogram.
 - `pig_backend_priority_rewrite_total`, `pig_backend_priority_skipped_total`,
   and `pig_backend_priority_failed_total`: show whether backend priority
   injection is rewriting, skipping, or failing request-body rewrites. A growing

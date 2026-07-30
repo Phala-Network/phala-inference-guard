@@ -1,0 +1,6 @@
+{"at_ms":0,"type":"config","control_limit":24,"decode_drift_tokens":0,"max_metrics_age_ms":2000}
+{"at_ms":0,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":862437,"used_tokens":690000,"generation_tokens":1000,"running":0}
+{"at_ms":1,"step_ms":1,"type":"request","id_prefix":"short-","repeat":32,"estimate_low":150,"estimate_high":500,"class":"short"}
+{"at_ms":40,"type":"request","id":"long-64k","estimate_low":50000,"estimate_high":65536,"class":"long","expect":"over_budget"}
+{"at_ms":41,"type":"request","id":"long-128k","estimate_low":100000,"estimate_high":131072,"class":"long","expect":"over_budget"}
+{"at_ms":50,"type":"assert","expect_shadow_fit":32,"expect_control_fit":24,"expect_hard_violations":0,"expect_decision_counts":{"fit":32,"over_budget":2},"min_improvement_percent":10}

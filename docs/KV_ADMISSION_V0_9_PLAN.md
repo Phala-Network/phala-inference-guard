@@ -1,8 +1,8 @@
 # PIG v0.9.0 Backend-Aware KV Admission Shadow Plan
 
-Status: implementation and simulation plan  
-Version target: `PIG-v0.9.0`  
-Release mode: `off` or `shadow` only  
+Status: implementation and simulation plan
+Version target: `PIG-v0.9.0`
+Release mode: `off` or `shadow` only
 Production deployment: explicitly out of scope
 
 ## 1. Goal
@@ -320,7 +320,7 @@ Example:
 
 ```json
 {"at_ms":0,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":862437,"used_tokens":689950,"generation_tokens":10000,"generation_tps":2000}
-{"at_ms":10,"type":"request","id":"r1","estimate_low":1500,"estimate_high":3000,"decode_tokens":256,"class":"short","expect":"fit"}
+{"at_ms":10,"type":"request","id":"r1","estimate_low":1500,"estimate_high":3000,"decode_tokens":256,"actual_tokens":3100,"class":"short","expect":"fit"}
 {"at_ms":20,"type":"request","id":"r2","estimate_low":32000,"estimate_high":65536,"decode_tokens":256,"class":"long","expect":"over_budget"}
 {"at_ms":1000,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":862437,"used_tokens":760000,"waiting":1}
 ```
@@ -342,7 +342,13 @@ Required committed scenarios:
 13. Poll intervals of both 500 ms and 1 s.
 
 The simulator includes a count-only control so mixed traces can compare safe
-short-request admits without redefining the safety budget.
+short-request admits without redefining the safety budget. A request may also
+provide `actual_tokens`, an independent post-admission ground-truth cost. The
+simulator tracks actual in-flight usage separately for shadow and control and
+counts a hard-budget violation when an admitted request's actual cumulative
+cost, rather than its already-checked projection, exceeds the backend hard
+budget. This prevents the safety metric from being tautologically zero merely
+because `fit` already requires `projected_high <= hard_budget`.
 
 ## 12. Quantitative acceptance criteria
 
@@ -382,12 +388,15 @@ short-request admits without redefining the safety budget.
 
 ### 12.4 Simulation efficacy
 
-- Zero hard-budget overshoots in deterministic same-poll burst scenarios.
+- Zero shadow hard-budget overshoots under independent `actual_tokens` in
+  deterministic same-poll burst scenarios.
 - At least 10% more safe short-request admits than the count-only control in a
   mixed short/long trace, without any additional hard-budget violation.
 - SGLang high-evictable/low-active input remains admissible.
-- A long-prompt burst that would move sampled KV to 98-99% is classified
-  `over_budget` before the next simulated metrics poll.
+- In the long-prompt trace that moves the count-only control to 98-99%, shadow
+  admits only the independently safe prefix and classifies the remaining
+  requests `over_budget` before the next simulated metrics poll; the control
+  records hard-budget violations while shadow records zero.
 
 ## 13. Builder-only validation and release procedure
 

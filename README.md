@@ -162,6 +162,42 @@ controls:
 /v1/responses
 ```
 
+### v0.9.0 KV admission shadow
+
+PIG v0.9.0 can simulate a backend-aware token-budget policy without changing
+real admission or routing:
+
+```text
+KV_ADMISSION_MODE=shadow
+```
+
+The only supported values in v0.9.0 are `off` (the default) and `shadow`.
+`enforce` is rejected during configuration validation. Shadow mode never
+rejects, delays, reroutes, or mutates a request based on its KV result; the
+existing QoS policy remains authoritative.
+
+The shadow adapter reads vLLM's group-aware `kv_cache_size_tokens` capacity and
+SGLang's deduplicated token-pool metrics. SGLang evictable radix-cache tokens
+are not counted as active pressure. A bounded local byte/token interval replaces
+an exact tokenizer or a hot-path `/tokenize` request. The hypothetical decision
+and an atomic unabsorbed-reservation ledger are exposed only in protected
+metrics and the compact status log.
+
+Use the deterministic simulator before considering any later enforcement
+version:
+
+```sh
+go run ./cmd/pig-kv-sim -scenario scenarios/kv-admission -all
+go run ./cmd/pig-kv-sim -performance
+```
+
+Scenario requests can declare an independent `actual_tokens` cost. The report
+then distinguishes shadow hard-budget violations from count-control violations,
+so a projection check cannot make the safety result tautologically pass.
+
+The design, initial budgets, failure semantics, and release gates are documented
+in [KV_ADMISSION_V0_9_PLAN.md](docs/KV_ADMISSION_V0_9_PLAN.md).
+
 ## Production Compose Integration
 
 Use the published GHCR image:
@@ -191,7 +227,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.8.12
+    image: ghcr.io/phala-network/phala-inference-guard:v0.9.0
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

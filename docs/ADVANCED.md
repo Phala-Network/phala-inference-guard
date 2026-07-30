@@ -474,6 +474,87 @@ labels through `pig_dynamic_capacity_projected_limit` and
 : Default: `16`. Minimum running load before severe pressure is treated as
   representative for learning.
 
+## KV ADMISSION SHADOW (v0.9.0)
+
+The KV admission model is simulation-only in v0.9.0. It never participates in
+the existing QoS `min()` composition and never changes the selected backend or
+the client-visible response. See
+[`KV_ADMISSION_V0_9_PLAN.md`](KV_ADMISSION_V0_9_PLAN.md) for the architecture,
+initial six-CVM evidence, scenarios, and enforcement gate.
+
+`KV_ADMISSION_MODE`
+: Default: `off`. Supported values are `off` and `shadow`. Any other value,
+  including `enforce`, is a startup validation error in v0.9.0. `shadow`
+  requires dynamic metrics polling and a positive bounded JSON classifier size.
+
+`KV_ADMISSION_VLLM_TARGET_RATIO`
+: Default: `0.84`. Preferred projected vLLM occupancy. A backend below this
+  target is preferred over protected spill headroom.
+
+`KV_ADMISSION_VLLM_HARD_RATIO`
+: Default: `0.88`. Maximum vLLM `projected_high` ratio that may be labelled
+  hypothetical `fit`.
+
+`KV_ADMISSION_VLLM_EMERGENCY_RATIO`
+: Default: `0.90`. Observed vLLM occupancy at or above this ratio is labelled
+  `emergency_red` before request cost is considered.
+
+`KV_ADMISSION_SGLANG_TARGET_RATIO`
+: Default: `0.80`. Preferred projected SGLang occupancy. EAGLE nodes may need a
+  lower per-backend value in later simulations because reported KV tokens do
+  not cover every temporary GPU workspace allocation.
+
+`KV_ADMISSION_SGLANG_HARD_RATIO`
+: Default: `0.84`. Maximum SGLang `projected_high` ratio that may be labelled
+  hypothetical `fit`.
+
+`KV_ADMISSION_SGLANG_EMERGENCY_RATIO`
+: Default: `0.85`. Observed SGLang active occupancy at or above this ratio is
+  labelled `emergency_red`.
+
+`KV_ADMISSION_MAX_METRICS_AGE_MS`
+: Default: three times `DYNAMIC_POLL_INTERVAL_MS`. Older token snapshots produce
+  `stale_metrics`, never `fit`.
+
+`KV_ADMISSION_PREEMPTION_COOLDOWN_SECONDS`
+: Default: `10`. Holds hypothetical intake closed after a vLLM preemption or an
+  SGLang retraction/paused signal.
+
+`KV_ADMISSION_DECODE_DRIFT_TOKENS`
+: Default: `8192`. Global per-backend blind-window allowance for decode growth
+  between metrics samples.
+
+`KV_ADMISSION_NEW_REQUEST_DECODE_TOKENS`
+: Default: `256`. Bounded new-request output allowance. If a smaller valid
+  output maximum is present, the smaller value is used. PIG does not reserve
+  the full requested output maximum.
+
+`KV_ADMISSION_RESERVATION_TTL_SECONDS`
+: Default: `1800`. Maximum lifetime for an abandoned simulated reservation.
+  Normal response completion releases it earlier; restart/counter/capacity
+  reconciliation can clear it as well.
+
+`KV_ESTIMATOR_MIN_BYTES_PER_TOKEN` / `KV_ESTIMATOR_MAX_BYTES_PER_TOKEN`
+: Defaults: `2` / `6`. Conservative whole-body and text interval bounds. The
+  minimum controls the upper token estimate and must not exceed the maximum.
+
+`KV_ESTIMATOR_TOOL_MIN_BYTES_PER_TOKEN` / `KV_ESTIMATOR_TOOL_MAX_BYTES_PER_TOKEN`
+: Defaults: `2` / `6`. Bounds for tool, function, and response-schema bytes.
+
+`KV_ESTIMATOR_TEMPLATE_TOKENS_PER_MESSAGE_LOW` /
+`KV_ESTIMATOR_TEMPLATE_TOKENS_PER_MESSAGE_HIGH`
+: Defaults: `3` / `8`. Bounded chat-template allowance for each detected
+  message.
+
+`KV_ESTIMATOR_MODALITY_TOKENS_LOW` / `KV_ESTIMATOR_MODALITY_TOKENS_HIGH`
+: Defaults: `256` / `4096`. Conservative allowance per detected image, audio,
+  or video marker. This is an interval, not an exact model vision-token count.
+
+Eligible bodies use a zero-allocation linear byte scanner after the existing
+bounded JSON classifier validates the top-level request. Unknown-length,
+oversized, malformed, and non-JSON bodies produce `unsupported_request` in
+shadow metrics while real traffic continues through existing PIG behavior.
+
 ## QUEUEING
 
 `PIG_QUEUE_WAIT_SECONDS`
