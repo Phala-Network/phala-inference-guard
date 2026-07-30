@@ -3,6 +3,7 @@ package pigconfig
 import (
 	"time"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
 )
 
@@ -115,4 +116,7 @@ type Config struct {
 	StatusLogInterval                  time.Duration
 	QoSQueueWait                       time.Duration
 	QoSQueuePoll                       time.Duration
+	KVAdmissionMode                    string
+	KVAdmissionPolicy                  kvadmission.Policy
+	KVAdmissionEstimator               kvadmission.EstimatorConfig
 }

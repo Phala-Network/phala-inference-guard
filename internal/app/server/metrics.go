@@ -49,6 +49,7 @@ func (s *proxyServer) combinedMetrics(w http.ResponseWriter, r *http.Request) {
 func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	metrics.WriteRuntime(w, s.runtimeMetricsInput())
 	metrics.WriteBackends(w, s.backendMetricsInput())
+	metrics.WriteKVShadow(w, s.kvShadowMetricsInput())
 	s.writeDynamicMetrics(w)
 	metrics.WriteClassifier(w, s.classifierMetricsInput())
 	metrics.WritePriority(w, s.priorityMetricsInput())
@@ -143,18 +144,33 @@ func (s *proxyServer) runtimeMetricsInput() metrics.RuntimeInput {
 			BackendUnavailable: s.backendUnavailable.Load(),
 		},
 		Histograms: metrics.RuntimeHistograms{
-			DecisionDuration:    &s.decisionDuration,
-			ProxyTTFB:           &s.proxyTTFB,
-			RequestSemanticTTFT: &s.requestSemanticTTFT,
-			ProxyTotal:          &s.proxyTotal,
-			InternalOverhead:    &s.internalOverhead,
+			DecisionDuration:         &s.decisionDuration,
+			KVEstimatorDuration:      &s.kvEstimatorDuration,
+			KVShadowDecisionDuration: &s.kvShadowDecisionDuration,
+			ProxyTTFB:                &s.proxyTTFB,
+			RequestSemanticTTFT:      &s.requestSemanticTTFT,
+			ProxyTotal:               &s.proxyTotal,
+			InternalOverhead:         &s.internalOverhead,
 		},
 	}
 }
 
+func (s *proxyServer) kvShadowMetricsInput() metrics.KVShadowInput {
+	input := metrics.KVShadowInput{
+		Mode:      s.cfg.KVAdmissionMode,
+		Policy:    s.cfg.KVAdmissionPolicy,
+		Estimator: s.cfg.KVAdmissionEstimator,
+		Now:       time.Now(),
+	}
+	if s.kvShadow != nil {
+		input.Snapshot = s.kvShadow.Snapshot()
+	}
+	return input
+}
+
 func (s *proxyServer) backendMetricsInput() []metrics.BackendSnapshot {
 	backends := make([]metrics.BackendSnapshot, 0, len(s.backends))
-	for _, backend := range s.backends {
+	for index, backend := range s.backends {
 		stats := backend.Stats()
 		backends = append(backends, metrics.BackendSnapshot{
 			Name:     backend.Name(),
@@ -167,7 +183,7 @@ func (s *proxyServer) backendMetricsInput() []metrics.BackendSnapshot {
 				ProxyErrs: stats.ProxyErrs,
 				CopyErrs:  stats.CopyErrs,
 			},
-			Status: backend.Status(),
+			Status: s.backendRuntimeStatus(index, backend),
 		})
 	}
 	return backends

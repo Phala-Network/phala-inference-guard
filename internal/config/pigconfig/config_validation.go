@@ -64,7 +64,10 @@ func Validate(cfg Config) error {
 	if err := validateRuntimeConfig(cfg); err != nil {
 		return err
 	}
-	return validateDynamicConfig(cfg)
+	if err := validateDynamicConfig(cfg); err != nil {
+		return err
+	}
+	return validateKVAdmissionConfig(cfg)
 }
 
 func validateCoreConfig(cfg Config) error {

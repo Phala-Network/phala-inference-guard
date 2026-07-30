@@ -49,7 +49,13 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	decisionStart := time.Now()
+	estimatorStart := time.Now()
 	classification := s.classifyRequest(r)
+	if s.kvShadow != nil {
+		s.kvEstimatorDuration.Observe(time.Since(estimatorStart))
+	}
+	releaseKVShadow := s.shadowKVRequest(classification.KVCost)
+	defer releaseKVShadow()
 	ln := classification.Lane
 	outputTokens := classification.OutputTokens
 	hasOutputTokens := classification.HasOutputTokens

@@ -3,6 +3,7 @@ package request
 import (
 	"net/http"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/lane"
 	requestclass "github.com/Phala-Network/phala-inference-guard/internal/domain/request"
 )
@@ -27,6 +28,7 @@ type Classification struct {
 	OutputTokens    int
 	HasOutputTokens bool
 	Streaming       bool
+	KVCost          kvadmission.Cost
 }
 
 func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
@@ -34,7 +36,8 @@ func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
 		Lane:      c.classify(r),
 		Streaming: c.WantsStreamingResponse(r),
 	}
-	fields, ok := c.classifyJSONFields(r)
+	fields, kvCost, ok := c.classifyJSONFields(r)
+	result.KVCost = kvCost
 	if !ok {
 		return result
 	}

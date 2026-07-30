@@ -11,6 +11,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
+	"github.com/Phala-Network/phala-inference-guard/internal/runtime/kvshadow"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
 
@@ -34,28 +35,33 @@ func newProxyServer(cfg config) (*proxyServer, error) {
 		return nil, err
 	}
 	srv := &proxyServer{
-		cfg:                 cfg,
-		target:              target,
-		proxy:               proxy,
-		backends:            backends,
-		globalLn:            newLane("global", cfg.GlobalLimit),
-		defaultLn:           newLane("default", 0),
-		mediumLn:            newLane("medium_body", 0),
-		longLn:              newLane("long_body", 0),
-		veryLongLn:          newLane("very_long_body", 0),
-		mediumOutputLn:      newLane("medium_output", 0),
-		longOutputLn:        newLane("long_output", 0),
-		veryLongOutputLn:    newLane("very_long_output", 0),
-		unknownLn:           newLane("unknown_body", 0),
-		attestation:         attestationService,
-		priorityInjector:    request.NewPriorityInjector(priorityInjectorConfig(cfg)),
-		started:             time.Now(),
-		activeRequests:      prefill.New(),
-		decisionDuration:    newDurationHistogram(),
-		proxyTTFB:           newDurationHistogram(),
-		requestSemanticTTFT: newDurationHistogram(),
-		proxyTotal:          newDurationHistogram(),
-		internalOverhead:    newDurationHistogram(),
+		cfg:                      cfg,
+		target:                   target,
+		proxy:                    proxy,
+		backends:                 backends,
+		globalLn:                 newLane("global", cfg.GlobalLimit),
+		defaultLn:                newLane("default", 0),
+		mediumLn:                 newLane("medium_body", 0),
+		longLn:                   newLane("long_body", 0),
+		veryLongLn:               newLane("very_long_body", 0),
+		mediumOutputLn:           newLane("medium_output", 0),
+		longOutputLn:             newLane("long_output", 0),
+		veryLongOutputLn:         newLane("very_long_output", 0),
+		unknownLn:                newLane("unknown_body", 0),
+		attestation:              attestationService,
+		priorityInjector:         request.NewPriorityInjector(priorityInjectorConfig(cfg)),
+		started:                  time.Now(),
+		activeRequests:           prefill.New(),
+		decisionDuration:         newDurationHistogram(),
+		kvEstimatorDuration:      newDurationHistogram(),
+		kvShadowDecisionDuration: newDurationHistogram(),
+		proxyTTFB:                newDurationHistogram(),
+		requestSemanticTTFT:      newDurationHistogram(),
+		proxyTotal:               newDurationHistogram(),
+		internalOverhead:         newDurationHistogram(),
+	}
+	if cfg.KVAdmissionMode == "shadow" {
+		srv.kvShadow = kvshadow.New(cfg.KVAdmissionPolicy)
 	}
 	srv.qosGate = gate.New(gate.Config{
 		QueueWait: cfg.QoSQueueWait,

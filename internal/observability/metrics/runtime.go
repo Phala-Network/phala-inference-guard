@@ -57,11 +57,13 @@ type DynamicCounterSnapshot struct {
 }
 
 type RuntimeHistograms struct {
-	DecisionDuration    *histogram.DurationHistogram
-	ProxyTTFB           *histogram.DurationHistogram
-	RequestSemanticTTFT *histogram.DurationHistogram
-	ProxyTotal          *histogram.DurationHistogram
-	InternalOverhead    *histogram.DurationHistogram
+	DecisionDuration         *histogram.DurationHistogram
+	KVEstimatorDuration      *histogram.DurationHistogram
+	KVShadowDecisionDuration *histogram.DurationHistogram
+	ProxyTTFB                *histogram.DurationHistogram
+	RequestSemanticTTFT      *histogram.DurationHistogram
+	ProxyTotal               *histogram.DurationHistogram
+	InternalOverhead         *histogram.DurationHistogram
 }
 
 type RuntimeInput struct {
@@ -142,6 +144,12 @@ func writeDynamicCounterMetrics(w io.Writer, cfg RuntimeConfig, counters Dynamic
 
 func writeRuntimeHistograms(w io.Writer, histograms RuntimeHistograms) {
 	histogram.WriteDurationHistogram(w, "pig_decision_duration_seconds", histograms.DecisionDuration)
+	if histograms.KVEstimatorDuration != nil {
+		histogram.WriteDurationHistogram(w, "pig_kv_estimator_duration_seconds", histograms.KVEstimatorDuration)
+	}
+	if histograms.KVShadowDecisionDuration != nil {
+		histogram.WriteDurationHistogram(w, "pig_kv_shadow_decision_duration_seconds", histograms.KVShadowDecisionDuration)
+	}
 	histogram.WriteDurationHistogram(w, "pig_proxy_time_to_first_byte_seconds", histograms.ProxyTTFB)
 	histogram.WriteDurationHistogram(w, "pig_request_semantic_ttft_seconds", histograms.RequestSemanticTTFT)
 	histogram.WriteDurationHistogram(w, "pig_proxy_total_duration_seconds", histograms.ProxyTotal)

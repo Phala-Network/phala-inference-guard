@@ -3,6 +3,7 @@ package request
 import (
 	"sync/atomic"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/lane"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/token"
 )
@@ -31,6 +32,8 @@ type Config struct {
 	AdaptiveOutputRed     float64
 	DynamicEnabled        bool
 	DynamicFailsafeState  string
+	KVAdmissionMode       string
+	KVAdmissionEstimator  kvadmission.EstimatorConfig
 }
 
 type Lanes struct {

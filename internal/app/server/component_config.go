@@ -43,6 +43,8 @@ func requestClassifierConfig(cfg config) request.Config {
 		AdaptiveOutputRed:     cfg.AdaptiveOutputRed,
 		DynamicEnabled:        cfg.DynamicEnabled,
 		DynamicFailsafeState:  cfg.DynamicFailsafeState,
+		KVAdmissionMode:       cfg.KVAdmissionMode,
+		KVAdmissionEstimator:  cfg.KVAdmissionEstimator,
 	}
 }
 

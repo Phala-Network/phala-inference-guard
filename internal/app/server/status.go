@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"log"
 	"time"
 
@@ -16,7 +17,7 @@ func (s *proxyServer) statusLogLine() string {
 		snapshot = s.dynamicController.Snapshot()
 	}
 	tierSnapshot := s.qosGate.TierSnapshot(snapshot.GlobalLimit)
-	return statusview.Format(statusview.Input{
+	line := statusview.Format(statusview.Input{
 		Version:            version,
 		Snapshot:           snapshot,
 		QueueCurrent:       s.qosGate.QueueCurrent(),
@@ -32,12 +33,18 @@ func (s *proxyServer) statusLogLine() string {
 		},
 		Backends: s.statusBackendSnapshots(),
 	})
+	if s.kvShadow != nil {
+		shadow := s.kvShadow.Snapshot()
+		last := shadow.LastDecision
+		line += fmt.Sprintf(" kv_shadow={last=%s backend=%s projected=%d/%d ratio=%.3f reservations=%d tokens=%d}", last.Reason, last.Backend, last.ProjectedHighTokens, last.HardBudgetTokens, last.ProjectedRatio, shadow.Reservations, shadow.UnabsorbedTokens)
+	}
+	return line
 }
 
 func (s *proxyServer) statusBackendSnapshots() []statusview.BackendSnapshot {
 	backends := make([]statusview.BackendSnapshot, 0, len(s.backends))
-	for _, backend := range s.backends {
-		backendStatus := backend.Status()
+	for index, backend := range s.backends {
+		backendStatus := s.backendRuntimeStatus(index, backend)
 		backends = append(backends, statusview.BackendSnapshot{
 			Name:      backend.Name(),
 			Running:   backendStatus.Running,

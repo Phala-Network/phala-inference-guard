@@ -3,8 +3,11 @@ package request
 import (
 	"bytes"
 	"io"
+	"mime"
 	"net/http"
+	"strings"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	tokenclassifier "github.com/Phala-Network/phala-inference-guard/internal/domain/request"
 )
 
@@ -13,15 +16,22 @@ type readCloser struct {
 	io.Closer
 }
 
-func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFields, bool) {
+func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFields, kvadmission.Cost, bool) {
+	unsupported := kvadmission.Cost{UnsupportedReason: "body_not_scannable"}
 	if c.cfg.JSONClassifyBodyBytes <= 0 {
-		return tokenclassifier.JSONFields{}, false
+		return tokenclassifier.JSONFields{}, unsupported, false
 	}
 	if r.Body == nil || r.ContentLength < 0 || r.ContentLength > c.cfg.JSONClassifyBodyBytes {
-		return tokenclassifier.JSONFields{}, false
+		if r.ContentLength < 0 {
+			unsupported.UnsupportedReason = "unknown_body_length"
+		} else if r.ContentLength > c.cfg.JSONClassifyBodyBytes {
+			unsupported.UnsupportedReason = "body_too_large"
+		}
+		return tokenclassifier.JSONFields{}, unsupported, false
 	}
 	if !c.acquire() {
-		return tokenclassifier.JSONFields{}, false
+		unsupported.UnsupportedReason = "classifier_saturated"
+		return tokenclassifier.JSONFields{}, unsupported, false
 	}
 	defer c.release()
 	originalBody := r.Body
@@ -30,18 +40,42 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFi
 	if err != nil {
 		r.Body = readCloser{Reader: io.MultiReader(bytes.NewReader(body), originalBody), Closer: originalBody}
 		r.ContentLength = originalContentLength
-		return tokenclassifier.JSONFields{}, false
+		unsupported.UnsupportedReason = "body_read_failed"
+		return tokenclassifier.JSONFields{}, unsupported, false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 	r.ContentLength = int64(len(body))
 	if int64(len(body)) > c.cfg.JSONClassifyBodyBytes {
-		return tokenclassifier.JSONFields{}, false
+		unsupported.UnsupportedReason = "body_too_large"
+		return tokenclassifier.JSONFields{}, unsupported, false
 	}
 	fields := c.cfg.OutputTokenFields
-	if !c.cfg.ClassifyOutputTokens {
+	if !c.cfg.ClassifyOutputTokens && c.cfg.KVAdmissionMode != "shadow" {
 		fields = nil
 	}
-	return tokenclassifier.ParseJSONFields(body, fields)
+	parsed, ok := tokenclassifier.ParseJSONFields(body, fields)
+	cost := unsupported
+	if c.cfg.KVAdmissionMode == "shadow" {
+		if !ok {
+			cost.UnsupportedReason = "invalid_json"
+		} else if requestContentTypeJSON(r.Header.Get("Content-Type")) {
+			cost = kvadmission.EstimateJSON(body, parsed.OutputTokens, parsed.HasOutputTokens, c.cfg.KVAdmissionEstimator)
+		} else {
+			cost.UnsupportedReason = "unsupported_content_type"
+		}
+	}
+	return parsed, cost, ok
+}
+
+func requestContentTypeJSON(value string) bool {
+	if strings.TrimSpace(value) == "" {
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return false
+	}
+	return mediaType == "application/json" || strings.HasSuffix(mediaType, "+json")
 }
 
 func (c *Classifier) acquire() bool {

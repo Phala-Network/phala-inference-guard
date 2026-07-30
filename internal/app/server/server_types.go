@@ -14,10 +14,11 @@ import (
 	infrabackend "github.com/Phala-Network/phala-inference-guard/internal/infra/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/observability/histogram"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
+	"github.com/Phala-Network/phala-inference-guard/internal/runtime/kvshadow"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
 
-const version = "PIG-v0.8.12"
+const version = "PIG-v0.9.0"
 
 const maxQoSQueueWait = 500 * time.Millisecond
 
@@ -81,13 +82,17 @@ type proxyServer struct {
 	priorityInjector         *request.PriorityInjector
 	attestation              *attestation.Service
 	dynamicController        *dynamic.Controller
+	kvShadow                 *kvshadow.Manager
 	started                  time.Time
 	total429                 atomic.Uint64
 	backendUnavailable       atomic.Uint64
 	qosGate                  *gate.Gate
 	activeRequests           *prefill.Tracker
 	nextActiveID             atomic.Uint64
+	nextKVShadowID           atomic.Uint64
 	decisionDuration         durationHistogram
+	kvEstimatorDuration      durationHistogram
+	kvShadowDecisionDuration durationHistogram
 	proxyTTFB                durationHistogram
 	requestSemanticTTFT      durationHistogram
 	proxyTotal               durationHistogram
