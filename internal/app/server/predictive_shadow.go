@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
@@ -27,6 +28,10 @@ type predictiveAdmissionShadow interface {
 	Close() error
 }
 
+type predictiveSemanticTTFTObserver interface {
+	ObserveSemanticTTFT(time.Duration) bool
+}
+
 type serverDependencies struct {
 	NewPredictiveShadow func(config) (predictiveAdmissionShadow, error)
 }
@@ -35,9 +40,15 @@ type guardedPredictiveReservation struct {
 	mu                    sync.Mutex
 	reservation           predictiveShadowReservation
 	prefillComplete       bool
+	semanticTTFTObserved  bool
 	terminated            bool
 	onSemanticCallFailure func()
 	onTerminalCallFailure func()
+}
+
+func observePredictiveSemanticTTFT(reservation predictiveShadowReservation, ttft time.Duration) bool {
+	observer, ok := reservation.(predictiveSemanticTTFTObserver)
+	return ok && observer.ObserveSemanticTTFT(ttft)
 }
 
 func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predictiveShadowInput) (result predictiveShadowReservation) {
@@ -78,6 +89,25 @@ func (r *guardedPredictiveReservation) MarkPrefillComplete() bool {
 	}
 	r.prefillComplete = true
 	return callPredictiveShadow(r.onSemanticCallFailure, r.reservation.MarkPrefillComplete)
+}
+
+func (r *guardedPredictiveReservation) ObserveSemanticTTFT(ttft time.Duration) bool {
+	if r == nil || r.reservation == nil || ttft <= 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.semanticTTFTObserved || r.terminated {
+		return false
+	}
+	observer, ok := r.reservation.(predictiveSemanticTTFTObserver)
+	if !ok {
+		return false
+	}
+	r.semanticTTFTObserved = true
+	return callPredictiveShadow(r.onSemanticCallFailure, func() bool {
+		return observer.ObserveSemanticTTFT(ttft)
+	})
 }
 
 func (r *guardedPredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {

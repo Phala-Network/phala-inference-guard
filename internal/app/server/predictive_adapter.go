@@ -64,8 +64,11 @@ type realPredictiveShadow struct {
 }
 
 type realPredictiveReservation struct {
-	owner     *realPredictiveShadow
-	requestID string
+	owner             *realPredictiveShadow
+	requestID         string
+	identity          runtimepredictive.ModelIdentity
+	semanticTTFT      time.Duration
+	semanticTTFTValid bool
 }
 
 func newRealPredictiveShadow(config realPredictiveShadowConfig) (*realPredictiveShadow, error) {
@@ -155,7 +158,11 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		return nil
 	}
 	s.reservations[requestID] = struct{}{}
-	return &realPredictiveReservation{owner: s, requestID: requestID}
+	return &realPredictiveReservation{
+		owner:     s,
+		requestID: requestID,
+		identity:  result.Prediction.Identity,
+	}
 }
 
 func (s *realPredictiveShadow) ObserveOutcome(requestID string, outcome runtimepredictive.SchedulerOutcome) bool {
@@ -223,6 +230,23 @@ func (r *realPredictiveReservation) MarkPrefillComplete() bool {
 	return r.owner.coordinator.MarkPrefillComplete(r.requestID)
 }
 
+func (r *realPredictiveReservation) ObserveSemanticTTFT(ttft time.Duration) bool {
+	if r == nil || r.owner == nil || ttft <= 0 {
+		return false
+	}
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	if r.owner.closed || r.semanticTTFTValid {
+		return false
+	}
+	if _, exists := r.owner.reservations[r.requestID]; !exists {
+		return false
+	}
+	r.semanticTTFT = ttft
+	r.semanticTTFTValid = true
+	return true
+}
+
 func (r *realPredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {
 	if r == nil || r.owner == nil {
 		return false
@@ -234,6 +258,15 @@ func (r *realPredictiveReservation) Terminate(cause runtimepredictive.TerminalCa
 	}
 	if !r.owner.coordinator.Terminate(r.requestID, cause) {
 		return false
+	}
+	if cause == runtimepredictive.TerminalCompleted && r.semanticTTFTValid {
+		r.owner.coordinator.ObserveOutcome(r.requestID, runtimepredictive.SchedulerOutcome{
+			Identity:   r.identity,
+			ObservedAt: r.owner.now(),
+			Attributed: true,
+			TTFT:       r.semanticTTFT,
+			TTFTValid:  true,
+		})
 	}
 	delete(r.owner.reservations, r.requestID)
 	return true

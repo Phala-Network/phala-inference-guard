@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
@@ -22,9 +23,10 @@ type recordingPredictiveShadow struct {
 }
 
 type recordingPredictiveReservation struct {
-	mu       sync.Mutex
-	semantic int
-	causes   []runtimepredictive.TerminalCause
+	mu           sync.Mutex
+	semantic     int
+	semanticTTFT []time.Duration
+	causes       []runtimepredictive.TerminalCause
 }
 
 func (s *recordingPredictiveShadow) DecideAndReserve(_ context.Context, _ string, input predictiveShadowInput) predictiveShadowReservation {
@@ -62,6 +64,13 @@ func (r *recordingPredictiveReservation) MarkPrefillComplete() bool {
 	return r.semantic == 1
 }
 
+func (r *recordingPredictiveReservation) ObserveSemanticTTFT(ttft time.Duration) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.semanticTTFT = append(r.semanticTTFT, ttft)
+	return len(r.semanticTTFT) == 1
+}
+
 func (r *recordingPredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -80,6 +89,19 @@ func (s *recordingPredictiveShadow) snapshot(t *testing.T) (predictiveShadowInpu
 	request.mu.Lock()
 	defer request.mu.Unlock()
 	return s.inputs[0], request.semantic, append([]runtimepredictive.TerminalCause(nil), request.causes...)
+}
+
+func (s *recordingPredictiveShadow) semanticTTFTSnapshot(t *testing.T) []time.Duration {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) != 1 {
+		t.Fatalf("predictive requests = %d, want 1", len(s.requests))
+	}
+	request := s.requests[0]
+	request.mu.Lock()
+	defer request.mu.Unlock()
+	return append([]time.Duration(nil), request.semanticTTFT...)
 }
 
 func TestPredictiveAdmissionOffConstructsAndRunsNoShadow(t *testing.T) {
@@ -238,6 +260,10 @@ func TestPredictiveShadowMarksSemanticStreamingOutput(t *testing.T) {
 	_, semantic, causes := shadow.snapshot(t)
 	if semantic != 1 || len(causes) != 1 || causes[0] != runtimepredictive.TerminalCompleted {
 		t.Fatalf("stream lifecycle semantic/causes = %d/%v", semantic, causes)
+	}
+	ttft := shadow.semanticTTFTSnapshot(t)
+	if len(ttft) != 1 || ttft[0] <= 0 {
+		t.Fatalf("stream attributed semantic TTFT = %v, want one positive observation", ttft)
 	}
 }
 

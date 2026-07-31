@@ -124,6 +124,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		markSemanticOutput = func() {
 			markDecode()
 			predictiveReservation.MarkPrefillComplete()
+			observePredictiveSemanticTTFT(predictiveReservation, time.Since(requestStart))
 		}
 	}
 	r.Header.Set("X-PIG-Lane", ln.Name())
