@@ -34,7 +34,7 @@ func TestPredictiveProfilePinsObserverTiming(t *testing.T) {
 }
 
 func TestPredictiveProfileRejectsHashStructureAssetAndModelMismatch(t *testing.T) {
-	for name, mutate, want := range map[string]struct {
+	for name, test := range map[string]struct {
 		mutate func(*config, map[string]any)
 		want   string
 	}{
@@ -81,13 +81,13 @@ func TestPredictiveProfileRejectsHashStructureAssetAndModelMismatch(t *testing.T
 			cfg := config{}
 			writePredictiveFactoryTestProfile(t, &cfg)
 			profile := readPredictiveFactoryTestProfile(t, cfg.PredictiveAdmissionProfilePath)
-			mutate(&cfg, profile)
+			test.mutate(&cfg, profile)
 			if name != "profile-sha" {
 				rewritePredictiveFactoryTestProfile(t, &cfg, profile)
 			}
 			_, err := loadPredictiveProfile(cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256)
-			if err == nil || !strings.Contains(err.Error(), want) {
-				t.Fatalf("load error = %v, want substring %q", err, want)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("load error = %v, want substring %q", err, test.want)
 			}
 		})
 	}
