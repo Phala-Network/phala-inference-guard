@@ -155,7 +155,7 @@ func TestCacheMirrorResetClearsIdentityAndResidencyEvidence(t *testing.T) {
 		t.Fatal("prefill completion was not applied")
 	}
 	if err := mirror.Reset(CacheMirrorEpoch{
-		ManifestID:  "new-profile",
+		ManifestID:   "new-profile",
 		BackendEpoch: "backend-2",
 		BlockSize:    4,
 	}); err != nil {
