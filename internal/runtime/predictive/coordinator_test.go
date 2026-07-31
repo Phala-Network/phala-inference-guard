@@ -264,6 +264,126 @@ func TestCoordinatorSampleAndCompletionDoNotDoubleCountPhaseState(t *testing.T) 
 	}
 }
 
+func TestCoordinatorTypedTerminalCausesReleaseExactlyOnce(t *testing.T) {
+	causes := []TerminalCause{
+		TerminalLocalQoSReject,
+		TerminalClientCancelled,
+		TerminalClientDisconnected,
+		TerminalUpstreamFailure,
+		TerminalTimeout,
+		TerminalExpired,
+	}
+	for index, cause := range causes {
+		t.Run(string(cause), func(t *testing.T) {
+			coordinator := mustCoordinator(t, 120, domain.VirtualState{})
+			requestID := string(rune('u' + index))
+			result := coordinator.DecideAndReserve(time.Unix(15_000+int64(index), 0), coordinatorProposal(requestID, byte(50+index), byte(70+index)))
+			if result.Decision.Reason != domain.ReasonFit || !result.Reserved {
+				t.Fatalf("admission = %+v, want committed fit", result)
+			}
+			if !coordinator.Terminate(requestID, cause) {
+				t.Fatalf("first %s terminal event did not release", cause)
+			}
+			if coordinator.Terminate(requestID, cause) {
+				t.Fatalf("duplicate %s terminal event released twice", cause)
+			}
+			if after := coordinator.Snapshot(); after.Manager.Reservations != 0 || after.Manager.Virtual != (domain.VirtualStateInterval{}) || after.Cache.Requests != 0 {
+				t.Fatalf("terminal cause %s leaked state: %+v", cause, after)
+			}
+		})
+	}
+}
+
+func TestCoordinatorLocalQoSRejectCannotBecomeLearningOutcome(t *testing.T) {
+	now := time.Unix(16_000, 0)
+	identity := coordinatorModelIdentity()
+	scheduler := mustCoordinatorScheduler(t, identity, 120)
+	coordinator, err := NewCoordinator(coordinatorConfig(identity, scheduler, domain.VirtualState{}))
+	if err != nil {
+		t.Fatalf("new coordinator: %v", err)
+	}
+	result := coordinator.DecideAndReserve(now, coordinatorProposal("local-reject", 80, 81))
+	if result.Decision.Reason != domain.ReasonFit || !result.Reserved {
+		t.Fatalf("admission = %+v, want committed fit", result)
+	}
+	if !coordinator.Terminate("local-reject", TerminalLocalQoSReject) {
+		t.Fatal("local QoS reject did not release reservation")
+	}
+	outcome := SchedulerOutcome{
+		Identity:             identity,
+		ObservedAt:           now.Add(time.Second),
+		Attributed:           true,
+		ExistingUserTPS:      100,
+		ExistingUserTPSValid: true,
+		AllUserTPS:           100,
+		AllUserTPSValid:      true,
+		TTFT:                 time.Millisecond,
+		TTFTValid:            true,
+		TPOT:                 time.Millisecond,
+		TPOTValid:            true,
+	}
+	if coordinator.ObserveOutcome("local-reject", outcome) {
+		t.Fatal("local QoS reject was mislabeled as an upstream learning outcome")
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 0 || snapshot.Cells != 0 {
+		t.Fatalf("local reject changed learned state: %+v", snapshot)
+	}
+}
+
+func TestCoordinatorInvalidTerminalCauseDoesNotRelease(t *testing.T) {
+	coordinator := mustCoordinator(t, 120, domain.VirtualState{})
+	result := coordinator.DecideAndReserve(time.Unix(17_000, 0), coordinatorProposal("invalid-terminal", 82, 83))
+	if result.Decision.Reason != domain.ReasonFit || !result.Reserved {
+		t.Fatalf("admission = %+v, want committed fit", result)
+	}
+	if coordinator.Terminate("invalid-terminal", TerminalCause("unbounded-error-text")) {
+		t.Fatal("invalid terminal cause released reservation")
+	}
+	if snapshot := coordinator.Snapshot(); snapshot.Manager.Reservations != 1 || snapshot.Cache.Requests != 1 {
+		t.Fatalf("invalid cause mutated reservation: %+v", snapshot)
+	}
+	if !coordinator.Complete("invalid-terminal") {
+		t.Fatal("cleanup completion failed")
+	}
+}
+
+func TestCoordinatorConcurrentTerminalEventsReleaseOnlyOnce(t *testing.T) {
+	coordinator := mustCoordinator(t, 120, domain.VirtualState{})
+	result := coordinator.DecideAndReserve(time.Unix(18_000, 0), coordinatorProposal("terminal-race", 84, 85))
+	if result.Decision.Reason != domain.ReasonFit || !result.Reserved {
+		t.Fatalf("admission = %+v, want committed fit", result)
+	}
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	var group sync.WaitGroup
+	group.Add(2)
+	go func() {
+		defer group.Done()
+		<-start
+		results <- coordinator.Complete("terminal-race")
+	}()
+	go func() {
+		defer group.Done()
+		<-start
+		results <- coordinator.Terminate("terminal-race", TerminalClientCancelled)
+	}()
+	close(start)
+	group.Wait()
+	close(results)
+	succeeded := 0
+	for released := range results {
+		if released {
+			succeeded++
+		}
+	}
+	if succeeded != 1 {
+		t.Fatalf("successful terminal events = %d, want 1", succeeded)
+	}
+	if after := coordinator.Snapshot(); after.Manager.Reservations != 0 || after.Manager.Virtual != (domain.VirtualStateInterval{}) || after.Cache.Requests != 0 {
+		t.Fatalf("terminal race leaked state: %+v", after)
+	}
+}
+
 func mustCoordinator(t *testing.T, baseCompletionTPS float64, initial domain.VirtualState) *Coordinator {
 	t.Helper()
 	identity := coordinatorModelIdentity()
