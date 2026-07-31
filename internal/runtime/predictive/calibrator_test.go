@@ -88,6 +88,45 @@ func TestLearnedSchedulerRejectsWrongEpochInvalidAndUnattributedOutcomes(t *test
 	}
 }
 
+func TestLearnedSchedulerCalibratesAvailableTargetsIndependently(t *testing.T) {
+	now := time.Unix(2_500, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	state := domain.VirtualState{}
+	cost := learnedTestCost()
+	cost.CachedPrefillExpected = 0
+	cost.DecodeSequencesUpper = 1
+
+	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
+		predictedAt := now.Add(time.Duration(index) * time.Second)
+		prediction := scheduler.Predict(predictedAt, state, cost)
+		outcome := SchedulerOutcome{
+			Identity:        prediction.Identity,
+			ObservedAt:      predictedAt.Add(500 * time.Millisecond),
+			Attributed:      true,
+			AllUserTPS:      prediction.Prior.AllUserTPSLower * 1.20,
+			AllUserTPSValid: true,
+			TTFT:            prediction.Prior.TTFTUpper * 8 / 10,
+			TTFTValid:       true,
+			TPOT:            prediction.Prior.TPOTUpper * 8 / 10,
+			TPOTValid:       true,
+		}
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe partial target set %d: %v", index, err)
+		}
+	}
+
+	calibrated := scheduler.Predict(now.Add(5*time.Second), state, cost)
+	if calibrated.Source != PredictionSourceCalibrated || calibrated.Samples != testResidualConfig().MinimumSamples {
+		t.Fatalf("partial calibrated source/samples = %s/%d", calibrated.Source, calibrated.Samples)
+	}
+	if calibrated.Estimate.ExistingUserTPSLower != calibrated.Prior.ExistingUserTPSLower {
+		t.Fatalf("unobserved existing-user TPS changed: prior=%f estimate=%f", calibrated.Prior.ExistingUserTPSLower, calibrated.Estimate.ExistingUserTPSLower)
+	}
+	if calibrated.Estimate.AllUserTPSLower <= calibrated.Prior.AllUserTPSLower || calibrated.Estimate.TTFTUpper >= calibrated.Prior.TTFTUpper || calibrated.Estimate.TPOTUpper >= calibrated.Prior.TPOTUpper {
+		t.Fatalf("available targets were not independently calibrated: %+v", calibrated)
+	}
+}
+
 func testPredictorIdentity() ModelIdentity {
 	return ModelIdentity{
 		ProfileID:        "gemma-vllm-test",
