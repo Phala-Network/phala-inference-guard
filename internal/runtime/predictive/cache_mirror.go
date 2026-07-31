@@ -42,7 +42,60 @@ type CacheMirrorSnapshot struct {
 	BackendEpoch   string
 }
 
-type cacheBlockKey [sha256.Size]byte
+type CacheBlockDigest [sha256.Size]byte
+
+type cacheBlockKey = CacheBlockDigest
+
+type TokenBlockAnalysis struct {
+	ManifestID         string
+	BackendEpoch       string
+	BlockSize          int
+	ExactInputTokens   int64
+	FullBlockDigests   []CacheBlockDigest
+	PartialBlockTokens int64
+	PartialBlockDigest CacheBlockDigest
+}
+
+func (a TokenBlockAnalysis) Clone() TokenBlockAnalysis {
+	a.FullBlockDigests = append([]CacheBlockDigest(nil), a.FullBlockDigests...)
+	return a
+}
+
+func (a TokenBlockAnalysis) Validate(epoch CacheMirrorEpoch) error {
+	if a.ManifestID == "" || a.ManifestID != epoch.ManifestID {
+		return fmt.Errorf("token block analysis manifest does not match cache mirror epoch")
+	}
+	if a.BackendEpoch == "" || a.BackendEpoch != epoch.BackendEpoch {
+		return fmt.Errorf("token block analysis backend epoch does not match cache mirror epoch")
+	}
+	if a.BlockSize <= 0 || a.BlockSize != epoch.BlockSize {
+		return fmt.Errorf("token block analysis block size does not match cache mirror epoch")
+	}
+	if a.ExactInputTokens < 0 {
+		return fmt.Errorf("token block analysis input tokens must be non-negative")
+	}
+	fullBlocks := a.ExactInputTokens / int64(a.BlockSize)
+	if fullBlocks != int64(len(a.FullBlockDigests)) {
+		return fmt.Errorf("token block analysis full-block count does not match input tokens")
+	}
+	wantPartial := a.ExactInputTokens % int64(a.BlockSize)
+	if a.PartialBlockTokens != wantPartial {
+		return fmt.Errorf("token block analysis partial-block count does not match input tokens")
+	}
+	for index, digest := range a.FullBlockDigests {
+		if digest == (CacheBlockDigest{}) {
+			return fmt.Errorf("token block analysis full-block digest %d is empty", index)
+		}
+	}
+	if a.PartialBlockTokens == 0 {
+		if a.PartialBlockDigest != (CacheBlockDigest{}) {
+			return fmt.Errorf("token block analysis has a digest for an empty partial block")
+		}
+	} else if a.PartialBlockDigest == (CacheBlockDigest{}) {
+		return fmt.Errorf("token block analysis partial-block digest is empty")
+	}
+	return nil
+}
 
 type cacheBlockEntry struct {
 	PendingReferences int
@@ -115,6 +168,19 @@ func (m *CacheMirror) Estimate(tokenIDs []int64) (domain.CacheHitInterval, error
 	return m.estimateLocked(keys), nil
 }
 
+func (m *CacheMirror) EstimateAnalysis(analysis TokenBlockAnalysis) (domain.CacheHitInterval, error) {
+	if m == nil {
+		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror is nil")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	keys, err := m.analysisKeysLocked(analysis)
+	if err != nil {
+		return domain.CacheHitInterval{}, err
+	}
+	return m.estimateLocked(keys), nil
+}
+
 func (m *CacheMirror) BeginRequest(requestID string, tokenIDs []int64) (domain.CacheHitInterval, error) {
 	if m == nil {
 		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror is nil")
@@ -131,6 +197,29 @@ func (m *CacheMirror) BeginRequest(requestID string, tokenIDs []int64) (domain.C
 	if err != nil {
 		return domain.CacheHitInterval{}, err
 	}
+	return m.beginRequestLocked(requestID, keys)
+}
+
+func (m *CacheMirror) BeginAnalyzedRequest(requestID string, analysis TokenBlockAnalysis) (domain.CacheHitInterval, error) {
+	if m == nil {
+		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror is nil")
+	}
+	if requestID == "" {
+		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror request id is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.requests[requestID]; exists {
+		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror request %q already exists", requestID)
+	}
+	keys, err := m.analysisKeysLocked(analysis)
+	if err != nil {
+		return domain.CacheHitInterval{}, err
+	}
+	return m.beginRequestLocked(requestID, keys)
+}
+
+func (m *CacheMirror) beginRequestLocked(requestID string, keys []cacheBlockKey) (domain.CacheHitInterval, error) {
 	hit := m.estimateLocked(keys)
 	if err := m.ensureCapacityLocked(keys); err != nil {
 		return domain.CacheHitInterval{}, err
@@ -284,6 +373,17 @@ func (m *CacheMirror) blockKeysLocked(tokenIDs []int64) ([]cacheBlockKey, error)
 		previous = key
 	}
 	return keys, nil
+}
+
+func (m *CacheMirror) analysisKeysLocked(analysis TokenBlockAnalysis) ([]cacheBlockKey, error) {
+	if err := analysis.Validate(CacheMirrorEpoch{
+		ManifestID:   m.manifestID,
+		BackendEpoch: m.backendEpoch,
+		BlockSize:    m.blockSize,
+	}); err != nil {
+		return nil, err
+	}
+	return append([]cacheBlockKey(nil), analysis.FullBlockDigests...), nil
 }
 
 func (m *CacheMirror) estimateLocked(keys []cacheBlockKey) domain.CacheHitInterval {
