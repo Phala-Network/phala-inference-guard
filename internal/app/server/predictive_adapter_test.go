@@ -210,15 +210,15 @@ func TestRealPredictiveShadowEligibleHistoryChangesPreForwardDecision(t *testing
 			t.Fatalf("training reservation %d was rejected", index)
 		}
 		outcome := runtimepredictive.SchedulerOutcome{
-			Identity:             identity,
-			ObservedAt:           trainedClock.Now().Add(time.Millisecond),
-			Attributed:           true,
-			AllUserTPS:           40,
-			AllUserTPSValid:      true,
-			TTFT:                 10 * time.Millisecond,
-			TTFTValid:            true,
-			TPOT:                 10 * time.Millisecond,
-			TPOTValid:            true,
+			Identity:        identity,
+			ObservedAt:      trainedClock.Now().Add(time.Millisecond),
+			Attributed:      true,
+			AllUserTPS:      40,
+			AllUserTPSValid: true,
+			TTFT:            10 * time.Millisecond,
+			TTFTValid:       true,
+			TPOT:            10 * time.Millisecond,
+			TPOTValid:       true,
 		}
 		if !trained.ObserveOutcome(requestID, outcome) {
 			t.Fatalf("training outcome %d was not learned", index)
