@@ -25,7 +25,6 @@ func TestNativeCounterReturnsOnlyExactTokenCountAndClosesIdempotently(t *testing
 		context.Background(),
 		runtimepredictive.RequestClassCompletion,
 		[]byte("hello world"),
-		runtimepredictive.RequestFeatures{},
 	)
 	if err != nil {
 		t.Fatalf("count: %v", err)
@@ -43,7 +42,7 @@ func TestNativeCounterReturnsOnlyExactTokenCountAndClosesIdempotently(t *testing
 	if err := counter.Close(); err != nil {
 		t.Fatalf("second close: %v", err)
 	}
-	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello"), runtimepredictive.RequestFeatures{}); !errors.Is(err, ErrUnavailable) {
+	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello")); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("count after close error = %v, want unavailable", err)
 	}
 }
@@ -81,17 +80,17 @@ func TestNativeCounterRejectsInvalidConfigAndInputBeforeReturningAnalysis(t *tes
 
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := counter.Count(cancelled, runtimepredictive.RequestClassCompletion, []byte("hello"), runtimepredictive.RequestFeatures{}); !errors.Is(err, context.Canceled) {
+	if _, err := counter.Count(cancelled, runtimepredictive.RequestClassCompletion, []byte("hello")); !errors.Is(err, context.Canceled) {
 		t.Fatalf("pre-cancelled count error = %v, want context canceled", err)
 	}
-	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClass("unsupported"), []byte("hello"), runtimepredictive.RequestFeatures{}); !errors.Is(err, runtimepredictive.ErrUnsupportedRequestClass) {
+	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClass("unsupported"), []byte("hello")); !errors.Is(err, runtimepredictive.ErrUnsupportedRequestClass) {
 		t.Fatalf("unsupported class error = %v", err)
 	}
-	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte{0xff}, runtimepredictive.RequestFeatures{}); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte{0xff}); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
 		t.Fatalf("invalid UTF-8 error = %v", err)
 	}
 	var nilCounter *Counter
-	if _, err := nilCounter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello"), runtimepredictive.RequestFeatures{}); !errors.Is(err, ErrUnavailable) {
+	if _, err := nilCounter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello")); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("nil counter error = %v, want unavailable", err)
 	}
 }
@@ -111,7 +110,7 @@ func TestNativeCounterCloseRacesDoNotLeakOrUseDestroyedHandle(t *testing.T) {
 			defer workers.Done()
 			<-start
 			for range 32 {
-				_, countErr := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello world"), runtimepredictive.RequestFeatures{})
+				_, countErr := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello world"))
 				if countErr != nil && !errors.Is(countErr, ErrUnavailable) {
 					errorsByWorker <- countErr
 					return
@@ -128,7 +127,7 @@ func TestNativeCounterCloseRacesDoNotLeakOrUseDestroyedHandle(t *testing.T) {
 	for err := range errorsByWorker {
 		t.Fatalf("concurrent count error = %v", err)
 	}
-	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello"), runtimepredictive.RequestFeatures{}); !errors.Is(err, ErrUnavailable) {
+	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello")); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("post-close count error = %v, want unavailable", err)
 	}
 }
@@ -149,7 +148,7 @@ func BenchmarkNativeCounterCountShort(b *testing.B) {
 	b.SetBytes(int64(len(rendered)))
 	b.ResetTimer()
 	for b.Loop() {
-		analysis, countErr := counter.Count(ctx, runtimepredictive.RequestClassCompletion, rendered, runtimepredictive.RequestFeatures{})
+		analysis, countErr := counter.Count(ctx, runtimepredictive.RequestClassCompletion, rendered)
 		if countErr != nil {
 			b.Fatalf("count: %v", countErr)
 		}

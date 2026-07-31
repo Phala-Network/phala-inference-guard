@@ -8,27 +8,6 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-type prefillSensitiveScheduler struct{}
-
-func (prefillSensitiveScheduler) Identity() runtimepredictive.ModelIdentity {
-	return simulationSchedulerIdentity("prefill-sensitive")
-}
-
-func (prefillSensitiveScheduler) Predict(now time.Time, _ domain.VirtualState, request domain.RequestCost) runtimepredictive.SchedulerPrediction {
-	tps := 30 - float64(request.UncachedPrefillUpper)/5_000
-	return runtimepredictive.SchedulerPrediction{
-		Identity:    simulationSchedulerIdentity("prefill-sensitive"),
-		PredictedAt: now,
-		Estimate: domain.SchedulerEstimate{
-			ExistingUserTPSLower: tps,
-			AllUserTPSLower:      tps,
-			TTFTUpper:            100 * time.Millisecond,
-			TPOTUpper:            25 * time.Millisecond,
-		},
-		Confidence: 0.99,
-	}
-}
-
 func simulationConstraints() domain.Constraints {
 	return domain.Constraints{
 		PhysicalKVHard:       100_000,
@@ -88,26 +67,6 @@ func TestScenarioCompletionReopensBeforeNextPoll(t *testing.T) {
 	}
 }
 
-func TestScenarioCertainCacheHitProtectsPrefillTPS(t *testing.T) {
-	cold := cacheAwareCost(t, 64_000, 0)
-	hot := cacheAwareCost(t, 64_000, 60_000)
-
-	coldManager := runtimepredictive.NewManager("test-profile", domain.VirtualState{}, simulationConstraints(), prefillSensitiveScheduler{})
-	coldDecision := coldManager.DecideAndReserve(time.Unix(0, 0), "cold", cold)
-	if coldDecision.Reason != domain.ReasonExistingTPSAtRisk {
-		t.Fatalf("cold reason = %s, want existing TPS risk", coldDecision.Reason)
-	}
-
-	hotManager := runtimepredictive.NewManager("test-profile", domain.VirtualState{}, simulationConstraints(), prefillSensitiveScheduler{})
-	hotDecision := hotManager.DecideAndReserve(time.Unix(0, 0), "hot", hot)
-	if hotDecision.Reason != domain.ReasonFit {
-		t.Fatalf("hot reason = %s, want fit", hotDecision.Reason)
-	}
-	if hot.UncachedPrefillUpper != 4_000 {
-		t.Fatalf("hot uncached prefill = %d, want 4000", hot.UncachedPrefillUpper)
-	}
-}
-
 type constantSafeScheduler struct{}
 
 func (constantSafeScheduler) Identity() runtimepredictive.ModelIdentity {
@@ -145,31 +104,6 @@ func fixedCost(tokens int64) domain.RequestCost {
 			ActiveKVUpper:   tokens,
 		},
 		UncachedPrefillUpper: tokens,
-		Confidence:           0.99,
-	}
-}
-
-func cacheAwareCost(t *testing.T, inputTokens, certainHits int64) domain.RequestCost {
-	t.Helper()
-	increment, err := domain.ProjectVLLM(domain.VLLMProjectionInput{
-		InputTokens: inputTokens,
-		CacheHits: domain.CacheHitInterval{
-			Certain:  certainHits,
-			Lower:    certainHits,
-			Expected: certainHits,
-			Upper:    certainHits,
-		},
-		DecodeHorizonUpper: 256,
-		BlockSize:          64,
-	})
-	if err != nil {
-		t.Fatalf("projection failed: %v", err)
-	}
-	return domain.RequestCost{
-		ManifestID:           "test-profile",
-		InputTokens:          inputTokens,
-		KV:                   increment,
-		UncachedPrefillUpper: inputTokens - certainHits,
 		Confidence:           0.99,
 	}
 }

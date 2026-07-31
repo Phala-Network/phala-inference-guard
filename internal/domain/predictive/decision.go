@@ -21,9 +21,9 @@ func Evaluate(input EvaluationInput) Decision {
 		decision.Reason = ReasonTTFTAtRisk
 	case cfg.TPOTSLO > 0 && input.Scheduler.TPOTUpper > cfg.TPOTSLO:
 		decision.Reason = ReasonTPOTAtRisk
-	case cfg.WorkspaceRiskBudget > 0 && input.Scheduler.WorkspaceRiskUpper > cfg.WorkspaceRiskBudget:
+	case input.Scheduler.WorkspaceRiskUpper > cfg.WorkspaceRiskBudget:
 		decision.Reason = ReasonWorkspaceAtRisk
-	case cfg.PreemptionRiskBudget > 0 && input.Scheduler.PreemptionRiskUpper > cfg.PreemptionRiskBudget:
+	case input.Scheduler.PreemptionRiskUpper > cfg.PreemptionRiskBudget:
 		decision.Reason = ReasonPreemptionAtRisk
 	case input.Confidence < cfg.MinimumConfidence:
 		decision.Reason = ReasonPredictorProfileUnknown

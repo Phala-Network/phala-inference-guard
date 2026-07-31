@@ -15,7 +15,7 @@ func OpenCounter(CounterConfig) (*Counter, error) {
 	return nil, fmt.Errorf("%w: count-only tokenizer is not linked", ErrUnavailable)
 }
 
-func (c *Counter) Count(context.Context, runtimepredictive.RequestClass, []byte, runtimepredictive.RequestFeatures) (runtimepredictive.TokenCountAnalysis, error) {
+func (c *Counter) Count(context.Context, runtimepredictive.RequestClass, []byte) (runtimepredictive.TokenCountAnalysis, error) {
 	return runtimepredictive.TokenCountAnalysis{}, fmt.Errorf("%w: count-only tokenizer is not linked", ErrUnavailable)
 }
 

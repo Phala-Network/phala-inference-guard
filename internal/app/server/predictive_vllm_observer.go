@@ -21,8 +21,14 @@ type predictiveVLLMObserverConfig struct {
 	MaximumAge         time.Duration
 	RequestTimeout     time.Duration
 	PreemptionCooldown time.Duration
-	Coordinator        *runtimepredictive.CountCoordinator
+	Coordinator        predictiveSampleCoordinator
 	Now                func() time.Time
+}
+
+type predictiveSampleCoordinator interface {
+	StartSampleWindow() (uint64, domainpredictive.VirtualState)
+	EventSequence() uint64
+	ReconcileSample(runtimepredictive.SampleWindow) error
 }
 
 type predictiveVLLMObserver struct {
@@ -32,7 +38,7 @@ type predictiveVLLMObserver struct {
 	pollInterval       time.Duration
 	maximumAge         time.Duration
 	preemptionCooldown time.Duration
-	coordinator        *runtimepredictive.CountCoordinator
+	coordinator        predictiveSampleCoordinator
 	now                func() time.Time
 	client             *http.Client
 	cancel             context.CancelFunc
@@ -144,6 +150,10 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	preempted := o.hasPreemptions && sample.Preemptions > o.preemptions
 	o.preemptions = sample.Preemptions
 	o.hasPreemptions = true
+	if preempted {
+		o.lastSuccess = time.Time{}
+		o.lastPreemption = now
+	}
 	o.mu.Unlock()
 	err = o.coordinator.ReconcileSample(runtimepredictive.SampleWindow{
 		Observed: domainpredictive.VirtualState{
@@ -165,9 +175,6 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 		return
 	}
 	o.lastSuccess = now
-	if preempted {
-		o.lastPreemption = now
-	}
 }
 
 func predictiveVLLMMetricsURL(cfg config) (string, error) {

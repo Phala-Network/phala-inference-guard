@@ -39,6 +39,44 @@ type adapterTestUpstreamState struct {
 	closeCalls int
 }
 
+type blockingAdmissionCoordinator struct {
+	entered    chan struct{}
+	release    chan struct{}
+	terminated chan runtimepredictive.TerminalCause
+	enterOnce  sync.Once
+}
+
+func newBlockingAdmissionCoordinator() *blockingAdmissionCoordinator {
+	return &blockingAdmissionCoordinator{
+		entered:    make(chan struct{}),
+		release:    make(chan struct{}),
+		terminated: make(chan runtimepredictive.TerminalCause, 1),
+	}
+}
+
+func (c *blockingAdmissionCoordinator) DecideAndReserve(_ time.Time, _ runtimepredictive.CountAdmissionProposal) runtimepredictive.CountAdmissionResult {
+	c.enterOnce.Do(func() { close(c.entered) })
+	<-c.release
+	return runtimepredictive.CountAdmissionResult{
+		Decision: domainpredictive.Decision{Reason: domainpredictive.ReasonFit},
+		Prediction: runtimepredictive.SchedulerPrediction{
+			Identity: adapterTestIdentity(),
+		},
+		Reserved: true,
+	}
+}
+
+func (c *blockingAdmissionCoordinator) MarkPrefillComplete(string) bool { return false }
+
+func (c *blockingAdmissionCoordinator) Terminate(_ string, cause runtimepredictive.TerminalCause) bool {
+	c.terminated <- cause
+	return true
+}
+
+func (c *blockingAdmissionCoordinator) ObserveOutcome(string, runtimepredictive.SchedulerOutcome) bool {
+	return false
+}
+
 type semanticTTFTPredictiveReservation interface {
 	ObserveSemanticTTFT(time.Duration) bool
 }
@@ -72,7 +110,7 @@ func (r *adapterTestRenderer) Calls() int {
 	return r.calls
 }
 
-func (c *adapterTestCounter) Count(_ context.Context, _ runtimepredictive.RequestClass, _ []byte, _ runtimepredictive.RequestFeatures) (runtimepredictive.TokenCountAnalysis, error) {
+func (c *adapterTestCounter) Count(_ context.Context, _ runtimepredictive.RequestClass, _ []byte) (runtimepredictive.TokenCountAnalysis, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls++
@@ -251,80 +289,52 @@ func TestRealPredictiveShadowRejectsUnsupportedBeforeAnalysis(t *testing.T) {
 	}
 }
 
-func TestRealPredictiveShadowEligibleHistoryChangesPreForwardDecision(t *testing.T) {
-	finalTime := time.Unix(1_000, 0)
-	coldClock := &adapterTestClock{now: finalTime}
-	cold, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+func TestRealPredictiveShadowCloseDoesNotWaitForPredictionAndRollsBackLateReservation(t *testing.T) {
+	coordinator := newBlockingAdmissionCoordinator()
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
 		Renderer:    &adapterTestRenderer{},
 		Counter:     newAdapterTestCounter(),
-		Coordinator: newAdapterTestCoordinator(t),
-		Now:         coldClock.Now,
+		Coordinator: coordinator,
 	})
 	if err != nil {
-		t.Fatalf("new cold adapter: %v", err)
+		t.Fatalf("new adapter: %v", err)
 	}
 
-	trainedClock := &adapterTestClock{now: finalTime.Add(-3 * time.Second)}
-	trained, err := newRealPredictiveShadow(realPredictiveShadowConfig{
-		Renderer:    &adapterTestRenderer{},
-		Counter:     newAdapterTestCounter(),
-		Coordinator: newAdapterTestCoordinator(t),
-		Now:         trainedClock.Now,
-	})
-	if err != nil {
-		t.Fatalf("new trained adapter: %v", err)
-	}
-	identity := adapterTestIdentity()
-	for index := 0; index < 3; index++ {
-		requestID := fmt.Sprintf("training-%d", index)
-		reservation := trained.DecideAndReserve(context.Background(), requestID, predictiveShadowInput{
+	decisionDone := make(chan predictiveShadowReservation, 1)
+	go func() {
+		decisionDone <- adapter.DecideAndReserve(context.Background(), "late", predictiveShadowInput{
 			Path: "/v1/chat/completions",
-			Body: []byte(fmt.Sprintf(`{"messages":[{"role":"user","content":"training-%d"}]}`, index)),
+			Body: []byte(`{"messages":[{"role":"user","content":"late"}]}`),
 		})
-		if reservation == nil {
-			t.Fatalf("training reservation %d was rejected", index)
+	}()
+	<-coordinator.entered
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- adapter.Close() }()
+
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("close adapter: %v", err)
 		}
-		outcome := runtimepredictive.SchedulerOutcome{
-			Identity:        identity,
-			ObservedAt:      trainedClock.Now().Add(time.Millisecond),
-			Attributed:      true,
-			AllUserTPS:      40,
-			AllUserTPSValid: true,
-			TTFT:            10 * time.Millisecond,
-			TTFTValid:       true,
-			TPOT:            10 * time.Millisecond,
-			TPOTValid:       true,
-		}
-		if !trained.ObserveOutcome(requestID, outcome) {
-			t.Fatalf("training outcome %d was not learned", index)
-		}
-		if !reservation.Terminate(runtimepredictive.TerminalCompleted) {
-			t.Fatalf("training reservation %d did not terminate", index)
-		}
-		trainedClock.Advance(time.Second)
+	case <-time.After(time.Second):
+		close(coordinator.release)
+		<-decisionDone
+		<-closeDone
+		t.Fatal("adapter close waited for scheduler prediction while holding its lifecycle lock")
 	}
 
-	input := predictiveShadowInput{
-		Path: "/v1/chat/completions",
-		Body: []byte(`{"messages":[{"role":"user","content":"same request"}]}`),
+	close(coordinator.release)
+	if reservation := <-decisionDone; reservation != nil {
+		reservation.Terminate(runtimepredictive.TerminalExpired)
+		t.Fatal("prediction that completed after close escaped as a live reservation")
 	}
-	coldReservation := cold.DecideAndReserve(context.Background(), "cold-final", input)
-	trainedReservation := trained.DecideAndReserve(context.Background(), "trained-final", input)
-	if coldReservation == nil {
-		t.Fatal("cold static prediction unexpectedly rejected the final request")
-	}
-	defer coldReservation.Terminate(runtimepredictive.TerminalExpired)
-	if trainedReservation != nil {
-		trainedReservation.Terminate(runtimepredictive.TerminalExpired)
-		t.Fatal("eligible adverse history did not reject the trained counterfactual")
-	}
-	coldAttempt := cold.Snapshot()
-	trainedAttempt := trained.Snapshot()
-	if coldAttempt.LastReason != domainpredictive.ReasonFit || coldAttempt.LastSource != runtimepredictive.PredictionSourceStatic {
-		t.Fatalf("cold attempt = %+v", coldAttempt)
-	}
-	if trainedAttempt.LastReason != domainpredictive.ReasonNewTPSAtRisk || trainedAttempt.LastSource != runtimepredictive.PredictionSourceCalibrated || trainedAttempt.LastSamples != 3 {
-		t.Fatalf("trained attempt = %+v", trainedAttempt)
+	select {
+	case cause := <-coordinator.terminated:
+		if cause != runtimepredictive.TerminalExpired {
+			t.Fatalf("late reservation rollback cause = %s, want %s", cause, runtimepredictive.TerminalExpired)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("prediction that completed after close was not rolled back")
 	}
 }
 

@@ -96,9 +96,8 @@ type Snapshot struct {
 }
 
 type managerAdmissionResult struct {
-	Decision      domain.Decision
-	Prediction    SchedulerPrediction
-	HasPrediction bool
+	Decision   domain.Decision
+	Prediction SchedulerPrediction
 }
 
 func NewManager(manifestID string, base domain.VirtualState, constraints domain.Constraints, scheduler Scheduler) *Manager {
@@ -169,43 +168,9 @@ func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.
 		}
 	}
 	return managerAdmissionResult{
-		Decision:      decision,
-		Prediction:    prediction,
-		HasPrediction: true,
+		Decision:   decision,
+		Prediction: prediction,
 	}
-}
-
-func (m *Manager) ReservationPrediction(requestID string) (SchedulerPrediction, bool) {
-	if m == nil || requestID == "" {
-		return SchedulerPrediction{}, false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	item, exists := m.reservations[requestID]
-	if !exists {
-		return SchedulerPrediction{}, false
-	}
-	return item.Prediction, true
-}
-
-func (m *Manager) HasReservation(requestID string) bool {
-	if m == nil || requestID == "" {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	_, exists := m.reservations[requestID]
-	return exists
-}
-
-func (m *Manager) CanMarkPrefillComplete(requestID string) bool {
-	if m == nil || requestID == "" {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	item, exists := m.reservations[requestID]
-	return exists && !item.PrefillComplete
 }
 
 func (m *Manager) MarkPrefillComplete(requestID string) bool {
@@ -291,21 +256,6 @@ func (m *Manager) Terminate(requestID string, cause TerminalCause) bool {
 		Reservation:       item,
 		CompletedSequence: m.eventSequence,
 	}
-	return true
-}
-
-func (m *Manager) rollbackLatestReservation(requestID string) bool {
-	if m == nil || requestID == "" {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	item, exists := m.reservations[requestID]
-	if !exists || item.AdmittedSequence != m.eventSequence || item.Assimilation != assimilationUnabsorbed || item.PrefillComplete || item.OutcomeObserved {
-		return false
-	}
-	delete(m.reservations, requestID)
-	m.eventSequence--
 	return true
 }
 
@@ -469,7 +419,16 @@ func subtractIntFloorZero(value, decrement int) int {
 }
 
 func validRequestCost(cost domain.RequestCost) bool {
-	return cost.InputTokens >= 0 && cost.KV.PhysicalKVUpper >= 0 && cost.KV.ActiveKVUpper >= 0 && cost.KV.CacheDiscountTokens >= 0 && cost.KV.CacheDiscountTokens <= cost.InputTokens && cost.UncachedPrefillUpper >= 0 && cost.UncachedPrefillUpper <= cost.InputTokens && cost.CachedPrefillExpected >= 0 && cost.CachedPrefillExpected <= cost.InputTokens && cost.DecodeHorizonUpper >= 0 && cost.DecodeSequencesUpper >= 0 && cost.ActiveContextTokensUpper >= 0 && positiveFinite(cost.Confidence) && cost.Confidence <= 1
+	if cost.InputTokens < 0 || cost.UncachedPrefillUpper != cost.InputTokens {
+		return false
+	}
+	if cost.KV.PhysicalKVUpper < 0 || cost.KV.ActiveKVUpper < 0 {
+		return false
+	}
+	if cost.DecodeHorizonUpper < 0 || cost.DecodeSequencesUpper < 0 || cost.ActiveContextTokensUpper < 0 {
+		return false
+	}
+	return positiveFinite(cost.Confidence) && cost.Confidence <= 1
 }
 
 func validSchedulerPrediction(prediction SchedulerPrediction) bool {

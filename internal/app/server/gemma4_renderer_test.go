@@ -75,7 +75,7 @@ func TestGemma4TextRendererMatchesPinnedProductionTemplateOracle(t *testing.T) {
 			if err != nil {
 				t.Fatalf("render: %v", err)
 			}
-			if result.Class != test.wantClass || string(result.Rendered) != test.wantRendered || result.DecodeHorizonUpper != test.wantDecode || result.Confidence != 1 || result.Features != (runtimepredictive.RequestFeatures{}) {
+			if result.Class != test.wantClass || string(result.Rendered) != test.wantRendered || result.DecodeHorizonUpper != test.wantDecode || result.Confidence != 1 {
 				t.Fatalf("rendered = %+v/%q", result, result.Rendered)
 			}
 		})

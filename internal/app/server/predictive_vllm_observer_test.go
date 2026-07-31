@@ -10,12 +10,57 @@ import (
 	"testing"
 	"time"
 
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 type observerMetricsFixture struct {
 	mu   sync.Mutex
 	body string
+}
+
+type blockingSampleCoordinator struct {
+	delegate predictiveSampleCoordinator
+	mu       sync.Mutex
+	block    bool
+	entered  chan struct{}
+	release  chan struct{}
+}
+
+func newBlockingSampleCoordinator(delegate predictiveSampleCoordinator) *blockingSampleCoordinator {
+	return &blockingSampleCoordinator{
+		delegate: delegate,
+		entered:  make(chan struct{}),
+		release:  make(chan struct{}),
+	}
+}
+
+func (c *blockingSampleCoordinator) StartSampleWindow() (uint64, domainpredictive.VirtualState) {
+	return c.delegate.StartSampleWindow()
+}
+
+func (c *blockingSampleCoordinator) EventSequence() uint64 {
+	return c.delegate.EventSequence()
+}
+
+func (c *blockingSampleCoordinator) ReconcileSample(sample runtimepredictive.SampleWindow) error {
+	c.mu.Lock()
+	block := c.block
+	if block {
+		c.block = false
+	}
+	c.mu.Unlock()
+	if block {
+		close(c.entered)
+		<-c.release
+	}
+	return c.delegate.ReconcileSample(sample)
+}
+
+func (c *blockingSampleCoordinator) blockNextReconciliation() {
+	c.mu.Lock()
+	c.block = true
+	c.mu.Unlock()
 }
 
 func (f *observerMetricsFixture) ServeHTTP(w http.ResponseWriter, _ *http.Request) {
@@ -132,6 +177,40 @@ func TestPredictiveVLLMObserverPreemptionIncrementStartsCooldown(t *testing.T) {
 	}
 }
 
+func TestPredictiveVLLMObserverPreemptionIncrementFailsClosedBeforeReconciliation(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(7_500, 0)}
+	coordinator := newBlockingSampleCoordinator(newAdapterTestCoordinatorWithTPSTarget(t, 0))
+	fixture := &observerMetricsFixture{body: observerMetrics(1_000, 0.10, 1, 0, 4, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+	observer.poll(context.Background())
+	if !observer.Healthy(clock.Now()) {
+		t.Fatal("initial sample did not become healthy")
+	}
+
+	clock.Advance(time.Second)
+	fixture.Set(observerMetrics(1_000, 0.11, 1, 0, 5, true))
+	coordinator.blockNextReconciliation()
+	done := make(chan struct{})
+	go func() {
+		observer.poll(context.Background())
+		close(done)
+	}()
+	<-coordinator.entered
+
+	if observer.Healthy(clock.Now()) {
+		close(coordinator.release)
+		<-done
+		t.Fatal("preemption increment left the old healthy sample authorized while reconciliation was in progress")
+	}
+	close(coordinator.release)
+	<-done
+	if observer.Healthy(clock.Now()) {
+		t.Fatal("preemption increment did not retain cooldown after reconciliation")
+	}
+}
+
 func TestPredictiveVLLMObserverSampleWindowDoesNotDoubleCountConcurrentReservation(t *testing.T) {
 	clock := &adapterTestClock{now: time.Unix(8_000, 0)}
 	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 0)
@@ -240,7 +319,7 @@ func TestPredictiveVLLMMetricsURLRequiresExactlyOneUpstream(t *testing.T) {
 	}
 }
 
-func newManualPredictiveVLLMObserver(metricsURL string, maximumKV int64, coordinator *runtimepredictive.CountCoordinator, now func() time.Time) *predictiveVLLMObserver {
+func newManualPredictiveVLLMObserver(metricsURL string, maximumKV int64, coordinator predictiveSampleCoordinator, now func() time.Time) *predictiveVLLMObserver {
 	return &predictiveVLLMObserver{
 		metricsURL:         metricsURL,
 		maximumKVTokens:    maximumKV,

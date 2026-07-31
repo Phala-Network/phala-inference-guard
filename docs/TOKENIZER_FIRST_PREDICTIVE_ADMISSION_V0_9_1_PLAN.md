@@ -794,3 +794,214 @@ At this document revision the optimized source is focused-green. The next and
 final source-only gate is the exact document-commit full matrix: default and
 native Go tests and races, locked Rust tests, production renderer/count oracle,
 exact final token IDs, deterministic goodput, and the full tokenizer benchmark.
+
+## 18. SOLID, admission-model, and concurrency review
+
+This review is scoped to the PIG-v0.9.1 source-only shadow/evaluation
+candidate. It does not build an image, publish a registry artifact, deploy,
+restart a CVM, query a production inference endpoint, modify vLLM, or add
+routing behavior. All executable red/green work in this section ran on the
+remote builder; Windows was used only for editing, read-only inspection, and
+Git operations.
+
+The production dependency path after this review is deliberately small:
+
+~~~text
+HTTP request
+  -> Gemma4 renderer
+  -> count-only native tokenizer
+  -> cache-cold count cost builder
+  -> CountCoordinator
+  -> Manager atomic state/predict/evaluate/reserve transaction
+  -> narrow lifecycle reservation
+
+vLLM metrics
+  -> narrow sample coordinator
+  -> Manager sample-window reconciliation
+~~~
+
+`predictive_factory.go` is now only the composition root. Manifest schema,
+bounded file IO, duplicate/unknown JSON rejection, hashes, asset verification,
+and semantic validation live in `predictive_profile.go`. Count-cost validation,
+model-length overflow protection, block rounding, and conversion to the domain
+cost live in `count_cost.go`. The HTTP lifecycle adapter and vLLM observer own
+different narrow coordinator interfaces; neither depends on a concrete
+coordinator or on an artificial interface containing every method.
+
+The review intentionally does not introduce repository, service, strategy, or
+factory interface layers where Go functions and concrete immutable values are
+sufficient. SOLID here means one reason to change, consumer-owned interfaces,
+dependency inversion at process boundaries, and substitutable behavior under
+tests; it does not mean Java-style abstraction depth.
+
+### Review pass 1: model causality and SOLID boundaries
+
+Finding: the active count-only HTTP path was integrated and prospective, but
+3,243 lines across eleven disconnected cache/analyzer history files made the
+source model appear cache-aware and kept two incompatible architectures alive.
+The domain still exposed cache-hit intervals, projected discounts, tokenizer
+manifests, block digests, and cached-prefill fields even though the configured
+request path did not consume them.
+
+Revision: the disconnected Go cache mirror/coordinator/tokenizer/analyzer
+slice and the Rust block-analysis ABI/tests were deleted. `RequestCost` is now
+structurally cache-cold, and `Manager.validRequestCost` requires
+`UncachedPrefillUpper == InputTokens`. A regression test proves a partial
+prefill discount fails closed without creating a reservation. Repeated
+prefixes continue to pay full input, prefill, and rounded KV cost. The v0.9.0
+`kvshadow.Manager` remains only as the real KV-only comparator in the
+deterministic goodput suite; it is not a production dependency of the new
+path.
+
+Finding: the native library still exported block digest and analysis handles,
+and retained direct `blake3`/`sha2` dependencies, although production needed
+only exact count. The Go counter API also carried a `RequestFeatures` value
+that the renderer never populated and both native implementations ignored.
+
+Revision: native ABI 3 contains only open/count/destroy/version. The CLI keeps
+`encode` for the independent exact-ID oracle and keeps count/vector
+benchmarks, but no production block-analysis entry point. `RequestFeatures`,
+four unused Manager inspection/rollback methods, and the unused
+`HasPrediction` result field were removed. `blake3` and `sha2` are no longer
+direct Cargo dependencies. This is interface segregation and dependency
+reduction, not an inference-throughput claim.
+
+Finding: risk constraints were inconsistent with their declared equation.
+`workspace_risk_budget == 0` or `preemption_risk_budget == 0` skipped the
+comparison, so a zero-tolerance profile could admit a non-zero predicted risk.
+
+Revision: workspace and preemption risk now always enforce
+`predicted_upper <= configured_budget`; zero predicted risk still fits a zero
+budget. The optional zero-disables convention remains only for KV/TPS/TTFT/TPOT
+constraints where it is explicitly part of the existing contract. The
+behavioral red failed on both zero-budget cases and the merged green passes.
+
+The authentic prediction chain remains unchanged: exact rendered input tokens
+produce full-cold KV/prefill/decode cost; observed state plus unabsorbed
+reservations produces the post-admit counterfactual; the learned/static
+scheduler predicts existing-user TPS, all-user TPS, TTFT, TPOT, workspace, and
+preemption bounds; and `Evaluate` consumes those values before forwarding.
+Real successful completion with attributed semantic TTFT trains the residual
+calibrator for a future decision. TPS and TPOT remain explicit static profile
+predictions because PIG has no sufficiently attributed per-request production
+target for them; fabricated targets were not added merely to make learning
+look broader.
+
+Pass-1 result: the source and domain now describe one cache-free admission
+model, PIG still predicts acceptance for exactly one configured upstream and
+does not route, and every retained abstraction has a production, safety-test,
+or deterministic-simulation consumer.
+
+### Review pass 2: safety, locking, lifecycle, and failure modes
+
+Finding: `realPredictiveShadow.mu` covered the complete
+`CountCoordinator.DecideAndReserve` call. A slow scheduler therefore blocked
+`Close`, snapshot bookkeeping, and reservation lifecycle operations even
+though the Manager already owned the required atomic transaction lock.
+
+Revision: the adapter lock now covers only closed-state ordering, attempt
+statistics, and its lifecycle map. The Manager lock still covers the full
+virtual-state read, scheduler prediction, counterfactual evaluation, event
+sequence increment, and reservation insert. If prediction returns after
+adapter closure, a fit is never returned to the caller: its reservation is
+terminated with `TerminalExpired` and the attempt is recorded unknown. The
+behavioral red proved that old `Close` waited more than one second for a
+blocked prediction; default/native race greens prove the reduced lock and late
+rollback path.
+
+Finding: when the vLLM preemption counter increased, the observer first waited
+for Manager reconciliation and only then recorded the cooldown. During that
+window the preceding sample remained healthy and could authorize another
+request.
+
+Revision: detection now immediately clears sample freshness and records the
+new preemption time under the observer lock, then performs reconciliation.
+Successful reconciliation restores only sample freshness; it does not cancel
+the cooldown. Failed reconciliation remains fail-closed. A blocking fake
+coordinator produced a deterministic red while reconciliation was in progress,
+and default/native race greens cover the corrected ordering without nesting
+the observer and Manager locks.
+
+Safety invariants rechecked in this pass:
+
+- count analysis must match manifest and backend epoch;
+- input plus decode horizon must not overflow or exceed model maximum length;
+- every admission is charged full cold input and block-rounded KV;
+- observed vLLM KV token capacity must equal immutable profile capacity;
+- sample windows retain conservative lower/upper ambiguity and unabsorbed
+  reservations;
+- duplicate admission IDs, invalid predictions, stale/future metrics, counter
+  reset, recent preemption, cancellation, close, and terminal replay fail
+  closed or remain idempotent as specified;
+- only successful completion with owned semantic TTFT can train;
+- native counter close/count races retain handle ownership via the existing
+  RW lock;
+- adapter Close no longer waits for prediction, while Manager admission remains
+  one atomic check/predict/reserve transaction.
+
+Pass-2 result: reducing the outer lock improved shutdown/lifecycle
+responsiveness without weakening oversubscription protection, and preemption
+feedback now closes intake at detection rather than after reconciliation.
+
+### Review pass 3: evidence, reproducibility, and claim limits
+
+The disconnected-architecture baseline at `a6aa07d` failed the no-cache gate
+as intended and measured 3,243 legacy lines. Evidence:
+
+- `/work/pig-v091-evidence/a6aa07d-pig-v0.9.1-solid-architecture-red.log`,
+  SHA-256 `9a8fbc420f2cc699bd8fe3937a7cec86f0b56707447886397f398ffae1df40a2`;
+- matching status SHA-256
+  `31487098585a70a8e9609b8d65e5c8fa87a24c42d441c46e79c3a72ced1768c7`.
+
+The adapter lock red is
+`/work/pig-v091-evidence/solid-focused-20260731144628.log`, SHA-256
+`b27dcd1080e85f63f272294bc8a553b344e106a92a9ae2c57c9a54889de929ba`.
+It failed for the intended one-second Close wait, not for formatting or a
+broken harness.
+
+The immediate-preemption red is
+`/work/pig-v091-evidence/solid-focused-20260731150058.log`, SHA-256
+`bccdd19487f7670296e3d63a906d3d16ce2413b779b395ecea13e694a5f47dc9`.
+Default, default-race, native, and native-race all failed only because the old
+healthy sample remained authorized while reconciliation was blocked.
+
+The zero-risk-budget red is
+`/work/pig-v091-evidence/solid-focused-20260731151405.log`, SHA-256
+`70cdbdd35a500ab478767e94081df43d641cc9bbe4d06967dd18c1e3fa0b0461`.
+Both workspace and preemption cases returned the old incorrect `fit`; all
+unrelated focused and race/native gates stayed green.
+
+The merged uncommitted candidate is focused-green in
+`/work/pig-v091-evidence/solid-focused-20260731151708.log`, SHA-256
+`8a11e6bff3194c54ebe9d2e43533125f62e75bff9e145aa15d9046de3f315eec`;
+its status SHA-256 is
+`be795f95234e8fe3b09709820f1732e3ba2aad7d89587af365c97a3b5a316295`.
+It passed the no-cache source gate, Rust formatting and locked all-target tests,
+release native build, focused Go tests, default/native races, and the native
+counter tests. Its formatter/lock patch is empty with SHA-256
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+
+Against the architecture-red baseline, the staged source diff is 836
+insertions and 4,905 deletions across 44 files, a net reduction of 4,069 lines.
+The release native library changed from 5,942,400 to 5,839,576 bytes
+(-102,824, about -1.73%), and the CLI from 6,037,776 to 5,939,416 bytes
+(-98,360, about -1.63%). `cargo tree --locked -i blake3` no longer resolves a
+package. These measurements support maintainability, dependency, and binary
+surface reductions only. They do not prove higher GPU utilization or serving
+throughput.
+
+The previous deterministic fixed-trace baseline remains 5,856 completion-token
+goodput for current thresholds, 3,040 for v0.9.0 KV-only, and 12,256 for the
+predictive policy, with zero predictive TPS/TTFT/TPOT/KV safety violations,
+preemption proxies, false accepts, or reservation leaks. That result is not yet
+re-attributed to this SOLID refactor. The exact final commit must reproduce the
+five production Gemma4 renderer/count oracle cases, exact final IDs with zero
+mismatches, repeated-prefix cold charging, the 12,256 goodput result, and the
+full count/vector benchmark before the source goal is complete.
+
+Pass-3 result: the focused evidence is valid for its named scope, red failures
+are behavior-specific, and all throughput/goodput claims remain separated from
+source deletion and binary size. The next gate is commit and push of the
+source-only candidate followed by a clean remote-builder full matrix on that
+exact commit. No image, publication, deployment, production access, or cache
+prediction is authorized or implied.

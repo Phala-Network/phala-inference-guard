@@ -82,13 +82,13 @@ func TestManagerStoresPredictionAndLearnsFromOutcomeExactlyOnce(t *testing.T) {
 	scheduler := mustLearnedScheduler(t, profile, testResidualConfig())
 	manager := NewManager("test-profile", learnedTestState(), testLearnedConstraints(), scheduler)
 
-	decision := manager.DecideAndReserve(now, "owned", learnedTestCost())
-	if decision.Reason != domain.ReasonFit {
-		t.Fatalf("decision reason = %s, want fit", decision.Reason)
+	result := manager.decideAndReserve(now, "owned", learnedTestCost())
+	if result.Decision.Reason != domain.ReasonFit {
+		t.Fatalf("decision reason = %s, want fit", result.Decision.Reason)
 	}
-	stored, ok := manager.ReservationPrediction("owned")
-	if !ok || stored.Identity != testPredictorIdentity() || stored.PredictedAt != now {
-		t.Fatalf("stored prediction = %+v/%t", stored, ok)
+	stored := result.Prediction
+	if stored.Identity != testPredictorIdentity() || stored.PredictedAt != now {
+		t.Fatalf("admission prediction = %+v", stored)
 	}
 	outcome := healthyLearnedOutcome(stored, now.Add(time.Second))
 	if !manager.ObserveOutcome("owned", outcome) {
@@ -127,21 +127,6 @@ func TestStaticSchedulerAppliesPrefillPenaltyToEveryPostJoinUser(t *testing.T) {
 	}
 	if math.Abs(prediction.Estimate.AllUserTPSLower-wantTPS) > 1e-9 {
 		t.Fatalf("all-user TPS = %.6f, want post-join prefill-adjusted %.6f", prediction.Estimate.AllUserTPSLower, wantTPS)
-	}
-}
-
-func TestCacheMetadataCannotChangeProspectiveSchedulerPrediction(t *testing.T) {
-	now := time.Unix(7_000, 0)
-	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
-	withoutCacheMetadata := learnedTestCost()
-	withoutCacheMetadata.CachedPrefillExpected = 0
-	withCacheMetadata := withoutCacheMetadata
-	withCacheMetadata.CachedPrefillExpected = 7_000
-
-	without := scheduler.Predict(now, learnedTestState(), withoutCacheMetadata)
-	with := scheduler.Predict(now, learnedTestState(), withCacheMetadata)
-	if with != without {
-		t.Fatalf("cache metadata changed prediction: without=%+v with=%+v", without, with)
 	}
 }
 

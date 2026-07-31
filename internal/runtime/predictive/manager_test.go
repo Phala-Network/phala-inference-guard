@@ -67,7 +67,22 @@ func testRequest() domain.RequestCost {
 			PhysicalKVUpper: 10_000,
 			ActiveKVUpper:   10_000,
 		},
-		Confidence: 0.99,
+		UncachedPrefillUpper: 10_000,
+		Confidence:           0.99,
+	}
+}
+
+func TestManagerRejectsNonColdPrefillCostWithoutReservation(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	cost := testRequest()
+	cost.UncachedPrefillUpper--
+
+	decision := manager.DecideAndReserve(time.Unix(0, 0), "discounted", cost)
+	if decision.Reason != domain.ReasonPredictorProfileUnknown {
+		t.Fatalf("reason = %s, want %s", decision.Reason, domain.ReasonPredictorProfileUnknown)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 {
+		t.Fatalf("non-cold request cost changed manager state: %+v", snapshot)
 	}
 }
 

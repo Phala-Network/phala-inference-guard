@@ -93,7 +93,6 @@ func TestLearnedSchedulerCalibratesAvailableTargetsIndependently(t *testing.T) {
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
 	state := domain.VirtualState{}
 	cost := learnedTestCost()
-	cost.CachedPrefillExpected = 0
 	cost.DecodeSequencesUpper = 1
 
 	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
@@ -191,13 +190,12 @@ func learnedTestState() domain.VirtualState {
 
 func learnedTestCost() domain.RequestCost {
 	return domain.RequestCost{
-		ManifestID:            "test-profile",
-		InputTokens:           8_000,
-		KV:                    domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
-		UncachedPrefillUpper:  1_000,
-		CachedPrefillExpected: 7_000,
-		DecodeHorizonUpper:    256,
-		Confidence:            0.99,
+		ManifestID:           "test-profile",
+		InputTokens:          1_000,
+		KV:                   domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
+		UncachedPrefillUpper: 1_000,
+		DecodeHorizonUpper:   256,
+		Confidence:           0.99,
 	}
 }
 

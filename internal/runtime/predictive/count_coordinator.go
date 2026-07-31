@@ -2,7 +2,6 @@ package predictive
 
 import (
 	"fmt"
-	"math"
 	"time"
 
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
@@ -16,32 +15,11 @@ type CountCoordinatorConfig struct {
 	Scheduler          Scheduler
 }
 
-type CountAdmissionProposal struct {
-	RequestID          string
-	Analysis           TokenCountAnalysis
-	DecodeHorizonUpper int64
-	Confidence         float64
-}
-
-type CountRequestCost struct {
-	ManifestID               string
-	BackendEpoch             string
-	InputTokens              int64
-	PhysicalKVUpper          int64
-	ActiveKVUpper            int64
-	UncachedPrefillUpper     int64
-	DecodeHorizonUpper       int64
-	DecodeSequencesUpper     int
-	ActiveContextTokensUpper int64
-	Confidence               float64
-}
-
 type CountAdmissionResult struct {
-	Decision      domain.Decision
-	Prediction    SchedulerPrediction
-	HasPrediction bool
-	Cost          CountRequestCost
-	Reserved      bool
+	Decision   domain.Decision
+	Prediction SchedulerPrediction
+	Cost       CountRequestCost
+	Reserved   bool
 }
 
 type CountCoordinatorSnapshot struct {
@@ -84,42 +62,16 @@ func (c *CountCoordinator) DecideAndReserve(now time.Time, proposal CountAdmissi
 	if c == nil || c.manager == nil {
 		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
 	}
-	if proposal.RequestID == "" || proposal.DecodeHorizonUpper < 0 || !positiveFinite(proposal.Confidence) || proposal.Confidence > 1 {
-		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
-	}
-	if err := proposal.Analysis.Validate(c.identity.ManifestID, c.identity.BackendEpoch); err != nil {
-		return countAdmissionFailure(domain.ReasonTokenizerProfileUnknown)
-	}
-	if proposal.Analysis.ExactInputTokens > math.MaxInt64-proposal.DecodeHorizonUpper {
-		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
-	}
-	activeContext := proposal.Analysis.ExactInputTokens + proposal.DecodeHorizonUpper
-	if activeContext > c.modelMaximumLength {
-		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
-	}
-	kvUpper, ok := roundUpCountCost(activeContext, int64(c.identity.BlockSize))
-	if !ok {
-		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
-	}
-	cost := CountRequestCost{
-		ManifestID:               c.identity.ManifestID,
-		BackendEpoch:             c.identity.BackendEpoch,
-		InputTokens:              proposal.Analysis.ExactInputTokens,
-		PhysicalKVUpper:          kvUpper,
-		ActiveKVUpper:            kvUpper,
-		UncachedPrefillUpper:     proposal.Analysis.ExactInputTokens,
-		DecodeHorizonUpper:       proposal.DecodeHorizonUpper,
-		DecodeSequencesUpper:     1,
-		ActiveContextTokensUpper: activeContext,
-		Confidence:               proposal.Confidence,
+	cost, reason := buildCountRequestCost(c.identity, c.modelMaximumLength, proposal)
+	if reason != domain.ReasonFit {
+		return countAdmissionFailure(reason)
 	}
 	managerResult := c.manager.decideAndReserve(now, proposal.RequestID, cost.managerCost())
 	return CountAdmissionResult{
-		Decision:      managerResult.Decision,
-		Prediction:    managerResult.Prediction,
-		HasPrediction: managerResult.HasPrediction,
-		Cost:          cost,
-		Reserved:      managerResult.Decision.Reason == domain.ReasonFit,
+		Decision:   managerResult.Decision,
+		Prediction: managerResult.Prediction,
+		Cost:       cost,
+		Reserved:   managerResult.Decision.Reason == domain.ReasonFit,
 	}
 }
 
@@ -169,30 +121,4 @@ func (c *CountCoordinator) Snapshot() CountCoordinatorSnapshot {
 
 func countAdmissionFailure(reason domain.Reason) CountAdmissionResult {
 	return CountAdmissionResult{Decision: domain.Decision{Reason: reason}}
-}
-
-func (c CountRequestCost) managerCost() domain.RequestCost {
-	return domain.RequestCost{
-		ManifestID:  c.ManifestID,
-		InputTokens: c.InputTokens,
-		KV: domain.KVIncrement{
-			PhysicalKVUpper: c.PhysicalKVUpper,
-			ActiveKVUpper:   c.ActiveKVUpper,
-		},
-		UncachedPrefillUpper:     c.UncachedPrefillUpper,
-		DecodeHorizonUpper:       c.DecodeHorizonUpper,
-		DecodeSequencesUpper:     c.DecodeSequencesUpper,
-		ActiveContextTokensUpper: c.ActiveContextTokensUpper,
-		Confidence:               c.Confidence,
-	}
-}
-
-func roundUpCountCost(value, blockSize int64) (int64, bool) {
-	if value <= 0 {
-		return 0, true
-	}
-	if blockSize <= 0 || value > math.MaxInt64-(blockSize-1) {
-		return 0, false
-	}
-	return ((value + blockSize - 1) / blockSize) * blockSize, true
 }

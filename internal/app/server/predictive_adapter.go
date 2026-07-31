@@ -14,7 +14,6 @@ import (
 type predictiveRenderedRequest struct {
 	Class              runtimepredictive.RequestClass
 	Rendered           []byte
-	Features           runtimepredictive.RequestFeatures
 	DecodeHorizonUpper int64
 	Confidence         float64
 }
@@ -24,7 +23,7 @@ type predictiveRequestRenderer interface {
 }
 
 type predictiveTokenCounter interface {
-	Count(context.Context, runtimepredictive.RequestClass, []byte, runtimepredictive.RequestFeatures) (runtimepredictive.TokenCountAnalysis, error)
+	Count(context.Context, runtimepredictive.RequestClass, []byte) (runtimepredictive.TokenCountAnalysis, error)
 	Close() error
 }
 
@@ -33,10 +32,17 @@ type predictiveUpstreamState interface {
 	Close() error
 }
 
+type predictiveAdmissionCoordinator interface {
+	DecideAndReserve(time.Time, runtimepredictive.CountAdmissionProposal) runtimepredictive.CountAdmissionResult
+	MarkPrefillComplete(string) bool
+	Terminate(string, runtimepredictive.TerminalCause) bool
+	ObserveOutcome(string, runtimepredictive.SchedulerOutcome) bool
+}
+
 type realPredictiveShadowConfig struct {
 	Renderer    predictiveRequestRenderer
 	Counter     predictiveTokenCounter
-	Coordinator *runtimepredictive.CountCoordinator
+	Coordinator predictiveAdmissionCoordinator
 	Upstream    predictiveUpstreamState
 	Now         func() time.Time
 }
@@ -55,7 +61,7 @@ type realPredictiveShadow struct {
 	mu           sync.Mutex
 	renderer     predictiveRequestRenderer
 	counter      predictiveTokenCounter
-	coordinator  *runtimepredictive.CountCoordinator
+	coordinator  predictiveAdmissionCoordinator
 	upstream     predictiveUpstreamState
 	now          func() time.Time
 	closed       bool
@@ -126,7 +132,7 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
 		return nil
 	}
-	analysis, err := s.counter.Count(ctx, rendered.Class, rendered.Rendered, rendered.Features)
+	analysis, err := s.counter.Count(ctx, rendered.Class, rendered.Rendered)
 	if err != nil {
 		s.recordUnknown(domainpredictive.ReasonTokenizerProfileUnknown)
 		return nil
@@ -141,43 +147,33 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		return nil
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		s.recordUnknownLocked(domainpredictive.ReasonPredictorProfileUnknown)
-		return nil
-	}
 	result := s.coordinator.DecideAndReserve(decisionTime, runtimepredictive.CountAdmissionProposal{
 		RequestID:          requestID,
 		Analysis:           analysis,
 		DecodeHorizonUpper: rendered.DecodeHorizonUpper,
 		Confidence:         rendered.Confidence,
 	})
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		if result.Reserved {
+			s.coordinator.Terminate(requestID, runtimepredictive.TerminalExpired)
+		}
+		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
+		return nil
+	}
 	s.recordResultLocked(result)
 	if !result.Reserved {
+		s.mu.Unlock()
 		return nil
 	}
 	s.reservations[requestID] = struct{}{}
+	s.mu.Unlock()
 	return &realPredictiveReservation{
 		owner:     s,
 		requestID: requestID,
 		identity:  result.Prediction.Identity,
 	}
-}
-
-func (s *realPredictiveShadow) ObserveOutcome(requestID string, outcome runtimepredictive.SchedulerOutcome) bool {
-	if s == nil || s.coordinator == nil || requestID == "" {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.closed {
-		return false
-	}
-	if _, exists := s.reservations[requestID]; !exists {
-		return false
-	}
-	return s.coordinator.ObserveOutcome(requestID, outcome)
 }
 
 func (s *realPredictiveShadow) Snapshot() predictiveAttemptSnapshot {

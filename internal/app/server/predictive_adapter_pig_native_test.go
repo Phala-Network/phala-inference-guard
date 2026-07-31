@@ -60,7 +60,7 @@ func TestRealPredictiveShadowChargesRepeatedNativePrefixesAsFullColdCost(t *test
 	if err != nil {
 		t.Fatalf("render fixture request: %v", err)
 	}
-	analysis, err := counter.Count(context.Background(), rendered.Class, rendered.Rendered, rendered.Features)
+	analysis, err := counter.Count(context.Background(), rendered.Class, rendered.Rendered)
 	if err != nil {
 		t.Fatalf("count rendered fixture request: %v", err)
 	}

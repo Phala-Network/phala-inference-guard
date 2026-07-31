@@ -21,6 +21,17 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
+const (
+	nativeABIVersion = 3
+	nativeErrorBytes = 512
+)
+
+type nativeError struct {
+	operation string
+	code      int
+	message   string
+}
+
 type Counter struct {
 	mu                         sync.RWMutex
 	handle                     *C.PigTokenizerCountHandle
@@ -69,7 +80,7 @@ func OpenCounter(config CounterConfig) (*Counter, error) {
 	}, nil
 }
 
-func (c *Counter) Count(ctx context.Context, class runtimepredictive.RequestClass, rendered []byte, _ runtimepredictive.RequestFeatures) (runtimepredictive.TokenCountAnalysis, error) {
+func (c *Counter) Count(ctx context.Context, class runtimepredictive.RequestClass, rendered []byte) (runtimepredictive.TokenCountAnalysis, error) {
 	if c == nil {
 		return runtimepredictive.TokenCountAnalysis{}, fmt.Errorf("%w: counter is nil", ErrUnavailable)
 	}
@@ -146,4 +157,26 @@ func (c *Counter) specialTokenPolicy(class runtimepredictive.RequestClass) (bool
 	default:
 		return false, fmt.Errorf("%w: %q", runtimepredictive.ErrUnsupportedRequestClass, class)
 	}
+}
+
+func newNativeError(operation string, status C.int32_t, message *C.char) error {
+	text := ""
+	if message != nil {
+		text = C.GoString(message)
+	}
+	return &nativeError{operation: operation, code: int(status), message: text}
+}
+
+func (e *nativeError) Error() string {
+	if e.message == "" {
+		return fmt.Sprintf("native tokenizer %s failed with status %d", e.operation, e.code)
+	}
+	return fmt.Sprintf("native tokenizer %s failed with status %d: %s", e.operation, e.code, e.message)
+}
+
+func boolByte(value bool) C.uint8_t {
+	if value {
+		return 1
+	}
+	return 0
 }

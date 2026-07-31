@@ -23,7 +23,6 @@ def measure(
     mode: str,
     warmup: int,
     iterations: int,
-    block_size: int,
     add_special_tokens: str,
 ) -> dict:
     command = [
@@ -34,8 +33,6 @@ def measure(
         str(warmup),
         str(iterations),
     ]
-    if mode == "analyze-bench":
-        command.append(str(block_size))
     with tempfile.NamedTemporaryFile() as timing:
         completed = subprocess.run(
             ["/usr/bin/time", "-f", "%M", "-o", timing.name, *command],
@@ -55,13 +52,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tokenizer", type=Path, required=True)
     parser.add_argument("--native-binary", type=Path, required=True)
-    parser.add_argument("--block-size", type=int, default=64)
     parser.add_argument("--add-special-tokens", choices=("true", "false"), default="false")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-
-    if args.block_size <= 0:
-        raise ValueError("block size must be positive")
 
     results = []
     for name, seed, repeat, warmup, iterations in CASES:
@@ -73,7 +66,6 @@ def main() -> None:
             "count-bench",
             warmup,
             iterations,
-            args.block_size,
             args.add_special_tokens,
         )
         vec_ids = measure(
@@ -83,20 +75,9 @@ def main() -> None:
             "bench",
             warmup,
             iterations,
-            args.block_size,
             args.add_special_tokens,
         )
-        block_analysis = measure(
-            args.native_binary,
-            args.tokenizer,
-            text,
-            "analyze-bench",
-            warmup,
-            iterations,
-            args.block_size,
-            args.add_special_tokens,
-        )
-        if len({count_only["tokens"], vec_ids["tokens"], block_analysis["tokens"]}) != 1:
+        if count_only["tokens"] != vec_ids["tokens"]:
             raise RuntimeError(f"token-count mismatch for {name}")
         results.append(
             {
@@ -104,17 +85,8 @@ def main() -> None:
                 "input_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
                 "count_only": count_only,
                 "vec_ids": vec_ids,
-                "block_analysis": block_analysis,
                 "count_to_vec_ratio": {
                     quantile: count_only[quantile] / vec_ids[quantile]
-                    for quantile in ("p50_us", "p95_us", "p99_us")
-                },
-                "count_to_analysis_ratio": {
-                    quantile: count_only[quantile] / block_analysis[quantile]
-                    for quantile in ("p50_us", "p95_us", "p99_us")
-                },
-                "analysis_to_vec_ratio": {
-                    quantile: block_analysis[quantile] / vec_ids[quantile]
                     for quantile in ("p50_us", "p95_us", "p99_us")
                 },
             }
@@ -124,10 +96,9 @@ def main() -> None:
         "scope": (
             "same Rust binary and tokenizer; each path has its own process load and "
             "warmup; report-level input_sha256 identifies only the fixed synthetic fixture; "
-            "count_only returns only a count; vec_ids clones IDs; block_analysis returns no IDs "
-            "but computes keyed rendered-input and block digests; peak RSS includes tokenizer load"
+            "count_only returns only a count; vec_ids clones IDs for the exact-ID comparator; "
+            "peak RSS includes tokenizer load"
         ),
-        "block_size": args.block_size,
         "add_special_tokens": args.add_special_tokens == "true",
         "tokenizer_sha256": hashlib.sha256(args.tokenizer.read_bytes()).hexdigest(),
         "cases": results,

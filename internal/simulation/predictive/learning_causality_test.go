@@ -91,13 +91,12 @@ func TestSimulationDecisionChangesOnlyAfterEligibleLearning(t *testing.T) {
 		ActiveContextTokens: 24_000,
 	}
 	cost := domain.RequestCost{
-		ManifestID:            "test-profile",
-		InputTokens:           8_000,
-		KV:                    domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
-		UncachedPrefillUpper:  1_000,
-		CachedPrefillExpected: 7_000,
-		DecodeHorizonUpper:    256,
-		Confidence:            0.99,
+		ManifestID:           "test-profile",
+		InputTokens:          1_000,
+		KV:                   domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
+		UncachedPrefillUpper: 1_000,
+		DecodeHorizonUpper:   256,
+		Confidence:           0.99,
 	}
 	for index := 0; index < config.MinimumSamples; index++ {
 		prediction := trainedScheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)

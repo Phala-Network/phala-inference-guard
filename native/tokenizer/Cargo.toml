@@ -8,7 +8,7 @@ publish = false
 crate-type = ["rlib", "cdylib"]
 
 [dependencies]
-ahash = "0.8.12"
-blake3 = "1.8.2"
-sha2 = "0.10.9"
 tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }
+
+[dev-dependencies]
+ahash = "0.8.12"
