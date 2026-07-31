@@ -21,7 +21,7 @@ type recordingPredictiveShadow struct {
 }
 
 type recordingPredictiveReservation struct {
-	mu        sync.Mutex
+	mu       sync.Mutex
 	semantic int
 	causes   []runtimepredictive.TerminalCause
 }
