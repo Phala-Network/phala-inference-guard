@@ -5,6 +5,95 @@ import (
 	"time"
 )
 
+type SpecialTokenPolicy string
+
+const (
+	SpecialTokenPolicyAdd  SpecialTokenPolicy = "add"
+	SpecialTokenPolicyOmit SpecialTokenPolicy = "omit"
+)
+
+func (p SpecialTokenPolicy) Validate() error {
+	switch p {
+	case SpecialTokenPolicyAdd, SpecialTokenPolicyOmit:
+		return nil
+	default:
+		return fmt.Errorf("tokenizer manifest special-token policy %q is invalid", p)
+	}
+}
+
+func (p SpecialTokenPolicy) AddSpecialTokens() bool {
+	return p == SpecialTokenPolicyAdd
+}
+
+type TokenBinding struct {
+	Value string
+	ID    int64
+}
+
+func (b TokenBinding) validate(role string) error {
+	if b.Value == "" {
+		return fmt.Errorf("tokenizer manifest %s token value is required", role)
+	}
+	if b.ID < 0 || b.ID > int64(^uint32(0)) {
+		return fmt.Errorf("tokenizer manifest %s token id must be an unsigned 32-bit value", role)
+	}
+	return nil
+}
+
+type SpecialTokenBindings struct {
+	BOS TokenBinding
+	EOS TokenBinding
+	UNK TokenBinding
+	PAD TokenBinding
+}
+
+func (b SpecialTokenBindings) Validate() error {
+	for _, binding := range []struct {
+		role  string
+		value TokenBinding
+	}{
+		{role: "bos", value: b.BOS},
+		{role: "eos", value: b.EOS},
+		{role: "unk", value: b.UNK},
+		{role: "pad", value: b.PAD},
+	} {
+		if err := binding.value.validate(binding.role); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type TokenizerCapabilities struct {
+	Completions     bool
+	ChatCompletions bool
+	Tools           bool
+	ToolChoice      bool
+	ResponseFormat  bool
+	JSONSchema      bool
+	Reasoning       bool
+	Multimodal      bool
+}
+
+func (c TokenizerCapabilities) Validate(multimodalProfile string) error {
+	if !c.Completions && !c.ChatCompletions {
+		return fmt.Errorf("tokenizer manifest must enable at least one request class")
+	}
+	if !c.ChatCompletions && (c.Tools || c.ToolChoice || c.ResponseFormat || c.JSONSchema || c.Reasoning || c.Multimodal) {
+		return fmt.Errorf("tokenizer manifest chat-only capabilities require chat completions")
+	}
+	if c.ToolChoice && !c.Tools {
+		return fmt.Errorf("tokenizer manifest tool-choice capability requires tools")
+	}
+	if c.JSONSchema && !c.ResponseFormat {
+		return fmt.Errorf("tokenizer manifest json-schema capability requires response format")
+	}
+	if c.Multimodal && multimodalProfile == "text-only" {
+		return fmt.Errorf("tokenizer manifest multimodal capability requires a verified multimodal profile")
+	}
+	return nil
+}
+
 type TokenizerManifest struct {
 	ProfileID             string
 	ServedModel           string
@@ -16,6 +105,11 @@ type TokenizerManifest struct {
 	TokenizerConfigSHA256 string
 	SpecialTokensSHA256   string
 	TemplateSHA256        string
+	TemplateRuntime       string
+	TemplateRuntimeVersion string
+	SpecialTokenPolicy    SpecialTokenPolicy
+	SpecialTokens         SpecialTokenBindings
+	Capabilities          TokenizerCapabilities
 	BackendKind           string
 	BackendVersion        string
 	BlockSize             int64
@@ -38,6 +132,8 @@ func (m TokenizerManifest) Validate() error {
 		{name: "tokenizer config sha256", value: m.TokenizerConfigSHA256},
 		{name: "special tokens sha256", value: m.SpecialTokensSHA256},
 		{name: "template sha256", value: m.TemplateSHA256},
+		{name: "template runtime", value: m.TemplateRuntime},
+		{name: "template runtime version", value: m.TemplateRuntimeVersion},
 		{name: "backend kind", value: m.BackendKind},
 		{name: "backend version", value: m.BackendVersion},
 		{name: "multimodal profile", value: m.MultimodalProfile},
@@ -50,6 +146,15 @@ func (m TokenizerManifest) Validate() error {
 	}
 	if m.BlockSize <= 0 {
 		return fmt.Errorf("tokenizer manifest block size must be positive")
+	}
+	if err := m.SpecialTokenPolicy.Validate(); err != nil {
+		return err
+	}
+	if err := m.SpecialTokens.Validate(); err != nil {
+		return err
+	}
+	if err := m.Capabilities.Validate(m.MultimodalProfile); err != nil {
+		return err
 	}
 	return nil
 }
