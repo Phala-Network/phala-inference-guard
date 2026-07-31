@@ -1,6 +1,7 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: reviewed shadow plan; implementation and builder validation in progress
+Status: third review cycle complete; prediction-causality integration is the
+current P0 and remains unimplemented
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -98,6 +99,52 @@ forward-looking scheduler model:
 - a stale waiting or TPS sample can keep intake closed after PIG-observed work
   has completed;
 - fixed queue waits are not based on a predicted safe time.
+
+### 3.1 Current implementation reachability audit at `92d1daf`
+
+The 2026-07-31 source audit found that the new predictive components are not
+reachable from the PIG HTTP request path:
+
+| Component | Implemented evidence | Actual request-path reachability |
+|---|---|---|
+| `internal/runtime/predictive.TokenizerRuntime` | Unit-tested manifest, request-class policy, concurrency, reset, and fake-engine encode contract. | No application/server/config call site constructs or calls it. |
+| `internal/runtime/predictive.CacheMirror` | Unit-tested active/pending/probable block state and opaque native analysis ingestion. | No application/server call site constructs it or applies its hit interval to a request. |
+| `internal/runtime/predictive.Manager` | Unit-tested minimal KV check-and-reserve and sample watermark reconciliation. | Called only by predictive unit tests and the predictive simulator. |
+| `runtime/predictive.Scheduler` | Interface exists. | All implementations are test-only hand-written fakes; there is no learned/calibrated runtime scheduler. |
+| `internal/simulation/predictive` | Minimal completion-before-poll and cache-hit examples. | It consumes already-constructed `RequestCost`; it does not run rendering, tokenizer, cache analysis, learning, or the HTTP transaction. |
+| Production HTTP shadow path | `server.ServeHTTP -> classifyRequest -> shadowKVRequest -> runtime/kvshadow.Manager`. | Uses the v0.9.0 byte interval and sampled backend state, not the new predictive packages. |
+| Existing capacity/TTFT learning | `capacity.CleanLearnCap` and `latency.LearnCap` adjust a global dynamic limit from observed TPS, waiting, KV, preemption, and TTFT. | Feedback-only global-cap learning; it does not predict the post-admit effect of the current request. |
+
+This means the present branch contains useful contracts and prototypes, but it
+does not yet implement predictive admission. Passing their isolated tests does
+not prove that learning, tokenizer output, or cache state changes any real or
+shadow HTTP decision.
+
+### 3.2 P0 prediction-authenticity gate
+
+Before further tokenizer micro-optimization, the branch must prove one coherent
+vertical slice:
+
+~~~
+request features and virtual state
+  -> versioned scheduler features
+  -> static backend prior plus online calibrated residual bounds
+  -> post-admit TPS/TTFT/TPOT/KV forecast
+  -> atomic shadow decision and reservation
+~~~
+
+The gate fails if observations merely update metrics, EWMA values, a later
+global limit, or an unused model. With current backend metrics held constant,
+tests must show that changing only valid learned state changes at least one of:
+
+- the lower-bound existing-user or all-user TPS forecast;
+- TTFT/TPOT upper bounds;
+- a reservation's resource/phase horizon;
+- the resulting fit/risk decision.
+
+Cold, insufficient, stale, incompatible, or invalid learned state must reduce
+confidence and remove predictive extra headroom; it must never create a more
+permissive forecast than the validated static prior.
 
 ## 4. Design principle: feed-forward decision, feedback calibration
 
@@ -202,7 +249,7 @@ special_tokens_map.json SHA-256
 chat-template SHA-256
 template runtime and compatibility version
 declared BOS/EOS/UNK/PAD values and token IDs
-immutable add_special_tokens policy
+immutable request-class-specific add_special_tokens policies
 endpoint and tools/schema/reasoning/multimodal capabilities
 backend kind and version
 block size
@@ -296,7 +343,7 @@ Source and builder findings:
 | Special tokens | The wrapper infers token roles by string-pattern search in the vocabulary instead of parsing the effective tokenizer configuration. | Reject heuristic role inference. Load declared values and IDs from the immutable profile and prove them against the backend oracle. |
 | Template input | `ChatMessage` contains only `role: String` and `content: String`. The MiniJinja context contains messages, `add_generation_prompt`, BOS, and EOS only. | Use lossless normalized JSON for messages, tools, tool results, reasoning fields, multimodal parts, and profile-approved template kwargs. |
 | Template failure | Missing templates silently fall back to `role: content`. The evaluated Gemma4 template fails on `message.get(...)`. | Exact profiles fail closed to `tokenizer_profile_unknown`; never silently substitute a generic template. |
-| Encode policy | `encode` and `encode_batch` hard-code `add_special_tokens=false`. | Make special-token behavior an immutable, golden-tested profile decision. |
+| Encode policy | `encode` and `encode_batch` hard-code `add_special_tokens=false`. | Make special-token behavior an immutable, request-class-specific, golden-tested profile decision. |
 | Concurrency and cancellation | Immutable tokenizer values are shareable and synchronous encoding returns `Result`, but there is no profile pool, in-flight cancellation, deadline, or panic/crash containment boundary. | Retain PIG's bounded profile concurrency and keep the in-process versus Unix-socket isolation gate. |
 | Tests | The 41 selected tokenizer unit tests pass, but chat-template tests are simplified string assertions and the real tokenizer integration uses TinyLlama. There is no Transformers/vLLM final-token parity suite. | Treat the tests as module tests only, not backend parity evidence. |
 
@@ -381,7 +428,8 @@ The strict Go manifest now binds and validates:
 
 - template runtime identity and compatibility version;
 - declared BOS/EOS/UNK/PAD text and unsigned 32-bit IDs;
-- immutable add/omit special-token policy, which a request cannot override;
+- immutable request-class-specific add/omit special-token policies, which a
+  request cannot override;
 - completions and chat-completions endpoint capabilities;
 - tools, tool choice, response format, JSON schema, reasoning, and multimodal
   feature capabilities with dependency checks;
@@ -543,6 +591,70 @@ Rust/Cargo 1.97.0, container ID, immutable image ID, and image name
 These measurements still exclude a real template renderer, C ABI or Unix
 socket transfer, and Go request-path integration. They do not prove final
 vLLM Chat Completions token parity.
+
+### 6.3.3 Target profile split and production provenance
+
+The six originally named CVMs are not one interchangeable tokenizer/scheduler
+population. The read-only 2026-07-31 snapshot divides them into:
+
+| Profile family | CVMs | Backend | Profile rule |
+|---|---|---|---|
+| Gemma4 31B IT | `bf47b91b-77f9-44ab-a081-284268e205f7`, `6e775a03-c7e2-496b-9c6b-76d17d89ca12`, `a0f0bfb3-e46f-4b22-814e-24872f251193` | vLLM | One Gemma/vLLM profile may be shared only while immutable image/model/template/config/block-size evidence matches. |
+| GLM-5.2 | `d4c268f5-b537-4b5e-969f-784432250f7c`, `55f52ee5-813c-4c25-b92a-4d3ca2de39c2`, `6193464a-a31a-4bab-8284-9b64d326a848` | SGLang | Requires an independent SGLang tokenizer/template/cache/scheduler profile; Gemma/vLLM evidence cannot enable it. |
+
+PIG still performs no routing. The split only selects the one configured local
+upstream profile and prevents cross-backend learning or cache state.
+
+The three Gemma CVMs used the same read-only production identity:
+
+~~~
+image:
+  ghcr.io/phala-network/vllm-openai:v0.24.0-cu129-ubuntu2404-phala.6
+image digest:
+  sha256:66fa87a8eb31b1c9849c907c63a18a6d03c1696a50246ca094c5789b0efd7368
+Phala overlay source revision:
+  6586e54ee274d75b71bd0b77600a6cc71f57c4bc
+official vLLM base source revision:
+  ee0da84ab9e04ac7610e28580af62c365e898389
+model repository/revision:
+  RedHatAI/gemma-4-31B-it-FP8-block@b92691b6de6294798f45df81accf88cbc3e1d901
+served model:
+  google/gemma-4-31B-it
+block size / maximum model length:
+  64 / 262144
+production CLI template:
+  examples/tool_chat_template_gemma4.jinja
+production CLI template SHA-256:
+  afdbb2abe3667ccde95cc2f86919f05370339399bab5f750950a4390523b8927
+tokenizer.json SHA-256:
+  cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f
+tokenizer_config.json SHA-256:
+  e467669cfe172dfb0c4e7de7bfbe7553c42bfa5de95acd71f423f58a434d80de
+~~~
+
+The production CLI template is not the model repository's default
+`chat_template.jinja` (`6a1015...`). Earlier raw-tokenizer work used the
+`FP8-dynamic@5f206f...` candidate and the repository-default template. Its
+identical `tokenizer.json` keeps the raw encoder benchmark informative, but it
+does not establish production Chat Completions parity.
+
+Read-only vLLM protocol inspection also established endpoint-specific special
+token behavior:
+
+- Completions defaults to `add_special_tokens=true`;
+- Chat Completions defaults to `add_special_tokens=false` because the chat
+  template inserts BOS itself.
+
+Test-only commit `40f579c` exposed the previous invalid single global policy;
+green commit `92d1daf` binds immutable policies to request class and also binds
+template source, backend source revision, and backend image digest in the
+manifest. This improves the contract only. It adds neither a template renderer
+nor an HTTP predictive call site.
+
+The SGLang/GLM-5.2 immutable tokenizer, template, radix-cache semantics,
+scheduler features, and golden oracles remain pending. Until they exist, those
+three profiles return `tokenizer_profile_unknown`/`predictor_profile_unknown`
+in predictive shadow and receive no cache or learned extra headroom.
 
 ### 6.4 Unsupported requests
 
@@ -851,6 +963,100 @@ It predicts only to the next reliable re-evaluation horizon:
 Every admission, phase transition, completion, cancellation, sample, cache
 epoch change, or prediction-error threshold crossing triggers re-evaluation.
 
+### 9.5 Online learned calibration that participates in admission
+
+The learned component is not the existing global concurrency-limit learner.
+It is a versioned scheduler calibrator invoked synchronously by
+`DecideAndReserve` before the request is forwarded.
+
+The initial implementation is an explainable hierarchical online residual
+model, not an unconstrained neural model. For feature vector `x` and outcome
+`y`:
+
+~~~
+base = static_backend_profile.predict(x)
+residual = observed_y / max(base, epsilon)
+
+safe TPS lower bound = base_TPS * lower_quantile(residual_TPS)
+safe latency upper bound = base_latency * upper_quantile(residual_latency)
+~~~
+
+The static profile remains the conservative cold-start prior. Learned
+residuals can correct systematic bias and recover measured safe headroom only
+after the coverage gate passes. They cannot bypass hard KV/workspace limits or
+the profile's absolute min/max clamps.
+
+The versioned feature record contains at least:
+
+~~~
+backend/model/image/config and predictor epoch
+decode sequence-count bucket
+active context-token bucket and distribution summary
+prefill sequence-count bucket
+new and already scheduled uncached-prefill tokens
+request cached/certain/expected token intervals
+KV physical and active occupancy buckets
+new request context and decode-horizon buckets
+chunked-prefill and scheduler settings
+speculative-acceptance bucket when applicable
+cache/profile confidence and sample age
+~~~
+
+Cache-hit features reduce only the modeled prefill/allocation work they can
+actually avoid. They never reduce the new request's decode share or
+backend-specific workspace risk merely because the prompt is cached.
+
+The hierarchy backs off from an exact feature cell to coarser cells and then to
+the static profile. Each cell records bounded recent residuals or an equivalent
+mergeable quantile sketch, sample count, effective sample weight, last update,
+prediction errors, and profile version. Eligibility requires:
+
+- a configured minimum effective sample size;
+- non-stale samples from the same backend/model/config/predictor epoch;
+- finite, positive, range-checked observations;
+- sufficient ownership/attribution to match an observation to the predicted
+  cohort;
+- measured one-sided coverage at or above the configured target;
+- no active distribution-shift or error-circuit-breaker condition.
+
+Training observations are outcome-specific. Missing TPOT, usage, cache, or KV
+evidence does not become a zero. The first sources are:
+
+- PIG semantic first-output timing for TTFT;
+- streaming token cadence or verified response usage for TPOT/request decode;
+- backend generation-token deltas divided across an attributed active decode
+  cohort for aggregate completion capacity;
+- backend KV/token samples reconciled through poll watermarks;
+- PIG request lifecycle events for phase duration and release timing;
+- backend prefix-cache query/hit deltas only for aggregate calibration, never
+  as proof that a particular request hit.
+
+An accepted shadow request produces a prediction record before forwarding and
+an outcome record after sufficient observations arrive. A request that the
+authoritative existing QoS path rejects has no observed upstream outcome and
+must not be trained as if the predictive counterfactual were known. Builder
+simulation supplies explicit ground truth for both policies.
+
+Staleness, reset, backend restart, tokenizer/profile mismatch, model/config
+change, impossible residual, sustained coverage miss, or excessive drift
+quarantines the affected cell and falls back through the hierarchy. Learned
+state is bounded in memory and cardinality and never stores prompt text, token
+IDs, request bodies, or prompt-derived hashes in telemetry/persistence.
+
+The mandatory causality tests use identical current backend samples and request
+costs, vary only the learner state, and prove:
+
+1. a calibrated safe cohort can raise the TPS lower bound and change a shadow
+   risk decision to fit inside all hard bounds;
+2. adverse latency/TPS residuals lower capacity and change fit to the correct
+   risk reason;
+3. cold, sparse, stale, shifted, or invalid learning never makes the decision
+   more permissive than the static prior;
+4. an observation with the wrong profile/epoch or insufficient attribution
+   cannot change a forecast;
+5. a prediction is stored in the reservation and later reconciled with the
+   matching outcome exactly once.
+
 ## 10. Predictive decision
 
 For a request r:
@@ -933,6 +1139,62 @@ created, transition, and expiry times
 
 Duplicate IDs, double release, reset, completion, cancellation, and expiry are
 idempotent and cannot underflow virtual state.
+
+### 11.1 One transaction across cache, scheduler, and reservation state
+
+The current `runtime/predictive.Manager` mutex proves atomicity only for its
+minimal physical/active-KV reservation map. `CacheMirror.BeginRequest` owns a
+different mutex, and the current reservation does not retain the complete
+scheduler prediction, block references, phase state, outcome linkage, or
+learner version. Calling those components sequentially would permit a cache pin
+without a KV reservation, or a reservation without the matching cache state.
+
+The integrated implementation therefore introduces one admission coordinator
+as the transaction owner. Exact rendering/tokenization and native block
+analysis may run before the coordinator lock because they can be expensive, but
+they are immutable proposals rather than state mutations. Under one coordinator
+critical section the implementation must:
+
+~~~
+sweep expired state and apply queued lifecycle events
+revalidate tokenizer manifest, backend epoch, scheduler profile, and learner epoch
+derive cache-hit interval without mutating shared state
+derive KV/prefill/decode/workspace request cost
+predict the post-admit state using the current learned calibrator snapshot
+evaluate every hard and QoS constraint
+if fit:
+  commit cache references plus all resource/phase reservations
+  store the exact prediction/features/model version needed for reconciliation
+else:
+  leave cache, virtual state, learner linkage, and reservation maps unchanged
+~~~
+
+No external callback, tokenizer call, network request, log write, or metrics
+scrape occurs while holding this lock. Metrics counters are updated from the
+committed result after unlock.
+
+If independent internal locks remain for read-only snapshots, the coordinator
+must define and test one lock order. Prefer coordinator-owned state or
+non-locking helpers called only under the coordinator rather than rollback
+between multiple separately committed managers.
+
+HTTP shadow lifecycle is explicit:
+
+- reserve before entering the authoritative existing QoS gate so the
+  counterfactual sees simultaneous arrivals;
+- release with `local_qos_reject` if the existing gate rejects, without
+  treating it as an upstream performance outcome;
+- mark semantic first output once and move prefill to decode;
+- reconcile streaming/non-streaming completion, client cancellation, upstream
+  failure, timeout, and panic/early return exactly once;
+- expire abandoned reservations conservatively and count the cause;
+- reset/quarantine all incompatible state atomically on epoch changes.
+
+Property and race tests snapshot every owned map/counter before an injected
+failure at each transaction stage and require either a complete valid commit or
+byte-for-byte equivalent logical state afterward. They also require zero leaked
+cache references and reservations after mixed completion/cancellation/reset
+stress.
 
 ## 12. Predicted waiting instead of fixed poll waiting
 
@@ -1040,6 +1302,11 @@ data.
 - Preserve v0.9.0 tests and deterministic scenarios.
 - Add predictive packages behind mode off/shadow.
 - Prove off mode performs no tokenizer/cache/scheduler work.
+- Add an application reachability test so a predictive package cannot be
+  called complete while only tests/simulators import it.
+- Set the development runtime version to PIG-v0.9.1 only when the off/shadow
+  configuration and HTTP integration exist; a plan or isolated package does
+  not change the runtime version.
 - Add a deterministic clock and backend-profile fixtures.
 
 ### Phase 1: tokenizer interface and manifest
@@ -1088,7 +1355,8 @@ Tests cover:
 
 ### Phase 4: scheduler and TPS predictor
 
-Tests cover:
+This is the next P0 executable slice after the `92d1daf` audit. Write and push a
+test-only red commit before implementation. Tests cover:
 
 - uncached long prefill reducing existing-user TPS;
 - cached long prefix reducing predicted prefill interference;
@@ -1101,8 +1369,48 @@ Tests cover:
 - EAGLE/DeepGEMM workspace constraint;
 - low-confidence profile fallback;
 - receding-horizon updates.
+- exact feature/profile/epoch identity and bounded bucketization;
+- static conservative cold-start predictions;
+- online lower-tail TPS and upper-tail TTFT/TPOT residual calibration;
+- hierarchical fallback for sparse cells and staleness/shift quarantine;
+- wrong-epoch, unattributed, missing, NaN, infinite, negative, and duplicate
+  observations changing no learned decision state;
+- identical current metrics and request cost producing different decisions
+  only after eligible learned residuals change;
+- the scheduler model version and forecast being retained for exactly-once
+  outcome reconciliation.
 
-### Phase 5: integrated decisions and replay
+The red test must fail because no concrete learned scheduler/calibrator exists,
+not because of a broken builder script or missing toolchain. The first green
+slice is domain/runtime plus deterministic simulator only; it makes no HTTP,
+template, native bridge, or real-GPU accuracy claim.
+
+### Phase 5: integrated transaction coordinator
+
+Tests build one coordinator with deterministic renderer/tokenizer analysis,
+cache mirror, learned scheduler, virtual state, and reservation ledger. They
+cover:
+
+- immutable proposal work outside the lock followed by manifest/epoch recheck;
+- cache-hit interval affecting uncached prefill and KV projection;
+- learned scheduler output affecting the same atomic decision;
+- all-or-nothing commit of cache refs, KV, prefill/decode horizon, prediction,
+  and learner linkage;
+- failure injection after every proposed mutation;
+- completion, local QoS reject, cancellation, upstream failure, reset, expiry,
+  and duplicate events;
+- concurrent same-prefix and near-capacity admissions under `go test -race`;
+- no request body, token IDs, request IDs, or block digests in metrics labels or
+  persistent learner state.
+
+### Phase 6: HTTP shadow integration, decisions, and replay
+
+First add off/shadow HTTP integration with injected deterministic components.
+Off mode must not construct, warm, or call rendering/tokenizer/cache/scheduler
+components. Shadow mode must execute the coordinator before the existing QoS
+gate while preserving the existing status, headers, body, routing, and real
+queue decision. Only after that reachability gate passes is the native bridge
+and production-profile template parity connected.
 
 Counterfactual policies:
 
@@ -1146,6 +1454,12 @@ Required integrated scenarios:
 - a stale sample cannot erase newer virtual events.
 - all reservation lifecycle operations are race-safe and idempotent.
 - cache/profile/backend resets invalidate incompatible state.
+- cache references, phase reservations, scheduler predictions, and learner
+  linkage commit or roll back as one logical transaction.
+- learned state is never updated from an unobserved rejected counterfactual,
+  mismatched epoch, duplicate outcome, or insufficiently attributed sample.
+- no isolated predictive package is called integrated until an application
+  test proves HTTP reachability in shadow and zero construction/work in off.
 
 ### 17.2 Prediction coverage
 
@@ -1157,6 +1471,11 @@ Required integrated scenarios:
   coverage target.
 - TTFT/TPOT upper bounds meet the configured empirical coverage target.
 - error-bound breach disables predictive extra headroom.
+- with current backend metrics and request cost held constant, eligible learned
+  residuals demonstrably change the scheduler interval and at least one
+  admission/reservation outcome; otherwise the learning implementation fails.
+- cold, sparse, stale, shifted, invalid, or wrong-epoch learned state is never
+  more permissive than the conservative static profile.
 
 Coverage targets are selected from builder/simulator evidence before any
 enforcement plan. v0.9.1 does not invent an unmeasured probability guarantee.
@@ -1187,6 +1506,39 @@ Against the same deterministic or replayed workload:
 - the primary gain is completion TPS, not only prompt or total TPS;
 - predicted single-user TPS protection is no worse than the current baseline;
 - cache-miss and unsupported traffic is not starved by cache-hit traffic.
+
+The deterministic builder suite computes completion goodput rather than raw
+admission count:
+
+~~~
+goodput = completion tokens from requests whose modeled single-user TPS,
+          TTFT, TPOT, KV, workspace, and preemption constraints all pass
+          / simulated wall time
+~~~
+
+Before any real-GPU calibration claim, the full predictive policy must meet all
+of these simulation gates against both current count/dynamic control and the
+v0.9.0 KV-only shadow on identical event traces:
+
+- zero additional modeled hard-budget, SLO, preemption-proxy, underflow,
+  duplicate, or reservation/cache-reference leak events;
+- zero false fits when the deterministic oracle says a configured hard or QoS
+  constraint would be violated;
+- at least 5% aggregate completion-goodput improvement on the declared
+  cache/burst/mixed workload suite, plus a strict improvement in at least three
+  independently named scenarios rather than one oversized trace dominating;
+- no more than 1% completion-goodput regression on the declared cache-cold
+  workload suite;
+- lower false-deny count than KV-only control on safe cache-hit and
+  completion-before-poll opportunities;
+- no fit caused by cache credit in the high-cache-hit plus long-decode case when
+  the post-join TPS bound fails;
+- every result reproducible from a seed, scenario hash, predictor/profile
+  version, and exact commit.
+
+These are simulator engineering gates, not claims about the six production
+GPUs. A failure triggers model/profile work; it is not fixed by weakening the
+trace ground truth or silently changing the comparator.
 
 ### 17.4 Performance gates on the remote builder
 
@@ -1343,7 +1695,10 @@ Completed and builder-green:
   cache certainty states, deterministic simulations, and their race tests;
 - manifest-bound reservation admission: a missing or stale tokenizer manifest
   fails before scheduler work and cannot create or mutate a reservation;
-- strict tokenizer manifest fields and immutable special-token policy;
+- strict tokenizer manifest fields and immutable declared special-token
+  bindings;
+- request-class-specific immutable special-token policies at `92d1daf`:
+  Completions add and Chat Completions omit backend tokenizer special tokens;
 - request-feature capability and dependency rejection before engine work, plus
   rejection of native token IDs outside the unsigned 32-bit contract;
 - domain-separated runtime-local Go and context-keyed native rendered-input
@@ -1365,16 +1720,67 @@ Still pending and not claimed:
 - complete request-path population of the phase-rich reservation fields in
   Section 11; the current Builder-green manager reserves the minimal
   `RequestCost` contract only;
+- a concrete static scheduler prior plus online residual learner/calibrator;
+  all current `Scheduler` implementations are test-only fakes and no learned
+  value participates in `DecideAndReserve`;
+- real predictive sample simulation: the current `EventSample` branch only
+  increments `SampleEvents` and does not call `Manager.ReconcileSample`;
+- the cross-component transaction coordinator from Section 11.1; current
+  cache-mirror and minimal reservation mutations are separately locked;
 - one request-path digest protocol: the legacy Go token-ID/HMAC helper remains
   an internal test helper and must not be mixed with native BLAKE3 opaque block
   analyses in a shared cache-mirror epoch;
 - off/shadow HTTP request-path integration and proof that off mode performs
   zero predictive work;
+- any `PREDICTIVE_ADMISSION_MODE` configuration loader/validator; the current
+  application exposes only `KV_ADMISSION_MODE` and reports PIG-v0.9.0;
 - calibrated scheduler/TPS/TTFT/TPOT profiles from a real upstream;
 - Docker smoke, image publication, any CVM deployment, and enforcement.
 
 The active implementation therefore remains an internal builder-tested slice.
 It does not change production traffic or current PIG behavior.
+
+### 19.2 Next executable slice: learned scheduler causality
+
+The next red commit adds tests only in these planned paths:
+
+~~~
+internal/runtime/predictive/calibrator_test.go
+internal/runtime/predictive/scheduler_test.go
+internal/simulation/predictive/learning_causality_test.go
+~~~
+
+The red tests reference a concrete static-prior scheduler, versioned online
+residual calibrator, eligible/stale/wrong-epoch observations, prediction model
+identity, and a simulator event that applies a real sample window. The intended
+red result is a Go compile failure for missing production types/functions, plus
+no unrelated package failure. A failing shell, missing `go`, malformed script,
+or pre-existing test failure is invalid red evidence.
+
+The first implementation commit may add only the coherent domain/runtime and
+simulator support needed to make those tests green. It must not add a fake HTTP
+claim, a vLLM dependency, or a production deployment. In particular it must
+prove with fixed current metrics and request cost that:
+
+~~~
+static/cold prior -> risk decision
+eligible healthy residual history -> fit decision inside unchanged hard bounds
+eligible adverse residual history -> TPS or latency risk decision
+stale/wrong-epoch/invalid history -> exact cold-prior decision
+~~~
+
+The focused remote-builder red/green commands are:
+
+~~~
+go test ./internal/runtime/predictive ./internal/simulation/predictive
+go test -race ./internal/runtime/predictive ./internal/simulation/predictive
+~~~
+
+The green exact commit then runs `git show --check`, tracked `gofmt` validation,
+`go test ./...`, `go test -race ./...`, `cargo fmt --check`, and
+`cargo test --locked` in a new clean builder checkout. Evidence records exact
+HEAD, clean status, toolchain/container identity, exit codes, and SHA-256. No
+local Windows test is substituted for any gate.
 
 ## 20. Version, Git, and release boundary
 
@@ -1431,7 +1837,9 @@ remains pending until a separately authorized isolated GPU shadow test exists.
 
 ## 23. Review record
 
-Three independent reviews are required before implementation begins:
+Three independent reviews were required before the first implementation and
+are repeated after every material slice or discovery that changes the
+architecture, evidence boundary, or next execution order:
 
 1. architecture and forward-control correctness;
 2. tokenizer/cache/backend semantics and safety;
@@ -1569,6 +1977,67 @@ Pass 3, quantitative evidence and release boundary:
   lane gates remain unchanged; and 2 MiB remains permanently ineligible for
   synchronous prediction. The small-core result is now explicitly separated
   from the end-to-end chat gate. The manifest-reservation green was also rerun
-  in a clean exact-commit Builder checkout with toolchain/container identity,
-  full Go, race, and locked Rust gates; no image was built or published and no
-  CVM was deployed.
+   in a clean exact-commit Builder checkout with toolchain/container identity,
+   full Go, race, and locked Rust gates; no image was built or published and no
+   CVM was deployed.
+
+### 2026-07-31 prediction-authenticity three-pass re-review
+
+This cycle was triggered by the question whether the originally intended
+learning algorithm actually predicts admission. It inspected the current
+`92d1daf` call graph, production and test implementations of `Scheduler`, the
+HTTP request path, tokenizer/cache/manager construction sites, current
+simulation events, configuration, runtime version, and the full plan.
+
+Pass 1, model causality and objective alignment:
+
+- Issues: the plan correctly described a future feed-forward model, but its
+  execution narrative could make isolated tokenizer/cache/manager components
+  look like predictive admission progress without proving reachability. Every
+  concrete scheduler was test-only. Existing capacity and TTFT learners adjust
+  a global limit after observations rather than forecasting this request's
+  post-admit effect. No acceptance test required learned state to change a
+  decision with current metrics held constant.
+- Changes: Sections 3.1 and 3.2 now record the exact call-graph gap and make
+  prediction causality the P0. Section 9.5 defines an explainable online
+  residual calibrator, features, targets, observation eligibility, hierarchical
+  fallback, staleness/shift behavior, and mandatory decision-causality tests.
+  Section 16 moves this learned scheduler slice ahead of further tokenizer
+  micro-optimization.
+
+Pass 2, transaction safety and lifecycle correctness:
+
+- Issues: the existing manager's mutex protects only minimal physical/active KV
+  numbers. Cache references use a different manager/lock, and reservations do
+  not retain phase resources, scheduler prediction, learner version, or outcome
+  linkage. Sequentially wiring these components could leak a cache pin or a KV
+  reservation on partial failure. Local-QoS rejects could also be mislabeled as
+  upstream training outcomes.
+- Changes: Section 11.1 introduces one coordinator-owned all-or-nothing
+  transaction, immutable work outside the lock with epoch revalidation, no
+  external work under the lock, exact lifecycle reasons, failure-injection
+  properties, and zero-leak race gates. Section 16 adds a separate integrated
+  coordinator phase before HTTP wiring.
+
+Pass 3, evidence validity and executable next step:
+
+- Issues: the predictive simulator's `EventSample` was a counter only and never
+  reconciled a sample into manager state. Prior green tests could all pass while
+  no application package imported the predictive runtime. The next learned
+  slice lacked named red-test files, intended failure reason, fixed builder
+  commands, and quantitative goodput comparators. The target six-CVM set was
+  also at risk of being treated as one Gemma/vLLM profile despite three of the
+  nodes being GLM-5.2/SGLang.
+- Changes: Sections 6.3.3 and 19.1 record the backend/profile split, immutable
+  Gemma production provenance, request-class special-token result, the no-op
+  sample event, missing predictive config, and PIG-v0.9.0 runtime truth. Section
+  19.2 fixes the next red/green file set and builder gates. Sections 16 and 17
+  add application-reachability/off-zero-work tests, a real sample event,
+  prediction-causality gates, all-or-nothing state assertions, deterministic
+  completion-goodput comparators, zero false fits, and cache-cold non-regression.
+
+Result of this review cycle: the document now explicitly says that the learning
+algorithm is not implemented or wired at `92d1daf`. The next authorized action
+is the test-only learned-scheduler causality commit in Section 19.2. This review
+does not claim native HTTP integration, a PIG-v0.9.1 runtime build, an image, a
+production deployment, or real-GPU prediction accuracy.
