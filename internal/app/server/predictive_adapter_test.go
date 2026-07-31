@@ -39,6 +39,10 @@ type adapterTestUpstreamState struct {
 	closeCalls int
 }
 
+type semanticTTFTPredictiveReservation interface {
+	ObserveSemanticTTFT(time.Duration) bool
+}
+
 func (r *adapterTestRenderer) Render(_ context.Context, input predictiveShadowInput) (predictiveRenderedRequest, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -324,6 +328,98 @@ func TestRealPredictiveShadowEligibleHistoryChangesPreForwardDecision(t *testing
 	}
 }
 
+func TestRealPredictiveShadowLearnsCompletedAttributedSemanticTTFTBeforeNextDecision(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(2_000, 0)}
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     newAdapterTestCounter(),
+		Coordinator: newAdapterTestCoordinatorWithTargets(t, 0, 15*time.Millisecond),
+		Now:         clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	input := predictiveShadowInput{
+		Path: "/v1/chat/completions",
+		Body: []byte(`{"messages":[{"role":"user","content":"same feature cell"}]}`),
+	}
+	for index := 0; index < 3; index++ {
+		requestID := fmt.Sprintf("semantic-training-%d", index)
+		reservation := adapter.DecideAndReserve(context.Background(), requestID, input)
+		if reservation == nil {
+			t.Fatalf("training reservation %d was rejected: %+v", index, adapter.Snapshot())
+		}
+		semantic, ok := reservation.(semanticTTFTPredictiveReservation)
+		if !ok {
+			reservation.Terminate(runtimepredictive.TerminalExpired)
+			t.Fatal("real reservation does not expose attributed semantic TTFT observation")
+		}
+		if !semantic.ObserveSemanticTTFT(100 * time.Millisecond) {
+			t.Fatalf("training semantic TTFT %d was not accepted", index)
+		}
+		if !reservation.Terminate(runtimepredictive.TerminalCompleted) {
+			t.Fatalf("training reservation %d did not complete", index)
+		}
+		clock.Advance(time.Second)
+	}
+
+	final := adapter.DecideAndReserve(context.Background(), "semantic-final", input)
+	if final != nil {
+		final.Terminate(runtimepredictive.TerminalExpired)
+		t.Fatal("completed attributed semantic TTFT did not protect the next request")
+	}
+	attempt := adapter.Snapshot()
+	if attempt.LastReason != domainpredictive.ReasonTTFTAtRisk || attempt.LastSource != runtimepredictive.PredictionSourceCalibrated || attempt.LastSamples != 3 {
+		t.Fatalf("post-learning decision = %+v, want calibrated TTFT risk from three samples", attempt)
+	}
+}
+
+func TestRealPredictiveShadowDoesNotLearnSemanticTTFTFromFailedRequests(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(3_000, 0)}
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     newAdapterTestCounter(),
+		Coordinator: newAdapterTestCoordinatorWithTargets(t, 0, 15*time.Millisecond),
+		Now:         clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+
+	input := predictiveShadowInput{
+		Path: "/v1/chat/completions",
+		Body: []byte(`{"messages":[{"role":"user","content":"failed feature cell"}]}`),
+	}
+	for index := 0; index < 3; index++ {
+		reservation := adapter.DecideAndReserve(context.Background(), fmt.Sprintf("failed-training-%d", index), input)
+		if reservation == nil {
+			t.Fatalf("failed training reservation %d was rejected", index)
+		}
+		semantic, ok := reservation.(semanticTTFTPredictiveReservation)
+		if !ok {
+			reservation.Terminate(runtimepredictive.TerminalExpired)
+			t.Fatal("real reservation does not expose attributed semantic TTFT observation")
+		}
+		if !semantic.ObserveSemanticTTFT(100 * time.Millisecond) {
+			t.Fatalf("failed training semantic TTFT %d was not recorded", index)
+		}
+		if !reservation.Terminate(runtimepredictive.TerminalUpstreamFailure) {
+			t.Fatalf("failed training reservation %d did not terminate", index)
+		}
+		clock.Advance(time.Second)
+	}
+
+	final := adapter.DecideAndReserve(context.Background(), "failed-final", input)
+	if final == nil {
+		t.Fatalf("failed requests contaminated future admission: %+v", adapter.Snapshot())
+	}
+	defer final.Terminate(runtimepredictive.TerminalExpired)
+	if attempt := adapter.Snapshot(); attempt.LastReason != domainpredictive.ReasonFit || attempt.LastSource != runtimepredictive.PredictionSourceStatic {
+		t.Fatalf("post-failure decision = %+v, want unchanged static fit", attempt)
+	}
+}
+
 func newAdapterTestCounter() *adapterTestCounter {
 	return &adapterTestCounter{
 		manifestID: "adapter-test-manifest",
@@ -336,6 +432,10 @@ func newAdapterTestCoordinator(t *testing.T) *runtimepredictive.CountCoordinator
 }
 
 func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64) *runtimepredictive.CountCoordinator {
+	return newAdapterTestCoordinatorWithTargets(t, userTPSTarget, time.Second)
+}
+
+func newAdapterTestCoordinatorWithTargets(t *testing.T, userTPSTarget float64, ttftSLO time.Duration) *runtimepredictive.CountCoordinator {
 	t.Helper()
 	identity := adapterTestIdentity()
 	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
@@ -381,7 +481,7 @@ func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64)
 			PhysicalKVHard:       1_000,
 			ActiveKVHard:         1_000,
 			UserTPSTarget:        userTPSTarget,
-			TTFTSLO:              time.Second,
+			TTFTSLO:              ttftSLO,
 			TPOTSLO:              time.Second,
 			WorkspaceRiskBudget:  1,
 			PreemptionRiskBudget: 1,
