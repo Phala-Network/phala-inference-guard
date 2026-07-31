@@ -52,6 +52,18 @@ func TestPredictiveProfileRejectsHashStructureAssetAndModelMismatch(t *testing.T
 			},
 			want: "verify predictive tokenizer",
 		},
+		"tokenizer-config-sha": {
+			mutate: func(_ *config, profile map[string]any) {
+				profile["tokenizer_config"].(map[string]any)["sha256"] = strings.Repeat("f", 64)
+			},
+			want: "verify predictive tokenizer config",
+		},
+		"template-sha": {
+			mutate: func(_ *config, profile map[string]any) {
+				profile["chat_template"].(map[string]any)["sha256"] = strings.Repeat("f", 64)
+			},
+			want: "verify predictive chat template",
+		},
 		"backend-image": {
 			mutate: func(_ *config, profile map[string]any) { profile["backend_image_digest"] = "latest" },
 			want:   "pinned sha256 digest",
@@ -67,6 +79,18 @@ func TestPredictiveProfileRejectsHashStructureAssetAndModelMismatch(t *testing.T
 		"unaligned-protected-kv": {
 			mutate: func(_ *config, profile map[string]any) { profile["protected_kv_tokens"] = 900001 },
 			want:   "KV capacities",
+		},
+		"protected-kv-above-maximum": {
+			mutate: func(_ *config, profile map[string]any) { profile["protected_kv_tokens"] = 1000004 },
+			want:   "KV capacities",
+		},
+		"metrics-age-before-poll": {
+			mutate: func(_ *config, profile map[string]any) { profile["metrics_maximum_age_milliseconds"] = 100 },
+			want:   "maximum age must be >= poll interval",
+		},
+		"metrics-timeout-zero": {
+			mutate: func(_ *config, profile map[string]any) { profile["metrics_request_timeout_milliseconds"] = 0 },
+			want:   "metrics_request_timeout_milliseconds is invalid",
 		},
 		"decode-horizon": {
 			mutate: func(_ *config, profile map[string]any) { profile["default_decode_horizon"] = 300000 },
@@ -90,6 +114,24 @@ func TestPredictiveProfileRejectsHashStructureAssetAndModelMismatch(t *testing.T
 				t.Fatalf("load error = %v, want substring %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestPredictiveProfileRejectsDuplicateJSONKeys(t *testing.T) {
+	cfg := config{}
+	writePredictiveFactoryTestProfile(t, &cfg)
+	content, err := os.ReadFile(cfg.PredictiveAdmissionProfilePath)
+	if err != nil {
+		t.Fatalf("read predictive profile: %v", err)
+	}
+	duplicate := append([]byte(`{"schema_version":2,`), content[1:]...)
+	if err := os.WriteFile(cfg.PredictiveAdmissionProfilePath, duplicate, 0o600); err != nil {
+		t.Fatalf("write duplicate-key profile: %v", err)
+	}
+	cfg.PredictiveAdmissionProfileSHA256 = predictiveFactoryTestSHA(duplicate)
+	_, err = loadPredictiveProfile(cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256)
+	if err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatalf("duplicate-key load error = %v", err)
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive/nativeffi"
 )
 
-const predictiveProfileSchemaVersion = 1
+const predictiveProfileSchemaVersion = 2
 
 const predictiveGemma4RendererVersion = "gemma4-text-v1"
 
@@ -52,6 +52,10 @@ type predictiveProfileManifest struct {
 	ModelMaximumLength                  int64                  `json:"model_maximum_length"`
 	MaximumKVTokens                     int64                  `json:"maximum_kv_tokens"`
 	ProtectedKVTokens                   int64                  `json:"protected_kv_tokens"`
+	MetricsPollIntervalMilliseconds     int64                  `json:"metrics_poll_interval_milliseconds"`
+	MetricsMaximumAgeMilliseconds       int64                  `json:"metrics_maximum_age_milliseconds"`
+	MetricsRequestTimeoutMilliseconds   int64                  `json:"metrics_request_timeout_milliseconds"`
+	PreemptionCooldownMilliseconds      int64                  `json:"preemption_cooldown_milliseconds"`
 	DefaultDecodeHorizon                int64                  `json:"default_decode_horizon"`
 	MaximumDecodeHorizon                int64                  `json:"maximum_decode_horizon"`
 	BaseCompletionTPS                   float64                `json:"base_completion_tps"`
@@ -183,26 +187,13 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		_ = counter.Close()
 		return nil, err
 	}
-	pollInterval := cfg.DynamicPollInterval
-	if pollInterval <= 0 || pollInterval > time.Duration(math.MaxInt64/3) {
-		_ = counter.Close()
-		return nil, fmt.Errorf("predictive metrics poll interval is invalid")
-	}
-	maximumAge := cfg.KVAdmissionPolicy.MaxMetricsAge
-	if maximumAge <= 0 {
-		maximumAge = 3 * pollInterval
-	}
-	preemptionCooldown := cfg.KVAdmissionPolicy.PreemptionCooldown
-	if preemptionCooldown <= 0 {
-		preemptionCooldown = maximumAge
-	}
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
 		MetricsURL:         metricsURL,
 		MaximumKVTokens:    profile.manifest.MaximumKVTokens,
-		PollInterval:       pollInterval,
-		MaximumAge:         maximumAge,
-		RequestTimeout:     2 * time.Second,
-		PreemptionCooldown: preemptionCooldown,
+		PollInterval:       time.Duration(profile.manifest.MetricsPollIntervalMilliseconds) * time.Millisecond,
+		MaximumAge:         time.Duration(profile.manifest.MetricsMaximumAgeMilliseconds) * time.Millisecond,
+		RequestTimeout:     time.Duration(profile.manifest.MetricsRequestTimeoutMilliseconds) * time.Millisecond,
+		PreemptionCooldown: time.Duration(profile.manifest.PreemptionCooldownMilliseconds) * time.Millisecond,
 		Coordinator:        coordinator,
 	})
 	if err != nil {
@@ -340,6 +331,19 @@ func validatePredictiveProfile(profile predictiveProfileManifest) error {
 	blockSize := int64(profile.BlockSize)
 	if profile.MaximumKVTokens <= 0 || profile.ProtectedKVTokens <= 0 || profile.ProtectedKVTokens > profile.MaximumKVTokens || profile.MaximumKVTokens%blockSize != 0 || profile.ProtectedKVTokens%blockSize != 0 {
 		return fmt.Errorf("predictive profile KV capacities must be positive, block-aligned, and protected <= maximum")
+	}
+	for name, value := range map[string]int64{
+		"metrics_poll_interval_milliseconds":   profile.MetricsPollIntervalMilliseconds,
+		"metrics_maximum_age_milliseconds":     profile.MetricsMaximumAgeMilliseconds,
+		"metrics_request_timeout_milliseconds": profile.MetricsRequestTimeoutMilliseconds,
+		"preemption_cooldown_milliseconds":      profile.PreemptionCooldownMilliseconds,
+	} {
+		if err := validatePredictiveDuration(name, value, time.Millisecond); err != nil {
+			return err
+		}
+	}
+	if profile.MetricsMaximumAgeMilliseconds < profile.MetricsPollIntervalMilliseconds {
+		return fmt.Errorf("predictive profile metrics maximum age must be >= poll interval")
 	}
 	if profile.DefaultDecodeHorizon <= 0 || profile.MaximumDecodeHorizon < profile.DefaultDecodeHorizon || profile.MaximumDecodeHorizon > profile.ModelMaximumLength {
 		return fmt.Errorf("predictive profile decode horizons are invalid")

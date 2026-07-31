@@ -25,6 +25,9 @@ vllm:generation_tokens_total 100
 	cfg := testProxyConfig(backend.URL)
 	cfg.PredictiveAdmissionMode = "shadow"
 	cfg.Backends[0].MetricsURL = backend.URL
+	cfg.DynamicPollInterval = 9 * time.Second
+	cfg.KVAdmissionPolicy.MaxMetricsAge = 27 * time.Second
+	cfg.KVAdmissionPolicy.PreemptionCooldown = 45 * time.Second
 	writePredictiveFactoryTestProfile(t, &cfg)
 	srv, err := newProxyServer(cfg)
 	if err != nil {
@@ -41,6 +44,13 @@ vllm:generation_tokens_total 100
 	}
 	if shadow.upstream == nil {
 		t.Fatal("default predictive shadow did not construct an upstream metrics observer")
+	}
+	observer, ok := shadow.upstream.(*predictiveVLLMObserver)
+	if !ok {
+		t.Fatalf("default predictive upstream = %T, want *predictiveVLLMObserver", shadow.upstream)
+	}
+	if observer.pollInterval != 250*time.Millisecond || observer.maximumAge != 750*time.Millisecond || observer.client.Timeout != 500*time.Millisecond || observer.preemptionCooldown != time.Second {
+		t.Fatalf("observer timing = poll=%s age=%s timeout=%s cooldown=%s, want manifest-pinned 250ms/750ms/500ms/1s", observer.pollInterval, observer.maximumAge, observer.client.Timeout, observer.preemptionCooldown)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	for !shadow.upstream.Healthy(time.Now()) && time.Now().Before(deadline) {
