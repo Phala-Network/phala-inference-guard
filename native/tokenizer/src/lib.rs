@@ -1,7 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
+    use ahash::AHashMap;
     use tokenizers::{
         Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace,
     };
@@ -10,7 +9,7 @@ mod tests {
 
     #[test]
     fn returns_exact_ids_from_the_loaded_tokenizer() {
-        let vocabulary = HashMap::from([
+        let vocabulary = AHashMap::from([
             ("[UNK]".to_string(), 0),
             ("hello".to_string(), 1),
             ("world".to_string(), 2),
