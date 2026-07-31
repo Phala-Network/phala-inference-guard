@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -16,6 +17,10 @@ import (
 )
 
 func newProxyServer(cfg config) (*proxyServer, error) {
+	return newProxyServerWithDependencies(cfg, serverDependencies{})
+}
+
+func newProxyServerWithDependencies(cfg config, dependencies serverDependencies) (*proxyServer, error) {
 	if len(cfg.Backends) == 0 && cfg.Upstream != "" {
 		metricsURL := ""
 		if len(cfg.DynamicMetricsURLs) > 0 {
@@ -25,6 +30,20 @@ func newProxyServer(cfg config) (*proxyServer, error) {
 	}
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
+	}
+	var predictiveShadow predictiveAdmissionShadow
+	if cfg.PredictiveAdmissionMode == "shadow" {
+		if dependencies.NewPredictiveShadow == nil {
+			return nil, fmt.Errorf("predictive shadow adapter is required when PREDICTIVE_ADMISSION_MODE=shadow")
+		}
+		var err error
+		predictiveShadow, err = dependencies.NewPredictiveShadow(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("construct predictive shadow adapter: %w", err)
+		}
+		if predictiveShadow == nil {
+			return nil, fmt.Errorf("predictive shadow adapter constructor returned nil")
+		}
 	}
 	backends, target, proxy, err := backend.Build(backendProxyConfigs(cfg.Backends))
 	if err != nil {
@@ -50,6 +69,7 @@ func newProxyServer(cfg config) (*proxyServer, error) {
 		unknownLn:                newLane("unknown_body", 0),
 		attestation:              attestationService,
 		priorityInjector:         request.NewPriorityInjector(priorityInjectorConfig(cfg)),
+		predictiveShadow:         predictiveShadow,
 		started:                  time.Now(),
 		activeRequests:           prefill.New(),
 		decisionDuration:         newDurationHistogram(),

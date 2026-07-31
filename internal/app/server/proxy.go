@@ -1,12 +1,14 @@
 package server
 
 import (
-	requesttier "github.com/Phala-Network/phala-inference-guard/internal/domain/request"
-	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	requesttier "github.com/Phala-Network/phala-inference-guard/internal/domain/request"
+	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
+	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -51,6 +53,17 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	decisionStart := time.Now()
 	estimatorStart := time.Now()
 	classification := s.classifyRequest(r)
+	predictiveReservation := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
+		Path:            r.URL.Path,
+		Body:            classification.PredictiveBody,
+		OutputTokens:    classification.OutputTokens,
+		HasOutputTokens: classification.HasOutputTokens,
+		Streaming:       classification.Streaming,
+	})
+	predictiveCause := runtimepredictive.TerminalClientCancelled
+	if predictiveReservation != nil {
+		defer func() { predictiveReservation.Terminate(predictiveCause) }()
+	}
 	if s.kvShadow != nil {
 		s.kvEstimatorDuration.Observe(time.Since(estimatorStart))
 	}
@@ -70,12 +83,15 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.decisionDuration.Observe(decisionElapsed)
 	if releaseQoS == nil {
 		if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseQueue, false) {
+			predictiveCause = runtimepredictive.TerminalClientDisconnected
 			return
 		}
 		if qosReject == "backend_unavailable" {
+			predictiveCause = runtimepredictive.TerminalUpstreamFailure
 			s.unavailable(w, qosReject)
 			return
 		}
+		predictiveCause = runtimepredictive.TerminalLocalQoSReject
 		s.qosGate.ObserveReject(ln, tier, qosReject)
 		rejectLane := ln
 		if strings.HasPrefix(qosReject, "global_") {
@@ -87,10 +103,12 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer releaseQoS()
 	backend := s.chooseBackend()
 	if backend == nil {
+		predictiveCause = runtimepredictive.TerminalUpstreamFailure
 		s.unavailable(w, "backend_unavailable")
 		return
 	}
 	if !s.priorityInjector.Inject(r, tier) {
+		predictiveCause = runtimepredictive.TerminalLocalQoSReject
 		s.qosGate.ObserveReject(ln, tier, "backend_priority_injection")
 		s.reject(w, ln, "backend_priority_injection")
 		return
@@ -101,6 +119,13 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	prefillGrace := s.prefillGraceDuration(r, classification.Streaming)
 	markDecode, doneActive := s.trackActiveRequest(prefillGrace)
 	defer doneActive()
+	markSemanticOutput := markDecode
+	if predictiveReservation != nil {
+		markSemanticOutput = func() {
+			markDecode()
+			predictiveReservation.MarkPrefillComplete()
+		}
+	}
 	r.Header.Set("X-PIG-Lane", ln.Name())
 	r.Header.Set("X-PIG-Tier", tier.String())
 	if hasOutputTokens {
@@ -110,9 +135,16 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var result proxyResult
 	if classification.Streaming {
 		allowEarlyBridge := s.cfg.SSEEarlyBridgeEnabled && s.safeForEarlySSEBridge(r, outputTokens, hasOutputTokens)
-		result = s.proxyStreamingRequest(backend, w, r, allowEarlyBridge, requestStart, markDecode)
+		result = s.proxyStreamingRequest(backend, w, r, allowEarlyBridge, requestStart, markSemanticOutput)
 	} else {
 		result = s.proxyRequest(backend, w, r)
+	}
+	if result.status == clientClosedRequestStatus {
+		predictiveCause = runtimepredictive.TerminalClientDisconnected
+	} else if result.status >= http.StatusOK && result.status < http.StatusMultipleChoices {
+		predictiveCause = runtimepredictive.TerminalCompleted
+	} else {
+		predictiveCause = runtimepredictive.TerminalUpstreamFailure
 	}
 	elapsed := time.Since(started)
 	s.observeProxyResult(result)

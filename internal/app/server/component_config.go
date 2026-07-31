@@ -20,12 +20,13 @@ func backendProxyConfigs(configs []backendConfig) []backend.Config {
 
 func requestClassifierConfig(cfg config) request.Config {
 	return request.Config{
-		QoSPaths:              cfg.QoSPaths,
-		PathSuffixMatch:       cfg.PathSuffixMatch,
-		ClassifyOutputTokens:  cfg.ClassifyOutputTokens,
-		JSONClassifyBodyBytes: cfg.JSONClassifyBodyBytes,
-		JSONClassifyLimit:     cfg.JSONClassifyLimit,
-		OutputTokenFields:     cfg.OutputTokenFields,
+		QoSPaths:                cfg.QoSPaths,
+		PathSuffixMatch:         cfg.PathSuffixMatch,
+		PredictiveAdmissionMode: cfg.PredictiveAdmissionMode,
+		ClassifyOutputTokens:    cfg.ClassifyOutputTokens,
+		JSONClassifyBodyBytes:   cfg.JSONClassifyBodyBytes,
+		JSONClassifyLimit:       cfg.JSONClassifyLimit,
+		OutputTokenFields:       cfg.OutputTokenFields,
 		MediumBodyBytes:       cfg.MediumBodyBytes,
 		LongBodyBytes:         cfg.LongBodyBytes,
 		VeryLongBodyBytes:     cfg.VeryLongBodyBytes,

@@ -119,4 +119,5 @@ type Config struct {
 	KVAdmissionMode                    string
 	KVAdmissionPolicy                  kvadmission.Policy
 	KVAdmissionEstimator               kvadmission.EstimatorConfig
+	PredictiveAdmissionMode            string
 }

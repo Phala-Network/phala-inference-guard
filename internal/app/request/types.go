@@ -9,12 +9,13 @@ import (
 )
 
 type Config struct {
-	QoSPaths              []string
-	PathSuffixMatch       bool
-	ClassifyOutputTokens  bool
-	JSONClassifyBodyBytes int64
-	JSONClassifyLimit     int
-	OutputTokenFields     []string
+	QoSPaths                []string
+	PathSuffixMatch         bool
+	PredictiveAdmissionMode string
+	ClassifyOutputTokens    bool
+	JSONClassifyBodyBytes   int64
+	JSONClassifyLimit       int
+	OutputTokenFields       []string
 	MediumBodyBytes       int64
 	LongBodyBytes         int64
 	VeryLongBodyBytes     int64

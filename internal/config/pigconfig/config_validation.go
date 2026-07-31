@@ -67,7 +67,10 @@ func Validate(cfg Config) error {
 	if err := validateDynamicConfig(cfg); err != nil {
 		return err
 	}
-	return validateKVAdmissionConfig(cfg)
+	if err := validateKVAdmissionConfig(cfg); err != nil {
+		return err
+	}
+	return validatePredictiveAdmissionConfig(cfg)
 }
 
 func validateCoreConfig(cfg Config) error {

@@ -83,6 +83,7 @@ type proxyServer struct {
 	attestation              *attestation.Service
 	dynamicController        *dynamic.Controller
 	kvShadow                 *kvshadow.Manager
+	predictiveShadow         predictiveAdmissionShadow
 	started                  time.Time
 	total429                 atomic.Uint64
 	backendUnavailable       atomic.Uint64
@@ -90,6 +91,7 @@ type proxyServer struct {
 	activeRequests           *prefill.Tracker
 	nextActiveID             atomic.Uint64
 	nextKVShadowID           atomic.Uint64
+	nextPredictiveID         atomic.Uint64
 	decisionDuration         durationHistogram
 	kvEstimatorDuration      durationHistogram
 	kvShadowDecisionDuration durationHistogram

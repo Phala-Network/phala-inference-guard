@@ -16,10 +16,10 @@ type readCloser struct {
 	io.Closer
 }
 
-func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFields, kvadmission.Cost, bool) {
+func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFields, kvadmission.Cost, []byte, bool) {
 	unsupported := kvadmission.Cost{UnsupportedReason: "body_not_scannable"}
 	if c.cfg.JSONClassifyBodyBytes <= 0 {
-		return tokenclassifier.JSONFields{}, unsupported, false
+		return tokenclassifier.JSONFields{}, unsupported, nil, false
 	}
 	if r.Body == nil || r.ContentLength < 0 || r.ContentLength > c.cfg.JSONClassifyBodyBytes {
 		if r.ContentLength < 0 {
@@ -27,11 +27,11 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFi
 		} else if r.ContentLength > c.cfg.JSONClassifyBodyBytes {
 			unsupported.UnsupportedReason = "body_too_large"
 		}
-		return tokenclassifier.JSONFields{}, unsupported, false
+		return tokenclassifier.JSONFields{}, unsupported, nil, false
 	}
 	if !c.acquire() {
 		unsupported.UnsupportedReason = "classifier_saturated"
-		return tokenclassifier.JSONFields{}, unsupported, false
+		return tokenclassifier.JSONFields{}, unsupported, nil, false
 	}
 	defer c.release()
 	originalBody := r.Body
@@ -41,16 +41,21 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFi
 		r.Body = readCloser{Reader: io.MultiReader(bytes.NewReader(body), originalBody), Closer: originalBody}
 		r.ContentLength = originalContentLength
 		unsupported.UnsupportedReason = "body_read_failed"
-		return tokenclassifier.JSONFields{}, unsupported, false
+		return tokenclassifier.JSONFields{}, unsupported, nil, false
 	}
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
 	if int64(len(body)) > c.cfg.JSONClassifyBodyBytes {
+		r.Body = readCloser{Reader: io.MultiReader(bytes.NewReader(body), originalBody), Closer: originalBody}
+		r.ContentLength = originalContentLength
 		unsupported.UnsupportedReason = "body_too_large"
-		return tokenclassifier.JSONFields{}, unsupported, false
+		return tokenclassifier.JSONFields{}, unsupported, nil, false
 	}
+	r.Body = readCloser{Reader: bytes.NewReader(body), Closer: originalBody}
+	r.ContentLength = originalContentLength
 	fields := c.cfg.OutputTokenFields
-	if !c.cfg.ClassifyOutputTokens && c.cfg.KVAdmissionMode != "shadow" {
+	if c.cfg.PredictiveAdmissionMode == "shadow" && len(fields) == 0 {
+		fields = []string{"max_tokens", "max_completion_tokens", "max_output_tokens"}
+	}
+	if !c.cfg.ClassifyOutputTokens && c.cfg.KVAdmissionMode != "shadow" && c.cfg.PredictiveAdmissionMode != "shadow" {
 		fields = nil
 	}
 	parsed, ok := tokenclassifier.ParseJSONFields(body, fields)
@@ -64,7 +69,11 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFi
 			cost.UnsupportedReason = "unsupported_content_type"
 		}
 	}
-	return parsed, cost, ok
+	var predictiveBody []byte
+	if c.cfg.PredictiveAdmissionMode == "shadow" {
+		predictiveBody = append([]byte(nil), body...)
+	}
+	return parsed, cost, predictiveBody, ok
 }
 
 func requestContentTypeJSON(value string) bool {

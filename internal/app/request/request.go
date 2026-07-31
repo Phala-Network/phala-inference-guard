@@ -29,6 +29,7 @@ type Classification struct {
 	HasOutputTokens bool
 	Streaming       bool
 	KVCost          kvadmission.Cost
+	PredictiveBody  []byte
 }
 
 func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
@@ -36,17 +37,20 @@ func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
 		Lane:      c.classify(r),
 		Streaming: c.WantsStreamingResponse(r),
 	}
-	fields, kvCost, ok := c.classifyJSONFields(r)
+	fields, kvCost, predictiveBody, ok := c.classifyJSONFields(r)
 	result.KVCost = kvCost
+	result.PredictiveBody = predictiveBody
 	if !ok {
 		return result
 	}
 	result.Streaming = result.Streaming || (fields.HasStream && fields.Stream)
+	if fields.HasOutputTokens && (c.cfg.ClassifyOutputTokens || c.cfg.PredictiveAdmissionMode == "shadow") {
+		result.OutputTokens = fields.OutputTokens
+		result.HasOutputTokens = true
+	}
 	if result.Lane == c.lanes.UnknownBody || !c.cfg.ClassifyOutputTokens || !fields.HasOutputTokens {
 		return result
 	}
-	result.OutputTokens = fields.OutputTokens
-	result.HasOutputTokens = true
 	c.observeOutputTokens(result.OutputTokens)
 	result.Lane = requestclass.MoreRestrictiveLane(result.Lane, c.outputLane(result.OutputTokens))
 	return result
