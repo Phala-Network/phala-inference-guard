@@ -14,10 +14,10 @@ import (
 func TestNativeAnalyzerReturnsOpaqueBlockAnalysisAndClosesIdempotently(t *testing.T) {
 	analyzer, err := Open(Config{
 		TokenizerPath: filepath.Join("..", "..", "..", "..", "native", "tokenizer", "fixtures", "ffi-wordlevel-tokenizer.json"),
-		ManifestID:   "go-ffi-test-manifest",
-		BackendEpoch: "go-ffi-test-epoch",
-		BlockSize:    2,
-		Key:          []byte("0123456789abcdef0123456789abcdef"),
+		ManifestID:    "go-ffi-test-manifest",
+		BackendEpoch:  "go-ffi-test-epoch",
+		BlockSize:     2,
+		Key:           []byte("0123456789abcdef0123456789abcdef"),
 	})
 	if err != nil {
 		t.Fatalf("open native analyzer: %v", err)
