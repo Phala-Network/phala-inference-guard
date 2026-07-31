@@ -693,3 +693,104 @@ identity uncertainty. The source-only PIG-v0.9.1 promotion is included in the
 release candidate; remaining work is the exact final-commit full matrix. No
 image, registry publication, deployment, restart, or production inference test
 is authorized or implied.
+
+## 17. Predictive hot-path efficiency review
+
+This review covers only production-reachable predictive request work. It does
+not optimize the disconnected cache experiments or change admission semantics.
+The measurements below are remote-builder CPU benchmarks, not GPU-serving
+latency or production capacity claims.
+
+### Findings implemented
+
+1. The native count-only tokenizer requested offsets that PIG never consumes.
+   The hot count path now uses `Tokenizer::encode_fast`, while the builder-only
+   token-ID oracle keeps the full encode path. All five pinned Gemma4 production
+   cases retained exact final token IDs and counts. In the production-tokenizer
+   exploration, 128k count latency improved by about 11.4% at p50 and 21.6% at
+   p95; no measured length regressed at p50.
+2. The Gemma4 renderer copied each message content through an intermediate raw
+   message representation, copied content again for buffer ownership, grew the
+   output incrementally, and allocated a split/builder path even when assistant
+   text contained no thinking markers. Direct message-field decoding, capacity
+   pre-sizing, removal of the content copy, and the no-marker fast path reduced
+   the paired median by about 13.5%, bytes from 2,336,655 to 1,877,650 per
+   operation, and allocations from 137 to 131.
+3. Duplicate-key validation used `json.Decoder.Token`, which buffered or copied
+   large string values even though only object keys matter. A structural scanner
+   now runs only after the standard library has validated the JSON and decodes
+   only object keys. Semantic-equivalence tests cover escaped solidus,
+   backslash, Unicode, surrogate pairs, nested arrays/objects, and structural
+   characters inside strings. Against the preceding renderer commit, the
+   alternating ten-round builder A/B reduced median time by 23.41%, bytes from
+   1,877,645.5 to 1,133,463 per operation, and allocations from 131 to 59; the
+   new path was faster in nine of ten paired rounds.
+4. String message content was decoded once for validation and again for
+   rendering. The parsed text is now retained for rendering and only the raw
+   content length is retained for capacity estimation. Against the scanner
+   commit, the alternating ten-round A/B reduced median time by another 24.56%,
+   bytes from 1,133,463 to 912,165 per operation, and allocations from 59 to 56;
+   the new path was faster in all ten rounds.
+5. Calibrated prediction copied all samples, filtered them into another slice,
+   split each residual target again, and copied each target once more before
+   sorting. It now counts fresh target samples under the scheduler lock, copies
+   only scalar ratios into exact-capacity local slices, releases the lock, and
+   sorts those slices in place. The calibrated prediction benchmark decreased
+   from 2,680 B/op and 8 allocations to 128 B/op and 1 allocation; a prior
+   alternating ten-round A/B reduced median time by about 67%.
+
+### Findings intentionally retained
+
+- Predictive shadow keeps an independent request-body copy. A regression test
+  deliberately lets the shadow mutate its owned bytes and proves that both the
+  upstream request and client-visible response remain unchanged. Removing this
+  copy would weaken the shadow isolation contract for a relatively small
+  `memcpy` saving compared with JSON rendering and exact tokenization.
+- `Manager.virtualStateIntervalLocked` scans the active reservation map during
+  an atomic decision. With the configured request caps this is a small bounded
+  set, while incremental aggregates would complicate assimilation, ambiguous
+  samples, prefill completion, terminal reconciliation, and rollback. No
+  profile showed this scan as material, so it remains the simpler safety-first
+  implementation.
+- The native FFI error buffer was not pooled. The measured short count path is
+  approximately 520 B/op and 2 allocations, not a per-request 4 KiB heap
+  allocation. Adding shared pooling without evidence would introduce
+  synchronization and ownership complexity.
+- Prediction remains synchronous before forwarding. Moving tokenizer work to
+  an asynchronous shadow task would lower apparent request latency but would no
+  longer measure or exercise the required pre-forward forecast and reservation
+  transaction.
+
+### Stop condition and remaining cost
+
+The final renderer profile at source commit `78de475` measured about 4.05 ms,
+912,190 B/op, and 56 allocations on the long-chat CPU fixture. The old
+`json.Decoder.Token`/`Decoder.refill` allocation path is absent. Standard
+`encoding/json` validation and decoding account for about 92% of CPU;
+`uniqueJSONKeyScanner.skipString` accounts for about 5.9%. Allocation space is
+now dominated by `json.RawMessage` copies (about 50.6%), the one decoded string
+(about 23.5%), and the rendered output buffer (about 25.6%).
+
+A more invasive typed or custom full-request parser could remove another raw
+copy, but it would change accepted-field, null, and error-priority behavior for
+an end-to-end stage already much smaller than exact tokenization on long
+inputs. It is deferred until an integrated profile shows renderer parsing, not
+the tokenizer, is the admission latency bottleneck.
+
+Material builder evidence is retained under `/work/pig-v091-evidence`:
+
+- `d93defc-json-key-scanner-focused.log`, SHA-256
+  `d5c578d24ef2ddcfbbe861f230aa6fa47e50eba61fe926eb56475b7b51961cb6`;
+- `d93defc-json-key-scanner-paired-ab.log`, SHA-256
+  `93522225188ad5e50d180e519c94968340ac4bfcaca9e6eed7ba2c30119f8d05`;
+- `78de475-renderer-decode-once-focused.log`, SHA-256
+  `86b2f3bae131bf942f6f7ad16339e2e721773369f19c27433ddca405d7aaf608`;
+- `78de475-renderer-decode-once-paired-ab.log`, SHA-256
+  `c112e847f97c30c15214752ae9e527f355303c885b1fb37310bd47c53f58b395`;
+- `78de475-gemma4-renderer-profile.log`, SHA-256
+  `dcc3e648f22a1f0328b52c456cee262eb618c1fd9c16a19c6cd5aba6437f5945`.
+
+At this document revision the optimized source is focused-green. The next and
+final source-only gate is the exact document-commit full matrix: default and
+native Go tests and races, locked Rust tests, production renderer/count oracle,
+exact final token IDs, deterministic goodput, and the full tokenizer benchmark.
