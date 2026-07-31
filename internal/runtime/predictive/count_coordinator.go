@@ -2,6 +2,7 @@ package predictive
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
@@ -73,8 +74,38 @@ func NewCountCoordinator(config CountCoordinatorConfig) (*CountCoordinator, erro
 	}, nil
 }
 
-func (c *CountCoordinator) DecideAndReserve(time.Time, CountAdmissionProposal) CountAdmissionResult {
-	return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+func (c *CountCoordinator) DecideAndReserve(now time.Time, proposal CountAdmissionProposal) CountAdmissionResult {
+	if c == nil || c.manager == nil {
+		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+	}
+	if proposal.RequestID == "" || proposal.DecodeHorizonUpper < 0 || !positiveFinite(proposal.Confidence) || proposal.Confidence > 1 {
+		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+	}
+	if err := proposal.Analysis.Validate(c.identity.ManifestID, c.identity.BackendEpoch); err != nil {
+		return countAdmissionFailure(domain.ReasonTokenizerProfileUnknown)
+	}
+	activeContext := addInt64Saturating(proposal.Analysis.ExactInputTokens, proposal.DecodeHorizonUpper)
+	kvUpper := roundUpCountCost(activeContext, int64(c.identity.BlockSize))
+	cost := CountRequestCost{
+		ManifestID:               c.identity.ManifestID,
+		BackendEpoch:             c.identity.BackendEpoch,
+		InputTokens:              proposal.Analysis.ExactInputTokens,
+		PhysicalKVUpper:          kvUpper,
+		ActiveKVUpper:            kvUpper,
+		UncachedPrefillUpper:     proposal.Analysis.ExactInputTokens,
+		DecodeHorizonUpper:       proposal.DecodeHorizonUpper,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: activeContext,
+		Confidence:               proposal.Confidence,
+	}
+	managerResult := c.manager.decideAndReserve(now, proposal.RequestID, cost.managerCost())
+	return CountAdmissionResult{
+		Decision:      managerResult.Decision,
+		Prediction:    managerResult.Prediction,
+		HasPrediction: managerResult.HasPrediction,
+		Cost:          cost,
+		Reserved:      managerResult.Decision.Reason == domain.ReasonFit,
+	}
 }
 
 func (c *CountCoordinator) MarkPrefillComplete(requestID string) bool {
@@ -116,4 +147,30 @@ func (c *CountCoordinator) Snapshot() CountCoordinatorSnapshot {
 
 func countAdmissionFailure(reason domain.Reason) CountAdmissionResult {
 	return CountAdmissionResult{Decision: domain.Decision{Reason: reason}}
+}
+
+func (c CountRequestCost) managerCost() domain.RequestCost {
+	return domain.RequestCost{
+		ManifestID:  c.ManifestID,
+		InputTokens: c.InputTokens,
+		KV: domain.KVIncrement{
+			PhysicalKVUpper: c.PhysicalKVUpper,
+			ActiveKVUpper:   c.ActiveKVUpper,
+		},
+		UncachedPrefillUpper:     c.UncachedPrefillUpper,
+		DecodeHorizonUpper:       c.DecodeHorizonUpper,
+		DecodeSequencesUpper:     c.DecodeSequencesUpper,
+		ActiveContextTokensUpper: c.ActiveContextTokensUpper,
+		Confidence:               c.Confidence,
+	}
+}
+
+func roundUpCountCost(value, blockSize int64) int64 {
+	if value <= 0 {
+		return 0
+	}
+	if blockSize <= 0 || value > math.MaxInt64-(blockSize-1) {
+		return math.MaxInt64
+	}
+	return ((value + blockSize - 1) / blockSize) * blockSize
 }
