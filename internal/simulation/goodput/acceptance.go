@@ -42,7 +42,7 @@ type SuiteResult struct {
 }
 
 func RunAcceptanceSuite() (SuiteResult, error) {
-	return SuiteResult{}, nil
+	return runAcceptanceSuite()
 }
 
 func (s SuiteResult) Aggregate(policy PolicyName) Metrics {
