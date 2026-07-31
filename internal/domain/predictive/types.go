@@ -2,6 +2,7 @@ package predictive
 
 import (
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -236,7 +237,7 @@ func ProjectVLLM(input VLLMProjectionInput) (KVIncrement, error) {
 	if err := input.CacheHits.Validate(input.InputTokens); err != nil {
 		return KVIncrement{}, err
 	}
-	tokens := input.InputTokens - input.CacheHits.Certain + input.DecodeHorizonUpper
+	tokens := addNonNegativeSaturating(input.InputTokens-input.CacheHits.Certain, input.DecodeHorizonUpper)
 	rounded := roundUp(tokens, input.BlockSize)
 	return KVIncrement{
 		PhysicalKVUpper:     rounded,
@@ -249,7 +250,17 @@ func roundUp(value, unit int64) int64 {
 	if value <= 0 {
 		return 0
 	}
+	if value > math.MaxInt64-(unit-1) {
+		return math.MaxInt64
+	}
 	return ((value + unit - 1) / unit) * unit
+}
+
+func addNonNegativeSaturating(left, right int64) int64 {
+	if right > 0 && left > math.MaxInt64-right {
+		return math.MaxInt64
+	}
+	return left + right
 }
 
 type Projection struct {
@@ -271,22 +282,25 @@ type VirtualStateInterval struct {
 }
 
 type RequestCost struct {
-	ManifestID            string
-	InputTokens           int64
-	KV                    KVIncrement
-	UncachedPrefillUpper  int64
-	CachedPrefillExpected int64
-	DecodeHorizonUpper    int64
-	Confidence            float64
+	ManifestID               string
+	InputTokens              int64
+	KV                       KVIncrement
+	UncachedPrefillUpper     int64
+	CachedPrefillExpected    int64
+	DecodeHorizonUpper       int64
+	DecodeSequencesUpper     int
+	ActiveContextTokensUpper int64
+	Confidence               float64
 }
 
 type SchedulerEstimate struct {
-	ExistingUserTPSLower float64
-	AllUserTPSLower      float64
-	TTFTUpper            time.Duration
-	TPOTUpper            time.Duration
-	WorkspaceRiskUpper   float64
-	PreemptionRiskUpper  float64
+	ExistingUserTPSLower         float64
+	ExistingUserTPSNotApplicable bool
+	AllUserTPSLower              float64
+	TTFTUpper                    time.Duration
+	TPOTUpper                    time.Duration
+	WorkspaceRiskUpper           float64
+	PreemptionRiskUpper          float64
 }
 
 type Constraints struct {
@@ -313,6 +327,7 @@ const (
 	ReasonWorkspaceAtRisk         Reason = "workspace_at_risk"
 	ReasonPreemptionAtRisk        Reason = "preemption_at_risk"
 	ReasonTokenizerProfileUnknown Reason = "tokenizer_profile_unknown"
+	ReasonCacheStateUnknown       Reason = "cache_state_unknown"
 	ReasonPredictorProfileUnknown Reason = "predictor_profile_unknown"
 	ReasonDuplicateRequest        Reason = "duplicate_request"
 )

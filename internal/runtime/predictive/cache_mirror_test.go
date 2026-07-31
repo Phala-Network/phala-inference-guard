@@ -222,6 +222,29 @@ func TestCacheMirrorNeverEvictsPinnedBlocks(t *testing.T) {
 	}
 }
 
+func TestCacheMirrorAnalyzedPreflightDoesNotEvictOrMutateSnapshot(t *testing.T) {
+	mirror := newTestCacheMirror(t, 2, 2)
+	completeCachedRequest(t, mirror, "a", []int64{1, 2})
+	completeCachedRequest(t, mirror, "b", []int64{3, 4})
+	before := mirror.Snapshot()
+	analysis := TokenBlockAnalysis{
+		ManifestID:       "test-profile",
+		BackendEpoch:     "backend-1",
+		BlockSize:        2,
+		ExactInputTokens: 2,
+		FullBlockDigests: []CacheBlockDigest{testBlockDigest(9)},
+	}
+
+	hits, err := mirror.PreflightAnalyzedRequest("candidate", analysis)
+	if err != nil {
+		t.Fatalf("preflight failed: %v", err)
+	}
+	assertHitInterval(t, hits, domain.CacheHitInterval{})
+	if after := mirror.Snapshot(); after != before {
+		t.Fatalf("preflight mutated cache state: before=%+v after=%+v", before, after)
+	}
+}
+
 func TestCacheMirrorResetClearsIdentityAndResidencyEvidence(t *testing.T) {
 	mirror := newTestCacheMirror(t, 4, 2)
 	tokens := []int64{1, 2, 3, 4}

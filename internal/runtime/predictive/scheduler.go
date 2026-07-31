@@ -121,13 +121,14 @@ const (
 )
 
 type SchedulerFeatures struct {
-	DecodeSequences       int
-	ActiveContextTokens   int64
-	UncachedPrefillTokens int64
-	CachedPrefillExpected int64
-	PhysicalKVUpper       int64
-	ActiveKVUpper         int64
-	DecodeHorizonUpper    int64
+	ExistingDecodeSequences int
+	DecodeSequences         int
+	ActiveContextTokens     int64
+	UncachedPrefillTokens   int64
+	CachedPrefillExpected   int64
+	PhysicalKVUpper         int64
+	ActiveKVUpper           int64
+	DecodeHorizonUpper      int64
 }
 
 type SchedulerPrediction struct {
@@ -162,13 +163,14 @@ type LearnedSchedulerSnapshot struct {
 }
 
 type featureCell struct {
-	DecodeSequences       int
-	ActiveContextTokens   int64
-	UncachedPrefillTokens int64
-	CachedPrefillExpected int64
-	PhysicalKVUpper       int64
-	ActiveKVUpper         int64
-	DecodeHorizonUpper    int64
+	ExistingDecodeSequences int
+	DecodeSequences         int
+	ActiveContextTokens     int64
+	UncachedPrefillTokens   int64
+	CachedPrefillExpected   int64
+	PhysicalKVUpper         int64
+	ActiveKVUpper           int64
+	DecodeHorizonUpper      int64
 }
 
 type residualSample struct {
@@ -207,6 +209,13 @@ func NewLearnedScheduler(profile StaticSchedulerProfile, config ResidualCalibrat
 		config:  config,
 		cells:   make(map[featureCell][]residualSample),
 	}, nil
+}
+
+func (s *LearnedScheduler) Identity() ModelIdentity {
+	if s == nil {
+		return ModelIdentity{}
+	}
+	return s.profile.Identity
 }
 
 func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, request domain.RequestCost) SchedulerPrediction {
@@ -302,50 +311,58 @@ func (s *LearnedScheduler) rejectOutcome(err error) error {
 }
 
 func (s *LearnedScheduler) staticEstimate(features SchedulerFeatures) domain.SchedulerEstimate {
-	decodeSequences := features.DecodeSequences
-	if decodeSequences < 1 {
-		decodeSequences = 1
-	}
-	postJoinSequences := features.DecodeSequences + 1
-	if postJoinSequences < 1 {
-		postJoinSequences = 1
-	}
 	prefillPenalty := s.profile.PrefillTPSPenaltyPerKToken * float64(features.UncachedPrefillTokens) / 1_000
 	prefillCapacity := s.profile.BaseCompletionTPS - prefillPenalty
 	if prefillCapacity < 0 {
 		prefillCapacity = 0
 	}
+	existingTPS := prefillCapacity
+	existingTPSNotApplicable := features.ExistingDecodeSequences == 0
+	if features.ExistingDecodeSequences > 0 {
+		existingTPS = prefillCapacity / float64(features.ExistingDecodeSequences)
+	}
+	postJoinSequences := features.DecodeSequences
+	if postJoinSequences < 1 {
+		postJoinSequences = 1
+	}
 	return domain.SchedulerEstimate{
-		ExistingUserTPSLower: prefillCapacity / float64(decodeSequences),
-		AllUserTPSLower:      s.profile.BaseCompletionTPS / float64(postJoinSequences),
-		TTFTUpper:            addDurationSaturating(s.profile.BaseTTFT, multiplyDurationSaturating(s.profile.TTFTPerUncachedPrefillToken, features.UncachedPrefillTokens)),
-		TPOTUpper:            addDurationSaturating(s.profile.BaseTPOT, multiplyDurationSaturating(s.profile.TPOTPerExistingDecodeSequence, int64(features.DecodeSequences))),
-		WorkspaceRiskUpper:   s.profile.WorkspaceRiskUpper,
-		PreemptionRiskUpper:  s.profile.PreemptionRiskUpper,
+		ExistingUserTPSLower:         existingTPS,
+		ExistingUserTPSNotApplicable: existingTPSNotApplicable,
+		AllUserTPSLower:              s.profile.BaseCompletionTPS / float64(postJoinSequences),
+		TTFTUpper:                    addDurationSaturating(s.profile.BaseTTFT, multiplyDurationSaturating(s.profile.TTFTPerUncachedPrefillToken, features.UncachedPrefillTokens)),
+		TPOTUpper:                    addDurationSaturating(s.profile.BaseTPOT, multiplyDurationSaturating(s.profile.TPOTPerExistingDecodeSequence, int64(features.ExistingDecodeSequences))),
+		WorkspaceRiskUpper:           s.profile.WorkspaceRiskUpper,
+		PreemptionRiskUpper:          s.profile.PreemptionRiskUpper,
 	}
 }
 
 func (s *LearnedScheduler) featureCell(features SchedulerFeatures) featureCell {
 	return featureCell{
-		DecodeSequences:       bucketInt(features.DecodeSequences, s.config.DecodeSequenceBucket),
-		ActiveContextTokens:   bucketInt64(features.ActiveContextTokens, s.config.ContextTokenBucket),
-		UncachedPrefillTokens: bucketInt64(features.UncachedPrefillTokens, s.config.PrefillTokenBucket),
-		CachedPrefillExpected: bucketInt64(features.CachedPrefillExpected, s.config.PrefillTokenBucket),
-		PhysicalKVUpper:       bucketInt64(features.PhysicalKVUpper, s.config.KVTokenBucket),
-		ActiveKVUpper:         bucketInt64(features.ActiveKVUpper, s.config.KVTokenBucket),
-		DecodeHorizonUpper:    bucketInt64(features.DecodeHorizonUpper, s.config.PrefillTokenBucket),
+		ExistingDecodeSequences: bucketInt(features.ExistingDecodeSequences, s.config.DecodeSequenceBucket),
+		DecodeSequences:         bucketInt(features.DecodeSequences, s.config.DecodeSequenceBucket),
+		ActiveContextTokens:     bucketInt64(features.ActiveContextTokens, s.config.ContextTokenBucket),
+		UncachedPrefillTokens:   bucketInt64(features.UncachedPrefillTokens, s.config.PrefillTokenBucket),
+		CachedPrefillExpected:   bucketInt64(features.CachedPrefillExpected, s.config.PrefillTokenBucket),
+		PhysicalKVUpper:         bucketInt64(features.PhysicalKVUpper, s.config.KVTokenBucket),
+		ActiveKVUpper:           bucketInt64(features.ActiveKVUpper, s.config.KVTokenBucket),
+		DecodeHorizonUpper:      bucketInt64(features.DecodeHorizonUpper, s.config.PrefillTokenBucket),
 	}
 }
 
 func schedulerFeatures(state domain.VirtualState, request domain.RequestCost) SchedulerFeatures {
+	requestSequences := nonNegativeInt(request.DecodeSequencesUpper)
+	if requestSequences == 0 {
+		requestSequences = 1
+	}
 	return SchedulerFeatures{
-		DecodeSequences:       nonNegativeInt(state.DecodeSequences),
-		ActiveContextTokens:   nonNegativeInt64(state.ActiveContextTokens),
-		UncachedPrefillTokens: addInt64Saturating(nonNegativeInt64(state.UncachedPrefillTokens), nonNegativeInt64(request.UncachedPrefillUpper)),
-		CachedPrefillExpected: nonNegativeInt64(request.CachedPrefillExpected),
-		PhysicalKVUpper:       addInt64Saturating(nonNegativeInt64(state.PhysicalKVUpper), nonNegativeInt64(request.KV.PhysicalKVUpper)),
-		ActiveKVUpper:         addInt64Saturating(nonNegativeInt64(state.ActiveKVUpper), nonNegativeInt64(request.KV.ActiveKVUpper)),
-		DecodeHorizonUpper:    nonNegativeInt64(request.DecodeHorizonUpper),
+		ExistingDecodeSequences: nonNegativeInt(state.DecodeSequences),
+		DecodeSequences:         addIntSaturating(nonNegativeInt(state.DecodeSequences), requestSequences),
+		ActiveContextTokens:     addInt64Saturating(nonNegativeInt64(state.ActiveContextTokens), nonNegativeInt64(request.ActiveContextTokensUpper)),
+		UncachedPrefillTokens:   addInt64Saturating(nonNegativeInt64(state.UncachedPrefillTokens), nonNegativeInt64(request.UncachedPrefillUpper)),
+		CachedPrefillExpected:   nonNegativeInt64(request.CachedPrefillExpected),
+		PhysicalKVUpper:         addInt64Saturating(nonNegativeInt64(state.PhysicalKVUpper), nonNegativeInt64(request.KV.PhysicalKVUpper)),
+		ActiveKVUpper:           addInt64Saturating(nonNegativeInt64(state.ActiveKVUpper), nonNegativeInt64(request.KV.ActiveKVUpper)),
+		DecodeHorizonUpper:      nonNegativeInt64(request.DecodeHorizonUpper),
 	}
 }
 
@@ -485,6 +502,14 @@ func addDurationSaturating(left, right time.Duration) time.Duration {
 func addInt64Saturating(left, right int64) int64 {
 	if right > 0 && left > math.MaxInt64-right {
 		return math.MaxInt64
+	}
+	return left + right
+}
+
+func addIntSaturating(left, right int) int {
+	maximum := int(^uint(0) >> 1)
+	if right > 0 && left > maximum-right {
+		return maximum
 	}
 	return left + right
 }

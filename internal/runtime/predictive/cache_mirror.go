@@ -181,6 +181,28 @@ func (m *CacheMirror) EstimateAnalysis(analysis TokenBlockAnalysis) (domain.Cach
 	return m.estimateLocked(keys), nil
 }
 
+func (m *CacheMirror) PreflightAnalyzedRequest(requestID string, analysis TokenBlockAnalysis) (domain.CacheHitInterval, error) {
+	if m == nil {
+		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror is nil")
+	}
+	if requestID == "" {
+		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror request id is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, exists := m.requests[requestID]; exists {
+		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror request %q already exists", requestID)
+	}
+	keys, err := m.analysisKeysLocked(analysis)
+	if err != nil {
+		return domain.CacheHitInterval{}, err
+	}
+	if err := m.canEnsureCapacityLocked(keys); err != nil {
+		return domain.CacheHitInterval{}, err
+	}
+	return m.estimateWithoutTouchLocked(keys), nil
+}
+
 func (m *CacheMirror) BeginRequest(requestID string, tokenIDs []int64) (domain.CacheHitInterval, error) {
 	if m == nil {
 		return domain.CacheHitInterval{}, fmt.Errorf("cache mirror is nil")
@@ -220,10 +242,10 @@ func (m *CacheMirror) BeginAnalyzedRequest(requestID string, analysis TokenBlock
 }
 
 func (m *CacheMirror) beginRequestLocked(requestID string, keys []cacheBlockKey) (domain.CacheHitInterval, error) {
-	hit := m.estimateLocked(keys)
 	if err := m.ensureCapacityLocked(keys); err != nil {
 		return domain.CacheHitInterval{}, err
 	}
+	hit := m.estimateLocked(keys)
 	for _, key := range keys {
 		entry, exists := m.entries[key]
 		if !exists {
@@ -235,6 +257,39 @@ func (m *CacheMirror) beginRequestLocked(requestID string, keys []cacheBlockKey)
 	}
 	m.requests[requestID] = cacheMirrorRequest{Keys: append([]cacheBlockKey(nil), keys...)}
 	return hit, nil
+}
+
+func (m *CacheMirror) HasRequest(requestID string) bool {
+	if m == nil || requestID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, exists := m.requests[requestID]
+	return exists
+}
+
+func (m *CacheMirror) CanMarkPrefillComplete(requestID string) bool {
+	if m == nil || requestID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	request, exists := m.requests[requestID]
+	if !exists || request.PrefillComplete {
+		return false
+	}
+	for _, key := range request.Keys {
+		entry, present := m.entries[key]
+		if !present || entry.PendingReferences <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *CacheMirror) CanCompleteRequest(requestID string) bool {
+	return m.HasRequest(requestID)
 }
 
 func (m *CacheMirror) MarkPrefillComplete(requestID string) bool {
@@ -387,6 +442,14 @@ func (m *CacheMirror) analysisKeysLocked(analysis TokenBlockAnalysis) ([]cacheBl
 }
 
 func (m *CacheMirror) estimateLocked(keys []cacheBlockKey) domain.CacheHitInterval {
+	return m.estimateWithTouchLocked(keys, true)
+}
+
+func (m *CacheMirror) estimateWithoutTouchLocked(keys []cacheBlockKey) domain.CacheHitInterval {
+	return m.estimateWithTouchLocked(keys, false)
+}
+
+func (m *CacheMirror) estimateWithTouchLocked(keys []cacheBlockKey, touch bool) domain.CacheHitInterval {
 	var certain int64
 	var expected int64
 	certainPrefix := true
@@ -395,7 +458,9 @@ func (m *CacheMirror) estimateLocked(keys []cacheBlockKey) domain.CacheHitInterv
 		if !exists || (entry.ActiveReferences == 0 && !entry.ProbableResident) {
 			break
 		}
-		m.touchLocked(entry)
+		if touch {
+			m.touchLocked(entry)
+		}
 		switch {
 		case entry.ActiveReferences > 0:
 			expected += int64(m.blockSize)
@@ -422,7 +487,36 @@ func (m *CacheMirror) estimateLocked(keys []cacheBlockKey) domain.CacheHitInterv
 	}
 }
 
+func (m *CacheMirror) canEnsureCapacityLocked(keys []cacheBlockKey) error {
+	requested := make(map[cacheBlockKey]struct{}, len(keys))
+	missing := 0
+	for _, key := range keys {
+		requested[key] = struct{}{}
+		if _, exists := m.entries[key]; !exists {
+			missing++
+		}
+	}
+	excess := len(m.entries) + missing - m.capacityBlocks
+	if excess <= 0 {
+		return nil
+	}
+	available := 0
+	for key, entry := range m.entries {
+		if _, needed := requested[key]; needed || entry.ActiveReferences > 0 || entry.PendingReferences > 0 {
+			continue
+		}
+		available++
+	}
+	if available < excess {
+		return ErrCacheMirrorCapacity
+	}
+	return nil
+}
+
 func (m *CacheMirror) ensureCapacityLocked(keys []cacheBlockKey) error {
+	if err := m.canEnsureCapacityLocked(keys); err != nil {
+		return err
+	}
 	requested := make(map[cacheBlockKey]struct{}, len(keys))
 	missing := 0
 	for _, key := range keys {

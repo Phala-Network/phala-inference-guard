@@ -10,9 +10,14 @@ import (
 
 type prefillSensitiveScheduler struct{}
 
+func (prefillSensitiveScheduler) Identity() runtimepredictive.ModelIdentity {
+	return simulationSchedulerIdentity("prefill-sensitive")
+}
+
 func (prefillSensitiveScheduler) Predict(now time.Time, _ domain.VirtualState, request domain.RequestCost) runtimepredictive.SchedulerPrediction {
 	tps := 30 - float64(request.UncachedPrefillUpper)/5_000
 	return runtimepredictive.SchedulerPrediction{
+		Identity:    simulationSchedulerIdentity("prefill-sensitive"),
 		PredictedAt: now,
 		Estimate: domain.SchedulerEstimate{
 			ExistingUserTPSLower: tps,
@@ -105,8 +110,13 @@ func TestScenarioCertainCacheHitProtectsPrefillTPS(t *testing.T) {
 
 type constantSafeScheduler struct{}
 
+func (constantSafeScheduler) Identity() runtimepredictive.ModelIdentity {
+	return simulationSchedulerIdentity("constant-safe")
+}
+
 func (constantSafeScheduler) Predict(now time.Time, _ domain.VirtualState, _ domain.RequestCost) runtimepredictive.SchedulerPrediction {
 	return runtimepredictive.SchedulerPrediction{
+		Identity:    simulationSchedulerIdentity("constant-safe"),
 		PredictedAt: now,
 		Estimate: domain.SchedulerEstimate{
 			ExistingUserTPSLower: 30,
@@ -115,6 +125,14 @@ func (constantSafeScheduler) Predict(now time.Time, _ domain.VirtualState, _ dom
 			TPOTUpper:            25 * time.Millisecond,
 		},
 		Confidence: 0.99,
+	}
+}
+
+func simulationSchedulerIdentity(profile string) runtimepredictive.ModelIdentity {
+	return runtimepredictive.ModelIdentity{
+		ProfileID:        profile,
+		BackendEpoch:     "simulation-backend-1",
+		PredictorVersion: "simulation-v1",
 	}
 }
 

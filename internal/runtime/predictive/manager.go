@@ -9,6 +9,7 @@ import (
 )
 
 type Scheduler interface {
+	Identity() ModelIdentity
 	Predict(now time.Time, state domain.VirtualState, request domain.RequestCost) SchedulerPrediction
 }
 
@@ -25,13 +26,15 @@ const (
 )
 
 type reservation struct {
-	ID               string
-	Created          time.Time
-	Cost             domain.RequestCost
-	Prediction       SchedulerPrediction
-	OutcomeObserved  bool
-	AdmittedSequence uint64
-	Assimilation     assimilationState
+	ID                       string
+	Created                  time.Time
+	Cost                     domain.RequestCost
+	Prediction               SchedulerPrediction
+	OutcomeObserved          bool
+	PrefillComplete          bool
+	AdmittedSequence         uint64
+	PrefillCompletedSequence uint64
+	Assimilation             assimilationState
 }
 
 type completedReservation struct {
@@ -90,17 +93,27 @@ func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.
 	if m.manifestID == "" || cost.ManifestID == "" || cost.ManifestID != m.manifestID {
 		return domain.Decision{Reason: domain.ReasonTokenizerProfileUnknown}
 	}
+	if requestID == "" || !validRequestCost(cost) {
+		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
+	}
 	if _, exists := m.reservations[requestID]; exists {
 		return domain.Decision{Reason: domain.ReasonDuplicateRequest}
 	}
+	if m.scheduler == nil {
+		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
+	}
+	schedulerIdentity := m.scheduler.Identity()
+	if schedulerIdentity.Validate() != nil {
+		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
+	}
 	state := m.virtualStateIntervalLocked().Upper
-	prediction := SchedulerPrediction{}
-	if m.scheduler != nil {
-		prediction = m.scheduler.Predict(now, state, cost)
+	prediction := m.scheduler.Predict(now, state, cost)
+	if prediction.Identity != schedulerIdentity || !validSchedulerPrediction(prediction) {
+		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
 	}
 	projection := domain.Projection{
-		PhysicalKVUpper: state.PhysicalKVUpper + cost.KV.PhysicalKVUpper,
-		ActiveKVUpper:   state.ActiveKVUpper + cost.KV.ActiveKVUpper,
+		PhysicalKVUpper: addInt64Saturating(state.PhysicalKVUpper, cost.KV.PhysicalKVUpper),
+		ActiveKVUpper:   addInt64Saturating(state.ActiveKVUpper, cost.KV.ActiveKVUpper),
 	}
 	decision := domain.Evaluate(domain.EvaluationInput{
 		Projection:  projection,
@@ -133,6 +146,48 @@ func (m *Manager) ReservationPrediction(requestID string) (SchedulerPrediction, 
 		return SchedulerPrediction{}, false
 	}
 	return item.Prediction, true
+}
+
+func (m *Manager) HasReservation(requestID string) bool {
+	if m == nil || requestID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, exists := m.reservations[requestID]
+	return exists
+}
+
+func (m *Manager) CanMarkPrefillComplete(requestID string) bool {
+	if m == nil || requestID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, exists := m.reservations[requestID]
+	return exists && !item.PrefillComplete
+}
+
+func (m *Manager) MarkPrefillComplete(requestID string) bool {
+	if m == nil || requestID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, exists := m.reservations[requestID]
+	if !exists || item.PrefillComplete {
+		return false
+	}
+	m.eventSequence++
+	item.PrefillComplete = true
+	item.PrefillCompletedSequence = m.eventSequence
+	if item.Assimilation == assimilationAbsorbed {
+		prefill := prefillStateCost(item.Cost)
+		m.base.Lower = subtractState(m.base.Lower, prefill)
+		m.base.Upper = subtractState(m.base.Upper, prefill)
+	}
+	m.reservations[requestID] = item
+	return true
 }
 
 func (m *Manager) ObserveOutcome(requestID string, outcome SchedulerOutcome) bool {
@@ -175,18 +230,34 @@ func (m *Manager) Complete(requestID string) bool {
 		return false
 	}
 	m.eventSequence++
+	activeCost := reservationStateCost(item)
 	switch item.Assimilation {
 	case assimilationAbsorbed:
-		m.base.Lower = subtractState(m.base.Lower, item.Cost.KV)
-		m.base.Upper = subtractState(m.base.Upper, item.Cost.KV)
+		m.base.Lower = subtractState(m.base.Lower, activeCost)
+		m.base.Upper = subtractState(m.base.Upper, activeCost)
 	case assimilationAmbiguous:
-		m.base.Lower = subtractState(m.base.Lower, item.Cost.KV)
+		m.base.Lower = subtractState(m.base.Lower, activeCost)
 	}
 	delete(m.reservations, requestID)
 	m.completed[requestID] = completedReservation{
 		Reservation:       item,
 		CompletedSequence: m.eventSequence,
 	}
+	return true
+}
+
+func (m *Manager) rollbackLatestReservation(requestID string) bool {
+	if m == nil || requestID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, exists := m.reservations[requestID]
+	if !exists || item.AdmittedSequence != m.eventSequence || item.Assimilation != assimilationUnabsorbed || item.PrefillComplete || item.OutcomeObserved {
+		return false
+	}
+	delete(m.reservations, requestID)
+	m.eventSequence--
 	return true
 }
 
@@ -215,7 +286,7 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 	if m.hasSample && sample.FinishedSequence < m.lastSampleFinished {
 		return fmt.Errorf("sample finish watermark is stale")
 	}
-	if sample.Observed.PhysicalKVUpper < 0 || sample.Observed.ActiveKVUpper < 0 {
+	if sample.Observed.PhysicalKVUpper < 0 || sample.Observed.ActiveKVUpper < 0 || sample.Observed.DecodeSequences < 0 || sample.Observed.ActiveContextTokens < 0 || sample.Observed.UncachedPrefillTokens < 0 {
 		return fmt.Errorf("sample state must be non-negative")
 	}
 
@@ -232,6 +303,16 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 		default:
 			item.Assimilation = assimilationAmbiguous
 		}
+		if item.Assimilation == assimilationAbsorbed && item.PrefillComplete {
+			prefill := prefillStateCost(item.Cost)
+			switch {
+			case item.PrefillCompletedSequence > sample.FinishedSequence:
+				m.base.Lower = subtractState(m.base.Lower, prefill)
+				m.base.Upper = subtractState(m.base.Upper, prefill)
+			case item.PrefillCompletedSequence > sample.StartedSequence:
+				m.base.Lower = subtractState(m.base.Lower, prefill)
+			}
+		}
 		m.reservations[id] = item
 	}
 	for id, item := range m.completed {
@@ -241,10 +322,11 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 		case item.Reservation.AdmittedSequence > sample.FinishedSequence:
 			// The request was entirely newer than this sample window.
 		case item.Reservation.AdmittedSequence <= sample.StartedSequence && item.CompletedSequence > sample.FinishedSequence:
-			m.base.Lower = subtractState(m.base.Lower, item.Reservation.Cost.KV)
-			m.base.Upper = subtractState(m.base.Upper, item.Reservation.Cost.KV)
+			activeCost := reservationStateCost(item.Reservation)
+			m.base.Lower = subtractState(m.base.Lower, activeCost)
+			m.base.Upper = subtractState(m.base.Upper, activeCost)
 		default:
-			m.base.Lower = subtractState(m.base.Lower, item.Reservation.Cost.KV)
+			m.base.Lower = subtractState(m.base.Lower, reservationStateCost(item.Reservation))
 		}
 	}
 	m.lastSampleFinished = sample.FinishedSequence
@@ -273,26 +355,45 @@ func (m *Manager) Snapshot() Snapshot {
 func (m *Manager) virtualStateIntervalLocked() domain.VirtualStateInterval {
 	state := m.base
 	for _, item := range m.reservations {
+		cost := reservationStateCost(item)
 		switch item.Assimilation {
 		case assimilationUnabsorbed:
-			state.Lower = addState(state.Lower, item.Cost.KV)
-			state.Upper = addState(state.Upper, item.Cost.KV)
+			state.Lower = addState(state.Lower, cost)
+			state.Upper = addState(state.Upper, cost)
 		case assimilationAmbiguous:
-			state.Upper = addState(state.Upper, item.Cost.KV)
+			state.Upper = addState(state.Upper, cost)
 		}
 	}
 	return state
 }
 
-func addState(state domain.VirtualState, increment domain.KVIncrement) domain.VirtualState {
-	state.PhysicalKVUpper += increment.PhysicalKVUpper
-	state.ActiveKVUpper += increment.ActiveKVUpper
+func reservationStateCost(item reservation) domain.RequestCost {
+	cost := item.Cost
+	if item.PrefillComplete && item.Assimilation != assimilationAmbiguous {
+		cost.UncachedPrefillUpper = 0
+	}
+	return cost
+}
+
+func prefillStateCost(cost domain.RequestCost) domain.RequestCost {
+	return domain.RequestCost{UncachedPrefillUpper: cost.UncachedPrefillUpper}
+}
+
+func addState(state domain.VirtualState, cost domain.RequestCost) domain.VirtualState {
+	state.PhysicalKVUpper = addInt64Saturating(state.PhysicalKVUpper, cost.KV.PhysicalKVUpper)
+	state.ActiveKVUpper = addInt64Saturating(state.ActiveKVUpper, cost.KV.ActiveKVUpper)
+	state.DecodeSequences = addIntSaturating(state.DecodeSequences, cost.DecodeSequencesUpper)
+	state.ActiveContextTokens = addInt64Saturating(state.ActiveContextTokens, cost.ActiveContextTokensUpper)
+	state.UncachedPrefillTokens = addInt64Saturating(state.UncachedPrefillTokens, cost.UncachedPrefillUpper)
 	return state
 }
 
-func subtractState(state domain.VirtualState, increment domain.KVIncrement) domain.VirtualState {
-	state.PhysicalKVUpper = subtractFloorZero(state.PhysicalKVUpper, increment.PhysicalKVUpper)
-	state.ActiveKVUpper = subtractFloorZero(state.ActiveKVUpper, increment.ActiveKVUpper)
+func subtractState(state domain.VirtualState, cost domain.RequestCost) domain.VirtualState {
+	state.PhysicalKVUpper = subtractFloorZero(state.PhysicalKVUpper, cost.KV.PhysicalKVUpper)
+	state.ActiveKVUpper = subtractFloorZero(state.ActiveKVUpper, cost.KV.ActiveKVUpper)
+	state.DecodeSequences = subtractIntFloorZero(state.DecodeSequences, cost.DecodeSequencesUpper)
+	state.ActiveContextTokens = subtractFloorZero(state.ActiveContextTokens, cost.ActiveContextTokensUpper)
+	state.UncachedPrefillTokens = subtractFloorZero(state.UncachedPrefillTokens, cost.UncachedPrefillUpper)
 	return state
 }
 
@@ -301,6 +402,22 @@ func subtractFloorZero(value, decrement int64) int64 {
 		return 0
 	}
 	return value - decrement
+}
+
+func subtractIntFloorZero(value, decrement int) int {
+	if decrement >= value {
+		return 0
+	}
+	return value - decrement
+}
+
+func validRequestCost(cost domain.RequestCost) bool {
+	return cost.InputTokens >= 0 && cost.KV.PhysicalKVUpper >= 0 && cost.KV.ActiveKVUpper >= 0 && cost.KV.CacheDiscountTokens >= 0 && cost.KV.CacheDiscountTokens <= cost.InputTokens && cost.UncachedPrefillUpper >= 0 && cost.UncachedPrefillUpper <= cost.InputTokens && cost.CachedPrefillExpected >= 0 && cost.CachedPrefillExpected <= cost.InputTokens && cost.DecodeHorizonUpper >= 0 && cost.DecodeSequencesUpper >= 0 && cost.ActiveContextTokensUpper >= 0 && positiveFinite(cost.Confidence) && cost.Confidence <= 1
+}
+
+func validSchedulerPrediction(prediction SchedulerPrediction) bool {
+	estimate := prediction.Estimate
+	return nonNegativeFinite(estimate.ExistingUserTPSLower) && positiveFinite(estimate.AllUserTPSLower) && estimate.TTFTUpper > 0 && estimate.TPOTUpper > 0 && nonNegativeFinite(estimate.WorkspaceRiskUpper) && nonNegativeFinite(estimate.PreemptionRiskUpper) && positiveFinite(prediction.Confidence) && prediction.Confidence <= 1
 }
 
 func minimumConfidence(left, right float64) float64 {

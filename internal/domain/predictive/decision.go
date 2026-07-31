@@ -13,7 +13,7 @@ func Evaluate(input EvaluationInput) Decision {
 		decision.Reason = ReasonKVOverBudget
 	case cfg.ActiveKVHard > 0 && input.Projection.ActiveKVUpper > cfg.ActiveKVHard:
 		decision.Reason = ReasonActiveKVOverBudget
-	case cfg.UserTPSTarget > 0 && input.Scheduler.ExistingUserTPSLower < cfg.UserTPSTarget:
+	case cfg.UserTPSTarget > 0 && !input.Scheduler.ExistingUserTPSNotApplicable && input.Scheduler.ExistingUserTPSLower < cfg.UserTPSTarget:
 		decision.Reason = ReasonExistingTPSAtRisk
 	case cfg.UserTPSTarget > 0 && input.Scheduler.AllUserTPSLower < cfg.UserTPSTarget:
 		decision.Reason = ReasonNewTPSAtRisk

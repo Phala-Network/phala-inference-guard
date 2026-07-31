@@ -10,8 +10,17 @@ import (
 
 type safeScheduler struct{}
 
+type mismatchedPredictionScheduler struct {
+	safeScheduler
+}
+
+func (safeScheduler) Identity() ModelIdentity {
+	return safeSchedulerIdentity()
+}
+
 func (safeScheduler) Predict(now time.Time, state domain.VirtualState, request domain.RequestCost) SchedulerPrediction {
 	return SchedulerPrediction{
+		Identity:    safeSchedulerIdentity(),
 		PredictedAt: now,
 		Estimate: domain.SchedulerEstimate{
 			ExistingUserTPSLower: 30,
@@ -21,6 +30,20 @@ func (safeScheduler) Predict(now time.Time, state domain.VirtualState, request d
 		},
 		Confidence: 0.99,
 	}
+}
+
+func safeSchedulerIdentity() ModelIdentity {
+	return ModelIdentity{
+		ProfileID:        "safe-test-profile",
+		BackendEpoch:     "safe-test-backend-1",
+		PredictorVersion: "safe-test-v1",
+	}
+}
+
+func (mismatchedPredictionScheduler) Predict(now time.Time, state domain.VirtualState, request domain.RequestCost) SchedulerPrediction {
+	prediction := safeScheduler{}.Predict(now, state, request)
+	prediction.Identity.PredictorVersion = "wrong-version"
+	return prediction
 }
 
 func testConstraints() domain.Constraints {
@@ -146,6 +169,18 @@ func TestManagerRejectsMismatchedTokenizerManifestWithoutReservation(t *testing.
 	}
 	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 {
 		t.Fatalf("stale manifest changed manager state: %+v", snapshot)
+	}
+}
+
+func TestManagerRejectsMismatchedSchedulerPredictionWithoutReservation(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), mismatchedPredictionScheduler{})
+
+	decision := manager.DecideAndReserve(time.Unix(0, 0), "stale-predictor", testRequest())
+	if decision.Reason != domain.ReasonPredictorProfileUnknown {
+		t.Fatalf("reason = %s, want %s", decision.Reason, domain.ReasonPredictorProfileUnknown)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 {
+		t.Fatalf("mismatched scheduler prediction changed manager state: %+v", snapshot)
 	}
 }
 
