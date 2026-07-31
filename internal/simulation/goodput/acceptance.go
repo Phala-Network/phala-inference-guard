@@ -47,7 +47,7 @@ func RunAcceptanceSuite() (SuiteResult, error) {
 
 func (s SuiteResult) Aggregate(policy PolicyName) Metrics {
 	var result Metrics
-	result.MinimumProjectedKVHeadroom = -1
+	hasHeadroom := false
 	for _, scenario := range s.Scenarios {
 		metrics := scenario.Policies[policy]
 		result.Arrivals += metrics.Arrivals
@@ -66,11 +66,12 @@ func (s SuiteResult) Aggregate(policy PolicyName) Metrics {
 		if metrics.PeakProjectedKVTokens > result.PeakProjectedKVTokens {
 			result.PeakProjectedKVTokens = metrics.PeakProjectedKVTokens
 		}
-		if result.MinimumProjectedKVHeadroom < 0 || metrics.MinimumProjectedKVHeadroom < result.MinimumProjectedKVHeadroom {
+		if !hasHeadroom || metrics.MinimumProjectedKVHeadroom < result.MinimumProjectedKVHeadroom {
 			result.MinimumProjectedKVHeadroom = metrics.MinimumProjectedKVHeadroom
+			hasHeadroom = true
 		}
 	}
-	if result.MinimumProjectedKVHeadroom < 0 {
+	if !hasHeadroom {
 		result.MinimumProjectedKVHeadroom = 0
 	}
 	return result

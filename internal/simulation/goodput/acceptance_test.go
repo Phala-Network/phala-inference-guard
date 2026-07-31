@@ -1,6 +1,9 @@
 package goodput
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.T) {
 	suite, err := RunAcceptanceSuite()
@@ -61,6 +64,9 @@ func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.
 	if full.ReservationLeaks != 0 {
 		t.Fatalf("predictive QoS reservation leaks = %d, want 0", full.ReservationLeaks)
 	}
+	if full.FalseAccepts != 0 {
+		t.Fatalf("predictive QoS false accepts = %d, want 0", full.FalseAccepts)
+	}
 	if full.SafetyViolations() > current.SafetyViolations() || full.SafetyViolations() > kvOnly.SafetyViolations() {
 		t.Fatalf("predictive QoS safety violations=%d exceed current=%d or KV-only=%d", full.SafetyViolations(), current.SafetyViolations(), kvOnly.SafetyViolations())
 	}
@@ -95,4 +101,51 @@ func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.
 	if got := improvementPercent(fullLong, bestBaselineLong); got < -1 {
 		t.Fatalf("cache-cold long-prompt goodput regression = %.2f%%, want no worse than -1%%", got)
 	}
+
+	repeated, ok := scenarioByName(suite, "repeated_prefixes_charged_cold")
+	if !ok {
+		t.Fatal("repeated-prefix scenario disappeared after required-scenario validation")
+	}
+	wantRepeatedPeak := int64(4) * roundUpForTest(3_074+256, simulationBlock)
+	if got := repeated.Policies[PolicyPredictiveQoS].PeakProjectedKVTokens; got != wantRepeatedPeak {
+		t.Fatalf("repeated-prefix predictive peak KV = %d, want four full cache-cold costs = %d", got, wantRepeatedPeak)
+	}
+}
+
+func TestTokenizerLatencyEvidenceIsChargedToTTFT(t *testing.T) {
+	for _, test := range []struct {
+		tokens int64
+		want   time.Duration
+	}{
+		{tokens: 49, want: 52_539 * time.Nanosecond},
+		{tokens: 3_074, want: 8_612 * time.Microsecond},
+		{tokens: 24_578, want: 132_639 * time.Microsecond},
+		{tokens: 65_538, want: 587_303 * time.Microsecond},
+		{tokens: 131_074, want: 1_516 * time.Millisecond},
+	} {
+		if got := tokenizerP95(test.tokens); got != test.want {
+			t.Fatalf("tokenizer p95 at %d tokens = %s, want %s", test.tokens, got, test.want)
+		}
+	}
+	profile := (scenarioSpec{}).serviceProfile()
+	state := &actualState{active: make(map[string]*activeRequest)}
+	request := request("latency-128k", 0, 131_074, 64, 64)
+	withoutTokenizer := state.evaluate(profile, false, request)
+	withTokenizer := state.evaluate(profile, true, request)
+	if delta := withTokenizer.ttft - withoutTokenizer.ttft; delta != 1_516*time.Millisecond {
+		t.Fatalf("128k tokenizer TTFT charge = %s, want 1.516s", delta)
+	}
+}
+
+func scenarioByName(suite SuiteResult, name string) (ScenarioResult, bool) {
+	for _, scenario := range suite.Scenarios {
+		if scenario.Name == name {
+			return scenario, true
+		}
+	}
+	return ScenarioResult{}, false
+}
+
+func roundUpForTest(value, block int64) int64 {
+	return ((value + block - 1) / block) * block
 }
