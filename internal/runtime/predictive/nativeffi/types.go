@@ -13,3 +13,11 @@ type Config struct {
 	CompletionAddSpecialTokens bool
 	ChatAddSpecialTokens       bool
 }
+
+type CounterConfig struct {
+	TokenizerPath              string
+	ManifestID                 string
+	BackendEpoch               string
+	CompletionAddSpecialTokens bool
+	ChatAddSpecialTokens       bool
+}
