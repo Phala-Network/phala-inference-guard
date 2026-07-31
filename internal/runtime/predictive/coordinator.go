@@ -188,7 +188,14 @@ func (c *Coordinator) MarkPrefillComplete(requestID string) bool {
 }
 
 func (c *Coordinator) Complete(requestID string) bool {
+	return c.Terminate(requestID, TerminalCompleted)
+}
+
+func (c *Coordinator) Terminate(requestID string, cause TerminalCause) bool {
 	if c == nil || requestID == "" {
+		return false
+	}
+	if err := cause.Validate(); err != nil {
 		return false
 	}
 	c.mu.Lock()
@@ -201,7 +208,7 @@ func (c *Coordinator) Complete(requestID string) bool {
 	if !managerCan {
 		return false
 	}
-	if !c.manager.Complete(requestID) || !c.cache.CompleteRequest(requestID) {
+	if !c.manager.Terminate(requestID, cause) || !c.cache.CompleteRequest(requestID) {
 		panic("predictive coordinator completion violated its preflight invariant")
 	}
 	return true

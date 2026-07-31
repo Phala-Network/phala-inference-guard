@@ -25,6 +25,31 @@ const (
 	assimilationAbsorbed
 )
 
+type TerminalCause string
+
+const (
+	TerminalCompleted          TerminalCause = "completed"
+	TerminalLocalQoSReject     TerminalCause = "local_qos_reject"
+	TerminalClientCancelled    TerminalCause = "client_cancelled"
+	TerminalClientDisconnected TerminalCause = "client_disconnected"
+	TerminalUpstreamFailure    TerminalCause = "upstream_failure"
+	TerminalTimeout            TerminalCause = "timeout"
+	TerminalExpired            TerminalCause = "expired"
+)
+
+func (c TerminalCause) Validate() error {
+	switch c {
+	case TerminalCompleted, TerminalLocalQoSReject, TerminalClientCancelled, TerminalClientDisconnected, TerminalUpstreamFailure, TerminalTimeout, TerminalExpired:
+		return nil
+	default:
+		return fmt.Errorf("predictive terminal cause %q is invalid", c)
+	}
+}
+
+func (c TerminalCause) allowsCompletedOutcome() bool {
+	return c == TerminalCompleted
+}
+
 type reservation struct {
 	ID                       string
 	Created                  time.Time
@@ -32,6 +57,7 @@ type reservation struct {
 	Prediction               SchedulerPrediction
 	OutcomeObserved          bool
 	PrefillComplete          bool
+	TerminalCause            TerminalCause
 	AdmittedSequence         uint64
 	PrefillCompletedSequence uint64
 	Assimilation             assimilationState
@@ -209,7 +235,7 @@ func (m *Manager) ObserveOutcome(requestID string, outcome SchedulerOutcome) boo
 		return true
 	}
 	if item, exists := m.completed[requestID]; exists {
-		if item.Reservation.OutcomeObserved || observer.Observe(item.Reservation.Prediction, outcome) != nil {
+		if !item.Reservation.TerminalCause.allowsCompletedOutcome() || item.Reservation.OutcomeObserved || observer.Observe(item.Reservation.Prediction, outcome) != nil {
 			return false
 		}
 		item.Reservation.OutcomeObserved = true
@@ -220,7 +246,14 @@ func (m *Manager) ObserveOutcome(requestID string, outcome SchedulerOutcome) boo
 }
 
 func (m *Manager) Complete(requestID string) bool {
+	return m.Terminate(requestID, TerminalCompleted)
+}
+
+func (m *Manager) Terminate(requestID string, cause TerminalCause) bool {
 	if m == nil {
+		return false
+	}
+	if err := cause.Validate(); err != nil {
 		return false
 	}
 	m.mu.Lock()
@@ -230,6 +263,7 @@ func (m *Manager) Complete(requestID string) bool {
 		return false
 	}
 	m.eventSequence++
+	item.TerminalCause = cause
 	activeCost := reservationStateCost(item)
 	switch item.Assimilation {
 	case assimilationAbsorbed:
