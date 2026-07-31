@@ -394,22 +394,23 @@ new real-traffic rejection path.
 The native Rust core now offers a borrowed-Encoding analysis path that returns:
 
 ~~~
-input SHA-256
+process-local keyed input fingerprint
 exact token count
 keyed chained full-block digests
 partial-block token count and digest
 optional token IDs, disabled on the normal analysis path
 ~~~
 
-The current prototype names its rendered-input field `input_sha256`, and the
-Go prototype similarly exposes `RenderedInputSHA256`. Both are unkeyed. The
-second implementation review classified those fields as Builder diagnostics,
-not integration-safe privacy controls: they must not be logged, persisted,
-exported, used for a production LRU, or cross the future native bridge. Before
-bridge work, a red/green slice must replace them with a domain-separated,
-process-local keyed fingerprint and prove same-process stability plus
-cross-process unlinkability. The performance results below measure the current
-unkeyed prototype and therefore do not close that privacy gate.
+The second implementation review found unkeyed `input_sha256` and
+`RenderedInputSHA256` prototype fields. Red commit `f8f25a5` made a keyed
+fingerprint mandatory; green commit `f7789a6` replaced them. Each Go tokenizer
+runtime owns a random 32-byte key and produces a domain-separated HMAC-SHA256
+fingerprint that remains stable across its reset. Native analysis uses the
+explicit 32-byte process-local analysis key with a separate keyed BLAKE3 domain
+and binds the fingerprint to manifest, backend epoch, and block size. Tests
+prove stability with one key, inequality from plain SHA-256, and unlinkability
+across independently keyed runtimes/contexts. Fingerprints remain prohibited
+from logs, persistence, Prometheus labels, or external APIs.
 
 Digest identity is bound to a 32-byte process-local key, tokenizer manifest,
 backend epoch, and block size. One keyed BLAKE3 stream covers the entire token
@@ -430,6 +431,7 @@ The red/green evidence sequence is:
 | Opaque cache-analysis input | `0e9df17`, Go `1` as expected | `2fe694f`, formatted at `eedc3d9` |
 | Matched benchmark harness | HMAC version at `812671f` exceeded the 2 MiB safety gate | keyed BLAKE3 at `af54622`, streamed at `81d52e6` |
 | Reservation-to-tokenizer identity | `b196bf6`, Go `1` as expected because the manager and simulator did not yet bind a manifest | `3f2fb90`, exact clean Builder checkout fully green |
+| Rendered-input privacy | `f8f25a5`, Go `1` and Rust `101` as expected for the missing keyed fields | `f7789a6`, exact clean Builder checkout fully green; benchmark description fixed at `4e9d3d7` |
 
 Two matched reruns of the streamed `81d52e6` release binary measured:
 
@@ -466,6 +468,54 @@ Recomputing the applicable gates directly from those JSON files gives:
 These passes apply only to the stated core and overload gates. They do not
 close the small-chat template/FFI gate or the calibrated synchronous-lane gate.
 
+The `81d52e6` values above are the pre-keyed-fingerprint performance baseline.
+After the privacy fix, two matched release-binary reruns at exact benchmark HEAD
+`4e9d3d76a8c42c7b144b281a110cfdfdf62e1cd7` measured:
+
+| Case | Keyed analysis p50 range | Keyed analysis p95 range | Keyed analysis p99 range | Interpretation |
+|---|---:|---:|---:|---|
+| small, 49 tokens | 33.550-34.553 us | 55.164-56.642 us | 66.728-67.356 us | Core only; the template/FFI gate remains open. |
+| 64 KiB, 45,056 tokens, 704 blocks | 17.546-17.902 ms | 19.248-24.379 ms | 20.409-28.920 ms | Both p95 runs pass 25 ms. |
+| 2 MiB, 1,441,792 tokens, 22,528 blocks | 1.495-1.498 s | 1.540-1.580 s | 1.579-1.630 s | Both matched overload gates pass; analysis/Vec p99 ratio is 0.998-1.019. |
+
+The keyed rerun gate calculations were:
+
+| Run | 64 KiB analysis p95 | 2 MiB analysis p99 | Matched Vec p99 | Allowed ceiling | Result |
+|---|---:|---:|---:|---:|---|
+| 1 | 19.248 ms | 1.579 s | 1.582 s | 1.740 s | pass |
+| 2 | 24.379 ms | 1.630 s | 1.600 s | 1.760 s | pass |
+
+Builder evidence:
+
+~~~
+/work/pig-v091-evidence/f8f25a5-keyed-fingerprint-red.log
+SHA-256 0718e570015f293ba6b0cd5d21d72543598a55a9f4e545d1c02817d17614a6bb
+
+/work/pig-v091-evidence/f8f25a5-keyed-fingerprint-red.status
+SHA-256 4652a73ba397132aeb3c730044eb76393e1a38e5d8aac54064b850adff6ae220
+
+/work/pig-v091-evidence/f7789a6-keyed-fingerprint-green.log
+SHA-256 899962d952708b5ef6a57309017750a1290d90aa13fcdf233684d20b44ef2232
+
+/work/pig-v091-evidence/f7789a6-keyed-fingerprint-green.status
+SHA-256 4bf65cea25036f3c9f2c2c06ebb8ef398dba1b5ceae0ba43b2d961b188b8370f
+
+/work/pig-v091-evidence/4e9d3d7-keyed-fingerprint-benchmark-run1.json
+SHA-256 754ff723fbfbd8e4756f6309562866f92d705a796567075c293b37e554cb4688
+
+/work/pig-v091-evidence/4e9d3d7-keyed-fingerprint-benchmark-run2.json
+SHA-256 925d04b530caa8003a83be43a73c27f424093b625a280673552a5a17f68f316c
+
+/work/pig-v091-evidence/4e9d3d7-keyed-fingerprint-benchmark.log
+SHA-256 b6275c6a878a27092a68a6a7ac9ad5438c21fc9a0b15e0b5b23c5d4da040b855
+
+/work/pig-v091-evidence/4e9d3d7-keyed-fingerprint-benchmark.status
+SHA-256 6b51764e1a9b533825628bf561abd4753d0f35ae2eeead755939b0940912d01c
+~~~
+
+The report-level `input_sha256` in these JSON files identifies only fixed,
+synthetic benchmark fixtures. It is not returned by runtime block analysis.
+
 The reservation-identity red/green evidence is:
 
 ~~~
@@ -492,7 +542,7 @@ Rust/Cargo 1.97.0, container ID, immutable image ID, and image name
 
 These measurements still exclude a real template renderer, C ABI or Unix
 socket transfer, and Go request-path integration. They do not prove final
-vLLM Chat Completions token parity or a production-safe input fingerprint.
+vLLM Chat Completions token parity.
 
 ### 6.4 Unsupported requests
 
@@ -1296,6 +1346,8 @@ Completed and builder-green:
 - strict tokenizer manifest fields and immutable special-token policy;
 - request-feature capability and dependency rejection before engine work, plus
   rejection of native token IDs outside the unsigned 32-bit contract;
+- domain-separated runtime-local Go and context-keyed native rendered-input
+  fingerprints, with unkeyed SHA-256 removed from runtime results;
 - native raw tokenizer parity prototype and retained-Encoding source study;
 - native no-ID block analysis with chained keyed digests and partial metadata;
 - cache mirror ingestion of epoch-validated opaque block analyses;
@@ -1306,9 +1358,6 @@ Still pending and not claimed:
 - a strict lossless JSON chat-template runtime supporting the pinned Gemma4
   template, tools, tool results, reasoning, multimodal placeholders, and
   approved template kwargs;
-- replacement of the prototype's unkeyed rendered-input SHA-256 fields with a
-  domain-separated process-local keyed fingerprint before any bridge, cache,
-  telemetry, or request-path use;
 - final-token parity against a pinned production vLLM oracle for every enabled
   request feature class;
 - a Go C ABI or Unix-socket native engine and its cancellation/crash-isolation
@@ -1500,9 +1549,11 @@ Pass 2, tokenizer/cache correctness and privacy:
   rejects mismatched manifest, backend epoch, block size, counts, empty full
   digests, or inconsistent partial metadata before cache credit. Token IDs are
   range-checked and inconsistent feature dependencies fail before engine work.
-  The unkeyed fingerprint is now explicitly blocked from integration pending a
-  keyed red/green replacement, and the future request path is required to use
-  one opaque native digest protocol rather than mixing the legacy helper.
+  Red commit `f8f25a5` and green commit `f7789a6` replaced the unkeyed fields
+  with domain-separated keyed fingerprints; two exact-HEAD matched benchmark
+  reruns passed the unchanged core/overload gates. The future request path is
+  still required to use one opaque native digest protocol rather than mixing
+  the legacy helper.
 
 Pass 3, quantitative evidence and release boundary:
 
