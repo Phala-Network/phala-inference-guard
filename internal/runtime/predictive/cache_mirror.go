@@ -48,12 +48,12 @@ type cacheBlockEntry struct {
 	PendingReferences int
 	ActiveReferences  int
 	ProbableResident  bool
-	LastUsed           uint64
+	LastUsed          uint64
 }
 
 type cacheMirrorRequest struct {
-	Keys               []cacheBlockKey
-	PrefillComplete    bool
+	Keys            []cacheBlockKey
+	PrefillComplete bool
 }
 
 type CacheMirror struct {
