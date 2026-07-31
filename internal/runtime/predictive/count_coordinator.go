@@ -9,10 +9,11 @@ import (
 )
 
 type CountCoordinatorConfig struct {
-	Identity    CoordinatorIdentity
-	Initial     domain.VirtualState
-	Constraints domain.Constraints
-	Scheduler   Scheduler
+	Identity           CoordinatorIdentity
+	ModelMaximumLength int64
+	Initial            domain.VirtualState
+	Constraints        domain.Constraints
+	Scheduler          Scheduler
 }
 
 type CountAdmissionProposal struct {
@@ -48,8 +49,9 @@ type CountCoordinatorSnapshot struct {
 }
 
 type CountCoordinator struct {
-	identity CoordinatorIdentity
-	manager  *Manager
+	identity           CoordinatorIdentity
+	modelMaximumLength int64
+	manager            *Manager
 }
 
 func NewCountCoordinator(config CountCoordinatorConfig) (*CountCoordinator, error) {
@@ -58,6 +60,9 @@ func NewCountCoordinator(config CountCoordinatorConfig) (*CountCoordinator, erro
 	}
 	if config.Scheduler == nil {
 		return nil, fmt.Errorf("count coordinator scheduler is required")
+	}
+	if config.ModelMaximumLength <= 0 {
+		return nil, fmt.Errorf("count coordinator model maximum length must be positive")
 	}
 	if identity := config.Scheduler.Identity(); identity.Validate() != nil || identity != config.Identity.Scheduler {
 		return nil, fmt.Errorf("count coordinator scheduler identity mismatch")
@@ -69,8 +74,9 @@ func NewCountCoordinator(config CountCoordinatorConfig) (*CountCoordinator, erro
 		return nil, err
 	}
 	return &CountCoordinator{
-		identity: config.Identity,
-		manager:  NewManager(config.Identity.ManifestID, config.Initial, config.Constraints, config.Scheduler),
+		identity:           config.Identity,
+		modelMaximumLength: config.ModelMaximumLength,
+		manager:            NewManager(config.Identity.ManifestID, config.Initial, config.Constraints, config.Scheduler),
 	}, nil
 }
 

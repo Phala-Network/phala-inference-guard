@@ -1,6 +1,7 @@
 package predictive
 
 import (
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -133,6 +134,28 @@ func TestCountCoordinatorRejectsIdentityAndProposalErrorsWithoutMutation(t *test
 	}
 }
 
+func TestCountCoordinatorReturnsUnknownForInvalidContextUpperWithoutMutation(t *testing.T) {
+	coordinator := newCountTestCoordinatorWithModelMaximum(t, domain.VirtualState{}, math.MaxInt64, 1_024)
+	tests := []struct {
+		name     string
+		proposal CountAdmissionProposal
+	}{
+		{name: "input plus output overflow", proposal: countTestProposal("overflow", math.MaxInt64, 1)},
+		{name: "model maximum exceeded", proposal: countTestProposal("model-limit", 900, 125)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			result := coordinator.DecideAndReserve(time.Unix(0, 0), test.proposal)
+			if result.Decision.Reason != domain.ReasonPredictorProfileUnknown || result.Reserved || result.Cost != (CountRequestCost{}) {
+				t.Fatalf("invalid context result = %+v, want predictor-profile unknown without a projected cost", result)
+			}
+		})
+	}
+	if snapshot := coordinator.Snapshot(); snapshot.Manager.Reservations != 0 || snapshot.Manager.EventSequence != 0 {
+		t.Fatalf("invalid contexts mutated state: %+v", snapshot)
+	}
+}
+
 func TestCountCoordinatorConsumesLearnedResidualBeforeForwardWithStateHeldConstant(t *testing.T) {
 	now := time.Unix(9_000, 0)
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
@@ -186,6 +209,10 @@ func TestCountCoordinatorConsumesLearnedResidualBeforeForwardWithStateHeldConsta
 }
 
 func newCountTestCoordinator(t *testing.T, initial domain.VirtualState, kvHard int64) *CountCoordinator {
+	return newCountTestCoordinatorWithModelMaximum(t, initial, kvHard, 262_144)
+}
+
+func newCountTestCoordinatorWithModelMaximum(t *testing.T, initial domain.VirtualState, kvHard, modelMaximumLength int64) *CountCoordinator {
 	t.Helper()
 	constraints := testConstraints()
 	constraints.PhysicalKVHard = kvHard
@@ -197,9 +224,10 @@ func newCountTestCoordinator(t *testing.T, initial domain.VirtualState, kvHard i
 			Scheduler:    safeSchedulerIdentity(),
 			BlockSize:    64,
 		},
-		Initial:     initial,
-		Constraints: constraints,
-		Scheduler:   safeScheduler{},
+		ModelMaximumLength: modelMaximumLength,
+		Initial:            initial,
+		Constraints:        constraints,
+		Scheduler:          safeScheduler{},
 	})
 	if err != nil {
 		t.Fatalf("new count coordinator: %v", err)
@@ -229,9 +257,10 @@ func newCountLearnedCoordinator(t *testing.T, scheduler Scheduler, constraints d
 			Scheduler:    testPredictorIdentity(),
 			BlockSize:    64,
 		},
-		Initial:     learnedTestState(),
-		Constraints: constraints,
-		Scheduler:   scheduler,
+		ModelMaximumLength: 262_144,
+		Initial:            learnedTestState(),
+		Constraints:        constraints,
+		Scheduler:          scheduler,
 	})
 	if err != nil {
 		t.Fatalf("new learned count coordinator: %v", err)

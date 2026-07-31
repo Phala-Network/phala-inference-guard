@@ -304,6 +304,7 @@ func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64)
 			Scheduler:    identity,
 			BlockSize:    4,
 		},
+		ModelMaximumLength: 262_144,
 		Constraints: domainpredictive.Constraints{
 			PhysicalKVHard:       1_000,
 			ActiveKVHard:         1_000,
