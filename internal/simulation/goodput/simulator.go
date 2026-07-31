@@ -38,22 +38,22 @@ type requestSpec struct {
 }
 
 type scenarioSpec struct {
-	Name                   string
-	LongPromptSuite        bool
-	Requests               []requestSpec
-	CurrentLimit           int
-	PollInterval           time.Duration
-	StopPollingAt          time.Duration
-	InitialKVTokens        int64
-	InitialRunning         int
-	InitialPrefillTokens   int64
-	ReportedWaitingUntil   time.Duration
-	PreemptionAt           time.Duration
-	CounterResetAt         time.Duration
-	EpochRestoredAt        time.Duration
-	TTFTSLO                time.Duration
-	BaseCompletionTPS      float64
-	PrefillPenaltyPerK     float64
+	Name                 string
+	LongPromptSuite      bool
+	Requests             []requestSpec
+	CurrentLimit         int
+	PollInterval         time.Duration
+	StopPollingAt        time.Duration
+	InitialKVTokens      int64
+	InitialRunning       int
+	InitialPrefillTokens int64
+	ReportedWaitingUntil time.Duration
+	PreemptionAt         time.Duration
+	CounterResetAt       time.Duration
+	EpochRestoredAt      time.Duration
+	TTFTSLO              time.Duration
+	BaseCompletionTPS    float64
+	PrefillPenaltyPerK   float64
 }
 
 type serviceProfile struct {
@@ -526,13 +526,13 @@ func (c *currentThresholdController) Observe(now time.Time, observed observedSta
 	return nil
 }
 
-func (c *currentThresholdController) Reservations() int       { return 0 }
+func (c *currentThresholdController) Reservations() int        { return 0 }
 func (c *currentThresholdController) UsesExactTokenizer() bool { return false }
 
 type v090KVController struct {
-	manager      *kvshadow.Manager
-	snapshot     kvadmission.BackendSnapshot
-	generation   uint64
+	manager    *kvshadow.Manager
+	snapshot   kvadmission.BackendSnapshot
+	generation uint64
 }
 
 func newV090KVController() *v090KVController {
@@ -813,14 +813,14 @@ func acceptanceScenarios() []scenarioSpec {
 			request("before-poll-1", 0, 49, 16, 16),
 			request("before-poll-2", time.Second, 49, 16, 16),
 		}},
-		{Name: "stale_waiting_after_owned_completion", CurrentLimit: 1, PollInterval: time.Second, ReportedWaitingUntil: time.Second, Requests: []requestSpec{
+		{Name: "stale_waiting_after_owned_completion", CurrentLimit: 1, PollInterval: time.Second, StopPollingAt: time.Second, ReportedWaitingUntil: time.Second, Requests: []requestSpec{
 			request("stale-wait-1", 1100*time.Millisecond, 49, 16, 16),
-			request("stale-wait-2", 1500*time.Millisecond, 49, 16, 16),
+			request("stale-wait-2", 2*time.Second, 49, 16, 16),
 		}},
 		{Name: "cancel_during_prefill_and_decode", Requests: cancellationRequests()},
 		{Name: "local_qos_reject_after_reservation", Requests: localRejectRequests()},
 		{Name: "timeout_and_upstream_failure", Requests: failureRequests()},
-		{Name: "stale_or_reset_backend_epoch", CounterResetAt: time.Second, EpochRestoredAt: 2 * time.Second, Requests: epochResetRequests()},
+		{Name: "stale_or_reset_backend_epoch", PreemptionAt: time.Second, CounterResetAt: time.Second, EpochRestoredAt: 2 * time.Second, Requests: epochResetRequests()},
 		{Name: "tokenizer_template_mismatch", Requests: []requestSpec{mismatchedFailure("template-mismatch", 100*time.Millisecond)}},
 		{Name: "unsupported_tools_or_multimodal", Requests: []requestSpec{unsupportedFailure("unsupported-tools", 100*time.Millisecond)}},
 		{Name: "near_capacity_atomic_burst", InitialKVTokens: 820_000, Requests: underestimatedNearCapacityBurst()},

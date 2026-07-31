@@ -45,6 +45,19 @@ func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.
 	full := suite.Aggregate(PolicyPredictiveQoS)
 	current := suite.Aggregate(PolicyCurrentThreshold)
 	kvOnly := suite.Aggregate(PolicyV090KVOnly)
+	t.Logf("aggregate current=%+v", current)
+	t.Logf("aggregate v0.9.0-kv-only=%+v", kvOnly)
+	t.Logf("aggregate predictive-qos=%+v", full)
+	for _, scenario := range suite.Scenarios {
+		t.Logf("scenario=%s current_goodput=%d kv_only_goodput=%d exact_kv_goodput=%d predictive_goodput=%d predictive_safety=%d",
+			scenario.Name,
+			scenario.Policies[PolicyCurrentThreshold].CompletionTokenGoodput,
+			scenario.Policies[PolicyV090KVOnly].CompletionTokenGoodput,
+			scenario.Policies[PolicyExactKVOnly].CompletionTokenGoodput,
+			scenario.Policies[PolicyPredictiveQoS].CompletionTokenGoodput,
+			scenario.Policies[PolicyPredictiveQoS].SafetyViolations(),
+		)
+	}
 	if full.ReservationLeaks != 0 {
 		t.Fatalf("predictive QoS reservation leaks = %d, want 0", full.ReservationLeaks)
 	}

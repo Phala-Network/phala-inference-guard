@@ -10,21 +10,21 @@ const (
 )
 
 type Metrics struct {
-	Arrivals                   int
-	Admitted                   int
-	Completed                  int
-	SLOCompliantCompletions    int
-	CompletionTokenGoodput     int64
-	ExistingOrNewTPSViolations int
-	TTFTViolations             int
-	TPOTViolations             int
-	KVHardViolations           int
-	PreemptionProxyEvents      int
-	FalseAccepts               int
-	FalseDenies                int
-	ReservationLeaks           int
-	PeakProjectedKVTokens      int64
-	MinimumProjectedKVHeadroom int64
+	Arrivals                   int   `json:"arrivals"`
+	Admitted                   int   `json:"admitted"`
+	Completed                  int   `json:"completed"`
+	SLOCompliantCompletions    int   `json:"slo_compliant_completions"`
+	CompletionTokenGoodput     int64 `json:"completion_token_goodput"`
+	ExistingOrNewTPSViolations int   `json:"existing_or_new_tps_violations"`
+	TTFTViolations             int   `json:"ttft_violations"`
+	TPOTViolations             int   `json:"tpot_violations"`
+	KVHardViolations           int   `json:"kv_hard_violations"`
+	PreemptionProxyEvents      int   `json:"preemption_proxy_events"`
+	FalseAccepts               int   `json:"false_accepts"`
+	FalseDenies                int   `json:"false_denies"`
+	ReservationLeaks           int   `json:"reservation_leaks"`
+	PeakProjectedKVTokens      int64 `json:"peak_projected_kv_tokens"`
+	MinimumProjectedKVHeadroom int64 `json:"minimum_projected_kv_headroom"`
 }
 
 func (m Metrics) SafetyViolations() int {
@@ -32,13 +32,13 @@ func (m Metrics) SafetyViolations() int {
 }
 
 type ScenarioResult struct {
-	Name            string
-	LongPromptSuite bool
-	Policies        map[PolicyName]Metrics
+	Name            string                 `json:"name"`
+	LongPromptSuite bool                   `json:"long_prompt_suite"`
+	Policies        map[PolicyName]Metrics `json:"policies"`
 }
 
 type SuiteResult struct {
-	Scenarios []ScenarioResult
+	Scenarios []ScenarioResult `json:"scenarios"`
 }
 
 func RunAcceptanceSuite() (SuiteResult, error) {
