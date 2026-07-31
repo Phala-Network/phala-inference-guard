@@ -120,20 +120,25 @@ impl NativeTokenizer {
             .map_err(|error| NativeTokenizerError::new(format!("encode input: {error}")))?;
         let token_ids = encoding.get_ids();
         let mut full_block_digests = Vec::with_capacity(token_ids.len() / context.block_size);
-        let mut previous = [0_u8; 32];
+        let mut digest_stream = block_digest_stream(context);
         let mut chunks = token_ids.chunks_exact(context.block_size);
-        for block in &mut chunks {
-            let digest = block_digest(context, FULL_BLOCK_TAG, &previous, block);
-            full_block_digests.push(digest);
-            previous = digest;
+        for (block_index, block) in (&mut chunks).enumerate() {
+            update_digest_block(&mut digest_stream, FULL_BLOCK_TAG, block_index, block);
+            full_block_digests.push(*digest_stream.clone().finalize().as_bytes());
         }
         let remainder = chunks.remainder();
         let partial_block = if remainder.is_empty() {
             None
         } else {
+            update_digest_block(
+                &mut digest_stream,
+                PARTIAL_BLOCK_TAG,
+                full_block_digests.len(),
+                remainder,
+            );
             Some(PartialBlockMetadata {
                 token_count: remainder.len(),
-                digest: block_digest(context, PARTIAL_BLOCK_TAG, &previous, remainder),
+                digest: *digest_stream.finalize().as_bytes(),
             })
         };
         let input_sha256: [u8; 32] = Sha256::digest(input.as_bytes()).into();
@@ -147,24 +152,27 @@ impl NativeTokenizer {
     }
 }
 
-fn block_digest(
-    context: &BlockDigestContext,
-    block_tag: u8,
-    previous: &[u8; 32],
-    token_ids: &[u32],
-) -> [u8; 32] {
+fn block_digest_stream(context: &BlockDigestContext) -> blake3::Hasher {
     let mut digest = blake3::Hasher::new_keyed(&context.key);
     digest.update(BLOCK_DIGEST_DOMAIN);
     update_length_prefixed(&mut digest, context.manifest_id.as_bytes());
     update_length_prefixed(&mut digest, context.backend_epoch.as_bytes());
     digest.update(&(context.block_size as u64).to_le_bytes());
-    digest.update(previous);
+    digest
+}
+
+fn update_digest_block(
+    digest: &mut blake3::Hasher,
+    block_tag: u8,
+    block_index: usize,
+    token_ids: &[u32],
+) {
     digest.update(&[block_tag]);
+    digest.update(&(block_index as u64).to_le_bytes());
     digest.update(&(token_ids.len() as u64).to_le_bytes());
     for token_id in token_ids {
         digest.update(&u64::from(*token_id).to_le_bytes());
     }
-    *digest.finalize().as_bytes()
 }
 
 fn update_length_prefixed(digest: &mut blake3::Hasher, value: &[u8]) {
