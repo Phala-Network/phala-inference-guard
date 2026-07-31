@@ -1,9 +1,10 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: internal learned scheduling/atomic coordination plus injected HTTP
-reachability, parity, failure containment, and close lifecycle are
-builder-green; the three-pass real-adapter contract review is complete and a
-production-construction HTTP red is the current P0
+Status: the real adapter transaction, strict Gemma4 text renderer, native C ABI
+analysis, active-prefix cache accounting, TPS guard, and five-case pinned
+tokenizer parity are builder-green; immutable production bundle construction,
+independent predictive body capture, real reconciliation/outcome feedback,
+native latency/cancellation qualification, and efficacy simulation remain P0
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -2933,3 +2934,112 @@ Pass 3, red/green validity and reproducibility:
   outcome-to-future-prediction contracts. No implementation, tokenizer parity,
   simulation gain, image, v0.9.1 runtime promotion, vLLM change, or deployment
   is claimed by this review.
+
+### 2026-07-31 post-native-parity three-pass re-review
+
+This review covers the implementation and builder evidence from `a433bb1`
+through `f034231`. It does not replace the remaining production-construction,
+feedback, capture, latency, or efficacy gates. Each pass changed the plan or an
+executable test before the next pass was recorded.
+
+Pass 1, prospective model causality and cache/TPS interaction:
+
+- Finding: the real adapter now renders and analyzes before calling the same
+  `Coordinator.DecideAndReserve` that owns cache and virtual-state
+  reservations. The earlier HTTP learning-causality test holds current state
+  fixed and changes only three eligible attributed outcomes; the cold result is
+  `static/fit`, while the trained result is
+  `calibrated/new_tps_at_risk`. This proves that learned output can affect a
+  pre-forward decision through the real adapter, but the outcomes are still
+  deterministic test injections rather than production telemetry.
+- Finding: the first native end-to-end candidate `874d52a` was rejected on its
+  second identical request even though the first prefix was active. The direct
+  reason was `new_tps_at_risk`: two decode sequences project 50 completion TPS
+  per user against an 80 TPS target. The failure was correct model behavior,
+  not a tokenizer/cache failure.
+- Change: `fd49675` separates the two invariants. At a 40 TPS target, the active
+  full-block prefix reduces the second request's uncached prefill to its partial
+  block while the exact renderer/native/coordinator reservation succeeds. At
+  the original 80 TPS target, the same cache reuse is still rejected before
+  forwarding and does not mutate a second reservation. Cache credit therefore
+  reduces prospective prefill/KV work but never overrides decode TPS.
+- Remaining P0: construct this chain from one immutable Gemma profile in the
+  actual `newProxyServer` path, feed it monotonic backend reconciliation and
+  owned attributed outcomes, and keep learned mode fail-closed when that
+  outcome contract is unavailable. Test-injected outcomes are not production
+  learning.
+
+Pass 2, identity, native lifecycle, and body coverage:
+
+- Finding: `f034231` loads the pinned 31.2 MiB tokenizer, verifies its hash,
+  renders all five supported request forms, and calls the Go C ABI wrapper with
+  Chat `add_special_tokens=false`, Completion
+  `add_special_tokens=true`, block size 64, fixed manifest, and fixed backend
+  epoch. Exact token counts and block shapes match. The production hot path
+  returns no token IDs; a separate builder-only CLI retains IDs for parity.
+- Finding: the tagged word-level transaction test proves one executable
+  renderer/native/cache/TPS vertical path but is not production Gemma parity.
+  Conversely, the five-case Gemma oracle test proves production asset parity
+  but does not by itself prove the production factory. Both tests are required
+  and neither is described as the other.
+- Remaining issues: `realPredictiveShadow.Close` releases reservations but the
+  future factory must also own and destroy the analyzer and any observation
+  workers in reverse order on constructor failure. The C call still cannot be
+  forcibly cancelled after entry; deadline-during-call, worst-case latency,
+  memory, panic/isolation, and close-race qualification remain mandatory.
+  Predictive body capture is still coupled to the classifier path, so long,
+  chunked, saturated, and partially read bodies do not yet have the separate
+  bounded coverage required by Section 6.3.4.
+- Change: the next implementation gate is explicitly the immutable bundle and
+  fail-closed factory plus resource ownership, followed by independent body
+  capture. No no-op shadow adapter may be installed to make startup pass.
+
+Pass 3, red/green validity and oracle provenance:
+
+- Full renderer regression at `6334aeb9145229b07a1720255aabd1ff83636601`
+  passed focused/default/tagged Go, both race modes, Rust release/locked tests,
+  tracked gofmt, Rust fmt, and `git show --check`. Evidence:
+  `/work/pig-v091-evidence/6334aeb-gemma4-renderer-full-green.log`, SHA-256
+  `374e878817cd9a09f949b91609e9f2c24d19c14c968a7909c2f440c94adda227`;
+  status SHA-256
+  `88d051111a824dfd3e88874b2343b93fc80805c0cf235d042664bc6f90761014`.
+- The behavioral native transaction red at
+  `874d52a78fe0689043f91bb92d72766230425ed2` failed specifically on the TPS
+  expectation above. Evidence log SHA-256
+  `6d7dc8e69831451f197b9ef94ae06b1da38ea4863ff706f480532d254a828919`;
+  status SHA-256
+  `0f4a6ea528a8f0facfc15ea4e6ce4e6bf5ec45b2172d14e2568b47f366272cb6`.
+  The corrected `fd49675fd89bef0521343d9dbcabf69b3e3646b0` focused/tagged/race
+  green log SHA-256 is
+  `7a100ab066062a3248ce47e04ec1f061b0a1f82f8e7ea189ee1ddb35d4d664a7`;
+  status SHA-256 is
+  `62e66aa19d78d5a165b69c16a31613dfd97e4d01074616c138b41cdfbdd1c445`.
+- `c63184252a36c0eb6a5dae57cb41d433a4b9b898` produced zero parity
+  mismatches but is not green because tracked gofmt failed. The valid
+  `f034231bd79b5715c5414beeade2a583cb70345a` rerun passed asset hashes,
+  tracked Go/Rust formatting, Rust release, renderer+C ABI focused/race tests,
+  exact final-ID comparison, and the full tagged server suite. Evidence log
+  SHA-256 is
+  `383ee3684b227f7e19371d44b161dd0d4f751ae98f04d2be3a745817d467f17c`;
+  status SHA-256 is
+  `37fd70a7c230b9ab6a3bf01bc97e9e2bdcd94e37e5165631f7041d599cea9492`;
+  final-ID report SHA-256 is
+  `4fe90e58efdbe81d319c04c215ad2495009a97d46b397ecb7e34bb67d1ff6047`.
+- The verified assets are tokenizer
+  `cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f`,
+  tokenizer config
+  `e467669cfe172dfb0c4e7de7bfbe7553c42bfa5de95acd71f423f58a434d80de`,
+  LF-normalized template
+  `afdbb2abe3667ccde95cc2f86919f05370339399bab5f750950a4390523b8927`,
+  and oracle
+  `0161539eae267099adcda3d04b240b800e12a292d96a6bea9192865a71b0955a`.
+  All five final token-ID arrays match exactly with zero mismatches.
+- Limitation retained: the oracle used Transformers 4.57.1, tokenizers 0.22.2,
+  Jinja2 3.1.6, pinned model assets, and the LF-normalized production template.
+  It was not generated by executing the exact production vLLM image. vLLM
+  remained a read-only reference; no vLLM source, image, or deployment was
+  modified.
+- Release boundary: runtime remains PIG-v0.9.0. No PIG image was built or
+  published, no production CVM was contacted with inference traffic, and no
+  deployment was performed. Simulation efficacy and real-GPU coverage remain
+  unproven.
