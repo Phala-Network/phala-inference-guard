@@ -105,6 +105,83 @@ func TestCacheMirrorBlockKeysAreChainedAfterTokenDifference(t *testing.T) {
 	})
 }
 
+func TestCacheMirrorAcceptsOpaqueAnalyzedBlocksWithoutTokenIDs(t *testing.T) {
+	mirror := newTestCacheMirror(t, 8, 4)
+	analysis := testTokenBlockAnalysis(10, testBlockDigest(1), testBlockDigest(2))
+
+	cold, err := mirror.BeginAnalyzedRequest("first", analysis)
+	if err != nil {
+		t.Fatalf("begin analyzed request failed: %v", err)
+	}
+	assertHitInterval(t, cold, domain.CacheHitInterval{})
+	if !mirror.MarkPrefillComplete("first") {
+		t.Fatal("analyzed request prefill completion was not applied")
+	}
+
+	hot, err := mirror.BeginAnalyzedRequest("second", analysis)
+	if err != nil {
+		t.Fatalf("begin second analyzed request failed: %v", err)
+	}
+	assertHitInterval(t, hot, domain.CacheHitInterval{
+		Certain:  8,
+		Lower:    8,
+		Expected: 8,
+		Upper:    8,
+	})
+	if snapshot := mirror.Snapshot(); snapshot.Entries != 2 || snapshot.Requests != 2 {
+		t.Fatalf("analyzed snapshot = %+v, want two full blocks and two requests", snapshot)
+	}
+}
+
+func TestCacheMirrorTreatsPrecomputedDigestsAsAnOrderedPrefixChain(t *testing.T) {
+	mirror := newTestCacheMirror(t, 8, 4)
+	base := testTokenBlockAnalysis(8, testBlockDigest(1), testBlockDigest(2))
+	if _, err := mirror.BeginAnalyzedRequest("base", base); err != nil {
+		t.Fatalf("begin base analysis failed: %v", err)
+	}
+	if !mirror.MarkPrefillComplete("base") {
+		t.Fatal("base prefill completion was not applied")
+	}
+
+	secondChanged := testTokenBlockAnalysis(8, testBlockDigest(1), testBlockDigest(9))
+	hit, err := mirror.EstimateAnalysis(secondChanged)
+	if err != nil {
+		t.Fatalf("estimate changed analysis failed: %v", err)
+	}
+	assertHitInterval(t, hit, domain.CacheHitInterval{
+		Certain:  4,
+		Lower:    4,
+		Expected: 4,
+		Upper:    4,
+	})
+}
+
+func TestCacheMirrorRejectsStaleOrMalformedAnalyzedBlocks(t *testing.T) {
+	mirror := newTestCacheMirror(t, 8, 4)
+	valid := testTokenBlockAnalysis(10, testBlockDigest(1), testBlockDigest(2))
+	cases := []struct {
+		name   string
+		mutate func(*TokenBlockAnalysis)
+	}{
+		{name: "manifest", mutate: func(value *TokenBlockAnalysis) { value.ManifestID = "other" }},
+		{name: "backend epoch", mutate: func(value *TokenBlockAnalysis) { value.BackendEpoch = "other" }},
+		{name: "block size", mutate: func(value *TokenBlockAnalysis) { value.BlockSize = 8 }},
+		{name: "exact count", mutate: func(value *TokenBlockAnalysis) { value.ExactInputTokens = 9 }},
+		{name: "full digest", mutate: func(value *TokenBlockAnalysis) { value.FullBlockDigests[0] = CacheBlockDigest{} }},
+		{name: "partial count", mutate: func(value *TokenBlockAnalysis) { value.PartialBlockTokens = 0 }},
+		{name: "partial digest", mutate: func(value *TokenBlockAnalysis) { value.PartialBlockDigest = CacheBlockDigest{} }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			invalid := valid.Clone()
+			tc.mutate(&invalid)
+			if _, err := mirror.EstimateAnalysis(invalid); err == nil {
+				t.Fatal("invalid analyzed blocks were accepted")
+			}
+		})
+	}
+}
+
 func TestCacheMirrorEvictsOldestUnpinnedBlockAndStaysBounded(t *testing.T) {
 	mirror := newTestCacheMirror(t, 2, 2)
 	completeCachedRequest(t, mirror, "a", []int64{1, 2})
@@ -275,4 +352,25 @@ func assertHitInterval(t *testing.T, got, want domain.CacheHitInterval) {
 	if got != want {
 		t.Fatalf("cache hit interval = %+v, want %+v", got, want)
 	}
+}
+
+func testTokenBlockAnalysis(inputTokens int64, digests ...CacheBlockDigest) TokenBlockAnalysis {
+	analysis := TokenBlockAnalysis{
+		ManifestID:        "test-profile",
+		BackendEpoch:      "backend-1",
+		BlockSize:         4,
+		ExactInputTokens:  inputTokens,
+		FullBlockDigests:  append([]CacheBlockDigest(nil), digests...),
+		PartialBlockTokens: inputTokens % 4,
+	}
+	if analysis.PartialBlockTokens > 0 {
+		analysis.PartialBlockDigest = testBlockDigest(255)
+	}
+	return analysis
+}
+
+func testBlockDigest(value byte) CacheBlockDigest {
+	var digest CacheBlockDigest
+	digest[0] = value
+	return digest
 }
