@@ -1,7 +1,6 @@
 use std::{
     ffi::CString,
-    fs,
-    ptr,
+    fs, ptr,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -9,12 +8,9 @@ use ahash::AHashMap;
 use pig_tokenizer_native::ffi::{
     PIG_TOKENIZER_OK, PigTokenizationAnalysisHandle, PigTokenizationAnalysisView,
     PigTokenizerHandle, pig_tokenizer_abi_version, pig_tokenizer_analysis_destroy,
-    pig_tokenizer_analysis_view, pig_tokenizer_analyze, pig_tokenizer_destroy,
-    pig_tokenizer_open,
+    pig_tokenizer_analysis_view, pig_tokenizer_analyze, pig_tokenizer_destroy, pig_tokenizer_open,
 };
-use tokenizers::{
-    Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace,
-};
+use tokenizers::{Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -41,7 +37,10 @@ fn c_abi_opens_analyzes_views_and_destroys_without_token_ids() {
             error_buffer.len(),
         )
     };
-    assert_eq!(open_status, PIG_TOKENIZER_OK, "open error = {error_buffer:?}");
+    assert_eq!(
+        open_status, PIG_TOKENIZER_OK,
+        "open error = {error_buffer:?}"
+    );
     assert!(!tokenizer_handle.is_null());
 
     let input = b"hello world";
@@ -57,7 +56,10 @@ fn c_abi_opens_analyzes_views_and_destroys_without_token_ids() {
             error_buffer.len(),
         )
     };
-    assert_eq!(analyze_status, PIG_TOKENIZER_OK, "analyze error = {error_buffer:?}");
+    assert_eq!(
+        analyze_status, PIG_TOKENIZER_OK,
+        "analyze error = {error_buffer:?}"
+    );
     assert!(!analysis_handle.is_null());
 
     let mut view = PigTokenizationAnalysisView {

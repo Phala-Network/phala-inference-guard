@@ -67,9 +67,7 @@ pub unsafe extern "C" fn pig_tokenizer_analysis_destroy(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pig_tokenizer_destroy(
-    _handle: *mut *mut PigTokenizerHandle,
-) -> i32 {
+pub unsafe extern "C" fn pig_tokenizer_destroy(_handle: *mut *mut PigTokenizerHandle) -> i32 {
     PIG_TOKENIZER_UNAVAILABLE
 }
 
