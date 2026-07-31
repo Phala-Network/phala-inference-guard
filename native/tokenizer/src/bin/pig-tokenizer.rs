@@ -31,21 +31,21 @@ fn run() -> Result<(), Box<dyn Error>> {
     let load_micros = load_started.elapsed().as_secs_f64() * 1_000_000.0;
     match mode {
         "encode" => encode(&tokenizer, &input, add_special_tokens),
-		"count-bench" => {
-			if arguments.len() != 6 {
-				return Err("count-bench requires warmup and iteration counts".into());
-			}
-			let warmup: usize = arguments[4].parse()?;
-			let iterations: usize = arguments[5].parse()?;
-			count_bench(
-				&tokenizer,
-				&input,
-				add_special_tokens,
-				warmup,
-				iterations,
-				load_micros,
-			)
-		}
+        "count-bench" => {
+            if arguments.len() != 6 {
+                return Err("count-bench requires warmup and iteration counts".into());
+            }
+            let warmup: usize = arguments[4].parse()?;
+            let iterations: usize = arguments[5].parse()?;
+            count_bench(
+                &tokenizer,
+                &input,
+                add_special_tokens,
+                warmup,
+                iterations,
+                load_micros,
+            )
+        }
         "bench" => {
             if arguments.len() != 6 {
                 return Err("bench requires warmup and iteration counts".into());
@@ -139,40 +139,40 @@ fn bench(
 }
 
 fn count_bench(
-	tokenizer: &NativeTokenizer,
-	input: &str,
-	add_special_tokens: bool,
-	warmup: usize,
-	iterations: usize,
-	load_micros: f64,
+    tokenizer: &NativeTokenizer,
+    input: &str,
+    add_special_tokens: bool,
+    warmup: usize,
+    iterations: usize,
+    load_micros: f64,
 ) -> Result<(), Box<dyn Error>> {
-	if iterations == 0 {
-		return Err("count-bench iterations must be positive".into());
-	}
-	for _ in 0..warmup {
-		tokenizer.count(input, add_special_tokens)?;
-	}
-	let mut durations = Vec::with_capacity(iterations);
-	let mut token_count = 0;
-	for _ in 0..iterations {
-		let started = Instant::now();
-		token_count = tokenizer.count(input, add_special_tokens)?;
-		durations.push(started.elapsed().as_secs_f64() * 1_000_000.0);
-	}
-	durations.sort_by(f64::total_cmp);
-	println!(
-		"{{\"mode\":\"count_only\",\"input_bytes\":{},\"tokens\":{},\"warmup\":{},\"iterations\":{},\"load_us\":{:.3},\"p50_us\":{:.3},\"p95_us\":{:.3},\"p99_us\":{:.3},\"max_us\":{:.3}}}",
-		input.len(),
-		token_count,
-		warmup,
-		iterations,
-		load_micros,
-		percentile(&durations, 0.50),
-		percentile(&durations, 0.95),
-		percentile(&durations, 0.99),
-		durations[durations.len() - 1],
-	);
-	Ok(())
+    if iterations == 0 {
+        return Err("count-bench iterations must be positive".into());
+    }
+    for _ in 0..warmup {
+        tokenizer.count(input, add_special_tokens)?;
+    }
+    let mut durations = Vec::with_capacity(iterations);
+    let mut token_count = 0;
+    for _ in 0..iterations {
+        let started = Instant::now();
+        token_count = tokenizer.count(input, add_special_tokens)?;
+        durations.push(started.elapsed().as_secs_f64() * 1_000_000.0);
+    }
+    durations.sort_by(f64::total_cmp);
+    println!(
+        "{{\"mode\":\"count_only\",\"input_bytes\":{},\"tokens\":{},\"warmup\":{},\"iterations\":{},\"load_us\":{:.3},\"p50_us\":{:.3},\"p95_us\":{:.3},\"p99_us\":{:.3},\"max_us\":{:.3}}}",
+        input.len(),
+        token_count,
+        warmup,
+        iterations,
+        load_micros,
+        percentile(&durations, 0.50),
+        percentile(&durations, 0.95),
+        percentile(&durations, 0.99),
+        durations[durations.len() - 1],
+    );
+    Ok(())
 }
 
 fn analyze_bench(
