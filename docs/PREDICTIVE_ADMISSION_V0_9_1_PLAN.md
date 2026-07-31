@@ -1,6 +1,6 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: reviewed implementation and test plan
+Status: reviewed shadow plan; implementation and builder validation in progress
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -164,7 +164,7 @@ For every supported request, the tokenizer stage returns:
 ~~~
 model profile
 tokenizer manifest
-rendered-input fingerprint
+process-local keyed rendered-input fingerprint
 exact token count
 exact token IDs or backend-equivalent block keys
 message/tool/schema/modality classification
@@ -200,6 +200,10 @@ tokenizer.json SHA-256
 tokenizer_config.json SHA-256
 special_tokens_map.json SHA-256
 chat-template SHA-256
+template runtime and compatibility version
+declared BOS/EOS/UNK/PAD values and token IDs
+immutable add_special_tokens policy
+endpoint and tools/schema/reasoning/multimodal capabilities
 backend kind and version
 block size
 multimodal processor profile
@@ -367,6 +371,128 @@ rejected**. PIG keeps its minimal native core and adds a separately tested
 vLLM-compatible template/profile layer. Extracting or copying Router's current
 template and special-token code would preserve the very incompatibilities the
 profile contract is intended to prevent.
+
+### 6.3.2 Strict profile and native block-analysis implementation
+
+The next tests-first slice was implemented on the remote-builder-only branch.
+It does not yet claim chat-template parity or request-path integration.
+
+The strict Go manifest now binds and validates:
+
+- template runtime identity and compatibility version;
+- declared BOS/EOS/UNK/PAD text and unsigned 32-bit IDs;
+- immutable add/omit special-token policy, which a request cannot override;
+- completions and chat-completions endpoint capabilities;
+- tools, tool choice, response format, JSON schema, reasoning, and multimodal
+  feature capabilities with dependency checks;
+- exact manifest equality before and after tokenizer warm/reset.
+
+Unsupported request features are rejected by the predictive profile before the
+tokenizer engine is called. This is a shadow-predictor failure only; it is not a
+new real-traffic rejection path.
+
+The native Rust core now offers a borrowed-Encoding analysis path that returns:
+
+~~~
+input SHA-256
+exact token count
+keyed chained full-block digests
+partial-block token count and digest
+optional token IDs, disabled on the normal analysis path
+~~~
+
+The current prototype names its rendered-input field `input_sha256`, and the
+Go prototype similarly exposes `RenderedInputSHA256`. Both are unkeyed. The
+second implementation review classified those fields as Builder diagnostics,
+not integration-safe privacy controls: they must not be logged, persisted,
+exported, used for a production LRU, or cross the future native bridge. Before
+bridge work, a red/green slice must replace them with a domain-separated,
+process-local keyed fingerprint and prove same-process stability plus
+cross-process unlinkability. The performance results below measure the current
+unkeyed prototype and therefore do not close that privacy gate.
+
+Digest identity is bound to a 32-byte process-local key, tokenizer manifest,
+backend epoch, and block size. One keyed BLAKE3 stream covers the entire token
+prefix; each full-block digest finalizes a clone of the prefix stream. A token
+change in one block therefore changes that block and every later digest without
+re-initializing a hasher for every block.
+
+The Go cache mirror accepts these opaque analyses without prompt text or token
+IDs. It verifies manifest, backend epoch, block size, exact full/partial shape,
+and non-empty digests before allowing any cache lookup or cache discount.
+Stale or malformed analyses fail closed for predictive cache credit.
+
+The red/green evidence sequence is:
+
+| Slice | Red commit/evidence | Green implementation |
+|---|---|---|
+| Strict profile and native analysis | `f1288cc`, Go `1`, Rust `101` as expected | `f7867fd`, formatted at `458f8e1` |
+| Opaque cache-analysis input | `0e9df17`, Go `1` as expected | `2fe694f`, formatted at `eedc3d9` |
+| Matched benchmark harness | HMAC version at `812671f` exceeded the 2 MiB safety gate | keyed BLAKE3 at `af54622`, streamed at `81d52e6` |
+| Reservation-to-tokenizer identity | `b196bf6`, Go `1` as expected because the manager and simulator did not yet bind a manifest | `3f2fb90`, exact clean Builder checkout fully green |
+
+Two matched reruns of the streamed `81d52e6` release binary measured:
+
+| Case | Analysis p50 range | Analysis p95 range | Analysis p99 range | Interpretation |
+|---|---:|---:|---:|---|
+| small, 49 tokens | 32.4-33.8 us | 54.9-55.3 us | 65.5-66.7 us | Tokenizer/block core only; template and FFI are absent, so the 1 ms end-to-end chat gate remains open. |
+| 64 KiB, 45,056 tokens, 704 blocks | 17.30-17.32 ms | 19.31-22.60 ms | 21.68-52.02 ms | Both p95 runs pass 25 ms; p99 retains host scheduling outliers. |
+| 2 MiB, 1,441,792 tokens, 22,528 blocks | 1.539-1.575 s | 1.638-1.683 s | 1.655-1.726 s | Overload-only; matched analysis/Vec p99 ratio was 1.002-1.035. |
+
+The HMAC implementation's 2 MiB analysis/Vec p50-p99 ratio was approximately
+1.14-1.17. Per-block keyed BLAKE3 reduced it, and the single streaming keyed
+BLAKE3 design reduced the final 2 MiB ratio to approximately 0.99-1.04. The
+64 KiB p95 gate passed in both final reruns. Exact raw evidence remains on the
+builder:
+
+~~~
+/work/pig-v091-evidence/812671f-analysis-benchmark.json
+SHA-256 80792590565139a6fdf381d8bc8c8fa7075872f69f154b3f239abb357b2f94b8
+
+/work/pig-v091-evidence/81d52e6-analysis-benchmark.json
+SHA-256 63b8714803eb6e7c43a5969ebc6df57cef523f09db79a57d33fe019a2479c7ac
+
+/work/pig-v091-evidence/81d52e6-analysis-benchmark-rerun2.json
+SHA-256 e265467e116ded9fd135f1a30a76497835bd1dcbc6055789f1e58b34e13252d1
+~~~
+
+Recomputing the applicable gates directly from those JSON files gives:
+
+| Final run | 64 KiB analysis p95 | 64 KiB gate | 2 MiB analysis p99 | Matched Vec p99 | `max(1.5 s, 1.10 x Vec p99)` | Result |
+|---|---:|---:|---:|---:|---:|---|
+| `81d52e6-analysis-benchmark.json` | 22.603 ms | 25 ms | 1.726 s | 1.668 s | 1.835 s | pass |
+| `81d52e6-analysis-benchmark-rerun2.json` | 19.306 ms | 25 ms | 1.655 s | 1.652 s | 1.817 s | pass |
+
+These passes apply only to the stated core and overload gates. They do not
+close the small-chat template/FFI gate or the calibrated synchronous-lane gate.
+
+The reservation-identity red/green evidence is:
+
+~~~
+/work/pig-v091-evidence/b196bf6-manifest-reservation-red.log
+SHA-256 8581336748e291bd064d610ef005b7ee5185511a5480a9eb4322ead42b0f83b9
+
+/work/pig-v091-evidence/b196bf6-manifest-reservation-red.status
+SHA-256 d0557c125b967784e2f9e06f0023ae528cd8dbb417f1ddc2de507f230e3dd000
+
+/work/pig-v091-evidence/3f2fb90-manifest-reservation-green-v3.log
+SHA-256 88bba9783036d9bf53713f0c227ef829caa9ad4994a0c1b84d9b7a51a8080c5b
+
+/work/pig-v091-evidence/3f2fb90-manifest-reservation-green-v3.status
+SHA-256 cb022e3c36e41e60bfca031a9efdcf8705b44c6b310a077edb0d1809c55c4359
+~~~
+
+The green run checked exact HEAD
+`3f2fb905c94bb170f46523b634bc37bbb0bc3488`, `git show --check`, all
+tracked Go formatting, focused and full Go tests, focused and full race tests,
+Rust formatting, and locked Rust tests. Every recorded status and the final
+run exit were zero. The evidence also records the clean Git status, Go 1.24.5,
+Rust/Cargo 1.97.0, container ID, immutable image ID, and image name
+`ubuntu:24.04`.
+
+These measurements still exclude a real template renderer, C ABI or Unix
+socket transfer, and Go request-path integration. They do not prove final
+vLLM Chat Completions token parity or a production-safe input fingerprint.
 
 ### 6.4 Unsupported requests
 
@@ -1022,7 +1148,7 @@ Initial engineering gates, to be validated and revised from measurements:
 | Small supported chat exact tokenize/template p95 | at most 1 ms |
 | 64 KiB, 45k-token dense core stress p95 | at most 25 ms before template and FFI |
 | Synchronous exact-prediction lane | tokenization/template p95 at most min(25 ms, 5% of calibrated no-PIG TTFT) |
-| 2 MiB, 1.44M-token dense safety case p99 | at most 1.5 s and never eligible for the synchronous exact-prediction lane |
+| 2 MiB, 1.44M-token dense safety case p99 | at most max(1.5 s, 1.10 times the matched Vec-ID baseline p99) and never eligible for the synchronous exact-prediction lane |
 | Cache mirror lookup p99 | at most 100 us |
 | Scheduler prediction p99 | at most 500 us |
 | Atomic predict-and-reserve excluding tokenizer p99 | at most 1 ms |
@@ -1045,6 +1171,12 @@ rejected solely because the predictive tokenizer budget was exceeded.
 The 2 MiB case remains as overload, memory, and failure-containment evidence.
 It is not presented as representative production text or as a valid model
 context: its 1.44 million tokens exceed the intended Gemma4 serving context.
+Its allowed p99 ceiling is the larger of 1.5 seconds and 1.10 times the matched
+Vec baseline because the tokenizer-only Vec baseline itself measured above
+1.5 seconds on a later loaded builder run. Here, 1.5 seconds is a minimum value
+for the overload-test ceiling, not a claim that any result below it represents
+a normal request. The relative allowance does not apply to the 64 KiB or normal
+synchronous lane gates, and it cannot make a 2 MiB input synchronously eligible.
 
 Performance comparisons use the same builder host/container, exact commit,
 warmup count, sample count, CPU-affinity policy when available, and input
@@ -1110,10 +1242,10 @@ Tokenizer oracle assets are pinned by repository/revision and recorded file
 hashes. Authentication presence may be checked, but credentials and environment
 values are never printed.
 
-## 19. First executable test slice
+## 19. Original first executable test slice
 
-The first implementation slice deliberately stops before a native tokenizer.
-Planned packages are:
+The original first implementation slice deliberately stopped before a native
+tokenizer. Its planned packages were:
 
 ~~~
 internal/domain/predictive
@@ -1152,6 +1284,48 @@ go test ./internal/simulation/predictive
 
 Package names and commands may be revised only in the plan before the test-only
 commit is created.
+
+### 19.1 Execution status after the native-analysis slice
+
+Completed and builder-green:
+
+- predictive domain contracts, virtual-state intervals, atomic reservations,
+  cache certainty states, deterministic simulations, and their race tests;
+- manifest-bound reservation admission: a missing or stale tokenizer manifest
+  fails before scheduler work and cannot create or mutate a reservation;
+- strict tokenizer manifest fields and immutable special-token policy;
+- request-feature capability and dependency rejection before engine work, plus
+  rejection of native token IDs outside the unsigned 32-bit contract;
+- native raw tokenizer parity prototype and retained-Encoding source study;
+- native no-ID block analysis with chained keyed digests and partial metadata;
+- cache mirror ingestion of epoch-validated opaque block analyses;
+- two matched performance reruns for the final streaming digest design.
+
+Still pending and not claimed:
+
+- a strict lossless JSON chat-template runtime supporting the pinned Gemma4
+  template, tools, tool results, reasoning, multimodal placeholders, and
+  approved template kwargs;
+- replacement of the prototype's unkeyed rendered-input SHA-256 fields with a
+  domain-separated process-local keyed fingerprint before any bridge, cache,
+  telemetry, or request-path use;
+- final-token parity against a pinned production vLLM oracle for every enabled
+  request feature class;
+- a Go C ABI or Unix-socket native engine and its cancellation/crash-isolation
+  comparison;
+- complete request-path population of the phase-rich reservation fields in
+  Section 11; the current Builder-green manager reserves the minimal
+  `RequestCost` contract only;
+- one request-path digest protocol: the legacy Go token-ID/HMAC helper remains
+  an internal test helper and must not be mixed with native BLAKE3 opaque block
+  analyses in a shared cache-mirror epoch;
+- off/shadow HTTP request-path integration and proof that off mode performs
+  zero predictive work;
+- calibrated scheduler/TPS/TTFT/TPOT profiles from a real upstream;
+- Docker smoke, image publication, any CVM deployment, and enforcement.
+
+The active implementation therefore remains an internal builder-tested slice.
+It does not change production traffic or current PIG behavior.
 
 ## 20. Version, Git, and release boundary
 
@@ -1291,3 +1465,59 @@ Changes made:
 - Required pinned tokenizer oracle assets with recorded hashes.
 - Explicitly marked real GPU scheduler/TPS accuracy as pending separate
   authorization.
+
+### Post-implementation three-pass re-review
+
+The document and implementation were reviewed again after the strict-profile
+and native block-analysis slice.
+
+Pass 1, architecture and forward-control boundary:
+
+- Issue: a native block-analysis API and an opaque cache-mirror API could be
+  misread as an integrated request path even though no Go native bridge or HTTP
+  off/shadow wiring exists. A second issue was that `RequestCost` carried a
+  tokenizer manifest ID, but the atomic reservation manager did not bind an
+  expected ID, so a stale cost could cross the reservation boundary.
+- Change: Section 19.1 now separates builder-green internal components from
+  pending bridge, request-path, off-mode, scheduler, and GPU evidence. No
+  production behavior claim is made. Red commit `b196bf6` defined the missing
+  invariant; green commit `3f2fb90` binds the manager and simulator to one
+  manifest and rejects mismatch before scheduler or state mutation.
+
+Pass 2, tokenizer/cache correctness and privacy:
+
+- Issues: the first keyed HMAC implementation initialized a hasher per block;
+  the native key accepted a different length boundary from the Go mirror; and
+  opaque analyzed blocks needed explicit manifest/epoch/shape validation.
+  Review also found that Go accepted token IDs above the native unsigned 32-bit
+  contract and that normalized feature flags could express `tool_choice`
+  without tools or JSON schema without response format. Finally, the
+  prototype's unkeyed rendered-input SHA-256 fields contradicted the keyed
+  fingerprint privacy requirement, and the legacy Go token-ID/HMAC helper was
+  not identity-compatible with native BLAKE3 analyses.
+- Changes: both boundaries now require a 32-byte process-local key; one keyed
+  BLAKE3 prefix stream creates chained 32-byte digests; and the Go mirror
+  rejects mismatched manifest, backend epoch, block size, counts, empty full
+  digests, or inconsistent partial metadata before cache credit. Token IDs are
+  range-checked and inconsistent feature dependencies fail before engine work.
+  The unkeyed fingerprint is now explicitly blocked from integration pending a
+  keyed red/green replacement, and the future request path is required to use
+  one opaque native digest protocol rather than mixing the legacy helper.
+
+Pass 3, quantitative evidence and release boundary:
+
+- Issues: the original 2 MiB absolute p99 gate failed when the matched Vec-ID
+  baseline itself exceeded 1.5 seconds; a single run also contained large
+  small/64-KiB scheduling outliers. The small-core measurements were also
+  worded too close to the still-unmet 1 ms template-plus-FFI gate, and the first
+  manifest-reservation green record omitted the toolchain/container identity
+  required by Section 18.
+- Changes: two final exact-commit reruns and raw SHA-256 evidence are recorded;
+  the overload-only gate now combines the original 1.5-second floor with a
+  1.10-times matched-baseline bound; the independent 64 KiB p95 and synchronous
+  lane gates remain unchanged; and 2 MiB remains permanently ineligible for
+  synchronous prediction. The small-core result is now explicitly separated
+  from the end-to-end chat gate. The manifest-reservation green was also rerun
+  in a clean exact-commit Builder checkout with toolchain/container identity,
+  full Go, race, and locked Rust gates; no image was built or published and no
+  CVM was deployed.
