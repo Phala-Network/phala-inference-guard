@@ -25,6 +25,33 @@ func (p SpecialTokenPolicy) AddSpecialTokens() bool {
 	return p == SpecialTokenPolicyAdd
 }
 
+type SpecialTokenPolicies struct {
+	Completions     SpecialTokenPolicy
+	ChatCompletions SpecialTokenPolicy
+}
+
+func (p SpecialTokenPolicies) Validate(capabilities TokenizerCapabilities) error {
+	for _, requestClass := range []struct {
+		name    string
+		enabled bool
+		policy  SpecialTokenPolicy
+	}{
+		{name: "completions", enabled: capabilities.Completions, policy: p.Completions},
+		{name: "chat completions", enabled: capabilities.ChatCompletions, policy: p.ChatCompletions},
+	} {
+		if requestClass.enabled {
+			if err := requestClass.policy.Validate(); err != nil {
+				return fmt.Errorf("tokenizer manifest %s special-token policy: %w", requestClass.name, err)
+			}
+			continue
+		}
+		if requestClass.policy != "" {
+			return fmt.Errorf("tokenizer manifest disabled %s request class cannot define a special-token policy", requestClass.name)
+		}
+	}
+	return nil
+}
+
 type TokenBinding struct {
 	Value string
 	ID    int64
@@ -105,13 +132,16 @@ type TokenizerManifest struct {
 	TokenizerConfigSHA256  string
 	SpecialTokensSHA256    string
 	TemplateSHA256         string
+	TemplateSource         string
 	TemplateRuntime        string
 	TemplateRuntimeVersion string
-	SpecialTokenPolicy     SpecialTokenPolicy
+	SpecialTokenPolicies   SpecialTokenPolicies
 	SpecialTokens          SpecialTokenBindings
 	Capabilities           TokenizerCapabilities
 	BackendKind            string
 	BackendVersion         string
+	BackendSourceRevision  string
+	BackendImageDigest     string
 	BlockSize              int64
 	MultimodalProfile      string
 	PredictorVersion       string
@@ -132,10 +162,13 @@ func (m TokenizerManifest) Validate() error {
 		{name: "tokenizer config sha256", value: m.TokenizerConfigSHA256},
 		{name: "special tokens sha256", value: m.SpecialTokensSHA256},
 		{name: "template sha256", value: m.TemplateSHA256},
+		{name: "template source", value: m.TemplateSource},
 		{name: "template runtime", value: m.TemplateRuntime},
 		{name: "template runtime version", value: m.TemplateRuntimeVersion},
 		{name: "backend kind", value: m.BackendKind},
 		{name: "backend version", value: m.BackendVersion},
+		{name: "backend source revision", value: m.BackendSourceRevision},
+		{name: "backend image digest", value: m.BackendImageDigest},
 		{name: "multimodal profile", value: m.MultimodalProfile},
 		{name: "predictor version", value: m.PredictorVersion},
 	}
@@ -147,7 +180,7 @@ func (m TokenizerManifest) Validate() error {
 	if m.BlockSize <= 0 {
 		return fmt.Errorf("tokenizer manifest block size must be positive")
 	}
-	if err := m.SpecialTokenPolicy.Validate(); err != nil {
+	if err := m.SpecialTokenPolicies.Validate(m.Capabilities); err != nil {
 		return err
 	}
 	if err := m.SpecialTokens.Validate(); err != nil {

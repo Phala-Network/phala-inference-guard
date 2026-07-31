@@ -105,6 +105,10 @@ func (r *TokenizerRuntime) Tokenize(ctx context.Context, input TokenizeInput) (T
 	if err := validateRequestFeatures(input.Class, input.Features, state.profile.Manifest.Capabilities); err != nil {
 		return TokenizationResult{}, err
 	}
+	specialTokenPolicy, err := specialTokenPolicyForRequestClass(state.profile.Manifest.SpecialTokenPolicies, input.Class)
+	if err != nil {
+		return TokenizationResult{}, err
+	}
 	select {
 	case state.semaphore <- struct{}{}:
 		defer func() { <-state.semaphore }()
@@ -115,7 +119,7 @@ func (r *TokenizerRuntime) Tokenize(ctx context.Context, input TokenizeInput) (T
 	tokenIDs, err := state.engine.Encode(
 		ctx,
 		input.RenderedInput,
-		state.profile.Manifest.SpecialTokenPolicy.AddSpecialTokens(),
+		specialTokenPolicy.AddSpecialTokens(),
 	)
 	if err != nil {
 		return TokenizationResult{}, fmt.Errorf("tokenizer encode: %w", err)
@@ -194,6 +198,17 @@ func buildTokenizerRuntimeState(ctx context.Context, profile TokenizerProfile, e
 		engine:    engine,
 		semaphore: make(chan struct{}, profile.MaximumConcurrent),
 	}, nil
+}
+
+func specialTokenPolicyForRequestClass(policies domain.SpecialTokenPolicies, requestClass RequestClass) (domain.SpecialTokenPolicy, error) {
+	switch requestClass {
+	case RequestClassCompletion:
+		return policies.Completions, nil
+	case RequestClassChat:
+		return policies.ChatCompletions, nil
+	default:
+		return "", fmt.Errorf("%w: %q", ErrUnsupportedRequestClass, requestClass)
+	}
 }
 
 func manifestSupportsRequestClass(capabilities domain.TokenizerCapabilities, requestClass RequestClass) bool {
