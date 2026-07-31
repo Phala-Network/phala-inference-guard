@@ -41,6 +41,7 @@ func TestScenarioRequiresTokenizerManifestIdentity(t *testing.T) {
 
 func TestScenarioCompletionReopensBeforeNextPoll(t *testing.T) {
 	scenario := Scenario{
+		ManifestID: "test-profile",
 		Initial: domain.VirtualState{
 			PhysicalKVUpper: 70_000,
 			ActiveKVUpper:   70_000,
@@ -82,13 +83,13 @@ func TestScenarioCertainCacheHitProtectsPrefillTPS(t *testing.T) {
 	cold := cacheAwareCost(t, 64_000, 0)
 	hot := cacheAwareCost(t, 64_000, 60_000)
 
-	coldManager := runtimepredictive.NewManager(domain.VirtualState{}, simulationConstraints(), prefillSensitiveScheduler{})
+	coldManager := runtimepredictive.NewManager("test-profile", domain.VirtualState{}, simulationConstraints(), prefillSensitiveScheduler{})
 	coldDecision := coldManager.DecideAndReserve(time.Unix(0, 0), "cold", cold)
 	if coldDecision.Reason != domain.ReasonExistingTPSAtRisk {
 		t.Fatalf("cold reason = %s, want existing TPS risk", coldDecision.Reason)
 	}
 
-	hotManager := runtimepredictive.NewManager(domain.VirtualState{}, simulationConstraints(), prefillSensitiveScheduler{})
+	hotManager := runtimepredictive.NewManager("test-profile", domain.VirtualState{}, simulationConstraints(), prefillSensitiveScheduler{})
 	hotDecision := hotManager.DecideAndReserve(time.Unix(0, 0), "hot", hot)
 	if hotDecision.Reason != domain.ReasonFit {
 		t.Fatalf("hot reason = %s, want fit", hotDecision.Reason)

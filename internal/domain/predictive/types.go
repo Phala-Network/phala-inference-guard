@@ -274,6 +274,7 @@ const (
 	ReasonTPOTAtRisk              Reason = "tpot_at_risk"
 	ReasonWorkspaceAtRisk         Reason = "workspace_at_risk"
 	ReasonPreemptionAtRisk        Reason = "preemption_at_risk"
+	ReasonTokenizerProfileUnknown Reason = "tokenizer_profile_unknown"
 	ReasonPredictorProfileUnknown Reason = "predictor_profile_unknown"
 	ReasonDuplicateRequest        Reason = "duplicate_request"
 )

@@ -120,6 +120,31 @@ func TestTokenizerRuntimeRejectsUnsupportedFeatureSetWithoutEngineCall(t *testin
 	}
 }
 
+func TestTokenizerRuntimeRejectsInconsistentFeatureDependenciesWithoutEngineCall(t *testing.T) {
+	manifest := completeTokenizerManifest("profile-1")
+	for _, features := range []RequestFeatures{
+		{ToolChoice: true},
+		{JSONSchema: true},
+	} {
+		engine := &fakeTokenizerEngine{manifest: manifest, ids: []int64{1}}
+		runtime := mustTokenizerRuntime(t, TokenizerProfile{
+			Manifest:          manifest,
+			SupportedClasses:  []RequestClass{RequestClassChat},
+			MaximumConcurrent: 1,
+		}, engine)
+		if _, err := runtime.Tokenize(context.Background(), TokenizeInput{
+			Class:         RequestClassChat,
+			RenderedInput: "invalid normalized feature set",
+			Features:      features,
+		}); !errors.Is(err, ErrUnsupportedRequestFeatures) {
+			t.Fatalf("inconsistent feature error = %v, want %v", err, ErrUnsupportedRequestFeatures)
+		}
+		if engine.EncodeCalls() != 0 {
+			t.Fatalf("encode calls = %d, want 0", engine.EncodeCalls())
+		}
+	}
+}
+
 func TestTokenizerRuntimeBoundsConcurrencyAndHonorsCancellation(t *testing.T) {
 	manifest := completeTokenizerManifest("profile-1")
 	engine := &fakeTokenizerEngine{
@@ -233,6 +258,19 @@ func TestTokenizerRuntimeRejectsInvalidProfileAndTokenIDs(t *testing.T) {
 		RenderedInput: "invalid ids",
 	}); !errors.Is(err, ErrInvalidTokenizerOutput) {
 		t.Fatalf("invalid output error = %v, want %v", err, ErrInvalidTokenizerOutput)
+	}
+
+	overflowEngine := &fakeTokenizerEngine{manifest: manifest, ids: []int64{int64(^uint32(0)) + 1}}
+	overflowRuntime := mustTokenizerRuntime(t, TokenizerProfile{
+		Manifest:          manifest,
+		SupportedClasses:  []RequestClass{RequestClassCompletion},
+		MaximumConcurrent: 1,
+	}, overflowEngine)
+	if _, err := overflowRuntime.Tokenize(context.Background(), TokenizeInput{
+		Class:         RequestClassCompletion,
+		RenderedInput: "overflow id",
+	}); !errors.Is(err, ErrInvalidTokenizerOutput) {
+		t.Fatalf("overflow output error = %v, want %v", err, ErrInvalidTokenizerOutput)
 	}
 }
 

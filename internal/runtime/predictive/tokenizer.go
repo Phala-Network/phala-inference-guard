@@ -112,7 +112,7 @@ func (r *TokenizerRuntime) Tokenize(ctx context.Context, input TokenizeInput) (T
 		return TokenizationResult{}, fmt.Errorf("tokenizer encode: %w", err)
 	}
 	for index, tokenID := range tokenIDs {
-		if tokenID < 0 {
+		if tokenID < 0 || tokenID > int64(^uint32(0)) {
 			return TokenizationResult{}, fmt.Errorf("%w: token id %d at index %d", ErrInvalidTokenizerOutput, tokenID, index)
 		}
 	}
@@ -201,6 +201,10 @@ func validateRequestFeatures(class RequestClass, features RequestFeatures, capab
 	}
 	unsupported := ""
 	switch {
+	case features.ToolChoice && !features.Tools:
+		unsupported = "tool_choice_without_tools"
+	case features.JSONSchema && !features.ResponseFormat:
+		unsupported = "json_schema_without_response_format"
 	case features.Tools && !capabilities.Tools:
 		unsupported = "tools"
 	case features.ToolChoice && !capabilities.ToolChoice:

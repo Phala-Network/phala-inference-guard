@@ -45,7 +45,7 @@ func testRequest() domain.RequestCost {
 }
 
 func TestCompletionReopensPredictiveHeadroomBeforeNextSample(t *testing.T) {
-	manager := NewManager(domain.VirtualState{
+	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 70_000,
 		ActiveKVUpper:   70_000,
 	}, testConstraints(), safeScheduler{})
@@ -68,7 +68,7 @@ func TestCompletionReopensPredictiveHeadroomBeforeNextSample(t *testing.T) {
 }
 
 func TestConcurrentPredictAndReserveIsAtomic(t *testing.T) {
-	manager := NewManager(domain.VirtualState{
+	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 70_000,
 		ActiveKVUpper:   70_000,
 	}, testConstraints(), safeScheduler{})
@@ -110,7 +110,7 @@ func TestConcurrentPredictAndReserveIsAtomic(t *testing.T) {
 }
 
 func TestDuplicateAndDoubleCompleteAreIdempotent(t *testing.T) {
-	manager := NewManager(domain.VirtualState{
+	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 70_000,
 		ActiveKVUpper:   70_000,
 	}, testConstraints(), safeScheduler{})
@@ -146,7 +146,7 @@ func TestManagerRejectsMismatchedTokenizerManifestWithoutReservation(t *testing.
 }
 
 func TestSampleAssimilatesReservationPresentAcrossWholePollWindow(t *testing.T) {
-	manager := NewManager(domain.VirtualState{
+	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 50_000,
 		ActiveKVUpper:   50_000,
 	}, testConstraints(), safeScheduler{})
@@ -183,7 +183,7 @@ func TestSampleAssimilatesReservationPresentAcrossWholePollWindow(t *testing.T) 
 }
 
 func TestAdmissionInsideSampleWindowWidensUpperBound(t *testing.T) {
-	manager := NewManager(domain.VirtualState{
+	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 50_000,
 		ActiveKVUpper:   50_000,
 	}, testConstraints(), safeScheduler{})
@@ -211,7 +211,7 @@ func TestAdmissionInsideSampleWindowWidensUpperBound(t *testing.T) {
 }
 
 func TestAdmissionAfterSampleWindowRemainsDefinitelyUnabsorbed(t *testing.T) {
-	manager := NewManager(domain.VirtualState{
+	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 50_000,
 		ActiveKVUpper:   50_000,
 	}, testConstraints(), safeScheduler{})
@@ -239,7 +239,7 @@ func TestAdmissionAfterSampleWindowRemainsDefinitelyUnabsorbed(t *testing.T) {
 }
 
 func TestLateSampleDoesNotReintroduceCompletedOwnedWork(t *testing.T) {
-	manager := NewManager(domain.VirtualState{
+	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 50_000,
 		ActiveKVUpper:   50_000,
 	}, testConstraints(), safeScheduler{})
@@ -279,7 +279,7 @@ func TestLateSampleDoesNotReintroduceCompletedOwnedWork(t *testing.T) {
 }
 
 func TestCompletionInsideSampleWindowRemainsConservativeUntilCleanSample(t *testing.T) {
-	manager := NewManager(domain.VirtualState{
+	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 50_000,
 		ActiveKVUpper:   50_000,
 	}, testConstraints(), safeScheduler{})
@@ -328,7 +328,7 @@ func TestCompletionInsideSampleWindowRemainsConservativeUntilCleanSample(t *test
 }
 
 func TestReconcileRejectsInvalidOrStaleWatermarks(t *testing.T) {
-	manager := NewManager(domain.VirtualState{}, testConstraints(), safeScheduler{})
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
 	if err := manager.ReconcileSample(SampleWindow{StartedSequence: 1, FinishedSequence: 0}); err == nil {
 		t.Fatal("finish before start must fail")
 	}

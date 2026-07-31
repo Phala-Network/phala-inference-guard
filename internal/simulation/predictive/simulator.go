@@ -24,6 +24,7 @@ type Event struct {
 }
 
 type Scenario struct {
+	ManifestID  string
 	Initial     domain.VirtualState
 	Constraints domain.Constraints
 	Events      []Event
@@ -36,7 +37,10 @@ type Result struct {
 }
 
 func Run(start time.Time, scenario Scenario, scheduler runtimepredictive.Scheduler) (Result, error) {
-	manager := runtimepredictive.NewManager(scenario.Initial, scenario.Constraints, scheduler)
+	if scenario.ManifestID == "" {
+		return Result{}, fmt.Errorf("scenario tokenizer manifest id is required")
+	}
+	manager := runtimepredictive.NewManager(scenario.ManifestID, scenario.Initial, scenario.Constraints, scheduler)
 	result := Result{}
 	previous := time.Duration(0)
 	for index, event := range scenario.Events {

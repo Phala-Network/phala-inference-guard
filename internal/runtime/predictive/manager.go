@@ -41,6 +41,7 @@ type SampleWindow struct {
 
 type Manager struct {
 	mu                 sync.Mutex
+	manifestID         string
 	base               domain.VirtualStateInterval
 	constraints        domain.Constraints
 	scheduler          Scheduler
@@ -59,8 +60,9 @@ type Snapshot struct {
 	Virtual            domain.VirtualStateInterval
 }
 
-func NewManager(base domain.VirtualState, constraints domain.Constraints, scheduler Scheduler) *Manager {
+func NewManager(manifestID string, base domain.VirtualState, constraints domain.Constraints, scheduler Scheduler) *Manager {
 	return &Manager{
+		manifestID: manifestID,
 		base: domain.VirtualStateInterval{
 			Lower: base,
 			Upper: base,
@@ -79,6 +81,9 @@ func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.manifestID == "" || cost.ManifestID == "" || cost.ManifestID != m.manifestID {
+		return domain.Decision{Reason: domain.ReasonTokenizerProfileUnknown}
+	}
 	if _, exists := m.reservations[requestID]; exists {
 		return domain.Decision{Reason: domain.ReasonDuplicateRequest}
 	}
