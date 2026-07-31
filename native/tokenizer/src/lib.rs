@@ -2,7 +2,9 @@
 mod tests {
     use std::collections::HashMap;
 
-    use tokenizers::{Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace};
+    use tokenizers::{
+        Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace,
+    };
 
     use super::NativeTokenizer;
 
