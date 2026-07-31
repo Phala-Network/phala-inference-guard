@@ -336,7 +336,7 @@ func validatePredictiveProfile(profile predictiveProfileManifest) error {
 		"metrics_poll_interval_milliseconds":   profile.MetricsPollIntervalMilliseconds,
 		"metrics_maximum_age_milliseconds":     profile.MetricsMaximumAgeMilliseconds,
 		"metrics_request_timeout_milliseconds": profile.MetricsRequestTimeoutMilliseconds,
-		"preemption_cooldown_milliseconds":      profile.PreemptionCooldownMilliseconds,
+		"preemption_cooldown_milliseconds":     profile.PreemptionCooldownMilliseconds,
 	} {
 		if err := validatePredictiveDuration(name, value, time.Millisecond); err != nil {
 			return err
