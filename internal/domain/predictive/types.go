@@ -94,10 +94,11 @@ type VirtualState struct {
 }
 
 type RequestCost struct {
-	ManifestID  string
-	InputTokens int64
-	KV          KVIncrement
-	Confidence  float64
+	ManifestID           string
+	InputTokens          int64
+	KV                   KVIncrement
+	UncachedPrefillUpper int64
+	Confidence           float64
 }
 
 type SchedulerEstimate struct {
