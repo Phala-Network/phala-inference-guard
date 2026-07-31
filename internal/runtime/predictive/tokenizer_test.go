@@ -14,7 +14,6 @@ import (
 
 func TestTokenizerRuntimeWarmsAndReturnsExactEngineIDs(t *testing.T) {
 	manifest := completeTokenizerManifest("profile-1")
-	manifest.SpecialTokenPolicy = domain.SpecialTokenPolicyAdd
 	engine := &fakeTokenizerEngine{
 		manifest: manifest,
 		ids:      []int64{2, 100, 101, 1},
@@ -59,6 +58,36 @@ func TestTokenizerRuntimeWarmsAndReturnsExactEngineIDs(t *testing.T) {
 	}
 	if !engine.LastAddSpecialTokens() {
 		t.Fatal("engine did not receive the immutable profile special-token policy")
+	}
+}
+
+func TestTokenizerRuntimeUsesImmutableRequestClassSpecialTokenPolicies(t *testing.T) {
+	manifest := completeTokenizerManifest("profile-1")
+	engine := &fakeTokenizerEngine{manifest: manifest, ids: []int64{2, 100}}
+	runtime := mustTokenizerRuntime(t, TokenizerProfile{
+		Manifest:          manifest,
+		SupportedClasses:  []RequestClass{RequestClassCompletion, RequestClassChat},
+		MaximumConcurrent: 1,
+	}, engine)
+
+	if _, err := runtime.Tokenize(context.Background(), TokenizeInput{
+		Class:         RequestClassCompletion,
+		RenderedInput: "raw completion",
+	}); err != nil {
+		t.Fatalf("completion tokenization failed: %v", err)
+	}
+	if !engine.LastAddSpecialTokens() {
+		t.Fatal("completion did not receive add_special_tokens=true")
+	}
+
+	if _, err := runtime.Tokenize(context.Background(), TokenizeInput{
+		Class:         RequestClassChat,
+		RenderedInput: "<bos>strictly rendered chat",
+	}); err != nil {
+		t.Fatalf("chat tokenization failed: %v", err)
+	}
+	if engine.LastAddSpecialTokens() {
+		t.Fatal("chat did not receive add_special_tokens=false")
 	}
 }
 
@@ -383,9 +412,13 @@ func completeTokenizerManifest(profileID string) domain.TokenizerManifest {
 		TokenizerConfigSHA256:  "tokenizer-config-sha",
 		SpecialTokensSHA256:    "special-tokens-sha",
 		TemplateSHA256:         "template-sha",
+		TemplateSource:         "vllm@backend-rev:examples/tool_chat_template_gemma4.jinja",
 		TemplateRuntime:        "minijinja-vllm-profile",
 		TemplateRuntimeVersion: "v1",
-		SpecialTokenPolicy:     domain.SpecialTokenPolicyOmit,
+		SpecialTokenPolicies: domain.SpecialTokenPolicies{
+			Completions:     domain.SpecialTokenPolicyAdd,
+			ChatCompletions: domain.SpecialTokenPolicyOmit,
+		},
 		SpecialTokens: domain.SpecialTokenBindings{
 			BOS: domain.TokenBinding{Value: "<bos>", ID: 2},
 			EOS: domain.TokenBinding{Value: "<eos>", ID: 1},
@@ -401,11 +434,13 @@ func completeTokenizerManifest(profileID string) domain.TokenizerManifest {
 			JSONSchema:      true,
 			Reasoning:       true,
 		},
-		BackendKind:       "vllm",
-		BackendVersion:    "0.25.1",
-		BlockSize:         4,
-		MultimodalProfile: "text-only",
-		PredictorVersion:  "v0.9.1-test",
+		BackendKind:           "vllm",
+		BackendVersion:        "0.25.1",
+		BackendSourceRevision: "backend-rev",
+		BackendImageDigest:    "sha256:backend-image",
+		BlockSize:             4,
+		MultimodalProfile:     "text-only",
+		PredictorVersion:      "v0.9.1-test",
 	}
 }
 

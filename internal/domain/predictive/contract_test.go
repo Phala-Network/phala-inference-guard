@@ -17,9 +17,13 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 		TokenizerConfigSHA256:  "tokenizer-config-sha",
 		SpecialTokensSHA256:    "special-tokens-sha",
 		TemplateSHA256:         "template-sha",
+		TemplateSource:         "vllm@backend-rev:examples/tool_chat_template_gemma4.jinja",
 		TemplateRuntime:        "minijinja-vllm-profile",
 		TemplateRuntimeVersion: "v1",
-		SpecialTokenPolicy:     SpecialTokenPolicyOmit,
+		SpecialTokenPolicies: SpecialTokenPolicies{
+			Completions:     SpecialTokenPolicyAdd,
+			ChatCompletions: SpecialTokenPolicyOmit,
+		},
 		SpecialTokens: SpecialTokenBindings{
 			BOS: TokenBinding{Value: "<bos>", ID: 2},
 			EOS: TokenBinding{Value: "<eos>", ID: 1},
@@ -35,11 +39,13 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 			JSONSchema:      true,
 			Reasoning:       true,
 		},
-		BackendKind:       "vllm",
-		BackendVersion:    "0.25.1",
-		BlockSize:         64,
-		MultimodalProfile: "text-only",
-		PredictorVersion:  "v0.9.1-test",
+		BackendKind:           "vllm",
+		BackendVersion:        "0.25.1",
+		BackendSourceRevision: "backend-rev",
+		BackendImageDigest:    "sha256:backend-image",
+		BlockSize:             64,
+		MultimodalProfile:     "text-only",
+		PredictorVersion:      "v0.9.1-test",
 	}
 	if !base.Compatible(base) {
 		t.Fatal("identical manifest must be compatible")
@@ -59,12 +65,16 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 		{name: "tokenizer config", mutate: func(value *TokenizerManifest) { value.TokenizerConfigSHA256 = "other" }},
 		{name: "special tokens", mutate: func(value *TokenizerManifest) { value.SpecialTokensSHA256 = "other" }},
 		{name: "template", mutate: func(value *TokenizerManifest) { value.TemplateSHA256 = "other" }},
+		{name: "template source", mutate: func(value *TokenizerManifest) { value.TemplateSource = "other" }},
 		{name: "template runtime", mutate: func(value *TokenizerManifest) { value.TemplateRuntime = "other" }},
 		{name: "template runtime version", mutate: func(value *TokenizerManifest) { value.TemplateRuntimeVersion = "other" }},
-		{name: "special token policy", mutate: func(value *TokenizerManifest) { value.SpecialTokenPolicy = SpecialTokenPolicyAdd }},
+		{name: "completion special token policy", mutate: func(value *TokenizerManifest) { value.SpecialTokenPolicies.Completions = SpecialTokenPolicyOmit }},
+		{name: "chat special token policy", mutate: func(value *TokenizerManifest) { value.SpecialTokenPolicies.ChatCompletions = SpecialTokenPolicyAdd }},
 		{name: "bos token", mutate: func(value *TokenizerManifest) { value.SpecialTokens.BOS.Value = "<s>" }},
 		{name: "eos token id", mutate: func(value *TokenizerManifest) { value.SpecialTokens.EOS.ID = 212 }},
 		{name: "tools capability", mutate: func(value *TokenizerManifest) { value.Capabilities.Tools = false }},
+		{name: "backend source revision", mutate: func(value *TokenizerManifest) { value.BackendSourceRevision = "other" }},
+		{name: "backend image digest", mutate: func(value *TokenizerManifest) { value.BackendImageDigest = "sha256:other" }},
 		{name: "block size", mutate: func(value *TokenizerManifest) { value.BlockSize = 32 }},
 		{name: "multimodal profile", mutate: func(value *TokenizerManifest) { value.MultimodalProfile = "image" }},
 		{name: "predictor version", mutate: func(value *TokenizerManifest) { value.PredictorVersion = "other" }},
@@ -91,7 +101,7 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 	}
 
 	invalid = base
-	invalid.SpecialTokenPolicy = "heuristic"
+	invalid.SpecialTokenPolicies.ChatCompletions = "heuristic"
 	if err := invalid.Validate(); err == nil {
 		t.Fatal("manifest with an unknown special-token policy must be invalid")
 	}
@@ -106,6 +116,92 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 	invalid.Capabilities.Multimodal = true
 	if err := invalid.Validate(); err == nil {
 		t.Fatal("multimodal capability with a text-only processor profile must be invalid")
+	}
+}
+
+func TestTokenizerManifestRequiresSpecialTokenPolicyExactlyForEnabledRequestClasses(t *testing.T) {
+	base := TokenizerManifest{
+		ProfileID:              "gemma4-vllm",
+		ServedModel:            "google/gemma-4-31B-it",
+		ModelRepository:        "RedHatAI/gemma-4-31B-it-FP8-block",
+		ModelRevision:          "b92691b6de6294798f45df81accf88cbc3e1d901",
+		TokenizerRepository:    "RedHatAI/gemma-4-31B-it-FP8-block",
+		TokenizerRevision:      "b92691b6de6294798f45df81accf88cbc3e1d901",
+		TokenizerSHA256:        "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+		TokenizerConfigSHA256:  "e467669cfe172dfb0c4e7de7bfbe7553c42bfa5de95acd71f423f58a434d80de",
+		SpecialTokensSHA256:    "special-tokens-sha",
+		TemplateSHA256:         "afdbb2abe3667ccde95cc2f86919f05370339399bab5f750950a4390523b8927",
+		TemplateSource:         "vllm@6586e54ee274d75b71bd0b77600a6cc71f57c4bc:examples/tool_chat_template_gemma4.jinja",
+		TemplateRuntime:        "transformers-jinja-vllm-profile",
+		TemplateRuntimeVersion: "oracle-pending",
+		SpecialTokens: SpecialTokenBindings{
+			BOS: TokenBinding{Value: "<bos>", ID: 2},
+			EOS: TokenBinding{Value: "<eos>", ID: 1},
+			UNK: TokenBinding{Value: "<unk>", ID: 3},
+			PAD: TokenBinding{Value: "<pad>", ID: 0},
+		},
+		BackendKind:           "vllm",
+		BackendVersion:        "0.24.0-cu129-ubuntu2404-phala.6",
+		BackendSourceRevision: "6586e54ee274d75b71bd0b77600a6cc71f57c4bc",
+		BackendImageDigest:    "sha256:66fa87a8eb31b1c9849c907c63a18a6d03c1696a50246ca094c5789b0efd7368",
+		BlockSize:             64,
+		MultimodalProfile:     "text-only",
+		PredictorVersion:      "v0.9.1-test",
+	}
+
+	tests := []struct {
+		name         string
+		capabilities TokenizerCapabilities
+		policies     SpecialTokenPolicies
+		wantValid    bool
+	}{
+		{
+			name:         "completion only",
+			capabilities: TokenizerCapabilities{Completions: true},
+			policies:     SpecialTokenPolicies{Completions: SpecialTokenPolicyAdd},
+			wantValid:    true,
+		},
+		{
+			name:         "chat only",
+			capabilities: TokenizerCapabilities{ChatCompletions: true},
+			policies:     SpecialTokenPolicies{ChatCompletions: SpecialTokenPolicyOmit},
+			wantValid:    true,
+		},
+		{
+			name:         "both request classes",
+			capabilities: TokenizerCapabilities{Completions: true, ChatCompletions: true},
+			policies: SpecialTokenPolicies{
+				Completions:     SpecialTokenPolicyAdd,
+				ChatCompletions: SpecialTokenPolicyOmit,
+			},
+			wantValid: true,
+		},
+		{
+			name:         "enabled completion missing policy",
+			capabilities: TokenizerCapabilities{Completions: true},
+		},
+		{
+			name:         "disabled chat retains policy",
+			capabilities: TokenizerCapabilities{Completions: true},
+			policies: SpecialTokenPolicies{
+				Completions:     SpecialTokenPolicyAdd,
+				ChatCompletions: SpecialTokenPolicyOmit,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			manifest := base
+			manifest.Capabilities = tt.capabilities
+			manifest.SpecialTokenPolicies = tt.policies
+			err := manifest.Validate()
+			if tt.wantValid && err != nil {
+				t.Fatalf("valid manifest rejected: %v", err)
+			}
+			if !tt.wantValid && err == nil {
+				t.Fatal("invalid request-class policy manifest accepted")
+			}
+		})
 	}
 }
 
