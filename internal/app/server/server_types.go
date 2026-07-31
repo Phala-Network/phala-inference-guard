@@ -47,6 +47,13 @@ type proxyResult struct {
 	total       time.Duration
 	firstByte   time.Duration
 	firstByteOK bool
+	timedOut    bool
+}
+
+type predictiveShadowFailureCounters struct {
+	decide   atomic.Uint64
+	semantic atomic.Uint64
+	terminal atomic.Uint64
 }
 
 func loadConfig() (config, error) {
@@ -92,6 +99,7 @@ type proxyServer struct {
 	nextActiveID             atomic.Uint64
 	nextKVShadowID           atomic.Uint64
 	nextPredictiveID         atomic.Uint64
+	predictiveShadowFailures predictiveShadowFailureCounters
 	decisionDuration         durationHistogram
 	kvEstimatorDuration      durationHistogram
 	kvShadowDecisionDuration durationHistogram

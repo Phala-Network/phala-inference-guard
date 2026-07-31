@@ -30,22 +30,39 @@ type serverDependencies struct {
 }
 
 type guardedPredictiveReservation struct {
-	mu              sync.Mutex
-	reservation     predictiveShadowReservation
-	prefillComplete bool
-	terminated      bool
+	mu                    sync.Mutex
+	reservation           predictiveShadowReservation
+	prefillComplete       bool
+	terminated            bool
+	onSemanticCallFailure func()
+	onTerminalCallFailure func()
 }
 
-func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predictiveShadowInput) predictiveShadowReservation {
+func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predictiveShadowInput) (result predictiveShadowReservation) {
 	if s == nil || s.predictiveShadow == nil || input.Body == nil {
 		return nil
 	}
+	defer clear(input.Body)
+	defer func() {
+		if recover() != nil {
+			s.predictiveShadowFailures.decide.Add(1)
+			result = nil
+		}
+	}()
 	requestID := "http-" + strconv.FormatUint(s.nextPredictiveID.Add(1), 10)
 	reservation := s.predictiveShadow.DecideAndReserve(ctx, requestID, input)
 	if reservation == nil {
 		return nil
 	}
-	return &guardedPredictiveReservation{reservation: reservation}
+	return &guardedPredictiveReservation{
+		reservation: reservation,
+		onSemanticCallFailure: func() {
+			s.predictiveShadowFailures.semantic.Add(1)
+		},
+		onTerminalCallFailure: func() {
+			s.predictiveShadowFailures.terminal.Add(1)
+		},
+	}
 }
 
 func (r *guardedPredictiveReservation) MarkPrefillComplete() bool {
@@ -58,7 +75,7 @@ func (r *guardedPredictiveReservation) MarkPrefillComplete() bool {
 		return false
 	}
 	r.prefillComplete = true
-	return r.reservation.MarkPrefillComplete()
+	return callPredictiveShadow(r.onSemanticCallFailure, r.reservation.MarkPrefillComplete)
 }
 
 func (r *guardedPredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {
@@ -71,5 +88,19 @@ func (r *guardedPredictiveReservation) Terminate(cause runtimepredictive.Termina
 		return false
 	}
 	r.terminated = true
-	return r.reservation.Terminate(cause)
+	return callPredictiveShadow(r.onTerminalCallFailure, func() bool {
+		return r.reservation.Terminate(cause)
+	})
+}
+
+func callPredictiveShadow(onFailure func(), call func() bool) (result bool) {
+	defer func() {
+		if recover() != nil {
+			if onFailure != nil {
+				onFailure()
+			}
+			result = false
+		}
+	}()
+	return call()
 }

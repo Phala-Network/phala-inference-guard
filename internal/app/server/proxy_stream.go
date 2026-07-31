@@ -16,11 +16,12 @@ type upstreamRoundTripResult struct {
 	err      error
 }
 
-func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.ResponseWriter, r *http.Request, allowEarlyBridge bool, requestStarted time.Time, onSemantic func()) proxyResult {
+func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.ResponseWriter, r *http.Request, allowEarlyBridge bool, requestStarted time.Time, onSemantic func()) (result proxyResult) {
 	done := backend.Begin()
 	defer done()
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.ProxyTimeout)
 	defer cancel()
+	defer func() { result.timedOut = ctx.Err() == context.DeadlineExceeded }()
 	ctx = attachClientContext(ctx, r.Context())
 	started := time.Now()
 	resultCh := make(chan upstreamRoundTripResult, 1)

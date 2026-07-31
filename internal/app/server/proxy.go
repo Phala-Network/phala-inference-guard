@@ -139,7 +139,9 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		result = s.proxyRequest(backend, w, r)
 	}
-	if result.status == clientClosedRequestStatus {
+	if result.timedOut {
+		predictiveCause = runtimepredictive.TerminalTimeout
+	} else if result.status == clientClosedRequestStatus {
 		predictiveCause = runtimepredictive.TerminalClientDisconnected
 	} else if result.status >= http.StatusOK && result.status < http.StatusMultipleChoices {
 		predictiveCause = runtimepredictive.TerminalCompleted

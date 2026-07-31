@@ -31,20 +31,6 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
-	var predictiveShadow predictiveAdmissionShadow
-	if cfg.PredictiveAdmissionMode == "shadow" {
-		if dependencies.NewPredictiveShadow == nil {
-			return nil, fmt.Errorf("predictive shadow adapter is required when PREDICTIVE_ADMISSION_MODE=shadow")
-		}
-		var err error
-		predictiveShadow, err = dependencies.NewPredictiveShadow(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("construct predictive shadow adapter: %w", err)
-		}
-		if predictiveShadow == nil {
-			return nil, fmt.Errorf("predictive shadow adapter constructor returned nil")
-		}
-	}
 	backends, target, proxy, err := backend.Build(backendProxyConfigs(cfg.Backends))
 	if err != nil {
 		return nil, err
@@ -52,6 +38,19 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 	attestationService, err := newAttestationService(cfg)
 	if err != nil {
 		return nil, err
+	}
+	var predictiveShadow predictiveAdmissionShadow
+	if cfg.PredictiveAdmissionMode == "shadow" {
+		if dependencies.NewPredictiveShadow == nil {
+			return nil, fmt.Errorf("predictive shadow adapter is required when PREDICTIVE_ADMISSION_MODE=shadow")
+		}
+		predictiveShadow, err = dependencies.NewPredictiveShadow(cfg)
+		if err != nil {
+			return nil, fmt.Errorf("construct predictive shadow adapter: %w", err)
+		}
+		if predictiveShadow == nil {
+			return nil, fmt.Errorf("predictive shadow adapter constructor returned nil")
+		}
 	}
 	srv := &proxyServer{
 		cfg:                      cfg,

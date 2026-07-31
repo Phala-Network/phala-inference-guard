@@ -86,5 +86,6 @@ func (s *proxyServer) proxyRequest(backend *backendProxy, w http.ResponseWriter,
 	if s.recordClientDisconnect(proxyCtx, clientDisconnectPhaseResponse, true) {
 		result.status = clientClosedRequestStatus
 	}
+	result.timedOut = ctx.Err() == context.DeadlineExceeded
 	return result
 }
