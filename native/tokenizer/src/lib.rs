@@ -14,9 +14,8 @@ pub struct NativeTokenizerError {
 
 impl NativeTokenizer {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self, NativeTokenizerError> {
-        let tokenizer = Tokenizer::from_file(path.as_ref()).map_err(|error| {
-            NativeTokenizerError::new(format!("load tokenizer: {error}"))
-        })?;
+        let tokenizer = Tokenizer::from_file(path.as_ref())
+            .map_err(|error| NativeTokenizerError::new(format!("load tokenizer: {error}")))?;
         Ok(Self::from_tokenizer(tokenizer))
     }
 
