@@ -17,7 +17,7 @@ import (
 )
 
 func newProxyServer(cfg config) (*proxyServer, error) {
-	return newProxyServerWithDependencies(cfg, serverDependencies{})
+	return newProxyServerWithDependencies(cfg, serverDependencies{NewPredictiveShadow: newDefaultPredictiveShadow})
 }
 
 func newProxyServerWithDependencies(cfg config, dependencies serverDependencies) (*proxyServer, error) {

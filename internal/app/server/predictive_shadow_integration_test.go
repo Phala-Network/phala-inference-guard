@@ -241,13 +241,13 @@ func TestPredictiveShadowMarksSemanticStreamingOutput(t *testing.T) {
 	}
 }
 
-func TestPredictiveShadowModeFailsClosedWithoutAdapter(t *testing.T) {
+func TestPredictiveShadowModeFailsClosedWithoutProfile(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer backend.Close()
 	cfg := testProxyConfig(backend.URL)
 	cfg.PredictiveAdmissionMode = "shadow"
-	if _, err := newProxyServer(cfg); err == nil || !strings.Contains(err.Error(), "predictive shadow adapter") {
-		t.Fatalf("newProxyServer error = %v, want missing-adapter startup failure", err)
+	if _, err := newProxyServer(cfg); err == nil || !strings.Contains(err.Error(), "PREDICTIVE_ADMISSION_PROFILE_PATH") {
+		t.Fatalf("newProxyServer error = %v, want missing-profile startup failure", err)
 	}
 }
 
