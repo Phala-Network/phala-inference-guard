@@ -96,6 +96,8 @@ func TestGemma4TextRendererRejectsLossyOrUnsupportedInputs(t *testing.T) {
 		body string
 	}{
 		{name: "duplicate root key", path: "/v1/chat/completions", body: `{"messages":[],"messages":[]}`},
+		{name: "escaped duplicate root key", path: "/v1/chat/completions", body: `{"messages":[],"\u006dessages":[]}`},
+		{name: "escaped duplicate nested key", path: "/v1/chat/completions", body: `{"messages":[{"role":"user","\u0072ole":"user","content":"hello"}]}`},
 		{name: "tools unsupported", path: "/v1/chat/completions", body: `{"messages":[],"tools":[{"type":"function"}]}`},
 		{name: "multimodal unsupported", path: "/v1/chat/completions", body: `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`},
 		{name: "completion prompt array unsupported", path: "/v1/completions", body: `{"prompt":["a","b"]}`},

@@ -240,10 +240,6 @@ func loadPredictiveProfile(path, expectedSHA string) (loadedPredictiveProfile, e
 		clear(content)
 		return loadedPredictiveProfile{}, fmt.Errorf("predictive profile SHA-256 mismatch")
 	}
-	if err := validateUniqueJSONKeys(content); err != nil {
-		clear(content)
-		return loadedPredictiveProfile{}, fmt.Errorf("predictive profile JSON: %w", err)
-	}
 	var manifest predictiveProfileManifest
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.DisallowUnknownFields()
@@ -254,6 +250,10 @@ func loadPredictiveProfile(path, expectedSHA string) (loadedPredictiveProfile, e
 	if err := requirePredictiveJSONEOF(decoder); err != nil {
 		clear(content)
 		return loadedPredictiveProfile{}, err
+	}
+	if err := validateUniqueJSONKeys(content); err != nil {
+		clear(content)
+		return loadedPredictiveProfile{}, fmt.Errorf("predictive profile JSON: %w", err)
 	}
 	clear(content)
 	if err := validatePredictiveProfile(manifest); err != nil {

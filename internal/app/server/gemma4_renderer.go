@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"strings"
 	"unicode/utf8"
 
@@ -189,9 +188,6 @@ func parseStrictJSONObject(body []byte) (map[string]json.RawMessage, error) {
 	if !utf8.Valid(body) {
 		return nil, fmt.Errorf("predictive request body is not valid UTF-8")
 	}
-	if err := validateUniqueJSONKeys(body); err != nil {
-		return nil, err
-	}
 	var root map[string]json.RawMessage
 	if err := json.Unmarshal(body, &root); err != nil {
 		return nil, fmt.Errorf("decode predictive request: %w", err)
@@ -199,85 +195,158 @@ func parseStrictJSONObject(body []byte) (map[string]json.RawMessage, error) {
 	if root == nil {
 		return nil, fmt.Errorf("predictive request must be a JSON object")
 	}
+	if err := validateUniqueJSONKeys(body); err != nil {
+		return nil, err
+	}
 	return root, nil
 }
 
 func validateUniqueJSONKeys(body []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	first, err := decoder.Token()
-	if err != nil {
-		return fmt.Errorf("decode predictive request: %w", err)
-	}
-	if err := walkUniqueJSONValue(decoder, first); err != nil {
+	scanner := uniqueJSONKeyScanner{body: body}
+	if err := scanner.skipValue(); err != nil {
 		return err
 	}
-	if _, err := decoder.Token(); err != io.EOF {
-		if err == nil {
-			return fmt.Errorf("predictive request contains a trailing JSON value")
-		}
-		return fmt.Errorf("decode predictive request trailing data: %w", err)
+	scanner.skipWhitespace()
+	if scanner.offset != len(body) {
+		return fmt.Errorf("predictive request contains trailing JSON data")
 	}
 	return nil
 }
 
-func walkUniqueJSONValue(decoder *json.Decoder, token json.Token) error {
-	delimiter, composite := token.(json.Delim)
-	if !composite {
+type uniqueJSONKeyScanner struct {
+	body   []byte
+	offset int
+}
+
+func (s *uniqueJSONKeyScanner) skipValue() error {
+	s.skipWhitespace()
+	if s.offset >= len(s.body) {
+		return fmt.Errorf("predictive request JSON value is truncated")
+	}
+	switch s.body[s.offset] {
+	case '{':
+		return s.skipObject()
+	case '[':
+		return s.skipArray()
+	case '"':
+		_, err := s.skipString()
+		return err
+	default:
+		return s.skipScalar()
+	}
+}
+
+func (s *uniqueJSONKeyScanner) skipObject() error {
+	s.offset++
+	s.skipWhitespace()
+	if s.consume('}') {
 		return nil
 	}
-	switch delimiter {
-	case '{':
-		seen := make(map[string]struct{})
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return fmt.Errorf("decode predictive request object key: %w", err)
-			}
-			key, ok := keyToken.(string)
-			if !ok {
-				return fmt.Errorf("predictive request object key is not a string")
-			}
-			if _, duplicate := seen[key]; duplicate {
-				return fmt.Errorf("predictive request contains duplicate key %q", key)
-			}
-			seen[key] = struct{}{}
-			value, err := decoder.Token()
-			if err != nil {
-				return fmt.Errorf("decode predictive request object value: %w", err)
-			}
-			if err := walkUniqueJSONValue(decoder, value); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
+	seen := make(map[string]struct{})
+	for {
+		s.skipWhitespace()
+		start, err := s.skipString()
 		if err != nil {
-			return fmt.Errorf("decode predictive request object terminator: %w", err)
+			return err
 		}
-		if closing != json.Delim('}') {
-			return fmt.Errorf("predictive request object terminator is invalid")
+		var key string
+		if err := json.Unmarshal(s.body[start:s.offset], &key); err != nil {
+			return fmt.Errorf("decode predictive request object key: %w", err)
 		}
-	case '[':
-		for decoder.More() {
-			value, err := decoder.Token()
-			if err != nil {
-				return fmt.Errorf("decode predictive request array value: %w", err)
+		if _, duplicate := seen[key]; duplicate {
+			return fmt.Errorf("predictive request contains duplicate key %q", key)
+		}
+		seen[key] = struct{}{}
+		s.skipWhitespace()
+		if !s.consume(':') {
+			return fmt.Errorf("predictive request object key has no value")
+		}
+		if err := s.skipValue(); err != nil {
+			return err
+		}
+		s.skipWhitespace()
+		if s.consume('}') {
+			return nil
+		}
+		if !s.consume(',') {
+			return fmt.Errorf("predictive request object separator is invalid")
+		}
+	}
+}
+
+func (s *uniqueJSONKeyScanner) skipArray() error {
+	s.offset++
+	s.skipWhitespace()
+	if s.consume(']') {
+		return nil
+	}
+	for {
+		if err := s.skipValue(); err != nil {
+			return err
+		}
+		s.skipWhitespace()
+		if s.consume(']') {
+			return nil
+		}
+		if !s.consume(',') {
+			return fmt.Errorf("predictive request array separator is invalid")
+		}
+	}
+}
+
+func (s *uniqueJSONKeyScanner) skipString() (int, error) {
+	if s.offset >= len(s.body) || s.body[s.offset] != '"' {
+		return 0, fmt.Errorf("predictive request object key is not a string")
+	}
+	start := s.offset
+	s.offset++
+	for s.offset < len(s.body) {
+		value := s.body[s.offset]
+		s.offset++
+		switch value {
+		case '"':
+			return start, nil
+		case '\\':
+			if s.offset >= len(s.body) {
+				return 0, fmt.Errorf("predictive request JSON string is truncated")
 			}
-			if err := walkUniqueJSONValue(decoder, value); err != nil {
-				return err
-			}
+			s.offset++
 		}
-		closing, err := decoder.Token()
-		if err != nil {
-			return fmt.Errorf("decode predictive request array terminator: %w", err)
+	}
+	return 0, fmt.Errorf("predictive request JSON string is unterminated")
+}
+
+func (s *uniqueJSONKeyScanner) skipScalar() error {
+	start := s.offset
+	for s.offset < len(s.body) {
+		value := s.body[s.offset]
+		if value == ',' || value == ']' || value == '}' || isJSONWhitespace(value) {
+			break
 		}
-		if closing != json.Delim(']') {
-			return fmt.Errorf("predictive request array terminator is invalid")
-		}
-	default:
-		return fmt.Errorf("predictive request contains an invalid JSON delimiter")
+		s.offset++
+	}
+	if s.offset == start {
+		return fmt.Errorf("predictive request scalar value is invalid")
 	}
 	return nil
+}
+
+func (s *uniqueJSONKeyScanner) skipWhitespace() {
+	for s.offset < len(s.body) && isJSONWhitespace(s.body[s.offset]) {
+		s.offset++
+	}
+}
+
+func (s *uniqueJSONKeyScanner) consume(value byte) bool {
+	if s.offset >= len(s.body) || s.body[s.offset] != value {
+		return false
+	}
+	s.offset++
+	return true
+}
+
+func isJSONWhitespace(value byte) bool {
+	return value == ' ' || value == '\n' || value == '\r' || value == '\t'
 }
 
 func rejectGemma4UnsupportedRoot(root map[string]json.RawMessage, path string) error {
