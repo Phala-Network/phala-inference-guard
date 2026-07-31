@@ -92,8 +92,9 @@ def main() -> None:
     report = {
         "scope": (
             "same Rust binary and tokenizer fixture; each path has its own process load and "
-            "warmup; block_analysis returns no token IDs and includes input SHA-256 plus "
-            "keyed chained full/partial block digests"
+            "warmup; report-level input_sha256 identifies only the fixed synthetic fixture; "
+            "block_analysis returns no token IDs and includes a keyed rendered-input "
+            "fingerprint plus keyed chained full/partial block digests"
         ),
         "block_size": args.block_size,
         "tokenizer_sha256": hashlib.sha256(args.tokenizer.read_bytes()).hexdigest(),
