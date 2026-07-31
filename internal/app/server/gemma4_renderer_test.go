@@ -17,12 +17,12 @@ func TestGemma4TextRendererMatchesPinnedProductionTemplateOracle(t *testing.T) {
 		t.Fatalf("new renderer: %v", err)
 	}
 	tests := []struct {
-		name          string
-		path          string
-		body          string
-		wantClass     runtimepredictive.RequestClass
-		wantRendered  string
-		wantDecode    int64
+		name         string
+		path         string
+		body         string
+		wantClass    runtimepredictive.RequestClass
+		wantRendered string
+		wantDecode   int64
 	}{
 		{
 			name:         "chat user text",
