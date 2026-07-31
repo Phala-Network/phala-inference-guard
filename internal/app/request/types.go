@@ -16,25 +16,25 @@ type Config struct {
 	JSONClassifyBodyBytes   int64
 	JSONClassifyLimit       int
 	OutputTokenFields       []string
-	MediumBodyBytes       int64
-	LongBodyBytes         int64
-	VeryLongBodyBytes     int64
-	MediumOutputTokens    int
-	LongOutputTokens      int
-	VeryLongOutputTokens  int
-	AdaptiveOutput        bool
-	AdaptiveOutputWindow  int
-	AdaptiveOutputMin     int
-	AdaptiveOutputMediumQ float64
-	AdaptiveOutputLongQ   float64
-	AdaptiveOutputVeryQ   float64
-	AdaptiveOutputGreen   float64
-	AdaptiveOutputYellow  float64
-	AdaptiveOutputRed     float64
-	DynamicEnabled        bool
-	DynamicFailsafeState  string
-	KVAdmissionMode       string
-	KVAdmissionEstimator  kvadmission.EstimatorConfig
+	MediumBodyBytes         int64
+	LongBodyBytes           int64
+	VeryLongBodyBytes       int64
+	MediumOutputTokens      int
+	LongOutputTokens        int
+	VeryLongOutputTokens    int
+	AdaptiveOutput          bool
+	AdaptiveOutputWindow    int
+	AdaptiveOutputMin       int
+	AdaptiveOutputMediumQ   float64
+	AdaptiveOutputLongQ     float64
+	AdaptiveOutputVeryQ     float64
+	AdaptiveOutputGreen     float64
+	AdaptiveOutputYellow    float64
+	AdaptiveOutputRed       float64
+	DynamicEnabled          bool
+	DynamicFailsafeState    string
+	KVAdmissionMode         string
+	KVAdmissionEstimator    kvadmission.EstimatorConfig
 }
 
 type Lanes struct {
