@@ -106,16 +106,19 @@ func TestPredictiveAdmissionOffConstructsAndRunsNoShadow(t *testing.T) {
 func TestPredictiveShadowPreservesUpstreamAndClientBytes(t *testing.T) {
 	originalBody := `{"model":"m","messages":[{"role":"user","content":"hello"}],"max_tokens":64}`
 	type observation struct {
-		upstreamBody string
-		response     *httptest.ResponseRecorder
-		shadow       *recordingPredictiveShadow
+		upstreamBody         string
+		upstreamOutputTokens string
+		response             *httptest.ResponseRecorder
+		shadow               *recordingPredictiveShadow
 	}
 	run := func(t *testing.T, mode string) observation {
 		t.Helper()
 		seenBody := ""
+		seenOutputTokens := ""
 		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			body, _ := io.ReadAll(r.Body)
 			seenBody = string(body)
+			seenOutputTokens = r.Header.Get("X-PIG-Output-Tokens")
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Upstream-Proof", "same")
 			_, _ = w.Write([]byte(`{"id":"ok","choices":[{"message":{"content":"answer"}}]}`))
@@ -137,13 +140,16 @@ func TestPredictiveShadowPreservesUpstreamAndClientBytes(t *testing.T) {
 		request.Header.Set("Content-Type", "application/json")
 		recorder := httptest.NewRecorder()
 		srv.ServeHTTP(recorder, request)
-		return observation{upstreamBody: seenBody, response: recorder, shadow: shadow}
+		return observation{upstreamBody: seenBody, upstreamOutputTokens: seenOutputTokens, response: recorder, shadow: shadow}
 	}
 
 	off := run(t, "off")
 	shadow := run(t, "shadow")
 	if off.upstreamBody != originalBody || shadow.upstreamBody != originalBody {
 		t.Fatalf("upstream body changed: off=%q shadow=%q want=%q", off.upstreamBody, shadow.upstreamBody, originalBody)
+	}
+	if off.upstreamOutputTokens != shadow.upstreamOutputTokens {
+		t.Fatalf("upstream predictive header changed: off=%q shadow=%q", off.upstreamOutputTokens, shadow.upstreamOutputTokens)
 	}
 	if off.response.Code != shadow.response.Code || off.response.Body.String() != shadow.response.Body.String() {
 		t.Fatalf("client response changed: off=%d/%q shadow=%d/%q", off.response.Code, off.response.Body.String(), shadow.response.Code, shadow.response.Body.String())
