@@ -136,6 +136,8 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	o.mu.Lock()
 	if o.hasPreemptions && sample.Preemptions < o.preemptions {
 		o.preemptions = sample.Preemptions
+		o.lastSuccess = time.Time{}
+		o.lastPreemption = time.Time{}
 		o.mu.Unlock()
 		return
 	}
