@@ -281,7 +281,7 @@ func newAdapterTestCoordinator(t *testing.T) *runtimepredictive.Coordinator {
 		Identity:                 identity,
 		MinimumSamples:           3,
 		MaximumSamplesPerCell:    8,
-		MaxAge:                  time.Hour,
+		MaxAge:                   time.Hour,
 		LowerQuantile:            0.1,
 		UpperQuantile:            0.9,
 		MinimumTPSMultiplier:     0.2,

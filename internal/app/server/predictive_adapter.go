@@ -34,11 +34,11 @@ type realPredictiveShadowConfig struct {
 }
 
 type predictiveAttemptSnapshot struct {
-	Attempts   uint64
-	Fits       uint64
-	Unknown    uint64
-	LastReason domainpredictive.Reason
-	LastSource runtimepredictive.PredictionSource
+	Attempts    uint64
+	Fits        uint64
+	Unknown     uint64
+	LastReason  domainpredictive.Reason
+	LastSource  runtimepredictive.PredictionSource
 	LastSamples int
 }
 
