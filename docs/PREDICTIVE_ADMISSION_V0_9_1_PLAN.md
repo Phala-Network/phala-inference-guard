@@ -1,9 +1,8 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: internal learned scheduling/atomic coordination and injected HTTP
-off/shadow reachability with upstream-header parity are builder-green; shadow
-failure containment and a real tokenizer/cache/coordinator adapter are the
-current P0
+Status: internal learned scheduling/atomic coordination plus injected HTTP
+reachability, parity, failure containment, and close lifecycle are
+builder-green; a real tokenizer/cache/coordinator adapter is the current P0
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -1773,6 +1772,13 @@ Completed and builder-green:
 - upstream behavioral parity is builder-green at `0974efe`: prediction-only
   output-token metadata is separate from authoritative classification fields,
   so shadow does not add `X-PIG-Output-Tokens` or change early-SSE policy.
+- HTTP adapter failure containment is builder-green at `3b44e0a`: decide,
+  semantic, and terminal panics cannot escape into the client path; ephemeral
+  raw-body storage is scrubbed after synchronous analysis; proxy deadlines use
+  `timeout`; and fallible server dependencies are built before the adapter;
+- the adapter now has an idempotent close contract, and Run closes it after a
+  successful construction when the listener exits; the exact close lifecycle
+  is builder-green at `b0b31fd`.
 
 Still pending and not claimed:
 
@@ -1793,8 +1799,9 @@ Still pending and not claimed:
 - one request-path digest protocol: the legacy Go token-ID/HMAC helper remains
   an internal test helper and must not be mixed with native BLAKE3 opaque block
   analyses in a shared cache-mirror epoch;
-- panic, latency-budget, constructor rollback/close, precise timeout, and raw
-  body lifetime containment for a real synchronous shadow adapter;
+- calibrated synchronous profile eligibility, runtime-overrun
+  disable/narrowing, bounded failure metrics, and a no-raw-copy implementation
+  audit for the real adapter;
 - a production adapter connecting strict rendering, native token/block
   analysis, cache preflight, learned scheduling, coordinator reservation, and
   typed reconciliation to the injected HTTP seam;
@@ -2232,6 +2239,52 @@ The clean builder was Ubuntu 24.04.4 in container `6aff8e9be30d`, with Go
 1.24.5, Rust 1.97.0, and Cargo 1.97.0. No local Go/Rust test, image build,
 registry publication, CVM mutation, production request, or vLLM modification
 is part of this evidence.
+
+The next failure-containment red at `44ded5b` is valid. It fails when an
+injected `DecideAndReserve` panic escapes directly through `ServeHTTP`:
+
+~~~
+/work/pig-v091-evidence/44ded5b-predictive-shadow-failure-containment-red.log
+SHA-256 e4a71b52afaa0b1cedcfb737775e19d561032657efb0a03ecccfe9cd44de2f47
+
+/work/pig-v091-evidence/44ded5b-predictive-shadow-failure-containment-red.status
+SHA-256 8588a47de5fca222085d2649d714517fe0f64165d7f22edfefb4817e97b8367c
+~~~
+
+The first candidate then exposed a hanging test cleanup assumption: the proxy
+deadline returned, but the test backend handler required an explicit release
+before `httptest.Server.Close`. That diagnostic is not green evidence. After
+the test lifecycle correction, exact commit `3b44e0a` passes the complete gate:
+
+~~~
+/work/pig-v091-evidence/3b44e0a-predictive-shadow-failure-containment-green.log
+SHA-256 7b0f686bfe87ab81bbd27c2239917130622165be3b00c928b752009e0232f3b2
+
+/work/pig-v091-evidence/3b44e0a-predictive-shadow-failure-containment-green.status
+SHA-256 8bb293ac2abd84acff40e6ba54afa7bc443871fbd644a9a4184d15a02931984c
+~~~
+
+The separate close-lifecycle red at `0d9a4a8` is valid and fails to compile only
+because `proxyServer.Close` is absent:
+
+~~~
+/work/pig-v091-evidence/0d9a4a8-predictive-shadow-close-red.log
+SHA-256 686d32a440dd1a237096dae9a0c31296f4d8112d685feded674f51a8db5f4f1a
+
+/work/pig-v091-evidence/0d9a4a8-predictive-shadow-close-red.status
+SHA-256 9b18a708bc1de10a80df671d2b3768ea8fd0bb5fe5fb2a1938c1f61bfe44eaaf
+~~~
+
+Candidate `a8f1b6d` is explicitly non-green because its Run defer referenced
+`srv` before declaration. Corrected exact commit `b0b31fd` passes every gate:
+
+~~~
+/work/pig-v091-evidence/b0b31fd-predictive-shadow-close-green.log
+SHA-256 b4b1552313f98a1e97034dd52039e67059c8f948d8f406a929efd40e5754e8bc
+
+/work/pig-v091-evidence/b0b31fd-predictive-shadow-close-green.status
+SHA-256 8c858843061679cf333907b1a976f06ea058f8b7928d7d313a8bcc464b8b7638
+~~~
 
 ## 20. Version, Git, and release boundary
 
