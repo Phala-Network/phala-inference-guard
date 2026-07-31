@@ -24,12 +24,14 @@ func (c *Classifier) SafeForEarlySSEBridge(r *http.Request, outputTokens int, ha
 }
 
 type Classification struct {
-	Lane            *lane.Lane
-	OutputTokens    int
-	HasOutputTokens bool
-	Streaming       bool
-	KVCost          kvadmission.Cost
-	PredictiveBody  []byte
+	Lane                      *lane.Lane
+	OutputTokens              int
+	HasOutputTokens           bool
+	Streaming                 bool
+	KVCost                    kvadmission.Cost
+	PredictiveBody            []byte
+	PredictiveOutputTokens    int
+	PredictiveHasOutputTokens bool
 }
 
 func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
@@ -44,13 +46,15 @@ func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
 		return result
 	}
 	result.Streaming = result.Streaming || (fields.HasStream && fields.Stream)
-	if fields.HasOutputTokens && (c.cfg.ClassifyOutputTokens || c.cfg.PredictiveAdmissionMode == "shadow") {
-		result.OutputTokens = fields.OutputTokens
-		result.HasOutputTokens = true
+	if fields.HasOutputTokens && c.cfg.PredictiveAdmissionMode == "shadow" {
+		result.PredictiveOutputTokens = fields.OutputTokens
+		result.PredictiveHasOutputTokens = true
 	}
 	if result.Lane == c.lanes.UnknownBody || !c.cfg.ClassifyOutputTokens || !fields.HasOutputTokens {
 		return result
 	}
+	result.OutputTokens = fields.OutputTokens
+	result.HasOutputTokens = true
 	c.observeOutputTokens(result.OutputTokens)
 	result.Lane = requestclass.MoreRestrictiveLane(result.Lane, c.outputLane(result.OutputTokens))
 	return result

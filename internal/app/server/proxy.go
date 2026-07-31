@@ -56,8 +56,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	predictiveReservation := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
 		Path:            r.URL.Path,
 		Body:            classification.PredictiveBody,
-		OutputTokens:    classification.OutputTokens,
-		HasOutputTokens: classification.HasOutputTokens,
+		OutputTokens:    classification.PredictiveOutputTokens,
+		HasOutputTokens: classification.PredictiveHasOutputTokens,
 		Streaming:       classification.Streaming,
 	})
 	predictiveCause := runtimepredictive.TerminalClientCancelled
