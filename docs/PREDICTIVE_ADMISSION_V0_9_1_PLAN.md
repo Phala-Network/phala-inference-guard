@@ -265,6 +265,109 @@ Tokenizer assets may come from an immutable profile bundle in the PIG image or
 a read-only model-cache mount. The selected delivery method must prove the same
 manifest and must not make the first request download assets.
 
+### 6.3.1 vLLM Router tokenizer source evaluation
+
+The vLLM Router tokenizer is a useful source reference, but the implementation
+at the evaluated revision is not the PIG production tokenizer dependency or
+parity oracle.
+
+The builder evaluation is pinned to:
+
+~~~
+repository: https://github.com/vllm-project/router.git
+revision: d60711dc72ab8f073e33f9a3d93ee81b97274c26
+package: vllm_router_rs 0.1.15
+license: Apache-2.0
+~~~
+
+Source and builder findings:
+
+| Area | Evaluated behavior | PIG decision |
+|---|---|---|
+| Encoder core | Uses `tokenizers 0.22.2`, the same core already pinned by the PIG native prototype. | Keep the smaller PIG crate; importing Router does not provide a different tokenizer algorithm. |
+| Package boundary | `src/tokenizer` is a module of the monolithic Router crate. There is no tokenizer-only crate or feature gate. An external release consumer locked 489 packages, versus 81 in the PIG native tokenizer lock. | Do not directly depend on the whole Router crate. |
+| Runtime use | No Router request-path call site invokes the tokenizer or `apply_chat_template`. | Do not treat Router deployment or cache-aware behavior as production validation of this tokenizer module. |
+| Cache-aware policy | The policy deliberately stores raw text characters rather than token IDs. For Chat Completions, the evaluated request extractor returns `session_id` or an empty string. | Do not reuse this as PIG KV admission state. PIG has one upstream and needs exact token blocks, physical allocation, scheduler, and TPS fit rather than backend selection. |
+| Asset loading | The HF helper downloads tokenizer-related files from the repository's current revision; the API does not require an immutable revision or expected hashes. Runtime factory calls can download. | PIG assets remain startup-local, revision-pinned, and hash-verified; no request-time download. |
+| Special tokens | The wrapper infers token roles by string-pattern search in the vocabulary instead of parsing the effective tokenizer configuration. | Reject heuristic role inference. Load declared values and IDs from the immutable profile and prove them against the backend oracle. |
+| Template input | `ChatMessage` contains only `role: String` and `content: String`. The MiniJinja context contains messages, `add_generation_prompt`, BOS, and EOS only. | Use lossless normalized JSON for messages, tools, tool results, reasoning fields, multimodal parts, and profile-approved template kwargs. |
+| Template failure | Missing templates silently fall back to `role: content`. The evaluated Gemma4 template fails on `message.get(...)`. | Exact profiles fail closed to `tokenizer_profile_unknown`; never silently substitute a generic template. |
+| Encode policy | `encode` and `encode_batch` hard-code `add_special_tokens=false`. | Make special-token behavior an immutable, golden-tested profile decision. |
+| Concurrency and cancellation | Immutable tokenizer values are shareable and synchronous encoding returns `Result`, but there is no profile pool, in-flight cancellation, deadline, or panic/crash containment boundary. | Retain PIG's bounded profile concurrency and keep the in-process versus Unix-socket isolation gate. |
+| Tests | The 41 selected tokenizer unit tests pass, but chat-template tests are simplified string assertions and the real tokenizer integration uses TinyLlama. There is no Transformers/vLLM final-token parity suite. | Treat the tests as module tests only, not backend parity evidence. |
+
+The fixed Gemma4 asset probe made the incompatibility concrete:
+
+~~~
+model/tokenizer revision:
+  RedHatAI/gemma-4-31B-it-FP8-dynamic@5f206f2ff1a06ee5cc9d368127da5c3e80853153
+tokenizer.json SHA-256:
+  cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f
+candidate chat template SHA-256:
+  6a1015c47ccfcfa67c3b772385bccee357a4d37c3cda37bd202e9047f391ab82
+~~~
+
+The tokenizer configuration declares `<bos>` ID 2 and `<eos>` ID 1. Router's
+heuristic instead reports `<s>` ID 203 and `</s>` ID 212. Its MiniJinja
+renderer then fails on the candidate Gemma4 template with:
+
+~~~
+unknown method: map has no method named get
+~~~
+
+Router and PIG do return identical raw IDs for a plain completion fixture when
+no template or special-token processing is involved. This proves only
+`tokenizer.json`-level raw parity, which is expected because both use the same
+Rust library. It does not prove Chat Completions, tools, reasoning,
+multimodal, BOS/EOS, or backend cache-block parity.
+
+The direct comparison used the same builder container, tokenizer asset, input
+bytes, token counts, warmup, and iteration counts. It excludes Go/FFI and, for
+Router, excludes template rendering because the template failed. One matched
+rerun measured:
+
+| Core path | Load | Small p50/p95/p99 | 64 KiB, 45,056 tokens p50/p95/p99 | 2 MiB, 1,441,792 tokens p50/p95/p99 |
+|---|---:|---:|---:|---:|
+| PIG current `Vec<u32>` result | 2.36-2.57 s | 29.3/49.2/59.8 us | 16.1/19.0/28.0 ms | 1.305/1.390/1.452 s |
+| Router retained `Encoding` | 2.89 s | 26.2/44.8/55.1 us | 15.5/20.4/47.9 ms | 1.159/1.246/1.264 s |
+
+The matched evidence hashes are:
+
+~~~
+Router probe JSONL:
+  70d9118a0c2c31bd03bb52dffe17db8c961cf11a0cf612a43b47ab592d10690b
+PIG comparison JSON:
+  dc99d6bbea7487bcda3e6ee0b2d48494c742b6a980780445254e250c956d872f
+plain-completion raw-ID output:
+  948b3305619354df6a964b5f90f4e655ba569324970933c819f2917c0a24fdfb
+~~~
+
+The overload run reached about 481-484 MiB maximum resident set size on both
+paths. This is dominated by the 1.44-million-token encoding and reinforces
+that it must not share the normal synchronous prediction lane.
+
+The small differences are not evidence of a faster tokenizer implementation.
+The Router wrapper retains the library `Encoding`, while the current PIG
+prototype immediately copies all IDs into a new `Vec<u32>`. The useful
+optimization to carry forward is therefore:
+
+1. keep the encoding borrowed inside Rust for as long as possible;
+2. derive token count and full-block keyed digests in one Rust pass;
+3. return full token IDs only for profiles/callers that genuinely require
+   them;
+4. avoid copying an oversized token vector across FFI merely to hash it again
+   in Go;
+5. retain a small exact-result LRU keyed by tokenizer manifest plus rendered
+   input fingerprint for byte-identical repeated inputs, storing token count
+   and block digests rather than prompt text or an unnecessary full-ID copy;
+6. never use raw-character prefix similarity as a confirmed KV-cache hit.
+
+The implementation decision is therefore **reference selected, dependency
+rejected**. PIG keeps its minimal native core and adds a separately tested
+vLLM-compatible template/profile layer. Extracting or copying Router's current
+template and special-token code would preserve the very incompatibilities the
+profile contract is intended to prevent.
+
 ### 6.4 Unsupported requests
 
 The first implementation treats a request as unsupported for exact predictive
@@ -917,13 +1020,31 @@ Initial engineering gates, to be validated and revised from measurements:
 |---|---:|
 | Existing off-mode path | zero tokenizer/predictor calls and p95 within max(2%, 5 us) of matched baseline |
 | Small supported chat exact tokenize/template p95 | at most 1 ms |
-| 64 KiB exact tokenize/template p95 | at most 5 ms |
-| 2 MiB exact tokenize/template p99 | at most 150 ms |
+| 64 KiB, 45k-token dense core stress p95 | at most 25 ms before template and FFI |
+| Synchronous exact-prediction lane | tokenization/template p95 at most min(25 ms, 5% of calibrated no-PIG TTFT) |
+| 2 MiB, 1.44M-token dense safety case p99 | at most 1.5 s and never eligible for the synchronous exact-prediction lane |
 | Cache mirror lookup p99 | at most 100 us |
 | Scheduler prediction p99 | at most 500 us |
 | Atomic predict-and-reserve excluding tokenizer p99 | at most 1 ms |
 
-These are acceptance gates, not claims about results already measured.
+These are acceptance gates, not production claims. The original byte-only
+5 ms and 150 ms gates were revised after the fixed fixture showed that 64 KiB
+encoded to 45,056 tokens and 2 MiB encoded to 1,441,792 tokens. Byte length
+without token density is not a meaningful tokenizer cost gate.
+
+The synchronous-lane budget is enforced by profile eligibility derived from
+normalized payload bytes, request feature class, and a calibrated conservative
+cost envelope before native work starts; a timeout cannot safely cancel an
+arbitrary in-process tokenizer call already consuming CPU. An unexpected
+runtime budget overrun disables or narrows that profile bucket and never
+creates admission headroom. Inputs outside the calibrated lane remain
+`predictive_profile_budget_exceeded` in shadow and use the conservative
+fallback result. They are not admitted with a cache discount and are not
+rejected solely because the predictive tokenizer budget was exceeded.
+
+The 2 MiB case remains as overload, memory, and failure-containment evidence.
+It is not presented as representative production text or as a valid model
+context: its 1.44 million tokens exceed the intended Gemma4 serving context.
 
 Performance comparisons use the same builder host/container, exact commit,
 warmup count, sample count, CPU-affinity policy when available, and input
