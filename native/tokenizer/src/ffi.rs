@@ -72,8 +72,9 @@ pub unsafe extern "C" fn pig_tokenizer_count(
             .tokenizer
             .count(input, add_special_tokens)
             .map_err(|error| FfiError::new(PIG_TOKENIZER_COUNT_ERROR, error.to_string()))?;
-        let count = u64::try_from(count)
-            .map_err(|_| FfiError::new(PIG_TOKENIZER_COUNT_ERROR, "token count exceeds ABI range"))?;
+        let count = u64::try_from(count).map_err(|_| {
+            FfiError::new(PIG_TOKENIZER_COUNT_ERROR, "token count exceeds ABI range")
+        })?;
         unsafe { out_token_count.write(count) };
         Ok(())
     })
@@ -293,9 +294,7 @@ fn parse_add_special_tokens(value: u8) -> Result<bool, FfiError> {
     match value {
         0 => Ok(false),
         1 => Ok(true),
-        _ => Err(invalid_argument(
-            "add-special-tokens flag must be 0 or 1",
-        )),
+        _ => Err(invalid_argument("add-special-tokens flag must be 0 or 1")),
     }
 }
 
