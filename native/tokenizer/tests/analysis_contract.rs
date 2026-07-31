@@ -1,5 +1,6 @@
 use ahash::AHashMap;
 use pig_tokenizer_native::{BlockDigestContext, NativeTokenizer};
+use sha2::{Digest, Sha256};
 use tokenizers::{Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace};
 
 #[test]
@@ -23,7 +24,42 @@ fn analysis_returns_count_chained_full_blocks_and_partial_metadata_without_ids()
     assert_eq!(partial.token_count, 2);
     assert_ne!(partial.digest, [0; 32]);
     assert!(analysis.token_ids.is_none());
-    assert_ne!(analysis.input_sha256, [0; 32]);
+    assert_ne!(analysis.input_fingerprint, [0; 32]);
+}
+
+#[test]
+fn rendered_input_fingerprint_is_keyed_and_context_local() {
+    let native = word_tokenizer();
+    let input = "a b c d";
+    let first = native
+        .analyze(
+            input,
+            false,
+            &digest_context_with_key("profile-1", "backend-1", 4, &[7; 32]),
+            false,
+        )
+        .expect("first");
+    let repeated = native
+        .analyze(
+            input,
+            false,
+            &digest_context_with_key("profile-1", "backend-1", 4, &[7; 32]),
+            false,
+        )
+        .expect("repeated");
+    let different_key = native
+        .analyze(
+            input,
+            false,
+            &digest_context_with_key("profile-1", "backend-1", 4, &[8; 32]),
+            false,
+        )
+        .expect("different key");
+    let plain_sha256: [u8; 32] = Sha256::digest(input.as_bytes()).into();
+
+    assert_ne!(first.input_fingerprint, plain_sha256);
+    assert_eq!(first.input_fingerprint, repeated.input_fingerprint);
+    assert_ne!(first.input_fingerprint, different_key.input_fingerprint);
 }
 
 #[test]
@@ -104,8 +140,16 @@ fn invalid_digest_context_is_rejected_before_encoding() {
 }
 
 fn digest_context(manifest_id: &str, backend_epoch: &str, block_size: usize) -> BlockDigestContext {
-    BlockDigestContext::new(manifest_id, backend_epoch, block_size, &[7; 32])
-        .expect("digest context")
+    digest_context_with_key(manifest_id, backend_epoch, block_size, &[7; 32])
+}
+
+fn digest_context_with_key(
+    manifest_id: &str,
+    backend_epoch: &str,
+    block_size: usize,
+    key: &[u8],
+) -> BlockDigestContext {
+    BlockDigestContext::new(manifest_id, backend_epoch, block_size, key).expect("digest context")
 }
 
 fn word_tokenizer() -> NativeTokenizer {

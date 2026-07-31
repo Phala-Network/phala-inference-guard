@@ -2,6 +2,8 @@ package predictive
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sync"
 	"testing"
@@ -48,8 +50,8 @@ func TestTokenizerRuntimeWarmsAndReturnsExactEngineIDs(t *testing.T) {
 			t.Fatalf("token id %d = %d, want %d", index, result.TokenIDs[index], want[index])
 		}
 	}
-	if result.RenderedInputSHA256 == "" || result.RenderedInputSHA256 == "hello" {
-		t.Fatalf("rendered fingerprint = %q, want non-plaintext digest", result.RenderedInputSHA256)
+	if result.RenderedInputFingerprint == "" || result.RenderedInputFingerprint == "hello" {
+		t.Fatalf("rendered fingerprint = %q, want non-plaintext digest", result.RenderedInputFingerprint)
 	}
 	result.TokenIDs[0] = 999
 	if engine.ids[0] != 2 {
@@ -57,6 +59,43 @@ func TestTokenizerRuntimeWarmsAndReturnsExactEngineIDs(t *testing.T) {
 	}
 	if !engine.LastAddSpecialTokens() {
 		t.Fatal("engine did not receive the immutable profile special-token policy")
+	}
+}
+
+func TestTokenizerRuntimeUsesRuntimeLocalKeyedRenderedInputFingerprint(t *testing.T) {
+	manifest := completeTokenizerManifest("profile-1")
+	profile := TokenizerProfile{
+		Manifest:          manifest,
+		SupportedClasses:  []RequestClass{RequestClassCompletion},
+		MaximumConcurrent: 1,
+	}
+	first := mustTokenizerRuntime(t, profile, &fakeTokenizerEngine{manifest: manifest, ids: []int64{1}})
+	second := mustTokenizerRuntime(t, profile, &fakeTokenizerEngine{manifest: manifest, ids: []int64{1}})
+	input := TokenizeInput{Class: RequestClassCompletion, RenderedInput: "short predictable prompt"}
+
+	firstResult, err := first.Tokenize(context.Background(), input)
+	if err != nil {
+		t.Fatalf("first tokenize failed: %v", err)
+	}
+	repeated, err := first.Tokenize(context.Background(), input)
+	if err != nil {
+		t.Fatalf("repeated tokenize failed: %v", err)
+	}
+	secondResult, err := second.Tokenize(context.Background(), input)
+	if err != nil {
+		t.Fatalf("second runtime tokenize failed: %v", err)
+	}
+
+	plain := sha256.Sum256([]byte(input.RenderedInput))
+	plainHex := hex.EncodeToString(plain[:])
+	if firstResult.RenderedInputFingerprint == plainHex {
+		t.Fatal("rendered-input fingerprint must not be an unkeyed SHA-256 digest")
+	}
+	if firstResult.RenderedInputFingerprint != repeated.RenderedInputFingerprint {
+		t.Fatal("one runtime produced unstable rendered-input fingerprints")
+	}
+	if firstResult.RenderedInputFingerprint == secondResult.RenderedInputFingerprint {
+		t.Fatal("independent runtime keys produced a linkable rendered-input fingerprint")
 	}
 }
 
