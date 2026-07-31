@@ -207,6 +207,39 @@ func (c *Coordinator) Complete(requestID string) bool {
 	return true
 }
 
+func (c *Coordinator) EventSequence() uint64 {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.manager.EventSequence()
+}
+
+func (c *Coordinator) ReconcileSample(sample SampleWindow) error {
+	if c == nil {
+		return fmt.Errorf("predictive coordinator is nil")
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.scheduler == nil || c.scheduler.Identity() != c.identity.Scheduler {
+		return fmt.Errorf("predictive coordinator scheduler identity mismatch")
+	}
+	return c.manager.ReconcileSample(sample)
+}
+
+func (c *Coordinator) ObserveOutcome(requestID string, outcome SchedulerOutcome) bool {
+	if c == nil || requestID == "" {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.scheduler == nil || c.scheduler.Identity() != c.identity.Scheduler || outcome.Identity != c.identity.Scheduler {
+		return false
+	}
+	return c.manager.ObserveOutcome(requestID, outcome)
+}
+
 func (c *Coordinator) Snapshot() CoordinatorSnapshot {
 	if c == nil {
 		return CoordinatorSnapshot{}
