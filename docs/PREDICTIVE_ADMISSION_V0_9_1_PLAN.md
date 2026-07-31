@@ -1,8 +1,8 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: learned-scheduler causality and atomic transaction slices are
-builder-green; coordinator feedback causality and HTTP shadow reachability are
-the current P0 sequence
+Status: learned-scheduler, atomic transaction, and coordinator-feedback
+causality slices are builder-green; complete terminal lifecycle and HTTP shadow
+reachability are the current P0 sequence
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -1734,6 +1734,13 @@ Completed and builder-green:
 - cache preflight is non-mutating, so a scheduler reject does not pin, evict,
   or touch cache state; near-capacity concurrent admissions serialize and only
   one commits.
+- coordinator-owned outcome and sample APIs at `a93f87a` now close the internal
+  learning loop: eligible adverse outcomes observed through the coordinator
+  change a later fixed counterfactual from fit to TPS risk, while wrong-identity
+  and duplicate outcomes cannot create learned headroom;
+- coordinator sample reconciliation now shares the event watermark with
+  admission, first output, and completion; an overlapping late sample cannot
+  reintroduce completed phase state.
 
 Still pending and not claimed:
 
@@ -1744,13 +1751,6 @@ Still pending and not claimed:
   request feature class;
 - a Go C ABI or Unix-socket native engine and its cancellation/crash-isolation
   comparison;
-- coordinator-owned outcome and sample reconciliation APIs; the coordinator
-  currently encapsulates its manager but cannot yet feed an attributed outcome
-  or backend sample through that ownership boundary, so online learning cannot
-  yet close its loop at the coordinator boundary;
-- an integrated coordinator causality test that holds proposal/cache/current
-  state fixed and proves eligible learned history changes the coordinator's
-  forecast and decision; the existing causality proof is at the manager layer;
 - hierarchical feature-cell backoff, effective sample weighting, measured
   one-sided coverage, and distribution-shift/error circuit breakers; the first
   green learner deliberately supports bounded exact cells only;
@@ -1975,6 +1975,83 @@ SHA-256 1e93ff2c916e22c7460b685fa986d911ef4d29abe23d1807582524dbd51e62c8
 
 /work/pig-v091-evidence/519b219-atomic-predictive-transaction-green.status
 SHA-256 b3006b12135432db08c314332a518d6d1eb81c386d6c5d726d92bf8a419752b8
+~~~
+
+### 19.4 Executed slice: coordinator feedback causality
+
+The test-only red commit `c41d76e4c9ec656a4334c3f700c831369351fdc7`
+required coordinator-owned outcome observation, event watermarks, and sample
+reconciliation. Its exact clean checkout passed commit and gofmt checks, then
+focused Go compilation exited 1 only because `Coordinator.ObserveOutcome`,
+`Coordinator.EventSequence`, and `Coordinator.ReconcileSample` did not exist.
+
+The green commit `a93f87a42d1a2062bb1bf12365725be75c1fd44e`
+adds those ownership-preserving APIs under the coordinator lock. The integrated
+test repeatedly returns to the same initial virtual state and cold-cache
+feature cell, observes three eligible adverse outcomes through the coordinator,
+then proves a later otherwise-fixed counterfactual changes from fit to
+`new_tps_at_risk`. It also rejects wrong-identity and duplicate outcomes, and
+proves that first-output, absorbed sample, completion, and a late overlapping
+sample cannot leak or reintroduce phase/cache state.
+
+Pass 1 re-review, learned prediction causality:
+
+- Finding: online residual learning now has a complete internal causal path:
+  admitted prediction identity and features are retained, eligible attributed
+  outcomes update the matching cell exactly once, and the calibrated lower-tail
+  TPS estimate changes a later coordinator decision before any forwarding.
+- Remaining issue: the calibrator still has exact-cell eligibility only. It
+  lacks hierarchical backoff, effective weights, empirical one-sided coverage,
+  and distribution-shift quarantine. The current priors/outcomes remain
+  deterministic fixtures rather than GPU-calibrated evidence.
+- Change: coordinator feedback is moved to builder-green, but Phase 4 remains
+  partial and the plan retains every calibration/coverage gate.
+
+Pass 2 re-review, state and lifecycle safety:
+
+- Finding: outcome and sample operations are serialized with admissions and
+  lifecycle events, revalidate scheduler identity, and reuse the manager's
+  exactly-once and watermark rules. The late-overlap test demonstrates no
+  double-add/subtract after an absorbed phase transition and completion.
+- Remaining issue: HTTP terminal causes still need explicit coordinator
+  ownership. Local QoS reject, cancellation, disconnect, upstream failure,
+  timeout, expiry, and epoch reset cannot be collapsed into an untyped ordinary
+  completion because only attributable upstream outcomes may train the model.
+- Change: typed terminal release, reset/quarantine, and their idempotent/race
+  tests remain the immediate prerequisite to HTTP shadow lifecycle wiring.
+
+Pass 3 re-review, evidence and release boundary:
+
+- Finding: `a93f87a` passed `git show --check`, tracked gofmt, focused Go,
+  focused race, full Go, full race, Rust fmt, and locked Rust tests in a fresh
+  exact-commit builder checkout. Toolchain and container identity match the
+  recorded transaction gate.
+- Remaining issue: this evidence contains no HTTP request-path import, off-mode
+  zero-work proof, client-visible compatibility test, tokenizer/template bridge,
+  deterministic goodput comparison, latency measurement, image, or GPU run.
+- Change: runtime version stays PIG-v0.9.0 and deployment stays prohibited. The
+  next red must first define typed terminal ownership, then the off/shadow HTTP
+  reachability seam; a package-level coordinator green is still not a PIG
+  request-path green.
+
+Valid coordinator-feedback red evidence:
+
+~~~
+/work/pig-v091-evidence/c41d76e-coordinator-feedback-causality-red.log
+SHA-256 0a6ddf5057a18bc2f3461488b143c10474c762835037b3e4b8993e00ef89d228
+
+/work/pig-v091-evidence/c41d76e-coordinator-feedback-causality-red.status
+SHA-256 507d9c32cbadcd35ff64732756aafe30f8b43e8f6227db0cf0ee9f07186973e6
+~~~
+
+Valid coordinator-feedback green evidence:
+
+~~~
+/work/pig-v091-evidence/a93f87a-coordinator-feedback-causality-green.log
+SHA-256 d5c594fd07a7a73b0b43f2ef4f4bc55ff726bda9e2d236cf366f3d252b669ab8
+
+/work/pig-v091-evidence/a93f87a-coordinator-feedback-causality-green.status
+SHA-256 37acca3b422201c678bd98bb72bf29a8a8ee6cdaf0aa1e05cdd024791ce910a8
 ~~~
 
 ## 20. Version, Git, and release boundary
