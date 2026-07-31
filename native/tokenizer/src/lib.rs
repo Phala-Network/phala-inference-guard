@@ -2,6 +2,8 @@ use std::{error::Error, fmt, path::Path};
 
 use tokenizers::Tokenizer;
 
+pub mod ffi;
+
 const BLOCK_DIGEST_DOMAIN: &[u8] = b"pig-kv-token-block-v1";
 const INPUT_FINGERPRINT_DOMAIN: &[u8] = b"pig-rendered-input-fingerprint-v1";
 const FULL_BLOCK_TAG: u8 = 1;
