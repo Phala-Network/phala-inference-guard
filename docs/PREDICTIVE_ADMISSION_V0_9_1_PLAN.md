@@ -1,8 +1,8 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: learned-scheduler, atomic transaction, and coordinator-feedback
-causality slices are builder-green; complete terminal lifecycle and HTTP shadow
-reachability are the current P0 sequence
+Status: learned-scheduler, atomic transaction, coordinator-feedback, and typed
+terminal-release slices are builder-green; HTTP shadow reachability is the
+current P0
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -1741,6 +1741,10 @@ Completed and builder-green:
 - coordinator sample reconciliation now shares the event watermark with
   admission, first output, and completion; an overlapping late sample cannot
   reintroduce completed phase state.
+- bounded terminal causes at `7e1f289` release manager/cache ownership exactly
+  once for success, local QoS reject, cancellation, disconnect, upstream
+  failure, timeout, or expiry; invalid causes preserve the reservation, and
+  non-success causes permanently block completed-outcome learning.
 
 Still pending and not claimed:
 
@@ -1756,9 +1760,8 @@ Still pending and not claimed:
   green learner deliberately supports bounded exact cells only;
 - production-calibrated scheduler priors and residual targets; current values
   in tests/simulation are deterministic fixtures, not GPU evidence;
-- cancellation, local-QoS reject, upstream failure, expiry, reset, and sample
-  race coverage for the coordinator lifecycle beyond semantic first output and
-  ordinary completion;
+- automatic expiry sweeping and atomic epoch reset/quarantine; expiry has a
+  typed manual terminal path, but no clock-driven sweep exists yet;
 - one request-path digest protocol: the legacy Go token-ID/HMAC helper remains
   an internal test helper and must not be mixed with native BLAKE3 opaque block
   analyses in a shared cache-mirror epoch;
@@ -2064,6 +2067,99 @@ SHA-256 d5c594fd07a7a73b0b43f2ef4f4bc55ff726bda9e2d236cf366f3d252b669ab8
 /work/pig-v091-evidence/a93f87a-coordinator-feedback-causality-green.status
 SHA-256 37acca3b422201c678bd98bb72bf29a8a8ee6cdaf0aa1e05cdd024791ce910a8
 ~~~
+
+### 19.5 Executed slice: typed terminal release
+
+The test-only red commit `d8ae9917f174812c9e34af0a2ad6ee056586172d`
+required a bounded `TerminalCause` contract and coordinator termination API.
+Its exact clean checkout passed commit and gofmt checks, then focused Go
+compilation exited 1 only for the missing type, constants, and method.
+
+The green commit `7e1f2896a35f6c6de22af371332163e1661d1160`
+stores the cause in the completed reservation ledger, releases manager/cache
+ownership once under the coordinator lock, rejects unknown cause strings before
+mutation, and permits post-completion learning only for successful completion.
+Simultaneous success and cancellation produce one successful terminal event
+and no reservation, cache reference, or phase-state leak under race testing.
+
+Pass 1 re-review, prediction and learning semantics:
+
+- Finding: terminal causes do not grant capacity or alter a forecast; they only
+  release already-owned prospective state. Local QoS rejects and other
+  non-success endings cannot later be mislabeled as healthy upstream outcomes,
+  closing the feedback-contamination issue identified in the prior review.
+- Remaining issue: success alone is still not sufficient attribution for a
+  future outcome; HTTP integration must additionally check response/result
+  eligibility and measurement completeness before calling `ObserveOutcome`.
+- Change: typed release is builder-green, while outcome eligibility remains
+  explicit and fail-closed at the future HTTP adapter.
+
+Pass 2 re-review, idempotence and failure safety:
+
+- Finding: every bounded cause shares the same manager/cache preflight and lock
+  order, invalid causes leave the reservation live, duplicate terminal events
+  return false, and success/cancel races release exactly once. Existing
+  sample-assimilation and late-sample tests remain green.
+- Remaining issue: `expired` is currently an explicit cause, not an automatic
+  sweep; epoch reset/quarantine and abandoned-reservation clocks are still
+  absent. Manager/cache presence mismatch needs a typed invariant metric before
+  production shadow operation.
+- Change: automatic expiry and reset remain Phase 5 work, but they no longer
+  block the first injected HTTP reachability/off-mode slice because every HTTP
+  exit in that slice must terminate explicitly.
+
+Pass 3 re-review, evidence and boundary:
+
+- Finding: the exact `7e1f289` checkout passed commit, tracked gofmt, focused
+  and full Go, both race gates, Rust fmt, and locked Rust tests on the recorded
+  builder toolchain. No local Go/Rust run was substituted.
+- Remaining issue: no server package imports or invokes predictive admission;
+  no config mode, off-zero-work proof, body-parity test, version bump, image,
+  deployment, or GPU request exists.
+- Change: HTTP reachability is now the P0. Runtime version remains PIG-v0.9.0
+  until the off/shadow server seam itself is builder-green.
+
+Valid typed-terminal red evidence:
+
+~~~
+/work/pig-v091-evidence/d8ae991-predictive-typed-termination-red.log
+SHA-256 39307c8acace1f7e7fe0fd0ff52db4e28b012dba5238ec8120857f9fc0a50735
+
+/work/pig-v091-evidence/d8ae991-predictive-typed-termination-red.status
+SHA-256 4f4ba1a35f898f6c94b25547bf87d3886b664de610c4cedf3f7f8c09092f15fa
+~~~
+
+Valid typed-terminal green evidence:
+
+~~~
+/work/pig-v091-evidence/7e1f289-predictive-typed-termination-green.log
+SHA-256 354f73351016e37df4f53187a9769118985a2861213043c61f232152282e3c63
+
+/work/pig-v091-evidence/7e1f289-predictive-typed-termination-green.status
+SHA-256 4ca05f26f0339c09f62cb355b6a68847b344457f8d9e2cab0448ff3b5a42339d
+~~~
+
+The next test-only HTTP red adds
+`internal/config/pigconfig/config_predictive_admission_test.go` and
+`internal/app/server/predictive_shadow_integration_test.go`. It defines:
+
+- `PREDICTIVE_ADMISSION_MODE=off|shadow`, with enforce rejected;
+- dependency-injected shadow construction that is never invoked in off mode
+  and fails startup when shadow construction is unavailable or invalid;
+- an ephemeral bounded JSON body snapshot only in shadow mode, with the
+  original upstream request body and content length preserved byte-for-byte;
+- a server-owned shadow reservation started before the authoritative QoS gate,
+  released as `local_qos_reject` on local rejection, marked at semantic first
+  output for eligible streaming responses, and terminated exactly once on all
+  tested exits;
+- off versus shadow equality for upstream request bytes and client-visible
+  status, headers, and body, even when the fake predictive decision is risk.
+
+The initial HTTP slice uses only an injected deterministic fake. Production
+startup with shadow mode remains fail-closed until a real renderer/tokenizer/
+coordinator adapter exists; no no-op production shadow is permitted. Therefore
+this slice proves call-graph reachability and compatibility, not tokenizer
+parity or deployability.
 
 ## 20. Version, Git, and release boundary
 
