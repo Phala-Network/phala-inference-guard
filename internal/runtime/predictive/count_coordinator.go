@@ -90,8 +90,17 @@ func (c *CountCoordinator) DecideAndReserve(now time.Time, proposal CountAdmissi
 	if err := proposal.Analysis.Validate(c.identity.ManifestID, c.identity.BackendEpoch); err != nil {
 		return countAdmissionFailure(domain.ReasonTokenizerProfileUnknown)
 	}
-	activeContext := addInt64Saturating(proposal.Analysis.ExactInputTokens, proposal.DecodeHorizonUpper)
-	kvUpper := roundUpCountCost(activeContext, int64(c.identity.BlockSize))
+	if proposal.Analysis.ExactInputTokens > math.MaxInt64-proposal.DecodeHorizonUpper {
+		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+	}
+	activeContext := proposal.Analysis.ExactInputTokens + proposal.DecodeHorizonUpper
+	if activeContext > c.modelMaximumLength {
+		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+	}
+	kvUpper, ok := roundUpCountCost(activeContext, int64(c.identity.BlockSize))
+	if !ok {
+		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+	}
 	cost := CountRequestCost{
 		ManifestID:               c.identity.ManifestID,
 		BackendEpoch:             c.identity.BackendEpoch,
@@ -171,12 +180,12 @@ func (c CountRequestCost) managerCost() domain.RequestCost {
 	}
 }
 
-func roundUpCountCost(value, blockSize int64) int64 {
+func roundUpCountCost(value, blockSize int64) (int64, bool) {
 	if value <= 0 {
-		return 0
+		return 0, true
 	}
 	if blockSize <= 0 || value > math.MaxInt64-(blockSize-1) {
-		return math.MaxInt64
+		return 0, false
 	}
-	return ((value + blockSize - 1) / blockSize) * blockSize
+	return ((value + blockSize - 1) / blockSize) * blockSize, true
 }
