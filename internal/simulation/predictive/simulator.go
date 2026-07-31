@@ -30,8 +30,8 @@ type Scenario struct {
 }
 
 type Result struct {
-	Decisions   []domain.Decision
-	Completions int
+	Decisions    []domain.Decision
+	Completions  int
 	SampleEvents int
 }
 

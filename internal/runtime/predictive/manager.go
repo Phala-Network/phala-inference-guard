@@ -26,7 +26,7 @@ type Manager struct {
 }
 
 type Snapshot struct {
-	Reservations      int
+	Reservations       int
 	ReservedPhysicalKV int64
 	ReservedActiveKV   int64
 }
@@ -63,7 +63,7 @@ func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.
 		Projection:  projection,
 		Scheduler:   estimate,
 		Constraints: m.constraints,
-		Confidence: cost.Confidence,
+		Confidence:  cost.Confidence,
 	})
 	if decision.Reason == domain.ReasonFit {
 		m.reservations[requestID] = reservation{

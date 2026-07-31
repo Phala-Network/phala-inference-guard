@@ -34,7 +34,7 @@ func testConstraints() domain.Constraints {
 
 func testRequest() domain.RequestCost {
 	return domain.RequestCost{
-		ManifestID: "test-profile",
+		ManifestID:  "test-profile",
 		InputTokens: 10_000,
 		KV: domain.KVIncrement{
 			PhysicalKVUpper: 10_000,

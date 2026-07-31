@@ -52,8 +52,8 @@ type VLLMProjectionInput struct {
 }
 
 type KVIncrement struct {
-	PhysicalKVUpper    int64
-	ActiveKVUpper      int64
+	PhysicalKVUpper     int64
+	ActiveKVUpper       int64
 	CacheDiscountTokens int64
 }
 
@@ -70,8 +70,8 @@ func ProjectVLLM(input VLLMProjectionInput) (KVIncrement, error) {
 	tokens := input.InputTokens - input.CacheHits.Certain + input.DecodeHorizonUpper
 	rounded := roundUp(tokens, input.BlockSize)
 	return KVIncrement{
-		PhysicalKVUpper:    rounded,
-		ActiveKVUpper:      rounded,
+		PhysicalKVUpper:     rounded,
+		ActiveKVUpper:       rounded,
 		CacheDiscountTokens: input.CacheHits.Certain,
 	}, nil
 }
@@ -124,29 +124,29 @@ type Constraints struct {
 type Reason string
 
 const (
-	ReasonFit                    Reason = "fit"
-	ReasonKVOverBudget           Reason = "kv_over_budget"
-	ReasonActiveKVOverBudget     Reason = "active_kv_over_budget"
-	ReasonExistingTPSAtRisk      Reason = "existing_tps_at_risk"
-	ReasonNewTPSAtRisk           Reason = "new_tps_at_risk"
-	ReasonTTFTAtRisk             Reason = "ttft_at_risk"
-	ReasonTPOTAtRisk             Reason = "tpot_at_risk"
-	ReasonWorkspaceAtRisk        Reason = "workspace_at_risk"
-	ReasonPreemptionAtRisk       Reason = "preemption_at_risk"
+	ReasonFit                     Reason = "fit"
+	ReasonKVOverBudget            Reason = "kv_over_budget"
+	ReasonActiveKVOverBudget      Reason = "active_kv_over_budget"
+	ReasonExistingTPSAtRisk       Reason = "existing_tps_at_risk"
+	ReasonNewTPSAtRisk            Reason = "new_tps_at_risk"
+	ReasonTTFTAtRisk              Reason = "ttft_at_risk"
+	ReasonTPOTAtRisk              Reason = "tpot_at_risk"
+	ReasonWorkspaceAtRisk         Reason = "workspace_at_risk"
+	ReasonPreemptionAtRisk        Reason = "preemption_at_risk"
 	ReasonPredictorProfileUnknown Reason = "predictor_profile_unknown"
-	ReasonDuplicateRequest       Reason = "duplicate_request"
+	ReasonDuplicateRequest        Reason = "duplicate_request"
 )
 
 type EvaluationInput struct {
 	Projection  Projection
 	Scheduler   SchedulerEstimate
 	Constraints Constraints
-	Confidence float64
+	Confidence  float64
 }
 
 type Decision struct {
-	Reason      Reason
-	Projection  Projection
-	Scheduler   SchedulerEstimate
+	Reason     Reason
+	Projection Projection
+	Scheduler  SchedulerEstimate
 	Confidence float64
 }

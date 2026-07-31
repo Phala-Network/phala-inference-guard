@@ -2,9 +2,9 @@ package predictive
 
 func Evaluate(input EvaluationInput) Decision {
 	decision := Decision{
-		Reason:      ReasonFit,
-		Projection:  input.Projection,
-		Scheduler:   input.Scheduler,
+		Reason:     ReasonFit,
+		Projection: input.Projection,
+		Scheduler:  input.Scheduler,
 		Confidence: input.Confidence,
 	}
 	cfg := input.Constraints

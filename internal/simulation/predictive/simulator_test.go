@@ -105,7 +105,7 @@ func (constantSafeScheduler) Predict(_ domain.VirtualState, _ domain.RequestCost
 
 func fixedCost(tokens int64) domain.RequestCost {
 	return domain.RequestCost{
-		ManifestID: "test-profile",
+		ManifestID:  "test-profile",
 		InputTokens: tokens,
 		KV: domain.KVIncrement{
 			PhysicalKVUpper: tokens,
