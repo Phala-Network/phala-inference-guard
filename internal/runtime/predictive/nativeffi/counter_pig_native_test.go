@@ -13,6 +13,8 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
+var nativeCounterBenchmarkTokens int64
+
 func TestNativeCounterReturnsOnlyExactTokenCountAndClosesIdempotently(t *testing.T) {
 	counter, err := OpenCounter(validCounterConfig())
 	if err != nil {
@@ -128,6 +130,30 @@ func TestNativeCounterCloseRacesDoNotLeakOrUseDestroyedHandle(t *testing.T) {
 	}
 	if _, err := counter.Count(context.Background(), runtimepredictive.RequestClassCompletion, []byte("hello"), runtimepredictive.RequestFeatures{}); !errors.Is(err, ErrUnavailable) {
 		t.Fatalf("post-close count error = %v, want unavailable", err)
+	}
+}
+
+func BenchmarkNativeCounterCountShort(b *testing.B) {
+	counter, err := OpenCounter(validCounterConfig())
+	if err != nil {
+		b.Fatalf("open native counter: %v", err)
+	}
+	b.Cleanup(func() {
+		if closeErr := counter.Close(); closeErr != nil {
+			b.Errorf("close native counter: %v", closeErr)
+		}
+	})
+	ctx := context.Background()
+	rendered := []byte("hello world")
+	b.ReportAllocs()
+	b.SetBytes(int64(len(rendered)))
+	b.ResetTimer()
+	for b.Loop() {
+		analysis, countErr := counter.Count(ctx, runtimepredictive.RequestClassCompletion, rendered, runtimepredictive.RequestFeatures{})
+		if countErr != nil {
+			b.Fatalf("count: %v", countErr)
+		}
+		nativeCounterBenchmarkTokens = analysis.ExactInputTokens
 	}
 }
 
