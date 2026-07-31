@@ -161,6 +161,109 @@ func TestCoordinatorConcurrentNearTPSCapacityCommitsOnlyOne(t *testing.T) {
 	}
 }
 
+func TestCoordinatorLearnsEligibleOutcomesBeforeLaterAdmission(t *testing.T) {
+	now := time.Unix(13_000, 0)
+	identity := coordinatorModelIdentity()
+	scheduler := mustCoordinatorScheduler(t, identity, 96)
+	coordinator, err := NewCoordinator(coordinatorConfig(identity, scheduler, learnedTestState()))
+	if err != nil {
+		t.Fatalf("new coordinator: %v", err)
+	}
+
+	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
+		admittedAt := now.Add(time.Duration(index) * 10 * time.Second)
+		result := coordinator.DecideAndReserve(admittedAt, coordinatorProposal(
+			string(rune('k'+index)),
+			byte(20+index*2),
+			byte(21+index*2),
+		))
+		if result.Decision.Reason != domain.ReasonFit || !result.Reserved {
+			t.Fatalf("training admission %d = %+v, want committed fit", index, result)
+		}
+		outcome := SchedulerOutcome{
+			Identity:             identity,
+			ObservedAt:           admittedAt.Add(time.Second),
+			Attributed:           true,
+			ExistingUserTPS:      result.Decision.Scheduler.ExistingUserTPSLower * 6 / 10,
+			ExistingUserTPSValid: true,
+			AllUserTPS:           result.Decision.Scheduler.AllUserTPSLower * 6 / 10,
+			AllUserTPSValid:      true,
+			TTFT:                 result.Decision.Scheduler.TTFTUpper * 3 / 2,
+			TTFTValid:            true,
+			TPOT:                 result.Decision.Scheduler.TPOTUpper * 3 / 2,
+			TPOTValid:            true,
+		}
+		requestID := string(rune('k' + index))
+		if index == 0 {
+			wrongIdentity := outcome
+			wrongIdentity.Identity.BackendEpoch = "wrong-epoch"
+			if coordinator.ObserveOutcome(requestID, wrongIdentity) {
+				t.Fatal("wrong-identity outcome must not be learned")
+			}
+		}
+		if !coordinator.ObserveOutcome(requestID, outcome) {
+			t.Fatalf("eligible outcome %d was not learned", index)
+		}
+		if coordinator.ObserveOutcome(requestID, outcome) {
+			t.Fatalf("duplicate outcome %d was learned twice", index)
+		}
+		if !coordinator.Complete(requestID) {
+			t.Fatalf("training request %d did not complete", index)
+		}
+	}
+
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != uint64(testResidualConfig().MinimumSamples) || snapshot.Cells != 1 {
+		t.Fatalf("learned scheduler snapshot = %+v", snapshot)
+	}
+	adverse := coordinator.DecideAndReserve(now.Add(40*time.Second), coordinatorProposal("adverse", 30, 31))
+	if adverse.Decision.Reason != domain.ReasonNewTPSAtRisk || adverse.Reserved {
+		t.Fatalf("learned decision = %+v, want new-user TPS risk without reservation", adverse)
+	}
+	if adverse.Decision.Scheduler.AllUserTPSLower >= 25 {
+		t.Fatalf("learned all-user TPS = %.3f, want below target", adverse.Decision.Scheduler.AllUserTPSLower)
+	}
+}
+
+func TestCoordinatorSampleAndCompletionDoNotDoubleCountPhaseState(t *testing.T) {
+	now := time.Unix(14_000, 0)
+	coordinator := mustCoordinator(t, 120, domain.VirtualState{})
+	result := coordinator.DecideAndReserve(now, coordinatorProposal("sampled", 40, 41))
+	if result.Decision.Reason != domain.ReasonFit || !result.Reserved {
+		t.Fatalf("admission = %+v, want committed fit", result)
+	}
+	if !coordinator.MarkPrefillComplete("sampled") {
+		t.Fatal("semantic first output was not applied")
+	}
+	watermark := coordinator.EventSequence()
+	observed := coordinator.Snapshot().Manager.Virtual.Upper
+	if err := coordinator.ReconcileSample(SampleWindow{
+		Observed:         observed,
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("reconcile absorbed sample: %v", err)
+	}
+	if after := coordinator.Snapshot().Manager.Virtual; after.Lower != observed || after.Upper != observed {
+		t.Fatalf("absorbed interval = %+v, want exact %+v", after, observed)
+	}
+	if !coordinator.Complete("sampled") {
+		t.Fatal("sampled request did not complete")
+	}
+	if after := coordinator.Snapshot(); after.Manager.Virtual != (domain.VirtualStateInterval{}) || after.Cache.Requests != 0 {
+		t.Fatalf("completion leaked phase/cache state: %+v", after)
+	}
+	if err := coordinator.ReconcileSample(SampleWindow{
+		Observed:         observed,
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("reconcile late overlapping sample: %v", err)
+	}
+	if after := coordinator.Snapshot(); after.Manager.Virtual != (domain.VirtualStateInterval{}) || after.Cache.Requests != 0 {
+		t.Fatalf("late sample reintroduced completed work: %+v", after)
+	}
+}
+
 func mustCoordinator(t *testing.T, baseCompletionTPS float64, initial domain.VirtualState) *Coordinator {
 	t.Helper()
 	identity := coordinatorModelIdentity()
