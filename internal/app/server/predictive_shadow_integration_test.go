@@ -18,6 +18,7 @@ type recordingPredictiveShadow struct {
 	inputs     []predictiveShadowInput
 	requests   []*recordingPredictiveReservation
 	mutateBody bool
+	closeCalls int
 }
 
 type recordingPredictiveReservation struct {
@@ -39,6 +40,19 @@ func (s *recordingPredictiveShadow) DecideAndReserve(_ context.Context, _ string
 		input.Body[0] ^= 0xff
 	}
 	return request
+}
+
+func (s *recordingPredictiveShadow) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeCalls++
+	return nil
+}
+
+func (s *recordingPredictiveShadow) closeCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closeCalls
 }
 
 func (r *recordingPredictiveReservation) MarkPrefillComplete() bool {
@@ -234,5 +248,28 @@ func TestPredictiveShadowModeFailsClosedWithoutAdapter(t *testing.T) {
 	cfg.PredictiveAdmissionMode = "shadow"
 	if _, err := newProxyServer(cfg); err == nil || !strings.Contains(err.Error(), "predictive shadow adapter") {
 		t.Fatalf("newProxyServer error = %v, want missing-adapter startup failure", err)
+	}
+}
+
+func TestPredictiveShadowCloseIsIdempotent(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer backend.Close()
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "shadow"
+	shadow := &recordingPredictiveShadow{}
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return shadow, nil },
+	})
+	if err != nil {
+		t.Fatalf("new shadow server: %v", err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("first close: %v", err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("second close: %v", err)
+	}
+	if got := shadow.closeCount(); got != 1 {
+		t.Fatalf("adapter close calls = %d, want 1", got)
 	}
 }

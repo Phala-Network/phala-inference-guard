@@ -20,6 +20,10 @@ type failureInjectingPredictiveReservation struct {
 	phase string
 }
 
+func (s *failureInjectingPredictiveShadow) Close() error {
+	return nil
+}
+
 func (s *failureInjectingPredictiveShadow) DecideAndReserve(_ context.Context, _ string, input predictiveShadowInput) predictiveShadowReservation {
 	s.retainedBody = input.Body
 	if s.phase == "decide" {
