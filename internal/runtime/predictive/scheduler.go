@@ -30,16 +30,16 @@ func (i ModelIdentity) Validate() error {
 }
 
 type StaticSchedulerProfile struct {
-	Identity                       ModelIdentity
-	BaseCompletionTPS              float64
-	PrefillTPSPenaltyPerKToken     float64
-	BaseTTFT                       time.Duration
-	TTFTPerUncachedPrefillToken    time.Duration
-	BaseTPOT                       time.Duration
+	Identity                      ModelIdentity
+	BaseCompletionTPS             float64
+	PrefillTPSPenaltyPerKToken    float64
+	BaseTTFT                      time.Duration
+	TTFTPerUncachedPrefillToken   time.Duration
+	BaseTPOT                      time.Duration
 	TPOTPerExistingDecodeSequence time.Duration
-	WorkspaceRiskUpper             float64
-	PreemptionRiskUpper            float64
-	Confidence                     float64
+	WorkspaceRiskUpper            float64
+	PreemptionRiskUpper           float64
+	Confidence                    float64
 }
 
 func (p StaticSchedulerProfile) Validate() error {
@@ -68,21 +68,21 @@ func (p StaticSchedulerProfile) Validate() error {
 }
 
 type ResidualCalibratorConfig struct {
-	Identity                  ModelIdentity
-	MinimumSamples            int
-	MaximumSamplesPerCell     int
-	MaxAge                    time.Duration
-	LowerQuantile             float64
-	UpperQuantile             float64
-	MinimumTPSMultiplier      float64
-	MaximumTPSMultiplier      float64
-	MinimumLatencyMultiplier  float64
-	MaximumLatencyMultiplier  float64
-	CalibratedConfidence      float64
-	DecodeSequenceBucket      int
-	ContextTokenBucket        int64
-	PrefillTokenBucket        int64
-	KVTokenBucket             int64
+	Identity                 ModelIdentity
+	MinimumSamples           int
+	MaximumSamplesPerCell    int
+	MaxAge                   time.Duration
+	LowerQuantile            float64
+	UpperQuantile            float64
+	MinimumTPSMultiplier     float64
+	MaximumTPSMultiplier     float64
+	MinimumLatencyMultiplier float64
+	MaximumLatencyMultiplier float64
+	CalibratedConfidence     float64
+	DecodeSequenceBucket     int
+	ContextTokenBucket       int64
+	PrefillTokenBucket       int64
+	KVTokenBucket            int64
 }
 
 func (c ResidualCalibratorConfig) Validate() error {
@@ -149,10 +149,10 @@ type SchedulerOutcome struct {
 	ExistingUserTPSValid bool
 	AllUserTPS           float64
 	AllUserTPSValid      bool
-	TTFT                  time.Duration
-	TTFTValid             bool
-	TPOT                  time.Duration
-	TPOTValid             bool
+	TTFT                 time.Duration
+	TTFTValid            bool
+	TPOT                 time.Duration
+	TPOTValid            bool
 }
 
 type LearnedSchedulerSnapshot struct {

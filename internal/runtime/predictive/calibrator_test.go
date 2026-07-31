@@ -90,24 +90,24 @@ func TestLearnedSchedulerRejectsWrongEpochInvalidAndUnattributedOutcomes(t *test
 
 func testPredictorIdentity() ModelIdentity {
 	return ModelIdentity{
-		ProfileID:       "gemma-vllm-test",
-		BackendEpoch:    "backend-epoch-1",
+		ProfileID:        "gemma-vllm-test",
+		BackendEpoch:     "backend-epoch-1",
 		PredictorVersion: "scheduler-v1",
 	}
 }
 
 func testLearnedProfile() StaticSchedulerProfile {
 	return StaticSchedulerProfile{
-		Identity:                       testPredictorIdentity(),
-		BaseCompletionTPS:              72,
-		PrefillTPSPenaltyPerKToken:     1,
-		BaseTTFT:                       80 * time.Millisecond,
+		Identity:                      testPredictorIdentity(),
+		BaseCompletionTPS:             72,
+		PrefillTPSPenaltyPerKToken:    1,
+		BaseTTFT:                      80 * time.Millisecond,
 		TTFTPerUncachedPrefillToken:   20 * time.Microsecond,
-		BaseTPOT:                       20 * time.Millisecond,
+		BaseTPOT:                      20 * time.Millisecond,
 		TPOTPerExistingDecodeSequence: 2 * time.Millisecond,
-		WorkspaceRiskUpper:             0.01,
-		PreemptionRiskUpper:            0.001,
-		Confidence:                     0.97,
+		WorkspaceRiskUpper:            0.01,
+		PreemptionRiskUpper:           0.001,
+		Confidence:                    0.97,
 	}
 }
 
@@ -152,13 +152,13 @@ func learnedTestState() domain.VirtualState {
 
 func learnedTestCost() domain.RequestCost {
 	return domain.RequestCost{
-		ManifestID:           "test-profile",
-		InputTokens:          8_000,
-		KV:                   domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
-		UncachedPrefillUpper: 1_000,
+		ManifestID:            "test-profile",
+		InputTokens:           8_000,
+		KV:                    domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
+		UncachedPrefillUpper:  1_000,
 		CachedPrefillExpected: 7_000,
-		DecodeHorizonUpper:   256,
-		Confidence:           0.99,
+		DecodeHorizonUpper:    256,
+		Confidence:            0.99,
 	}
 }
 

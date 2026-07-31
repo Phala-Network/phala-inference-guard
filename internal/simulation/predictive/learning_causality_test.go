@@ -45,19 +45,19 @@ func TestSimulationDecisionChangesOnlyAfterEligibleLearning(t *testing.T) {
 	now := time.Unix(7_000, 0)
 	profile := runtimepredictive.StaticSchedulerProfile{
 		Identity: runtimepredictive.ModelIdentity{
-			ProfileID:       "simulation-profile",
-			BackendEpoch:    "simulation-epoch",
+			ProfileID:        "simulation-profile",
+			BackendEpoch:     "simulation-epoch",
 			PredictorVersion: "simulation-v1",
 		},
-		BaseCompletionTPS:              72,
-		PrefillTPSPenaltyPerKToken:     1,
-		BaseTTFT:                       80 * time.Millisecond,
+		BaseCompletionTPS:             72,
+		PrefillTPSPenaltyPerKToken:    1,
+		BaseTTFT:                      80 * time.Millisecond,
 		TTFTPerUncachedPrefillToken:   20 * time.Microsecond,
-		BaseTPOT:                       20 * time.Millisecond,
+		BaseTPOT:                      20 * time.Millisecond,
 		TPOTPerExistingDecodeSequence: 2 * time.Millisecond,
-		WorkspaceRiskUpper:             0.01,
-		PreemptionRiskUpper:            0.001,
-		Confidence:                     0.97,
+		WorkspaceRiskUpper:            0.01,
+		PreemptionRiskUpper:           0.001,
+		Confidence:                    0.97,
 	}
 	config := runtimepredictive.ResidualCalibratorConfig{
 		Identity:                 profile.Identity,
@@ -91,13 +91,13 @@ func TestSimulationDecisionChangesOnlyAfterEligibleLearning(t *testing.T) {
 		ActiveContextTokens: 24_000,
 	}
 	cost := domain.RequestCost{
-		ManifestID:           "test-profile",
-		InputTokens:          8_000,
-		KV:                   domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
-		UncachedPrefillUpper: 1_000,
+		ManifestID:            "test-profile",
+		InputTokens:           8_000,
+		KV:                    domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
+		UncachedPrefillUpper:  1_000,
 		CachedPrefillExpected: 7_000,
-		DecodeHorizonUpper:   256,
-		Confidence:           0.99,
+		DecodeHorizonUpper:    256,
+		Confidence:            0.99,
 	}
 	for index := 0; index < config.MinimumSamples; index++ {
 		prediction := trainedScheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
