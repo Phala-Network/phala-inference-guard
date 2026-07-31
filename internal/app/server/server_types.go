@@ -3,6 +3,7 @@ package server
 import (
 	"net/http/httputil"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -51,6 +52,7 @@ type proxyResult struct {
 }
 
 type predictiveShadowFailureCounters struct {
+	close    atomic.Uint64
 	decide   atomic.Uint64
 	semantic atomic.Uint64
 	terminal atomic.Uint64
@@ -91,6 +93,8 @@ type proxyServer struct {
 	dynamicController        *dynamic.Controller
 	kvShadow                 *kvshadow.Manager
 	predictiveShadow         predictiveAdmissionShadow
+	closeOnce                sync.Once
+	closeErr                 error
 	started                  time.Time
 	total429                 atomic.Uint64
 	backendUnavailable       atomic.Uint64

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"sync"
 
@@ -23,6 +24,7 @@ type predictiveShadowReservation interface {
 
 type predictiveAdmissionShadow interface {
 	DecideAndReserve(context.Context, string, predictiveShadowInput) predictiveShadowReservation
+	Close() error
 }
 
 type serverDependencies struct {
@@ -103,4 +105,26 @@ func callPredictiveShadow(onFailure func(), call func() bool) (result bool) {
 		}
 	}()
 	return call()
+}
+
+func (s *proxyServer) Close() error {
+	if s == nil {
+		return nil
+	}
+	s.closeOnce.Do(func() {
+		if s.predictiveShadow != nil {
+			s.closeErr = closePredictiveShadow(s)
+		}
+	})
+	return s.closeErr
+}
+
+func closePredictiveShadow(s *proxyServer) (err error) {
+	defer func() {
+		if recover() != nil {
+			s.predictiveShadowFailures.close.Add(1)
+			err = fmt.Errorf("predictive shadow close panicked")
+		}
+	}()
+	return s.predictiveShadow.Close()
 }

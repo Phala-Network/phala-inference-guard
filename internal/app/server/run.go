@@ -1,16 +1,18 @@
 package server
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"time"
 )
 
-func Run() error {
+func Run() (runErr error) {
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
 	}
+	defer func() { runErr = errors.Join(runErr, srv.Close()) }()
 	srv, err := newProxyServer(cfg)
 	if err != nil {
 		return err
