@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -105,6 +106,10 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
 		return nil
 	}
+	if s.upstream != nil && !s.upstream.Healthy(s.now()) {
+		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
+		return nil
+	}
 
 	rendered, err := s.renderer.Render(ctx, input)
 	if rendered.Rendered != nil {
@@ -127,6 +132,11 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
 		return nil
 	}
+	decisionTime := s.now()
+	if s.upstream != nil && !s.upstream.Healthy(decisionTime) {
+		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
+		return nil
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -134,7 +144,7 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		s.recordUnknownLocked(domainpredictive.ReasonPredictorProfileUnknown)
 		return nil
 	}
-	result := s.coordinator.DecideAndReserve(s.now(), runtimepredictive.CountAdmissionProposal{
+	result := s.coordinator.DecideAndReserve(decisionTime, runtimepredictive.CountAdmissionProposal{
 		RequestID:          requestID,
 		Analysis:           analysis,
 		DecodeHorizonUpper: rendered.DecodeHorizonUpper,
@@ -177,8 +187,8 @@ func (s *realPredictiveShadow) Close() error {
 		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.closed {
+		s.mu.Unlock()
 		return nil
 	}
 	s.closed = true
@@ -187,7 +197,15 @@ func (s *realPredictiveShadow) Close() error {
 			delete(s.reservations, requestID)
 		}
 	}
-	return s.counter.Close()
+	upstream := s.upstream
+	counter := s.counter
+	s.mu.Unlock()
+	var closeErrors []error
+	if upstream != nil {
+		closeErrors = append(closeErrors, upstream.Close())
+	}
+	closeErrors = append(closeErrors, counter.Close())
+	return errors.Join(closeErrors...)
 }
 
 func (r *realPredictiveReservation) MarkPrefillComplete() bool {
