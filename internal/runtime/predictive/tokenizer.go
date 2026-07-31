@@ -2,6 +2,8 @@ package predictive
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,6 +12,8 @@ import (
 
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
+
+const renderedInputFingerprintDomain = "pig-rendered-input-fingerprint-v1"
 
 var (
 	ErrTokenizerManifestMismatch  = errors.New("tokenizer manifest mismatch")
@@ -41,11 +45,11 @@ type RequestFeatures struct {
 }
 
 type TokenizationResult struct {
-	ManifestID          string
-	RenderedInputSHA256 string
-	TokenIDs            []int64
-	ExactInputTokens    int64
-	FullBlocks          int64
+	ManifestID               string
+	RenderedInputFingerprint string
+	TokenIDs                 []int64
+	ExactInputTokens         int64
+	FullBlocks               int64
 }
 
 type TokenizerProfile struct {
@@ -68,8 +72,9 @@ type tokenizerRuntimeState struct {
 }
 
 type TokenizerRuntime struct {
-	mu    sync.RWMutex
-	state *tokenizerRuntimeState
+	mu             sync.RWMutex
+	state          *tokenizerRuntimeState
+	fingerprintKey [sha256.Size]byte
 }
 
 func NewTokenizerRuntime(ctx context.Context, profile TokenizerProfile, engine TokenizerEngine) (*TokenizerRuntime, error) {
@@ -77,7 +82,11 @@ func NewTokenizerRuntime(ctx context.Context, profile TokenizerProfile, engine T
 	if err != nil {
 		return nil, err
 	}
-	return &TokenizerRuntime{state: state}, nil
+	var fingerprintKey [sha256.Size]byte
+	if _, err := rand.Read(fingerprintKey[:]); err != nil {
+		return nil, fmt.Errorf("generate rendered-input fingerprint key: %w", err)
+	}
+	return &TokenizerRuntime{state: state, fingerprintKey: fingerprintKey}, nil
 }
 
 func (r *TokenizerRuntime) Tokenize(ctx context.Context, input TokenizeInput) (TokenizationResult, error) {
@@ -117,13 +126,16 @@ func (r *TokenizerRuntime) Tokenize(ctx context.Context, input TokenizeInput) (T
 		}
 	}
 	ownedTokenIDs := append([]int64(nil), tokenIDs...)
-	digest := sha256.Sum256([]byte(input.RenderedInput))
+	digest := hmac.New(sha256.New, r.fingerprintKey[:])
+	_, _ = digest.Write([]byte(renderedInputFingerprintDomain))
+	_, _ = digest.Write([]byte{0})
+	_, _ = digest.Write([]byte(input.RenderedInput))
 	return TokenizationResult{
-		ManifestID:          state.profile.Manifest.ProfileID,
-		RenderedInputSHA256: hex.EncodeToString(digest[:]),
-		TokenIDs:            ownedTokenIDs,
-		ExactInputTokens:    int64(len(ownedTokenIDs)),
-		FullBlocks:          int64(len(ownedTokenIDs)) / state.profile.Manifest.BlockSize,
+		ManifestID:               state.profile.Manifest.ProfileID,
+		RenderedInputFingerprint: hex.EncodeToString(digest.Sum(nil)),
+		TokenIDs:                 ownedTokenIDs,
+		ExactInputTokens:         int64(len(ownedTokenIDs)),
+		FullBlocks:               int64(len(ownedTokenIDs)) / state.profile.Manifest.BlockSize,
 	}, nil
 }
 

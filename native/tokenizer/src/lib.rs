@@ -1,9 +1,9 @@
 use std::{error::Error, fmt, path::Path};
 
-use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
 
 const BLOCK_DIGEST_DOMAIN: &[u8] = b"pig-kv-token-block-v1";
+const INPUT_FINGERPRINT_DOMAIN: &[u8] = b"pig-rendered-input-fingerprint-v1";
 const FULL_BLOCK_TAG: u8 = 1;
 const PARTIAL_BLOCK_TAG: u8 = 2;
 
@@ -33,7 +33,7 @@ pub struct PartialBlockMetadata {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TokenizationAnalysis {
-    pub input_sha256: [u8; 32],
+    pub input_fingerprint: [u8; 32],
     pub token_count: usize,
     pub full_block_digests: Vec<[u8; 32]>,
     pub partial_block: Option<PartialBlockMetadata>,
@@ -141,15 +141,25 @@ impl NativeTokenizer {
                 digest: *digest_stream.finalize().as_bytes(),
             })
         };
-        let input_sha256: [u8; 32] = Sha256::digest(input.as_bytes()).into();
+        let input_fingerprint = rendered_input_fingerprint(context, input);
         Ok(TokenizationAnalysis {
-            input_sha256,
+            input_fingerprint,
             token_count: token_ids.len(),
             full_block_digests,
             partial_block,
             token_ids: retain_token_ids.then(|| token_ids.to_vec()),
         })
     }
+}
+
+fn rendered_input_fingerprint(context: &BlockDigestContext, input: &str) -> [u8; 32] {
+    let mut digest = blake3::Hasher::new_keyed(&context.key);
+    digest.update(INPUT_FINGERPRINT_DOMAIN);
+    update_length_prefixed(&mut digest, context.manifest_id.as_bytes());
+    update_length_prefixed(&mut digest, context.backend_epoch.as_bytes());
+    digest.update(&(context.block_size as u64).to_le_bytes());
+    update_length_prefixed(&mut digest, input.as_bytes());
+    *digest.finalize().as_bytes()
 }
 
 fn block_digest_stream(context: &BlockDigestContext) -> blake3::Hasher {
