@@ -30,59 +30,59 @@ type predictiveProfileAsset struct {
 }
 
 type predictiveProfileManifest struct {
-	SchemaVersion      int    `json:"schema_version"`
-	ManifestID        string `json:"manifest_id"`
-	ProfileID         string `json:"profile_id"`
-	PredictorVersion  string `json:"predictor_version"`
-	ServedModel       string `json:"served_model"`
-	ModelRevision     string `json:"model_revision"`
-	BackendKind       string `json:"backend_kind"`
-	BackendVersion    string `json:"backend_version"`
-	BackendSourceRevision string `json:"backend_source_revision"`
-	BackendImageDigest string `json:"backend_image_digest"`
-	BackendEpoch      string `json:"backend_epoch"`
-	RendererVersion   string `json:"renderer_version"`
-	BOSToken          string `json:"bos_token"`
-	Tokenizer         predictiveProfileAsset `json:"tokenizer"`
-	TokenizerConfig   predictiveProfileAsset `json:"tokenizer_config"`
-	ChatTemplate      predictiveProfileAsset `json:"chat_template"`
-	CompletionAddSpecialTokens *bool `json:"completion_add_special_tokens"`
-	ChatAddSpecialTokens       *bool `json:"chat_add_special_tokens"`
-	BlockSize                  int `json:"block_size"`
-	ModelMaximumLength         int64 `json:"model_maximum_length"`
-	MaximumKVTokens            int64 `json:"maximum_kv_tokens"`
-	ProtectedKVTokens          int64 `json:"protected_kv_tokens"`
-	DefaultDecodeHorizon       int64 `json:"default_decode_horizon"`
-	MaximumDecodeHorizon       int64 `json:"maximum_decode_horizon"`
-	BaseCompletionTPS                  float64 `json:"base_completion_tps"`
-	PrefillTPSPenaltyPerKToken         float64 `json:"prefill_tps_penalty_per_k_token"`
-	BaseTTFTMilliseconds               int64 `json:"base_ttft_milliseconds"`
-	TTFTPerPrefillTokenMicroseconds    int64 `json:"ttft_per_prefill_token_microseconds"`
-	BaseTPOTMilliseconds               int64 `json:"base_tpot_milliseconds"`
-	TPOTPerExistingSequenceMilliseconds int64 `json:"tpot_per_existing_sequence_milliseconds"`
-	WorkspaceRiskUpper  float64 `json:"workspace_risk_upper"`
-	PreemptionRiskUpper float64 `json:"preemption_risk_upper"`
-	ProfileConfidence   float64 `json:"profile_confidence"`
-	UserTPSTarget        float64 `json:"user_tps_target"`
-	TTFTSLOMilliseconds  int64 `json:"ttft_slo_milliseconds"`
-	TPOTSLOMilliseconds  int64 `json:"tpot_slo_milliseconds"`
-	WorkspaceRiskBudget  float64 `json:"workspace_risk_budget"`
-	PreemptionRiskBudget float64 `json:"preemption_risk_budget"`
-	MinimumConfidence    float64 `json:"minimum_confidence"`
-	CalibratorMinimumSamples          int `json:"calibrator_minimum_samples"`
-	CalibratorMaximumSamplesPerCell   int `json:"calibrator_maximum_samples_per_cell"`
-	CalibratorMaxAgeSeconds           int64 `json:"calibrator_max_age_seconds"`
-	CalibratorLowerQuantile           float64 `json:"calibrator_lower_quantile"`
-	CalibratorUpperQuantile           float64 `json:"calibrator_upper_quantile"`
-	CalibratorMinimumTPSMultiplier    float64 `json:"calibrator_minimum_tps_multiplier"`
-	CalibratorMaximumTPSMultiplier    float64 `json:"calibrator_maximum_tps_multiplier"`
-	CalibratorMinimumLatencyMultiplier float64 `json:"calibrator_minimum_latency_multiplier"`
-	CalibratorMaximumLatencyMultiplier float64 `json:"calibrator_maximum_latency_multiplier"`
-	CalibratorConfidence              float64 `json:"calibrator_confidence"`
-	CalibratorDecodeSequenceBucket    int `json:"calibrator_decode_sequence_bucket"`
-	CalibratorContextTokenBucket      int64 `json:"calibrator_context_token_bucket"`
-	CalibratorPrefillTokenBucket      int64 `json:"calibrator_prefill_token_bucket"`
-	CalibratorKVTokenBucket           int64 `json:"calibrator_kv_token_bucket"`
+	SchemaVersion                       int                    `json:"schema_version"`
+	ManifestID                          string                 `json:"manifest_id"`
+	ProfileID                           string                 `json:"profile_id"`
+	PredictorVersion                    string                 `json:"predictor_version"`
+	ServedModel                         string                 `json:"served_model"`
+	ModelRevision                       string                 `json:"model_revision"`
+	BackendKind                         string                 `json:"backend_kind"`
+	BackendVersion                      string                 `json:"backend_version"`
+	BackendSourceRevision               string                 `json:"backend_source_revision"`
+	BackendImageDigest                  string                 `json:"backend_image_digest"`
+	BackendEpoch                        string                 `json:"backend_epoch"`
+	RendererVersion                     string                 `json:"renderer_version"`
+	BOSToken                            string                 `json:"bos_token"`
+	Tokenizer                           predictiveProfileAsset `json:"tokenizer"`
+	TokenizerConfig                     predictiveProfileAsset `json:"tokenizer_config"`
+	ChatTemplate                        predictiveProfileAsset `json:"chat_template"`
+	CompletionAddSpecialTokens          *bool                  `json:"completion_add_special_tokens"`
+	ChatAddSpecialTokens                *bool                  `json:"chat_add_special_tokens"`
+	BlockSize                           int                    `json:"block_size"`
+	ModelMaximumLength                  int64                  `json:"model_maximum_length"`
+	MaximumKVTokens                     int64                  `json:"maximum_kv_tokens"`
+	ProtectedKVTokens                   int64                  `json:"protected_kv_tokens"`
+	DefaultDecodeHorizon                int64                  `json:"default_decode_horizon"`
+	MaximumDecodeHorizon                int64                  `json:"maximum_decode_horizon"`
+	BaseCompletionTPS                   float64                `json:"base_completion_tps"`
+	PrefillTPSPenaltyPerKToken          float64                `json:"prefill_tps_penalty_per_k_token"`
+	BaseTTFTMilliseconds                int64                  `json:"base_ttft_milliseconds"`
+	TTFTPerPrefillTokenMicroseconds     int64                  `json:"ttft_per_prefill_token_microseconds"`
+	BaseTPOTMilliseconds                int64                  `json:"base_tpot_milliseconds"`
+	TPOTPerExistingSequenceMilliseconds int64                  `json:"tpot_per_existing_sequence_milliseconds"`
+	WorkspaceRiskUpper                  float64                `json:"workspace_risk_upper"`
+	PreemptionRiskUpper                 float64                `json:"preemption_risk_upper"`
+	ProfileConfidence                   float64                `json:"profile_confidence"`
+	UserTPSTarget                       float64                `json:"user_tps_target"`
+	TTFTSLOMilliseconds                 int64                  `json:"ttft_slo_milliseconds"`
+	TPOTSLOMilliseconds                 int64                  `json:"tpot_slo_milliseconds"`
+	WorkspaceRiskBudget                 float64                `json:"workspace_risk_budget"`
+	PreemptionRiskBudget                float64                `json:"preemption_risk_budget"`
+	MinimumConfidence                   float64                `json:"minimum_confidence"`
+	CalibratorMinimumSamples            int                    `json:"calibrator_minimum_samples"`
+	CalibratorMaximumSamplesPerCell     int                    `json:"calibrator_maximum_samples_per_cell"`
+	CalibratorMaxAgeSeconds             int64                  `json:"calibrator_max_age_seconds"`
+	CalibratorLowerQuantile             float64                `json:"calibrator_lower_quantile"`
+	CalibratorUpperQuantile             float64                `json:"calibrator_upper_quantile"`
+	CalibratorMinimumTPSMultiplier      float64                `json:"calibrator_minimum_tps_multiplier"`
+	CalibratorMaximumTPSMultiplier      float64                `json:"calibrator_maximum_tps_multiplier"`
+	CalibratorMinimumLatencyMultiplier  float64                `json:"calibrator_minimum_latency_multiplier"`
+	CalibratorMaximumLatencyMultiplier  float64                `json:"calibrator_maximum_latency_multiplier"`
+	CalibratorConfidence                float64                `json:"calibrator_confidence"`
+	CalibratorDecodeSequenceBucket      int                    `json:"calibrator_decode_sequence_bucket"`
+	CalibratorContextTokenBucket        int64                  `json:"calibrator_context_token_bucket"`
+	CalibratorPrefillTokenBucket        int64                  `json:"calibrator_prefill_token_bucket"`
+	CalibratorKVTokenBucket             int64                  `json:"calibrator_kv_token_bucket"`
 }
 
 type loadedPredictiveProfile struct {
@@ -263,15 +263,15 @@ func validatePredictiveProfile(profile predictiveProfileManifest) error {
 		return fmt.Errorf("predictive profile schema_version must be %d", predictiveProfileSchemaVersion)
 	}
 	for name, value := range map[string]string{
-		"manifest_id": profile.ManifestID,
-		"profile_id": profile.ProfileID,
-		"predictor_version": profile.PredictorVersion,
-		"served_model": profile.ServedModel,
-		"model_revision": profile.ModelRevision,
-		"backend_version": profile.BackendVersion,
+		"manifest_id":             profile.ManifestID,
+		"profile_id":              profile.ProfileID,
+		"predictor_version":       profile.PredictorVersion,
+		"served_model":            profile.ServedModel,
+		"model_revision":          profile.ModelRevision,
+		"backend_version":         profile.BackendVersion,
 		"backend_source_revision": profile.BackendSourceRevision,
-		"backend_epoch": profile.BackendEpoch,
-		"bos_token": profile.BOSToken,
+		"backend_epoch":           profile.BackendEpoch,
+		"bos_token":               profile.BOSToken,
 	} {
 		if strings.TrimSpace(value) == "" {
 			return fmt.Errorf("predictive profile %s is required", name)
@@ -287,9 +287,9 @@ func validatePredictiveProfile(profile predictiveProfileManifest) error {
 		return fmt.Errorf("predictive profile backend_image_digest must be a pinned sha256 digest")
 	}
 	for name, asset := range map[string]predictiveProfileAsset{
-		"tokenizer": profile.Tokenizer,
+		"tokenizer":        profile.Tokenizer,
 		"tokenizer_config": profile.TokenizerConfig,
-		"chat_template": profile.ChatTemplate,
+		"chat_template":    profile.ChatTemplate,
 	} {
 		if strings.TrimSpace(asset.Path) == "" {
 			return fmt.Errorf("predictive profile %s path is required", name)
@@ -355,7 +355,7 @@ func validatePredictiveProfile(profile predictiveProfileManifest) error {
 		WorkspaceRiskBudget: profile.WorkspaceRiskBudget, PreemptionRiskBudget: profile.PreemptionRiskBudget, MinimumConfidence: profile.MinimumConfidence,
 	}
 	if _, err := runtimepredictive.NewCountCoordinator(runtimepredictive.CountCoordinatorConfig{
-		Identity: runtimepredictive.CoordinatorIdentity{ManifestID: profile.ManifestID, BackendEpoch: profile.BackendEpoch, Scheduler: identity, BlockSize: profile.BlockSize},
+		Identity:           runtimepredictive.CoordinatorIdentity{ManifestID: profile.ManifestID, BackendEpoch: profile.BackendEpoch, Scheduler: identity, BlockSize: profile.BlockSize},
 		ModelMaximumLength: profile.ModelMaximumLength, Constraints: constraints, Scheduler: scheduler,
 	}); err != nil {
 		return fmt.Errorf("predictive profile coordinator: %w", err)
