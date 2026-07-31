@@ -1,7 +1,7 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: third review cycle complete; prediction-causality integration is the
-current P0 and remains unimplemented
+Status: third review cycle and learned-scheduler causality slice are
+builder-green; integrated admission transaction is the current P0
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -1392,10 +1392,15 @@ cache mirror, learned scheduler, virtual state, and reservation ledger. They
 cover:
 
 - immutable proposal work outside the lock followed by manifest/epoch recheck;
+- exact binding among tokenizer manifest, backend epoch, scheduler profile, and
+  learner version before any prediction or mutation;
 - cache-hit interval affecting uncached prefill and KV projection;
 - learned scheduler output affecting the same atomic decision;
 - all-or-nothing commit of cache refs, KV, prefill/decode horizon, prediction,
   and learner linkage;
+- every committed reservation contributing its decode sequence, active context,
+  and uncached prefill to the next same-window prediction, then releasing or
+  transitioning those phase resources exactly once;
 - failure injection after every proposed mutation;
 - completion, local QoS reject, cancellation, upstream failure, reset, expiry,
   and duplicate events;
@@ -1707,6 +1712,14 @@ Completed and builder-green:
 - native no-ID block analysis with chained keyed digests and partial metadata;
 - cache mirror ingestion of epoch-validated opaque block analyses;
 - two matched performance reruns for the final streaming digest design.
+- a concrete static scheduler prior plus bounded exact-cell online residual
+  calibration at `b9f42b0`; healthy/adverse learned residuals change the
+  pre-admission TPS decision while stale, wrong-epoch, invalid, or unattributed
+  outcomes cannot create headroom;
+- prediction identity/feature/prior/estimate retention in minimal reservations
+  and exactly-once outcome learning for active or completed reservations;
+- predictive simulator sample events now call `Manager.ReconcileSample` and
+  return the final manager snapshot instead of incrementing a counter only.
 
 Still pending and not claimed:
 
@@ -1720,11 +1733,11 @@ Still pending and not claimed:
 - complete request-path population of the phase-rich reservation fields in
   Section 11; the current Builder-green manager reserves the minimal
   `RequestCost` contract only;
-- a concrete static scheduler prior plus online residual learner/calibrator;
-  all current `Scheduler` implementations are test-only fakes and no learned
-  value participates in `DecideAndReserve`;
-- real predictive sample simulation: the current `EventSample` branch only
-  increments `SampleEvents` and does not call `Manager.ReconcileSample`;
+- hierarchical feature-cell backoff, effective sample weighting, measured
+  one-sided coverage, and distribution-shift/error circuit breakers; the first
+  green learner deliberately supports bounded exact cells only;
+- production-calibrated scheduler priors and residual targets; current values
+  in tests/simulation are deterministic fixtures, not GPU evidence;
 - the cross-component transaction coordinator from Section 11.1; current
   cache-mirror and minimal reservation mutations are separately locked;
 - one request-path digest protocol: the legacy Go token-ID/HMAC helper remains
@@ -1740,9 +1753,9 @@ Still pending and not claimed:
 The active implementation therefore remains an internal builder-tested slice.
 It does not change production traffic or current PIG behavior.
 
-### 19.2 Next executable slice: learned scheduler causality
+### 19.2 Executed slice: learned scheduler causality
 
-The next red commit adds tests only in these planned paths:
+The red commit added tests only in these planned paths:
 
 ~~~
 internal/runtime/predictive/calibrator_test.go
@@ -1757,7 +1770,7 @@ red result is a Go compile failure for missing production types/functions, plus
 no unrelated package failure. A failing shell, missing `go`, malformed script,
 or pre-existing test failure is invalid red evidence.
 
-The first implementation commit may add only the coherent domain/runtime and
+The first implementation commit added only the coherent domain/runtime and
 simulator support needed to make those tests green. It must not add a fake HTTP
 claim, a vLLM dependency, or a production deployment. In particular it must
 prove with fixed current metrics and request cost that:
@@ -1769,18 +1782,67 @@ eligible adverse residual history -> TPS or latency risk decision
 stale/wrong-epoch/invalid history -> exact cold-prior decision
 ~~~
 
-The focused remote-builder red/green commands are:
+The focused remote-builder red/green commands were:
 
 ~~~
 go test ./internal/runtime/predictive ./internal/simulation/predictive
 go test -race ./internal/runtime/predictive ./internal/simulation/predictive
 ~~~
 
-The green exact commit then runs `git show --check`, tracked `gofmt` validation,
+The green exact commit then ran `git show --check`, tracked `gofmt` validation,
 `go test ./...`, `go test -race ./...`, `cargo fmt --check`, and
 `cargo test --locked` in a new clean builder checkout. Evidence records exact
 HEAD, clean status, toolchain/container identity, exit codes, and SHA-256. No
 local Windows test is substituted for any gate.
+
+Execution and evidence:
+
+| Stage | Exact commit | Result |
+|---|---|---|
+| Test-only red | `fa40ad62206d0ab8d5af73780393af66b6f0f970` | Focused Go compilation exited 1 for the missing learned scheduler, features, stored prediction, and real sample fields/functions. |
+| First implementation candidate | `c1ca96d6f5ca513bceac00a7b4fbb90f4e6049b6` | All focused/full Go, race, and Rust tests passed, but four Go files failed the tracked gofmt gate; this is a failed candidate, not green. |
+| Formatted green | `b9f42b0660a781a1e7ac307bfcbc1f1fa688109d` | `git show --check`, tracked gofmt, focused/full Go, focused/full race, Rust fmt, and locked Rust tests all exited 0 in a new clean checkout. |
+
+Valid red evidence:
+
+~~~
+/work/pig-v091-evidence/fa40ad6-learned-scheduler-causality-red-v2.log
+SHA-256 ff3340069188ad4ceac01397d1fc875ced30e36c43f0ee24c7940e41e80122b4
+
+/work/pig-v091-evidence/fa40ad6-learned-scheduler-causality-red-v2.status
+SHA-256 b8ade3038a7b42ba296c9e015a2a993636099125c697c2fb63d165de3063696d
+~~~
+
+The earlier non-`v2` red files are invalid and excluded because the script did
+not add `/usr/local/go/bin` and `/root/.cargo/bin` to `PATH`, so `go`, `rustc`,
+and `cargo` were not found; PowerShell CRLF also corrupted its final shell exit.
+
+Failed-format candidate evidence:
+
+~~~
+/work/pig-v091-evidence/c1ca96d-learned-scheduler-causality-green.log
+SHA-256 c7dc40ccc5dcdc5cc8f28479c6ecfd52f70e01bd9c2b5fa38c56313ace901fea
+
+/work/pig-v091-evidence/c1ca96d-learned-scheduler-causality-green.status
+SHA-256 8fa1600a326dbfbca738445a176f6a762a13e3074bd27c35c807e77e65458666
+~~~
+
+Valid green evidence:
+
+~~~
+/work/pig-v091-evidence/b9f42b0-learned-scheduler-causality-green.log
+SHA-256 425d00edad10bf8645b67d9b7a721a4d9a598d6cab507565ed4f1b7cfe79b7d9
+
+/work/pig-v091-evidence/b9f42b0-learned-scheduler-causality-green.status
+SHA-256 37db6ac0d898840cecffe66bedfdce7bbbb762213205223bd775ab5d55efd112
+~~~
+
+This closes only the prediction-authenticity gate from Section 3.2. The
+`LearnedScheduler` is called synchronously by the internal predictive manager,
+but neither is yet reachable from the HTTP server. The first calibrator has
+bounded exact feature cells and one-sided residual quantiles; hierarchical
+backoff, empirical coverage/shift control, phase-rich concurrent reservations,
+cache transaction integration, and real profile calibration remain open.
 
 ## 20. Version, Git, and release boundary
 
@@ -1977,9 +2039,9 @@ Pass 3, quantitative evidence and release boundary:
   lane gates remain unchanged; and 2 MiB remains permanently ineligible for
   synchronous prediction. The small-core result is now explicitly separated
   from the end-to-end chat gate. The manifest-reservation green was also rerun
-   in a clean exact-commit Builder checkout with toolchain/container identity,
-   full Go, race, and locked Rust gates; no image was built or published and no
-   CVM was deployed.
+  in a clean exact-commit Builder checkout with toolchain/container identity,
+  full Go, race, and locked Rust gates; no image was built or published and no
+  CVM was deployed.
 
 ### 2026-07-31 prediction-authenticity three-pass re-review
 
@@ -2036,8 +2098,58 @@ Pass 3, evidence validity and executable next step:
   prediction-causality gates, all-or-nothing state assertions, deterministic
   completion-goodput comparators, zero false fits, and cache-cold non-regression.
 
-Result of this review cycle: the document now explicitly says that the learning
-algorithm is not implemented or wired at `92d1daf`. The next authorized action
-is the test-only learned-scheduler causality commit in Section 19.2. This review
-does not claim native HTTP integration, a PIG-v0.9.1 runtime build, an image, a
-production deployment, or real-GPU prediction accuracy.
+Result at the time of this review cycle: the document explicitly said that the
+learning algorithm was not implemented or wired at `92d1daf`, and selected the
+test-only learned-scheduler causality commit in Section 19.2 as the next action.
+The later execution record in Section 19.2 supersedes that implementation
+status without changing the HTTP/deployment/GPU-evidence boundary.
+
+### 2026-07-31 post-learned-scheduler three-pass re-review
+
+This cycle inspected `b9f42b0`, its exact red/failed-format/green builder
+evidence, the manager/scheduler lock and call order, virtual-state arithmetic,
+model identity, outcome lifecycle, simulator integration, and remaining plan
+claims.
+
+Pass 1, learned prediction causality:
+
+- Finding: the original defect is fixed at the internal manager boundary.
+  `DecideAndReserve` now calls a concrete `LearnedScheduler`; exact-cell static,
+  healthy, adverse, sparse, stale, wrong-epoch, invalid, and unattributed cases
+  have behavior tests. The manager stores the prediction, and a matching
+  outcome updates the calibrator exactly once.
+- Remaining issue: this is still one-request/internal-manager causality. There
+  is no HTTP reachability, real profile calibration, hierarchical backoff,
+  measured coverage, or distribution-shift circuit breaker. The exact-cell
+  calibrator alone is not the full Phase 4 model.
+- Change: Sections 19.1 and 19.2 now move the concrete learned slice into the
+  builder-green list, record its exact limitations, and retain the remaining
+  calibration/coverage work rather than marking Phase 4 complete.
+
+Pass 2, virtual-state and identity safety:
+
+- Issues: `Manager` binds `RequestCost.ManifestID`, but it does not bind the
+  scheduler's `ModelIdentity` to an expected backend/predictor profile. A wrong
+  but internally valid scheduler can therefore produce a forecast. Also,
+  `addState`/`subtractState` still update only physical/active KV; committed
+  reservations do not add decode sequences, active context tokens, or uncached
+  prefill to the next same-window scheduler prediction. This means atomic KV
+  reservation is proven but concurrent prospective TPS/TTFT state is not.
+- Change: Phase 5 now requires exact cross-profile identity binding and makes
+  cumulative phase-resource contribution/release an explicit red-test gate for
+  the transaction coordinator.
+
+Pass 3, evidence and completion boundary:
+
+- Findings: the valid `fa40ad6` red fails for the intended missing production
+  symbols; the first `c1ca96d` candidate is correctly retained as failed because
+  gofmt was nonzero despite all tests passing; the exact `b9f42b0` clean checkout
+  passes every recorded Go, race, and Rust gate. Hashes and invalid-red reasons
+  are recorded in Section 19.2.
+- Remaining issue: these tests use deterministic static priors/outcomes and do
+  not measure simulation goodput, false fits/denies, scheduler latency, real
+  tokenizer/cache transaction behavior, or GPU coverage. No Docker image was
+  built.
+- Change: the status now says learned causality is builder-green while the
+  integrated transaction remains P0. No HTTP, image, version-runtime,
+  production, or real-GPU claim was added.
