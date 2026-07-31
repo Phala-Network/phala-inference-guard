@@ -16,7 +16,7 @@ import (
 )
 
 type gemma4NativeOracle struct {
-	Cases []gemma4NativeOracleCase `json:"cases"`
+	Cases  []gemma4NativeOracleCase `json:"cases"`
 	Oracle struct {
 		TokenizerSHA256 string `json:"tokenizer_sha256"`
 	} `json:"oracle"`
