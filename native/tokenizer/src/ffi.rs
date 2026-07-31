@@ -63,16 +63,13 @@ pub unsafe extern "C" fn pig_tokenizer_open(
             .filter(|value| *value > 0)
             .ok_or_else(|| invalid_argument("block size is invalid"))?;
         if key.is_null() || key_len != 32 {
-            return Err(invalid_argument("analysis key must contain exactly 32 bytes"));
+            return Err(invalid_argument(
+                "analysis key must contain exactly 32 bytes",
+            ));
         }
         let key = unsafe { slice::from_raw_parts(key, key_len) };
-        let digest_context = BlockDigestContext::new(
-            manifest_id,
-            backend_epoch,
-            block_size,
-            key,
-        )
-        .map_err(|error| invalid_argument(error.to_string()))?;
+        let digest_context = BlockDigestContext::new(manifest_id, backend_epoch, block_size, key)
+            .map_err(|error| invalid_argument(error.to_string()))?;
         let tokenizer = NativeTokenizer::from_file(tokenizer_path)
             .map_err(|error| FfiError::new(PIG_TOKENIZER_LOAD_ERROR, error.to_string()))?;
         let handle = Box::new(PigTokenizerHandle {
@@ -113,12 +110,7 @@ pub unsafe extern "C" fn pig_tokenizer_analyze(
         let handle = unsafe { &*handle };
         let analysis = handle
             .tokenizer
-            .analyze(
-                input,
-                add_special_tokens,
-                &handle.digest_context,
-                false,
-            )
+            .analyze(input, add_special_tokens, &handle.digest_context, false)
             .map_err(|error| FfiError::new(PIG_TOKENIZER_ANALYSIS_ERROR, error.to_string()))?;
         let analysis = Box::new(PigTokenizationAnalysisHandle { analysis });
         unsafe { out_analysis.write(Box::into_raw(analysis)) };
@@ -133,7 +125,9 @@ pub unsafe extern "C" fn pig_tokenizer_analysis_view(
 ) -> i32 {
     status_boundary(|| {
         if analysis.is_null() || out_view.is_null() {
-            return Err(invalid_argument("analysis handle and output view are required"));
+            return Err(invalid_argument(
+                "analysis handle and output view are required",
+            ));
         }
         let analysis = unsafe { &(*analysis).analysis };
         let token_count = u64::try_from(analysis.token_count)
@@ -189,9 +183,7 @@ pub unsafe extern "C" fn pig_tokenizer_analysis_destroy(
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn pig_tokenizer_destroy(
-    handle: *mut *mut PigTokenizerHandle,
-) -> i32 {
+pub unsafe extern "C" fn pig_tokenizer_destroy(handle: *mut *mut PigTokenizerHandle) -> i32 {
     status_boundary(|| {
         if handle.is_null() {
             return Err(invalid_argument("tokenizer handle pointer is required"));
