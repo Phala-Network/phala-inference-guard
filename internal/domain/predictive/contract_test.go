@@ -17,6 +17,24 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 		TokenizerConfigSHA256: "tokenizer-config-sha",
 		SpecialTokensSHA256:   "special-tokens-sha",
 		TemplateSHA256:        "template-sha",
+		TemplateRuntime:       "minijinja-vllm-profile",
+		TemplateRuntimeVersion: "v1",
+		SpecialTokenPolicy:    SpecialTokenPolicyOmit,
+		SpecialTokens: SpecialTokenBindings{
+			BOS: TokenBinding{Value: "<bos>", ID: 2},
+			EOS: TokenBinding{Value: "<eos>", ID: 1},
+			UNK: TokenBinding{Value: "<unk>", ID: 3},
+			PAD: TokenBinding{Value: "<pad>", ID: 0},
+		},
+		Capabilities: TokenizerCapabilities{
+			Completions:     true,
+			ChatCompletions: true,
+			Tools:           true,
+			ToolChoice:      true,
+			ResponseFormat:  true,
+			JSONSchema:      true,
+			Reasoning:       true,
+		},
 		BackendKind:           "vllm",
 		BackendVersion:        "0.25.1",
 		BlockSize:             64,
@@ -41,6 +59,12 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 		{name: "tokenizer config", mutate: func(value *TokenizerManifest) { value.TokenizerConfigSHA256 = "other" }},
 		{name: "special tokens", mutate: func(value *TokenizerManifest) { value.SpecialTokensSHA256 = "other" }},
 		{name: "template", mutate: func(value *TokenizerManifest) { value.TemplateSHA256 = "other" }},
+		{name: "template runtime", mutate: func(value *TokenizerManifest) { value.TemplateRuntime = "other" }},
+		{name: "template runtime version", mutate: func(value *TokenizerManifest) { value.TemplateRuntimeVersion = "other" }},
+		{name: "special token policy", mutate: func(value *TokenizerManifest) { value.SpecialTokenPolicy = SpecialTokenPolicyAdd }},
+		{name: "bos token", mutate: func(value *TokenizerManifest) { value.SpecialTokens.BOS.Value = "<s>" }},
+		{name: "eos token id", mutate: func(value *TokenizerManifest) { value.SpecialTokens.EOS.ID = 212 }},
+		{name: "tools capability", mutate: func(value *TokenizerManifest) { value.Capabilities.Tools = false }},
 		{name: "block size", mutate: func(value *TokenizerManifest) { value.BlockSize = 32 }},
 		{name: "multimodal profile", mutate: func(value *TokenizerManifest) { value.MultimodalProfile = "image" }},
 		{name: "predictor version", mutate: func(value *TokenizerManifest) { value.PredictorVersion = "other" }},
@@ -58,6 +82,30 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 	invalid.TokenizerRevision = ""
 	if err := invalid.Validate(); err == nil {
 		t.Fatal("manifest with missing required field must be invalid")
+	}
+
+	invalid = base
+	invalid.SpecialTokens.BOS.ID = -1
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("manifest with a negative declared special-token id must be invalid")
+	}
+
+	invalid = base
+	invalid.SpecialTokenPolicy = "heuristic"
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("manifest with an unknown special-token policy must be invalid")
+	}
+
+	invalid = base
+	invalid.Capabilities.ChatCompletions = false
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("tools without chat-completions capability must be invalid")
+	}
+
+	invalid = base
+	invalid.Capabilities.Multimodal = true
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("multimodal capability with a text-only processor profile must be invalid")
 	}
 }
 

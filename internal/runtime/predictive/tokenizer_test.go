@@ -12,6 +12,7 @@ import (
 
 func TestTokenizerRuntimeWarmsAndReturnsExactEngineIDs(t *testing.T) {
 	manifest := completeTokenizerManifest("profile-1")
+	manifest.SpecialTokenPolicy = domain.SpecialTokenPolicyAdd
 	engine := &fakeTokenizerEngine{
 		manifest: manifest,
 		ids:      []int64{2, 100, 101, 1},
@@ -29,9 +30,8 @@ func TestTokenizerRuntimeWarmsAndReturnsExactEngineIDs(t *testing.T) {
 	}
 
 	result, err := runtime.Tokenize(context.Background(), TokenizeInput{
-		Class:            RequestClassCompletion,
-		RenderedInput:    "hello",
-		AddSpecialTokens: true,
+		Class:         RequestClassCompletion,
+		RenderedInput: "hello",
 	})
 	if err != nil {
 		t.Fatalf("tokenize failed: %v", err)
@@ -54,6 +54,9 @@ func TestTokenizerRuntimeWarmsAndReturnsExactEngineIDs(t *testing.T) {
 	result.TokenIDs[0] = 999
 	if engine.ids[0] != 2 {
 		t.Fatal("token result aliases engine-owned token ids")
+	}
+	if !engine.LastAddSpecialTokens() {
+		t.Fatal("engine did not receive the immutable profile special-token policy")
 	}
 }
 
@@ -90,6 +93,30 @@ func TestTokenizerRuntimeRejectsUnsupportedClassWithoutEngineCall(t *testing.T) 
 	}
 	if engine.encodeCalls != 0 {
 		t.Fatalf("encode calls = %d, want 0", engine.encodeCalls)
+	}
+}
+
+func TestTokenizerRuntimeRejectsUnsupportedFeatureSetWithoutEngineCall(t *testing.T) {
+	manifest := completeTokenizerManifest("profile-1")
+	manifest.Capabilities.Tools = false
+	manifest.Capabilities.ToolChoice = false
+	engine := &fakeTokenizerEngine{manifest: manifest, ids: []int64{1}}
+	runtime := mustTokenizerRuntime(t, TokenizerProfile{
+		Manifest:          manifest,
+		SupportedClasses:  []RequestClass{RequestClassChat},
+		MaximumConcurrent: 1,
+	}, engine)
+	if _, err := runtime.Tokenize(context.Background(), TokenizeInput{
+		Class:         RequestClassChat,
+		RenderedInput: "strictly rendered chat input",
+		Features: RequestFeatures{
+			Tools: true,
+		},
+	}); !errors.Is(err, ErrUnsupportedRequestFeatures) {
+		t.Fatalf("unsupported feature error = %v, want %v", err, ErrUnsupportedRequestFeatures)
+	}
+	if engine.EncodeCalls() != 0 {
+		t.Fatalf("encode calls = %d, want 0", engine.EncodeCalls())
 	}
 }
 
@@ -217,6 +244,7 @@ type fakeTokenizerEngine struct {
 	encodeErr   error
 	warmCalls   int
 	encodeCalls int
+	lastAddSpecialTokens bool
 	started     chan struct{}
 	startOnce   sync.Once
 	release     chan struct{}
@@ -233,9 +261,10 @@ func (f *fakeTokenizerEngine) Warm(context.Context) error {
 	return f.warmErr
 }
 
-func (f *fakeTokenizerEngine) Encode(ctx context.Context, _ string, _ bool) ([]int64, error) {
+func (f *fakeTokenizerEngine) Encode(ctx context.Context, _ string, addSpecialTokens bool) ([]int64, error) {
 	f.mu.Lock()
 	f.encodeCalls++
+	f.lastAddSpecialTokens = addSpecialTokens
 	f.mu.Unlock()
 	if f.started != nil {
 		f.startOnce.Do(func() { close(f.started) })
@@ -251,6 +280,12 @@ func (f *fakeTokenizerEngine) Encode(ctx context.Context, _ string, _ bool) ([]i
 		return nil, f.encodeErr
 	}
 	return append([]int64(nil), f.ids...), nil
+}
+
+func (f *fakeTokenizerEngine) LastAddSpecialTokens() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastAddSpecialTokens
 }
 
 func (f *fakeTokenizerEngine) EncodeCalls() int {
@@ -271,6 +306,24 @@ func completeTokenizerManifest(profileID string) domain.TokenizerManifest {
 		TokenizerConfigSHA256: "tokenizer-config-sha",
 		SpecialTokensSHA256:   "special-tokens-sha",
 		TemplateSHA256:        "template-sha",
+		TemplateRuntime:       "minijinja-vllm-profile",
+		TemplateRuntimeVersion: "v1",
+		SpecialTokenPolicy:    domain.SpecialTokenPolicyOmit,
+		SpecialTokens: domain.SpecialTokenBindings{
+			BOS: domain.TokenBinding{Value: "<bos>", ID: 2},
+			EOS: domain.TokenBinding{Value: "<eos>", ID: 1},
+			UNK: domain.TokenBinding{Value: "<unk>", ID: 3},
+			PAD: domain.TokenBinding{Value: "<pad>", ID: 0},
+		},
+		Capabilities: domain.TokenizerCapabilities{
+			Completions:     true,
+			ChatCompletions: true,
+			Tools:           true,
+			ToolChoice:      true,
+			ResponseFormat:  true,
+			JSONSchema:      true,
+			Reasoning:       true,
+		},
 		BackendKind:           "vllm",
 		BackendVersion:        "0.25.1",
 		BlockSize:             4,
