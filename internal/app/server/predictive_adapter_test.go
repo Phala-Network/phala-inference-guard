@@ -264,6 +264,10 @@ func newAdapterTestAnalyzer() *adapterTestAnalyzer {
 }
 
 func newAdapterTestCoordinator(t *testing.T) *runtimepredictive.Coordinator {
+	return newAdapterTestCoordinatorWithTPSTarget(t, 80)
+}
+
+func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64) *runtimepredictive.Coordinator {
 	t.Helper()
 	identity := adapterTestIdentity()
 	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
@@ -307,7 +311,7 @@ func newAdapterTestCoordinator(t *testing.T) *runtimepredictive.Coordinator {
 		Constraints: domainpredictive.Constraints{
 			PhysicalKVHard:       1_000,
 			ActiveKVHard:         1_000,
-			UserTPSTarget:        80,
+			UserTPSTarget:        userTPSTarget,
 			TTFTSLO:              time.Second,
 			TPOTSLO:              time.Second,
 			WorkspaceRiskBudget:  1,

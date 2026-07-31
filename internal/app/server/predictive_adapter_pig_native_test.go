@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive/nativeffi"
 )
@@ -38,7 +39,7 @@ func TestRealPredictiveShadowRunsGemma4RendererNativeAnalyzerAndCacheAwareCoordi
 		}
 	}()
 
-	coordinator := newAdapterTestCoordinator(t)
+	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 40)
 	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
 		Renderer:    renderer,
 		Analyzer:    analyzer,
@@ -105,5 +106,38 @@ func TestRealPredictiveShadowRunsGemma4RendererNativeAnalyzerAndCacheAwareCoordi
 	finalSnapshot := coordinator.Snapshot()
 	if finalSnapshot.Manager.Reservations != 0 || finalSnapshot.Cache.Requests != 0 {
 		t.Fatalf("native reservations leaked after completion: %+v", finalSnapshot)
+	}
+
+	protectiveCoordinator := newAdapterTestCoordinator(t)
+	protectiveAdapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    renderer,
+		Analyzer:    analyzer,
+		Coordinator: protectiveCoordinator,
+	})
+	if err != nil {
+		t.Fatalf("new TPS-protective predictive shadow: %v", err)
+	}
+	defer func() {
+		if err := protectiveAdapter.Close(); err != nil {
+			t.Errorf("close TPS-protective predictive shadow: %v", err)
+		}
+	}()
+	protectiveFirst := protectiveAdapter.DecideAndReserve(context.Background(), "protective-first", input)
+	if protectiveFirst == nil || !protectiveFirst.MarkPrefillComplete() {
+		t.Fatalf("protective first request did not establish an active cache prefix: attempt=%+v", protectiveAdapter.Snapshot())
+	}
+	if protectiveSecond := protectiveAdapter.DecideAndReserve(context.Background(), "protective-second", input); protectiveSecond != nil {
+		protectiveSecond.Terminate(runtimepredictive.TerminalExpired)
+		t.Fatal("cache reuse bypassed the post-join single-user TPS bound")
+	}
+	protectiveAttempt := protectiveAdapter.Snapshot()
+	if protectiveAttempt.Risks != 1 || protectiveAttempt.LastReason != domainpredictive.ReasonNewTPSAtRisk || protectiveAttempt.LastSource != runtimepredictive.PredictionSourceStatic {
+		t.Fatalf("TPS-protective cache-hit attempt = %+v", protectiveAttempt)
+	}
+	if protectiveSnapshot := protectiveCoordinator.Snapshot(); protectiveSnapshot.Manager.Reservations != 1 || protectiveSnapshot.Cache.Requests != 1 {
+		t.Fatalf("TPS reject mutated committed cache or virtual reservations: %+v", protectiveSnapshot)
+	}
+	if !protectiveFirst.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("protective first reservation did not terminate")
 	}
 }
