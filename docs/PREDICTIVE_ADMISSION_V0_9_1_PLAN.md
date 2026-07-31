@@ -2034,6 +2034,17 @@ Pass 3 re-review, evidence and release boundary:
   reachability seam; a package-level coordinator green is still not a PIG
   request-path green.
 
+The next test-only terminal red uses one bounded `TerminalCause` contract and
+`Coordinator.Terminate(requestID, cause)`. The initial closed set is successful
+completion, local QoS reject, client cancellation, client disconnect, upstream
+failure, timeout, and expiry. Unknown strings fail without release. `Complete`
+remains a compatibility wrapper for successful completion. Every valid cause
+releases manager/cache state exactly once under the coordinator lock, but a
+local QoS reject and other non-success terminal causes make the completed
+reservation permanently ineligible for later upstream outcome learning. Race
+tests require simultaneous success/cancellation to produce one release and no
+state leak.
+
 Valid coordinator-feedback red evidence:
 
 ~~~
