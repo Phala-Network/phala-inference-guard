@@ -130,3 +130,204 @@ func TestDuplicateAndDoubleCompleteAreIdempotent(t *testing.T) {
 		t.Fatalf("snapshot after completion = %+v", snapshot)
 	}
 }
+
+func TestSampleAssimilatesReservationPresentAcrossWholePollWindow(t *testing.T) {
+	manager := NewManager(domain.VirtualState{
+		PhysicalKVUpper: 50_000,
+		ActiveKVUpper:   50_000,
+	}, testConstraints(), safeScheduler{})
+
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "active", testRequest()); got.Reason != domain.ReasonFit {
+		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	watermark := manager.EventSequence()
+	if watermark != 1 {
+		t.Fatalf("event sequence = %d, want 1", watermark)
+	}
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed: domain.VirtualState{
+			PhysicalKVUpper: 60_000,
+			ActiveKVUpper:   60_000,
+		},
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	snapshot := manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 60_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 60_000 {
+		t.Fatalf("assimilated virtual interval = %+v, want exact 60k", snapshot.Virtual)
+	}
+	if !manager.Complete("active") {
+		t.Fatal("completion was not applied")
+	}
+	snapshot = manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 50_000 {
+		t.Fatalf("post-completion interval = %+v, want exact 50k", snapshot.Virtual)
+	}
+}
+
+func TestAdmissionInsideSampleWindowWidensUpperBound(t *testing.T) {
+	manager := NewManager(domain.VirtualState{
+		PhysicalKVUpper: 50_000,
+		ActiveKVUpper:   50_000,
+	}, testConstraints(), safeScheduler{})
+
+	started := manager.EventSequence()
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "ambiguous", testRequest()); got.Reason != domain.ReasonFit {
+		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	finished := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed: domain.VirtualState{
+			PhysicalKVUpper: 50_000,
+			ActiveKVUpper:   50_000,
+		},
+		StartedSequence:  started,
+		FinishedSequence: finished,
+	}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	snapshot := manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 60_000 {
+		t.Fatalf("ambiguous virtual interval = %+v, want [50k, 60k]", snapshot.Virtual)
+	}
+}
+
+func TestAdmissionAfterSampleWindowRemainsDefinitelyUnabsorbed(t *testing.T) {
+	manager := NewManager(domain.VirtualState{
+		PhysicalKVUpper: 50_000,
+		ActiveKVUpper:   50_000,
+	}, testConstraints(), safeScheduler{})
+
+	started := manager.EventSequence()
+	finished := started
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "newer", testRequest()); got.Reason != domain.ReasonFit {
+		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed: domain.VirtualState{
+			PhysicalKVUpper: 50_000,
+			ActiveKVUpper:   50_000,
+		},
+		StartedSequence:  started,
+		FinishedSequence: finished,
+	}); err != nil {
+		t.Fatalf("reconcile failed: %v", err)
+	}
+
+	snapshot := manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 60_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 60_000 {
+		t.Fatalf("unabsorbed virtual interval = %+v, want exact 60k", snapshot.Virtual)
+	}
+}
+
+func TestLateSampleDoesNotReintroduceCompletedOwnedWork(t *testing.T) {
+	manager := NewManager(domain.VirtualState{
+		PhysicalKVUpper: 50_000,
+		ActiveKVUpper:   50_000,
+	}, testConstraints(), safeScheduler{})
+
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "owned", testRequest()); got.Reason != domain.ReasonFit {
+		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	watermark := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed: domain.VirtualState{
+			PhysicalKVUpper: 60_000,
+			ActiveKVUpper:   60_000,
+		},
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("initial reconcile failed: %v", err)
+	}
+	if !manager.Complete("owned") {
+		t.Fatal("completion was not applied")
+	}
+
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed: domain.VirtualState{
+			PhysicalKVUpper: 60_000,
+			ActiveKVUpper:   60_000,
+		},
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("late reconcile failed: %v", err)
+	}
+	snapshot := manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 50_000 {
+		t.Fatalf("late-sample interval = %+v, want exact 50k", snapshot.Virtual)
+	}
+}
+
+func TestCompletionInsideSampleWindowRemainsConservativeUntilCleanSample(t *testing.T) {
+	manager := NewManager(domain.VirtualState{
+		PhysicalKVUpper: 50_000,
+		ActiveKVUpper:   50_000,
+	}, testConstraints(), safeScheduler{})
+
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "windowed", testRequest()); got.Reason != domain.ReasonFit {
+		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	first := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed:         domain.VirtualState{PhysicalKVUpper: 60_000, ActiveKVUpper: 60_000},
+		StartedSequence:  first,
+		FinishedSequence: first,
+	}); err != nil {
+		t.Fatalf("initial reconcile failed: %v", err)
+	}
+
+	started := manager.EventSequence()
+	if !manager.Complete("windowed") {
+		t.Fatal("completion was not applied")
+	}
+	finished := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed:         domain.VirtualState{PhysicalKVUpper: 60_000, ActiveKVUpper: 60_000},
+		StartedSequence:  started,
+		FinishedSequence: finished,
+	}); err != nil {
+		t.Fatalf("ambiguous reconcile failed: %v", err)
+	}
+	snapshot := manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 60_000 {
+		t.Fatalf("completion-window interval = %+v, want [50k, 60k]", snapshot.Virtual)
+	}
+
+	clean := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed:         domain.VirtualState{PhysicalKVUpper: 50_000, ActiveKVUpper: 50_000},
+		StartedSequence:  clean,
+		FinishedSequence: clean,
+	}); err != nil {
+		t.Fatalf("clean reconcile failed: %v", err)
+	}
+	snapshot = manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 50_000 {
+		t.Fatalf("clean interval = %+v, want exact 50k", snapshot.Virtual)
+	}
+}
+
+func TestReconcileRejectsInvalidOrStaleWatermarks(t *testing.T) {
+	manager := NewManager(domain.VirtualState{}, testConstraints(), safeScheduler{})
+	if err := manager.ReconcileSample(SampleWindow{StartedSequence: 1, FinishedSequence: 0}); err == nil {
+		t.Fatal("finish before start must fail")
+	}
+	if err := manager.ReconcileSample(SampleWindow{StartedSequence: 0, FinishedSequence: 1}); err == nil {
+		t.Fatal("future finish watermark must fail")
+	}
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "one", testRequest()); got.Reason != domain.ReasonFit {
+		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	if err := manager.ReconcileSample(SampleWindow{StartedSequence: 1, FinishedSequence: 1}); err != nil {
+		t.Fatalf("valid sample failed: %v", err)
+	}
+	if err := manager.ReconcileSample(SampleWindow{StartedSequence: 0, FinishedSequence: 0}); err == nil {
+		t.Fatal("stale sample must fail")
+	}
+}
