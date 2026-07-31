@@ -1,6 +1,7 @@
 package predictive
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -104,6 +105,65 @@ func TestManagerStoresPredictionAndLearnsFromOutcomeExactlyOnce(t *testing.T) {
 	}
 	if manager.ObserveOutcome("owned", outcome) {
 		t.Fatal("completed duplicate outcome must not be learned twice")
+	}
+}
+
+func TestStaticSchedulerAppliesPrefillPenaltyToEveryPostJoinUser(t *testing.T) {
+	now := time.Unix(6_000, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	state := domain.VirtualState{DecodeSequences: 2}
+	cost := domain.RequestCost{
+		ManifestID:            "test-profile",
+		InputTokens:           1_000,
+		UncachedPrefillUpper:  1_000,
+		DecodeHorizonUpper:    256,
+		DecodeSequencesUpper: 1,
+		Confidence:            0.99,
+	}
+	prediction := scheduler.Predict(now, state, cost)
+	wantTPS := (testLearnedProfile().BaseCompletionTPS - testLearnedProfile().PrefillTPSPenaltyPerKToken) / 3
+	if math.Abs(prediction.Estimate.ExistingUserTPSLower-wantTPS) > 1e-9 {
+		t.Fatalf("existing-user TPS = %.6f, want post-join prefill-adjusted %.6f", prediction.Estimate.ExistingUserTPSLower, wantTPS)
+	}
+	if math.Abs(prediction.Estimate.AllUserTPSLower-wantTPS) > 1e-9 {
+		t.Fatalf("all-user TPS = %.6f, want post-join prefill-adjusted %.6f", prediction.Estimate.AllUserTPSLower, wantTPS)
+	}
+}
+
+func TestCacheMetadataCannotChangeProspectiveSchedulerPrediction(t *testing.T) {
+	now := time.Unix(7_000, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	withoutCacheMetadata := learnedTestCost()
+	withoutCacheMetadata.CachedPrefillExpected = 0
+	withCacheMetadata := withoutCacheMetadata
+	withCacheMetadata.CachedPrefillExpected = 7_000
+
+	without := scheduler.Predict(now, learnedTestState(), withoutCacheMetadata)
+	with := scheduler.Predict(now, learnedTestState(), withCacheMetadata)
+	if with != without {
+		t.Fatalf("cache metadata changed prediction: without=%+v with=%+v", without, with)
+	}
+}
+
+func TestZeroTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testing.T) {
+	now := time.Unix(8_000, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 1
+	profile.PrefillTPSPenaltyPerKToken = 2
+	scheduler := mustLearnedScheduler(t, profile, testResidualConfig())
+	manager := NewManager("test-profile", domain.VirtualState{}, testLearnedConstraints(), scheduler)
+	decision := manager.DecideAndReserve(now, "zero-tps", domain.RequestCost{
+		ManifestID:               "test-profile",
+		InputTokens:              1_000,
+		KV:                       domain.KVIncrement{PhysicalKVUpper: 1_024, ActiveKVUpper: 1_024},
+		UncachedPrefillUpper:     1_000,
+		DecodeHorizonUpper:       16,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: 1_016,
+		Confidence:               0.99,
+	})
+	if decision.Reason != domain.ReasonNewTPSAtRisk {
+		t.Fatalf("zero-TPS reason = %s, want %s", decision.Reason, domain.ReasonNewTPSAtRisk)
 	}
 }
 

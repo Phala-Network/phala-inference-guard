@@ -133,6 +133,58 @@ func TestCountCoordinatorRejectsIdentityAndProposalErrorsWithoutMutation(t *test
 	}
 }
 
+func TestCountCoordinatorConsumesLearnedResidualBeforeForwardWithStateHeldConstant(t *testing.T) {
+	now := time.Unix(9_000, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	constraints := testLearnedConstraints()
+	proposal := CountAdmissionProposal{
+		RequestID: "cold",
+		Analysis: TokenCountAnalysis{
+			ManifestID:       "test-profile",
+			BackendEpoch:     testPredictorIdentity().BackendEpoch,
+			ExactInputTokens: 1_000,
+		},
+		DecodeHorizonUpper: 256,
+		Confidence:         0.99,
+	}
+
+	cold := newCountLearnedCoordinator(t, scheduler, constraints).DecideAndReserve(now, proposal)
+	if cold.Decision.Reason != domain.ReasonExistingTPSAtRisk || cold.Reserved {
+		t.Fatalf("cold decision = %+v, want prospective existing-user TPS risk", cold)
+	}
+
+	trainingConstraints := constraints
+	trainingConstraints.UserTPSTarget = 0
+	training := newCountLearnedCoordinator(t, scheduler, trainingConstraints)
+	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
+		requestID := string(rune('a' + index))
+		proposal.RequestID = requestID
+		result := training.DecideAndReserve(now.Add(time.Duration(index)*time.Second), proposal)
+		if !result.Reserved || result.Decision.Reason != domain.ReasonFit {
+			t.Fatalf("training admission %d = %+v", index, result)
+		}
+		outcome := healthyLearnedOutcome(result.Prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		if !training.ObserveOutcome(requestID, outcome) {
+			t.Fatalf("training outcome %d was not attributed", index)
+		}
+		if !training.Complete(requestID) {
+			t.Fatalf("complete training request %d", index)
+		}
+	}
+
+	proposal.RequestID = "learned"
+	learned := newCountLearnedCoordinator(t, scheduler, constraints).DecideAndReserve(now.Add(10*time.Second), proposal)
+	if !learned.Reserved || learned.Decision.Reason != domain.ReasonFit || learned.Prediction.Source != PredictionSourceCalibrated {
+		t.Fatalf("learned pre-forward decision = %+v, want calibrated fit", learned)
+	}
+	if learned.Decision.Projection != cold.Decision.Projection {
+		t.Fatalf("current-state projection changed: cold=%+v learned=%+v", cold.Decision.Projection, learned.Decision.Projection)
+	}
+	if learned.Prediction.Estimate.ExistingUserTPSLower <= cold.Prediction.Estimate.ExistingUserTPSLower {
+		t.Fatalf("learned existing-user TPS %.3f did not exceed cold %.3f", learned.Prediction.Estimate.ExistingUserTPSLower, cold.Prediction.Estimate.ExistingUserTPSLower)
+	}
+}
+
 func newCountTestCoordinator(t *testing.T, initial domain.VirtualState, kvHard int64) *CountCoordinator {
 	t.Helper()
 	constraints := testConstraints()
@@ -166,4 +218,23 @@ func countTestProposal(requestID string, inputTokens, decodeHorizon int64) Count
 		DecodeHorizonUpper: decodeHorizon,
 		Confidence:         0.99,
 	}
+}
+
+func newCountLearnedCoordinator(t *testing.T, scheduler Scheduler, constraints domain.Constraints) *CountCoordinator {
+	t.Helper()
+	coordinator, err := NewCountCoordinator(CountCoordinatorConfig{
+		Identity: CoordinatorIdentity{
+			ManifestID:   "test-profile",
+			BackendEpoch: testPredictorIdentity().BackendEpoch,
+			Scheduler:    testPredictorIdentity(),
+			BlockSize:    64,
+		},
+		Initial:     learnedTestState(),
+		Constraints: constraints,
+		Scheduler:   scheduler,
+	})
+	if err != nil {
+		t.Fatalf("new learned count coordinator: %v", err)
+	}
+	return coordinator
 }
