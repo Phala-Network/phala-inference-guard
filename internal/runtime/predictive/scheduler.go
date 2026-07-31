@@ -242,20 +242,33 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	}
 
 	existingRatios, allRatios, ttftRatios, tpotRatios := residualRatios(fresh)
-	if len(existingRatios) < s.config.MinimumSamples || len(allRatios) < s.config.MinimumSamples || len(ttftRatios) < s.config.MinimumSamples || len(tpotRatios) < s.config.MinimumSamples {
+	calibratedSamples := make([]int, 0, 4)
+	if len(existingRatios) >= s.config.MinimumSamples {
+		existingMultiplier := clampFloat(quantile(existingRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
+		prediction.Estimate.ExistingUserTPSLower = prior.ExistingUserTPSLower * existingMultiplier
+		calibratedSamples = append(calibratedSamples, len(existingRatios))
+	}
+	if len(allRatios) >= s.config.MinimumSamples {
+		allMultiplier := clampFloat(quantile(allRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
+		prediction.Estimate.AllUserTPSLower = prior.AllUserTPSLower * allMultiplier
+		calibratedSamples = append(calibratedSamples, len(allRatios))
+	}
+	if len(ttftRatios) >= s.config.MinimumSamples {
+		ttftMultiplier := clampFloat(quantile(ttftRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
+		prediction.Estimate.TTFTUpper = scaleDuration(prior.TTFTUpper, ttftMultiplier)
+		calibratedSamples = append(calibratedSamples, len(ttftRatios))
+	}
+	if len(tpotRatios) >= s.config.MinimumSamples {
+		tpotMultiplier := clampFloat(quantile(tpotRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
+		prediction.Estimate.TPOTUpper = scaleDuration(prior.TPOTUpper, tpotMultiplier)
+		calibratedSamples = append(calibratedSamples, len(tpotRatios))
+	}
+	if len(calibratedSamples) == 0 {
 		return prediction
 	}
-	existingMultiplier := clampFloat(quantile(existingRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
-	allMultiplier := clampFloat(quantile(allRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
-	ttftMultiplier := clampFloat(quantile(ttftRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
-	tpotMultiplier := clampFloat(quantile(tpotRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
-	prediction.Estimate.ExistingUserTPSLower = prior.ExistingUserTPSLower * existingMultiplier
-	prediction.Estimate.AllUserTPSLower = prior.AllUserTPSLower * allMultiplier
-	prediction.Estimate.TTFTUpper = scaleDuration(prior.TTFTUpper, ttftMultiplier)
-	prediction.Estimate.TPOTUpper = scaleDuration(prior.TPOTUpper, tpotMultiplier)
 	prediction.Source = PredictionSourceCalibrated
-	prediction.Samples = minimumInt(len(existingRatios), len(allRatios), len(ttftRatios), len(tpotRatios))
-	prediction.Confidence = s.config.CalibratedConfidence
+	prediction.Samples = minimumInt(calibratedSamples...)
+	prediction.Confidence = minimumConfidence(s.profile.Confidence, s.config.CalibratedConfidence)
 	return prediction
 }
 

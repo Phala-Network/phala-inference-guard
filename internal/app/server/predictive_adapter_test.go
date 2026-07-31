@@ -213,8 +213,6 @@ func TestRealPredictiveShadowEligibleHistoryChangesPreForwardDecision(t *testing
 			Identity:             identity,
 			ObservedAt:           trainedClock.Now().Add(time.Millisecond),
 			Attributed:           true,
-			ExistingUserTPS:      100,
-			ExistingUserTPSValid: true,
 			AllUserTPS:           40,
 			AllUserTPSValid:      true,
 			TTFT:                 10 * time.Millisecond,

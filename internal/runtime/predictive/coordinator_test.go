@@ -19,8 +19,8 @@ func TestCoordinatorCommitsCumulativePhaseStateIntoNextPrediction(t *testing.T) 
 	if first.Decision.Reason != domain.ReasonFit || second.Decision.Reason != domain.ReasonFit {
 		t.Fatalf("first/second reasons = %s/%s, want fit/fit", first.Decision.Reason, second.Decision.Reason)
 	}
-	if third.Decision.Reason != domain.ReasonNewTPSAtRisk {
-		t.Fatalf("third reason = %s, want %s (scheduler=%+v)", third.Decision.Reason, domain.ReasonNewTPSAtRisk, third.Decision.Scheduler)
+	if third.Decision.Reason != domain.ReasonExistingTPSAtRisk {
+		t.Fatalf("third reason = %s, want %s (scheduler=%+v)", third.Decision.Reason, domain.ReasonExistingTPSAtRisk, third.Decision.Scheduler)
 	}
 	if first.Cost.KV != second.Cost.KV {
 		t.Fatalf("identical cold costs changed: first=%+v second=%+v", first.Cost.KV, second.Cost.KV)
@@ -146,7 +146,7 @@ func TestCoordinatorConcurrentNearTPSCapacityCommitsOnlyOne(t *testing.T) {
 		switch result.Decision.Reason {
 		case domain.ReasonFit:
 			fit++
-		case domain.ReasonNewTPSAtRisk:
+		case domain.ReasonExistingTPSAtRisk:
 			risk++
 		default:
 			t.Fatalf("unexpected concurrent decision: %+v", result)
@@ -216,8 +216,8 @@ func TestCoordinatorLearnsEligibleOutcomesBeforeLaterAdmission(t *testing.T) {
 		t.Fatalf("learned scheduler snapshot = %+v", snapshot)
 	}
 	adverse := coordinator.DecideAndReserve(now.Add(40*time.Second), coordinatorProposal("adverse", 30, 31))
-	if adverse.Decision.Reason != domain.ReasonNewTPSAtRisk || adverse.Reserved {
-		t.Fatalf("learned decision = %+v, want new-user TPS risk without reservation", adverse)
+	if adverse.Decision.Reason != domain.ReasonExistingTPSAtRisk || adverse.Reserved {
+		t.Fatalf("learned decision = %+v, want existing-user TPS risk without reservation", adverse)
 	}
 	if adverse.Decision.Scheduler.AllUserTPSLower >= 25 {
 		t.Fatalf("learned all-user TPS = %.3f, want below target", adverse.Decision.Scheduler.AllUserTPSLower)

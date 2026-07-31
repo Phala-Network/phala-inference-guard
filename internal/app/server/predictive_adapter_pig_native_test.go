@@ -131,7 +131,7 @@ func TestRealPredictiveShadowRunsGemma4RendererNativeAnalyzerAndCacheAwareCoordi
 		t.Fatal("cache reuse bypassed the post-join single-user TPS bound")
 	}
 	protectiveAttempt := protectiveAdapter.Snapshot()
-	if protectiveAttempt.Risks != 1 || protectiveAttempt.LastReason != domainpredictive.ReasonNewTPSAtRisk || protectiveAttempt.LastSource != runtimepredictive.PredictionSourceStatic {
+	if protectiveAttempt.Risks != 1 || protectiveAttempt.LastReason != domainpredictive.ReasonExistingTPSAtRisk || protectiveAttempt.LastSource != runtimepredictive.PredictionSourceStatic {
 		t.Fatalf("TPS-protective cache-hit attempt = %+v", protectiveAttempt)
 	}
 	if protectiveSnapshot := protectiveCoordinator.Snapshot(); protectiveSnapshot.Manager.Reservations != 1 || protectiveSnapshot.Cache.Requests != 1 {

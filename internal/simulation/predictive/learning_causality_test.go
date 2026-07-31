@@ -132,8 +132,8 @@ func TestSimulationDecisionChangesOnlyAfterEligibleLearning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run learned: %v", err)
 	}
-	if cold.Decisions[0].Reason != domain.ReasonNewTPSAtRisk || learned.Decisions[0].Reason != domain.ReasonFit {
-		t.Fatalf("cold/learned reasons = %s/%s, want new_tps_at_risk/fit", cold.Decisions[0].Reason, learned.Decisions[0].Reason)
+	if cold.Decisions[0].Reason != domain.ReasonExistingTPSAtRisk || learned.Decisions[0].Reason != domain.ReasonFit {
+		t.Fatalf("cold/learned reasons = %s/%s, want existing_tps_at_risk/fit", cold.Decisions[0].Reason, learned.Decisions[0].Reason)
 	}
 	if cold.Decisions[0].Projection != learned.Decisions[0].Projection {
 		t.Fatalf("current projection changed: cold=%+v learned=%+v", cold.Decisions[0].Projection, learned.Decisions[0].Projection)
