@@ -7,13 +7,21 @@ import (
 
 func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 	base := TokenizerManifest{
-		ProfileID:       "gemma4-vllm",
-		BackendKind:     "vllm",
-		BackendVersion:  "0.25.1",
-		ModelRevision:   "model-rev",
-		TokenizerSHA256: "tokenizer-sha",
-		TemplateSHA256:  "template-sha",
-		BlockSize:       64,
+		ProfileID:             "gemma4-vllm",
+		ServedModel:           "google/gemma-4-31B-it",
+		ModelRepository:       "RedHatAI/gemma-4-31B-it-FP8-dynamic",
+		ModelRevision:         "model-rev",
+		TokenizerRepository:   "RedHatAI/gemma-4-31B-it-FP8-dynamic",
+		TokenizerRevision:     "tokenizer-rev",
+		TokenizerSHA256:       "tokenizer-sha",
+		TokenizerConfigSHA256: "tokenizer-config-sha",
+		SpecialTokensSHA256:   "special-tokens-sha",
+		TemplateSHA256:        "template-sha",
+		BackendKind:           "vllm",
+		BackendVersion:        "0.25.1",
+		BlockSize:             64,
+		MultimodalProfile:     "text-only",
+		PredictorVersion:      "v0.9.1-test",
 	}
 	if !base.Compatible(base) {
 		t.Fatal("identical manifest must be compatible")
@@ -23,11 +31,19 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 		name   string
 		mutate func(*TokenizerManifest)
 	}{
+		{name: "served model", mutate: func(value *TokenizerManifest) { value.ServedModel = "other" }},
+		{name: "model repository", mutate: func(value *TokenizerManifest) { value.ModelRepository = "other" }},
 		{name: "backend version", mutate: func(value *TokenizerManifest) { value.BackendVersion = "0.26.0" }},
 		{name: "model revision", mutate: func(value *TokenizerManifest) { value.ModelRevision = "other" }},
+		{name: "tokenizer repository", mutate: func(value *TokenizerManifest) { value.TokenizerRepository = "other" }},
+		{name: "tokenizer revision", mutate: func(value *TokenizerManifest) { value.TokenizerRevision = "other" }},
 		{name: "tokenizer", mutate: func(value *TokenizerManifest) { value.TokenizerSHA256 = "other" }},
+		{name: "tokenizer config", mutate: func(value *TokenizerManifest) { value.TokenizerConfigSHA256 = "other" }},
+		{name: "special tokens", mutate: func(value *TokenizerManifest) { value.SpecialTokensSHA256 = "other" }},
 		{name: "template", mutate: func(value *TokenizerManifest) { value.TemplateSHA256 = "other" }},
 		{name: "block size", mutate: func(value *TokenizerManifest) { value.BlockSize = 32 }},
+		{name: "multimodal profile", mutate: func(value *TokenizerManifest) { value.MultimodalProfile = "image" }},
+		{name: "predictor version", mutate: func(value *TokenizerManifest) { value.PredictorVersion = "other" }},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -37,6 +53,11 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 				t.Fatalf("manifest with changed %s must be incompatible", tc.name)
 			}
 		})
+	}
+	invalid := base
+	invalid.TokenizerRevision = ""
+	if err := invalid.Validate(); err == nil {
+		t.Fatal("manifest with missing required field must be invalid")
 	}
 }
 
