@@ -6,25 +6,56 @@ import (
 )
 
 type TokenizerManifest struct {
-	ProfileID       string
-	BackendKind     string
-	BackendVersion  string
-	ModelRevision   string
-	TokenizerSHA256 string
-	TemplateSHA256  string
-	BlockSize       int64
+	ProfileID             string
+	ServedModel           string
+	ModelRepository       string
+	ModelRevision         string
+	TokenizerRepository   string
+	TokenizerRevision     string
+	TokenizerSHA256       string
+	TokenizerConfigSHA256 string
+	SpecialTokensSHA256   string
+	TemplateSHA256        string
+	BackendKind           string
+	BackendVersion        string
+	BlockSize             int64
+	MultimodalProfile     string
+	PredictorVersion      string
+}
+
+func (m TokenizerManifest) Validate() error {
+	required := []struct {
+		name  string
+		value string
+	}{
+		{name: "profile id", value: m.ProfileID},
+		{name: "served model", value: m.ServedModel},
+		{name: "model repository", value: m.ModelRepository},
+		{name: "model revision", value: m.ModelRevision},
+		{name: "tokenizer repository", value: m.TokenizerRepository},
+		{name: "tokenizer revision", value: m.TokenizerRevision},
+		{name: "tokenizer sha256", value: m.TokenizerSHA256},
+		{name: "tokenizer config sha256", value: m.TokenizerConfigSHA256},
+		{name: "special tokens sha256", value: m.SpecialTokensSHA256},
+		{name: "template sha256", value: m.TemplateSHA256},
+		{name: "backend kind", value: m.BackendKind},
+		{name: "backend version", value: m.BackendVersion},
+		{name: "multimodal profile", value: m.MultimodalProfile},
+		{name: "predictor version", value: m.PredictorVersion},
+	}
+	for _, field := range required {
+		if field.value == "" {
+			return fmt.Errorf("tokenizer manifest %s is required", field.name)
+		}
+	}
+	if m.BlockSize <= 0 {
+		return fmt.Errorf("tokenizer manifest block size must be positive")
+	}
+	return nil
 }
 
 func (m TokenizerManifest) Compatible(other TokenizerManifest) bool {
-	return m.ProfileID != "" &&
-		m.ProfileID == other.ProfileID &&
-		m.BackendKind == other.BackendKind &&
-		m.BackendVersion == other.BackendVersion &&
-		m.ModelRevision == other.ModelRevision &&
-		m.TokenizerSHA256 == other.TokenizerSHA256 &&
-		m.TemplateSHA256 == other.TemplateSHA256 &&
-		m.BlockSize > 0 &&
-		m.BlockSize == other.BlockSize
+	return m.Validate() == nil && other.Validate() == nil && m == other
 }
 
 type CacheHitInterval struct {
