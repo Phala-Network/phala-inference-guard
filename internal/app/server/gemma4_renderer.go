@@ -124,6 +124,9 @@ func (r *gemma4TextRenderer) decodeHorizon(root map[string]json.RawMessage) (int
 
 func (r *gemma4TextRenderer) renderChat(messages []gemma4TextMessage) ([]byte, error) {
 	var rendered bytes.Buffer
+	if capacity := estimatedGemma4RenderedCapacity(r.config.BOSToken, messages); capacity > 0 {
+		rendered.Grow(capacity)
+	}
 	rendered.WriteString(r.config.BOSToken)
 	if len(messages) > 0 && (messages[0].Role == "system" || messages[0].Role == "developer") {
 		rendered.WriteString("<|turn>system\n")
@@ -163,6 +166,20 @@ func (r *gemma4TextRenderer) renderChat(messages []gemma4TextMessage) ([]byte, e
 	}
 	rendered.WriteString("<|turn>model\n<|channel>thought\n<channel|>")
 	return rendered.Bytes(), nil
+}
+
+func estimatedGemma4RenderedCapacity(bosToken string, messages []gemma4TextMessage) int {
+	const perMessageOverhead = 64
+	maximum := int(^uint(0) >> 1)
+	capacity := len(bosToken) + perMessageOverhead
+	for _, message := range messages {
+		increment := len(message.Content) + perMessageOverhead
+		if increment < 0 || capacity > maximum-increment {
+			return 0
+		}
+		capacity += increment
+	}
+	return capacity
 }
 
 func parseStrictJSONObject(body []byte) (map[string]json.RawMessage, error) {
@@ -293,14 +310,13 @@ func parseGemma4TextMessages(root map[string]json.RawMessage) ([]gemma4TextMessa
 	if !exists {
 		return nil, fmt.Errorf("Gemma4 chat messages are required")
 	}
-	var encoded []json.RawMessage
+	var encoded []map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		return nil, fmt.Errorf("Gemma4 chat messages must be an array")
 	}
 	messages := make([]gemma4TextMessage, 0, len(encoded))
-	for index, rawMessage := range encoded {
-		var fields map[string]json.RawMessage
-		if err := json.Unmarshal(rawMessage, &fields); err != nil || fields == nil {
+	for index, fields := range encoded {
+		if fields == nil {
 			return nil, fmt.Errorf("Gemma4 chat message %d must be an object", index)
 		}
 		for _, unsupported := range []string{"tool_calls", "tool_responses", "reasoning", "reasoning_content"} {
@@ -319,7 +335,7 @@ func parseGemma4TextMessages(root map[string]json.RawMessage) ([]gemma4TextMessa
 		if !exists || string(content) == "null" {
 			return nil, fmt.Errorf("Gemma4 chat message %d content is required", index)
 		}
-		message := gemma4TextMessage{Role: role, Content: append(json.RawMessage(nil), content...)}
+		message := gemma4TextMessage{Role: role, Content: content}
 		trimmedContent := bytes.TrimSpace(content)
 		if len(trimmedContent) > 0 && trimmedContent[0] == '[' {
 			var parts []map[string]json.RawMessage
@@ -376,6 +392,9 @@ func renderGemma4Content(message gemma4TextMessage, firstSystem bool, model bool
 }
 
 func stripGemma4Thinking(text string) string {
+	if !strings.Contains(text, "<|channel>") && !strings.Contains(text, "<channel|>") {
+		return strings.TrimSpace(text)
+	}
 	var stripped strings.Builder
 	for _, part := range strings.Split(text, "<channel|>") {
 		if marker := strings.Index(part, "<|channel>"); marker >= 0 {

@@ -116,7 +116,7 @@ impl NativeTokenizer {
     ) -> Result<usize, NativeTokenizerError> {
         let encoding = self
             .tokenizer
-            .encode(input, add_special_tokens)
+            .encode_fast(input, add_special_tokens)
             .map_err(|error| NativeTokenizerError::new(format!("encode input: {error}")))?;
         Ok(encoding.get_ids().len())
     }

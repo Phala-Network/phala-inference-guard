@@ -234,40 +234,82 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 
 	key := s.featureCell(features)
 	s.mu.Lock()
-	samples := append([]residualSample(nil), s.cells[key]...)
-	s.mu.Unlock()
-	fresh := freshResiduals(samples, now, s.config.MaxAge)
-	if len(fresh) < s.config.MinimumSamples {
+	samples := s.cells[key]
+	freshSamples := 0
+	existingCount, allCount, ttftCount, tpotCount := 0, 0, 0, 0
+	for _, sample := range samples {
+		age := now.Sub(sample.ObservedAt)
+		if age < 0 || age > s.config.MaxAge {
+			continue
+		}
+		freshSamples++
+		if sample.ExistingTPSValid {
+			existingCount++
+		}
+		if sample.AllTPSValid {
+			allCount++
+		}
+		if sample.TTFTValid {
+			ttftCount++
+		}
+		if sample.TPOTValid {
+			tpotCount++
+		}
+	}
+	if freshSamples < s.config.MinimumSamples {
+		s.mu.Unlock()
 		return prediction
 	}
+	existingRatios := make([]float64, 0, existingCount)
+	allRatios := make([]float64, 0, allCount)
+	ttftRatios := make([]float64, 0, ttftCount)
+	tpotRatios := make([]float64, 0, tpotCount)
+	for _, sample := range samples {
+		age := now.Sub(sample.ObservedAt)
+		if age < 0 || age > s.config.MaxAge {
+			continue
+		}
+		if sample.ExistingTPSValid {
+			existingRatios = append(existingRatios, sample.ExistingTPSRatio)
+		}
+		if sample.AllTPSValid {
+			allRatios = append(allRatios, sample.AllTPSRatio)
+		}
+		if sample.TTFTValid {
+			ttftRatios = append(ttftRatios, sample.TTFTRatio)
+		}
+		if sample.TPOTValid {
+			tpotRatios = append(tpotRatios, sample.TPOTRatio)
+		}
+	}
+	s.mu.Unlock()
 
-	existingRatios, allRatios, ttftRatios, tpotRatios := residualRatios(fresh)
-	calibratedSamples := make([]int, 0, 4)
+	calibratedSamples := 0
 	if len(existingRatios) >= s.config.MinimumSamples {
-		existingMultiplier := clampFloat(quantile(existingRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
+		existingMultiplier := clampFloat(quantileInPlace(existingRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
 		prediction.Estimate.ExistingUserTPSLower = prior.ExistingUserTPSLower * existingMultiplier
-		calibratedSamples = append(calibratedSamples, len(existingRatios))
+		calibratedSamples = minimumPositiveInt(calibratedSamples, len(existingRatios))
 	}
 	if len(allRatios) >= s.config.MinimumSamples {
-		allMultiplier := clampFloat(quantile(allRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
+		allMultiplier := clampFloat(quantileInPlace(allRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
 		prediction.Estimate.AllUserTPSLower = prior.AllUserTPSLower * allMultiplier
-		calibratedSamples = append(calibratedSamples, len(allRatios))
+		calibratedSamples = minimumPositiveInt(calibratedSamples, len(allRatios))
 	}
 	if len(ttftRatios) >= s.config.MinimumSamples {
-		ttftMultiplier := clampFloat(quantile(ttftRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
+		ttftMultiplier := clampFloat(quantileInPlace(ttftRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
 		prediction.Estimate.TTFTUpper = scaleDuration(prior.TTFTUpper, ttftMultiplier)
-		calibratedSamples = append(calibratedSamples, len(ttftRatios))
+		calibratedSamples = minimumPositiveInt(calibratedSamples, len(ttftRatios))
 	}
 	if len(tpotRatios) >= s.config.MinimumSamples {
-		tpotMultiplier := clampFloat(quantile(tpotRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
+		tpotMultiplier := clampFloat(quantileInPlace(tpotRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
 		prediction.Estimate.TPOTUpper = scaleDuration(prior.TPOTUpper, tpotMultiplier)
-		calibratedSamples = append(calibratedSamples, len(tpotRatios))
+		calibratedSamples = minimumPositiveInt(calibratedSamples, len(tpotRatios))
 	}
-	if len(calibratedSamples) == 0 {
+	if calibratedSamples == 0 {
 		return prediction
 	}
 	prediction.Source = PredictionSourceCalibrated
-	prediction.Samples = minimumInt(calibratedSamples...)
+	prediction.Samples = calibratedSamples
 	prediction.Confidence = minimumConfidence(s.profile.Confidence, s.config.CalibratedConfidence)
 	return prediction
 }
@@ -421,50 +463,19 @@ func residualFromOutcome(prediction SchedulerPrediction, outcome SchedulerOutcom
 	return sample, nil
 }
 
-func freshResiduals(samples []residualSample, now time.Time, maxAge time.Duration) []residualSample {
-	result := make([]residualSample, 0, len(samples))
-	for _, sample := range samples {
-		age := now.Sub(sample.ObservedAt)
-		if age < 0 || age > maxAge {
-			continue
-		}
-		result = append(result, sample)
-	}
-	return result
-}
-
-func residualRatios(samples []residualSample) (existing, all, ttft, tpot []float64) {
-	for _, sample := range samples {
-		if sample.ExistingTPSValid {
-			existing = append(existing, sample.ExistingTPSRatio)
-		}
-		if sample.AllTPSValid {
-			all = append(all, sample.AllTPSRatio)
-		}
-		if sample.TTFTValid {
-			ttft = append(ttft, sample.TTFTRatio)
-		}
-		if sample.TPOTValid {
-			tpot = append(tpot, sample.TPOTRatio)
-		}
-	}
-	return existing, all, ttft, tpot
-}
-
-func quantile(values []float64, q float64) float64 {
+func quantileInPlace(values []float64, q float64) float64 {
 	if len(values) == 0 {
 		return 1
 	}
-	copyValues := append([]float64(nil), values...)
-	sort.Float64s(copyValues)
-	index := int(math.Ceil(q*float64(len(copyValues)))) - 1
+	sort.Float64s(values)
+	index := int(math.Ceil(q*float64(len(values)))) - 1
 	if index < 0 {
 		index = 0
 	}
-	if index >= len(copyValues) {
-		index = len(copyValues) - 1
+	if index >= len(values) {
+		index = len(values) - 1
 	}
-	return copyValues[index]
+	return values[index]
 }
 
 func positiveRatio(observed, predicted float64, name string) (float64, error) {
@@ -544,17 +555,11 @@ func clampFloat(value, low, high float64) float64 {
 	return value
 }
 
-func minimumInt(values ...int) int {
-	if len(values) == 0 {
-		return 0
+func minimumPositiveInt(current, candidate int) int {
+	if current <= 0 || candidate < current {
+		return candidate
 	}
-	result := values[0]
-	for _, value := range values[1:] {
-		if value < result {
-			result = value
-		}
-	}
-	return result
+	return current
 }
 
 func positiveFinite(value float64) bool {
