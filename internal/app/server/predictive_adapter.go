@@ -27,10 +27,16 @@ type predictiveTokenCounter interface {
 	Close() error
 }
 
+type predictiveUpstreamState interface {
+	Healthy(time.Time) bool
+	Close() error
+}
+
 type realPredictiveShadowConfig struct {
 	Renderer    predictiveRequestRenderer
 	Counter     predictiveTokenCounter
 	Coordinator *runtimepredictive.CountCoordinator
+	Upstream    predictiveUpstreamState
 	Now         func() time.Time
 }
 
@@ -49,6 +55,7 @@ type realPredictiveShadow struct {
 	renderer     predictiveRequestRenderer
 	counter      predictiveTokenCounter
 	coordinator  *runtimepredictive.CountCoordinator
+	upstream     predictiveUpstreamState
 	now          func() time.Time
 	closed       bool
 	attempts     predictiveAttemptSnapshot
@@ -77,6 +84,7 @@ func newRealPredictiveShadow(config realPredictiveShadowConfig) (*realPredictive
 		renderer:     config.Renderer,
 		counter:      config.Counter,
 		coordinator:  config.Coordinator,
+		upstream:     config.Upstream,
 		now:          config.Now,
 		reservations: make(map[string]struct{}),
 	}, nil

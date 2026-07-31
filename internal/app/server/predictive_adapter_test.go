@@ -32,6 +32,13 @@ type adapterTestClock struct {
 	now time.Time
 }
 
+type adapterTestUpstreamState struct {
+	mu         sync.Mutex
+	healthy    bool
+	checks     int
+	closeCalls int
+}
+
 func (r *adapterTestRenderer) Render(_ context.Context, input predictiveShadowInput) (predictiveRenderedRequest, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -94,6 +101,32 @@ func (c *adapterTestClock) Advance(elapsed time.Duration) {
 	c.mu.Unlock()
 }
 
+func (s *adapterTestUpstreamState) Healthy(time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checks++
+	return s.healthy
+}
+
+func (s *adapterTestUpstreamState) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeCalls++
+	return nil
+}
+
+func (s *adapterTestUpstreamState) SetHealthy(healthy bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.healthy = healthy
+}
+
+func (s *adapterTestUpstreamState) Snapshot() (checks, closeCalls int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.checks, s.closeCalls
+}
+
 func TestRealPredictiveShadowRunsExactTransactionBeforeQoS(t *testing.T) {
 	backendCalls := 0
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -143,6 +176,45 @@ func TestRealPredictiveShadowRunsExactTransactionBeforeQoS(t *testing.T) {
 	snapshot := coordinator.Snapshot()
 	if snapshot.Manager.Reservations != 0 || snapshot.Manager.EventSequence != 2 {
 		t.Fatalf("post-local-reject coordinator snapshot = %+v", snapshot)
+	}
+}
+
+func TestRealPredictiveShadowRequiresFreshUpstreamStateBeforeCounting(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(200, 0)}
+	counter := newAdapterTestCounter()
+	upstream := &adapterTestUpstreamState{}
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     counter,
+		Coordinator: newAdapterTestCoordinatorWithTPSTarget(t, 0),
+		Upstream:    upstream,
+		Now:         clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	input := predictiveShadowInput{Path: "/v1/chat/completions", Body: []byte(`{"messages":[{"role":"user","content":"hello"}]}`)}
+	if reservation := adapter.DecideAndReserve(context.Background(), "stale", input); reservation != nil {
+		reservation.Terminate(runtimepredictive.TerminalExpired)
+		t.Fatal("stale upstream state received predictive headroom")
+	}
+	if counter.Calls() != 0 {
+		t.Fatalf("stale upstream state performed %d tokenizer calls, want 0", counter.Calls())
+	}
+	upstream.SetHealthy(true)
+	reservation := adapter.DecideAndReserve(context.Background(), "fresh", input)
+	if reservation == nil {
+		t.Fatalf("fresh upstream state did not reach count-only reservation: %+v", adapter.Snapshot())
+	}
+	if !reservation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("fresh reservation did not terminate")
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("close adapter: %v", err)
+	}
+	checks, closeCalls := upstream.Snapshot()
+	if checks < 2 || closeCalls != 1 {
+		t.Fatalf("upstream checks/close calls = %d/%d, want at least 2/1", checks, closeCalls)
 	}
 }
 
