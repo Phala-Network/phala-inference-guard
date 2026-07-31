@@ -318,6 +318,15 @@ func (m *Manager) EventSequence() uint64 {
 	return m.eventSequence
 }
 
+func (m *Manager) StartSampleWindow() (uint64, domain.VirtualState) {
+	if m == nil {
+		return 0, domain.VirtualState{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.eventSequence, m.virtualStateIntervalLocked().Upper
+}
+
 func (m *Manager) ReconcileSample(sample SampleWindow) error {
 	if m == nil {
 		return fmt.Errorf("predictive manager is nil")

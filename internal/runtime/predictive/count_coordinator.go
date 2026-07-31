@@ -142,6 +142,13 @@ func (c *CountCoordinator) EventSequence() uint64 {
 	return c.manager.EventSequence()
 }
 
+func (c *CountCoordinator) StartSampleWindow() (uint64, domain.VirtualState) {
+	if c == nil || c.manager == nil {
+		return 0, domain.VirtualState{}
+	}
+	return c.manager.StartSampleWindow()
+}
+
 func (c *CountCoordinator) ReconcileSample(sample SampleWindow) error {
 	if c == nil {
 		return fmt.Errorf("count coordinator is nil")

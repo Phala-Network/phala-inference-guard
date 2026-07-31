@@ -178,12 +178,45 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		_ = counter.Close()
 		return nil, fmt.Errorf("reverify predictive tokenizer after open: %w", err)
 	}
+	metricsURL, err := predictiveVLLMMetricsURL(cfg)
+	if err != nil {
+		_ = counter.Close()
+		return nil, err
+	}
+	pollInterval := cfg.DynamicPollInterval
+	if pollInterval <= 0 || pollInterval > time.Duration(math.MaxInt64/3) {
+		_ = counter.Close()
+		return nil, fmt.Errorf("predictive metrics poll interval is invalid")
+	}
+	maximumAge := cfg.KVAdmissionPolicy.MaxMetricsAge
+	if maximumAge <= 0 {
+		maximumAge = 3 * pollInterval
+	}
+	preemptionCooldown := cfg.KVAdmissionPolicy.PreemptionCooldown
+	if preemptionCooldown <= 0 {
+		preemptionCooldown = maximumAge
+	}
+	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
+		MetricsURL:         metricsURL,
+		MaximumKVTokens:    profile.manifest.MaximumKVTokens,
+		PollInterval:       pollInterval,
+		MaximumAge:         maximumAge,
+		RequestTimeout:     2 * time.Second,
+		PreemptionCooldown: preemptionCooldown,
+		Coordinator:        coordinator,
+	})
+	if err != nil {
+		_ = counter.Close()
+		return nil, fmt.Errorf("construct predictive vLLM observer: %w", err)
+	}
 	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
 		Renderer:    renderer,
 		Counter:     counter,
 		Coordinator: coordinator,
+		Upstream:    observer,
 	})
 	if err != nil {
+		_ = observer.Close()
 		_ = counter.Close()
 		return nil, err
 	}

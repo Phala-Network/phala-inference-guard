@@ -1,6 +1,7 @@
 package prometheus
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,7 +10,15 @@ import (
 )
 
 func FetchSample(client *http.Client, metricsURL string) (telemetry.Sample, error) {
-	response, err := client.Get(metricsURL)
+	return FetchSampleContext(context.Background(), client, metricsURL)
+}
+
+func FetchSampleContext(ctx context.Context, client *http.Client, metricsURL string) (telemetry.Sample, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, metricsURL, nil)
+	if err != nil {
+		return telemetry.Sample{}, fmt.Errorf("%s: %w", metricsURL, err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return telemetry.Sample{}, fmt.Errorf("%s: %w", metricsURL, err)
 	}
