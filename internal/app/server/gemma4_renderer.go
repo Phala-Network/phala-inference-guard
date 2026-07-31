@@ -23,7 +23,8 @@ type gemma4TextRenderer struct {
 
 type gemma4TextMessage struct {
 	Role         string
-	Content      json.RawMessage
+	ContentBytes int
+	ContentText  string
 	ContentParts []gemma4TextPart
 }
 
@@ -172,7 +173,7 @@ func estimatedGemma4RenderedCapacity(bosToken string, messages []gemma4TextMessa
 	maximum := int(^uint(0) >> 1)
 	capacity := len(bosToken) + perMessageOverhead
 	for _, message := range messages {
-		increment := len(message.Content) + perMessageOverhead
+		increment := message.ContentBytes + perMessageOverhead
 		if increment < 0 || capacity > maximum-increment {
 			return 0
 		}
@@ -404,7 +405,7 @@ func parseGemma4TextMessages(root map[string]json.RawMessage) ([]gemma4TextMessa
 		if !exists || string(content) == "null" {
 			return nil, fmt.Errorf("Gemma4 chat message %d content is required", index)
 		}
-		message := gemma4TextMessage{Role: role, Content: content}
+		message := gemma4TextMessage{Role: role, ContentBytes: len(content)}
 		trimmedContent := bytes.TrimSpace(content)
 		if len(trimmedContent) > 0 && trimmedContent[0] == '[' {
 			var parts []map[string]json.RawMessage
@@ -424,8 +425,7 @@ func parseGemma4TextMessages(root map[string]json.RawMessage) ([]gemma4TextMessa
 				message.ContentParts = append(message.ContentParts, gemma4TextPart{Type: partType, Text: text})
 			}
 		} else {
-			var text string
-			if err := json.Unmarshal(content, &text); err != nil {
+			if err := json.Unmarshal(content, &message.ContentText); err != nil {
 				return nil, fmt.Errorf("Gemma4 chat message %d content must be text or text parts", index)
 			}
 		}
@@ -449,10 +449,7 @@ func renderGemma4Content(message gemma4TextMessage, firstSystem bool, model bool
 		}
 		return rendered.String(), nil
 	}
-	var text string
-	if err := json.Unmarshal(message.Content, &text); err != nil {
-		return "", fmt.Errorf("Gemma4 message content is not text")
-	}
+	text := message.ContentText
 	text = strings.TrimSpace(text)
 	if model {
 		text = stripGemma4Thinking(text)
