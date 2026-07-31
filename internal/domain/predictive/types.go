@@ -93,6 +93,11 @@ type VirtualState struct {
 	ActiveKVUpper   int64
 }
 
+type VirtualStateInterval struct {
+	Lower VirtualState
+	Upper VirtualState
+}
+
 type RequestCost struct {
 	ManifestID           string
 	InputTokens          int64
