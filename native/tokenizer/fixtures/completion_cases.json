@@ -1,0 +1,23 @@
+[
+  {
+    "name": "ascii_short",
+    "text": "Hello from a deterministic tokenizer parity fixture."
+  },
+  {
+    "name": "multilingual",
+    "text": "English, 中文, 日本語, 한국어, العربية, emoji: 🧪🚀"
+  },
+  {
+    "name": "code_and_json",
+    "text": "fn main() { println!(\"{}\", json!({\"ok\": true, \"n\": 17})); }"
+  },
+  {
+    "name": "whitespace_and_control_escapes",
+    "text": "line one\n\tline two\r\n\\u0000 is text here"
+  },
+  {
+    "name": "repeated_prefix",
+    "text": "shared-prefix-block-0123456789abcdef ",
+    "repeat": 512
+  }
+]
