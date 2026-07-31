@@ -1,5 +1,10 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
+> Superseded on 2026-07-31 by
+> `TOKENIZER_FIRST_PREDICTIVE_ADMISSION_V0_9_1_PLAN.md`. Do not use this
+> cache-aware plan as the execution contract unless the user explicitly
+> restores cache prediction.
+
 Status: the real adapter transaction, strict Gemma4 text renderer, native C ABI
 analysis, active-prefix cache accounting, TPS guard, and five-case pinned
 tokenizer parity are builder-green; immutable production bundle construction,
