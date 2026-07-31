@@ -29,11 +29,11 @@ const (
 )
 
 type Analyzer struct {
-	mu           sync.RWMutex
-	handle       *C.PigTokenizerHandle
-	manifestID   string
-	backendEpoch string
-	blockSize    int
+	mu                         sync.RWMutex
+	handle                     *C.PigTokenizerHandle
+	manifestID                 string
+	backendEpoch               string
+	blockSize                  int
 	completionAddSpecialTokens bool
 	chatAddSpecialTokens       bool
 }
