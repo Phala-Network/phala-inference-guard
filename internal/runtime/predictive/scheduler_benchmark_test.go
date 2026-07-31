@@ -8,7 +8,7 @@ import (
 var learnedSchedulerBenchmarkPrediction SchedulerPrediction
 
 func BenchmarkLearnedSchedulerPredictCalibratedTTFT(b *testing.B) {
-	scheduler, err := NewLearnedScheduler(testStaticProfile(), testResidualConfig())
+	scheduler, err := NewLearnedScheduler(testLearnedProfile(), testResidualConfig())
 	if err != nil {
 		b.Fatalf("new learned scheduler: %v", err)
 	}
