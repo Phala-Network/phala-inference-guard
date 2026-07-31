@@ -2,7 +2,8 @@
 
 Status: internal learned scheduling/atomic coordination plus injected HTTP
 reachability, parity, failure containment, and close lifecycle are
-builder-green; a real tokenizer/cache/coordinator adapter is the current P0
+builder-green; the three-pass real-adapter contract review is complete and a
+production-construction HTTP red is the current P0
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -676,6 +677,194 @@ The SGLang/GLM-5.2 immutable tokenizer, template, radix-cache semantics,
 scheduler features, and golden oracles remain pending. Until they exist, those
 three profiles return `tokenizer_profile_unknown`/`predictor_profile_unknown`
 in predictive shadow and receive no cache or learned extra headroom.
+
+### 6.3.4 Real HTTP adapter contract and native bridge decision
+
+The next P0 is one production-constructible adapter, not another server fake or
+an isolated tokenizer benchmark. Its request-time transaction is fixed as:
+
+~~~
+bounded private body snapshot
+  -> strict endpoint/schema/capability parse
+  -> profile-specific canonical renderer
+  -> one exact native tokenize-and-block-analysis call
+  -> identity and cost-envelope validation
+  -> Coordinator.DecideAndReserve
+  -> one HTTP-owned reservation handle
+  -> semantic/terminal reconciliation and attributed learning
+~~~
+
+The adapter contract is deliberately narrower than the OpenAI forwarding
+contract. Unsupported predictive syntax never changes or rejects the real
+shadow request; it produces a typed unknown result and receives no cache or
+learned headroom. The first Gemma/vLLM profile accepts only the following after
+golden parity is present:
+
+- `/v1/completions` with one string `prompt`; prompt arrays, pre-tokenized ID
+  arrays, `suffix`, and prompt-adapter/cache-salt extensions remain unknown;
+- `/v1/chat/completions` with losslessly parsed message objects and only the
+  feature classes explicitly enabled by the immutable profile;
+- `max_completion_tokens` or legacy `max_tokens` as the decode horizon, with a
+  conflict rejected by the predictor and an omitted value replaced by the
+  profile's conservative upper bound;
+- `add_generation_prompt=true` for Chat Completions and the immutable
+  request-class special-token policy from the manifest; request fields cannot
+  override either choice.
+
+The JSON parser preserves every template-relevant value and rejects duplicate
+keys, invalid UTF-8, trailing values, lossy numeric coercion, an unknown role,
+or a content/tool/reasoning/multimodal shape outside the profile before the
+renderer or tokenizer runs. It does not normalize or reserialize the body sent
+upstream. Renderer output is a private byte sequence whose identity binds the
+original template SHA-256, renderer implementation/compatibility version,
+tokenizer manifest, backend image/source/model revisions, block size, and
+backend epoch. A generic fallback template is forbidden.
+
+Predictive capture has its own explicit byte ceiling, in-flight byte budget,
+and concurrency limit; it does not silently inherit the smaller output-field
+classifier limit. The implementation must handle a known-length body, a body
+with unknown `Content-Length`, classifier saturation, and an early read error
+without losing or changing any byte forwarded upstream. It reads at most the
+configured ceiling plus one byte, restores the exact consumed prefix and
+unread remainder, and records `body_too_large`, `capture_saturated`,
+`unknown_length_over_budget`, or `body_read_failed` rather than treating a
+partial body as complete JSON. The configured ceiling must cover the profile's
+validated prompt envelope or the uncovered range is reported explicitly in
+simulation coverage; a convenient small default cannot be presented as exact
+long-context support. Peak retained bytes and concurrent copies are builder
+measured and bounded.
+
+The selected first bridge is a narrow in-process Rust C ABI. This choice is
+limited to v0.9.1 shadow and is based on the existing builder evidence: the
+repository already builds with `CGO_ENABLED=1`; the Rust core is already a
+`cdylib`; small exact analysis is about 34 us p50 and below 68 us p99 before
+rendering/FFI; and a process or HTTP round trip is unnecessary for the normal
+lane. The ABI owns immutable tokenizer/profile handles, accepts caller-owned
+input only for the duration of a call, returns a bounded owned analysis object,
+never retains a Go pointer, returns no token IDs on the hot path, catches Rust
+unwinds, validates every length and pointer, and exposes idempotent destroy.
+The Go wrapper serializes neither raw prompts nor block digests into logs,
+labels, persistence, or learner cells.
+
+This is not a blanket safety waiver for in-process native code. Remote-builder
+ABI fuzz/error/panic tests, sanitizer-capable tests, cancellation/timeout
+measurement, and final end-to-end p95/p99 gates remain mandatory. If a native
+panic, invalid input, bounded-allocation failure, or injected library failure
+can terminate/corrupt PIG or exceed the synchronous budget, the selected
+bridge changes to one long-lived Unix-socket helper. A subprocess-per-request
+or upstream-tokenize shortcut is forbidden.
+
+In particular, a Go context cannot forcibly interrupt an already-entered C ABI
+call. The in-process lane therefore admits only rendered byte/token envelopes
+whose measured worst-case runtime fits the configured synchronous budget; the
+pre-call size/capability check returns unknown outside that envelope. The
+builder must inject deadline expiry before the call and while a worst-case call
+is active. If the latter cannot preserve the shadow latency budget, long inputs
+move to the cancellable Unix-helper lane or remain explicitly unsupported;
+checking `ctx.Err()` only after an unbounded native call is not timeout
+containment. No timed-out analysis may commit a late reservation.
+
+Immutable work (parse, render, native analysis) occurs outside the coordinator
+lock. Immediately before mutation, `Coordinator.DecideAndReserve` rechecks the
+manifest/backend/scheduler identities and atomically evaluates the post-admit
+KV/cache/TPS/TTFT/TPOT counterfactual. Exactly one renderer call and one native
+analysis call are permitted per uncached request attempt. Only a `fit` result
+owns cache references and virtual capacity; unknown/risk/reject paths leave the
+coordinator snapshot unchanged.
+
+The adapter must use the same live `Coordinator` for request decisions and
+feedback. A semantic event records the reservation's TTFT transition; a typed
+terminal event releases that exact request once. Learning accepts only
+sufficiently attributed outcomes with the same manifest, backend epoch,
+predictor version, feature cell, and temporal window. Backend aggregate
+samples may reconcile virtual state but cannot masquerade as per-request
+TPS/TPOT outcomes. If exact output-token/TPOT attribution is unavailable, those
+targets remain invalid for that sample instead of learning from the requested
+decode horizon. Raw body, rendered text, token IDs, request IDs, and cache
+digests are absent from persistent learner state.
+
+Construction therefore requires two distinct observation contracts. A
+monotonic backend-state source bootstraps and reconciles physical/active KV,
+running/waiting work, active context, and backend epoch; staleness or an epoch
+change quarantines cache credit and calibrated headroom. A bounded attributed
+outcome source may update scheduler residuals for completed reservations. The
+latter must carry the coordinator request ownership, exact scheduler identity,
+observation time, and validity bits for every target. If no such attributed
+source is configured, the adapter remains a real exact-token/cache/static-prior
+predictor, but online residual learning is explicitly disabled and cannot be
+reported as integrated. The initial HTTP vertical-slice test may inject a
+deterministic attributed source; completion of v0.9.1 still requires the
+production constructor to receive a real source or to fail closed when learned
+mode is requested.
+
+Every attempt records a bounded reason, prediction source, sample count,
+confidence, exact-token bucket, certain-cache-hit bucket, projected KV bucket,
+and forecast bucket without high-cardinality request data. `fit` returns the
+only HTTP-owned reservation. Unknown or risk returns no reservation but retains
+an inspectable aggregate decision counter, so shadow false-deny/false-fit and
+learning-causality simulations can be audited instead of disappearing as a
+generic nil.
+
+Adapter close first stops new analysis, then waits only a bounded interval for
+owned calls, releases every committed coordinator request with `expired`,
+destroys native/profile handles exactly once, and scrubs temporary buffers.
+Constructor failure after any acquired native or observation resource rolls
+back in reverse order. Close, timeout, cancellation, local QoS reject, client
+disconnect, upstream failure, and completion are race-tested against semantic
+first output; none may double-learn, leak cache refs, or commit after close.
+
+The prediction-authenticity red/green test holds current backend metrics,
+request bytes, profile, and virtual state constant. It changes only eligible
+history ingested through the real adapter/coordinator and must observe a
+different pre-forward scheduler estimate plus decision or reservation. A
+server-injected hand-written `predictiveAdmissionShadow`, a pre-seeded final
+decision, or a learner queried only after forwarding does not satisfy this
+gate. Cold, sparse, stale, wrong-epoch, wrong-template, invalid-analysis, and
+unattributed histories must never create additional headroom.
+
+The executable evidence order is:
+
+1. Add a production-construction HTTP red that uses the existing compilable
+   `newProxyServer` entrypoint with a complete immutable test profile. It must
+   fail for the current behavioral reason, `predictive shadow adapter is
+   required`, not for an undefined symbol, missing toolchain, missing fixture,
+   or malformed config.
+2. Add adapter-contract reds with injected deterministic renderer, native
+   analyzer, coordinator, clock, and observation source. These exercise the
+   real adapter type rather than replacing `predictiveAdmissionShadow`. They
+   prove one render/analyze call, typed unknowns before tokenization, exact
+   analysis identity, cache preflight, pre-QoS reservation, lifecycle release,
+   no state mutation on reject, no raw retention, and the HTTP-level learned
+   counterfactual.
+3. Implement the smallest production factory and strict text-only
+   Completion/Chat vertical slice. Unsupported feature classes stay unknown;
+   no generic template or fake analyzer is installed to make startup pass.
+4. Add the Rust ABI and Go wrapper red/green. The production call returns only
+   count, opaque full-block digests, and partial-block metadata. A separate
+   builder-only parity call may retain token IDs; its allocation and latency
+   are not reported as hot-path performance.
+5. Run immutable Gemma/vLLM oracle fixtures for every enabled class and field,
+   then matched C ABI versus long-lived Unix-helper latency/isolation tests.
+   Record whether the provisional C ABI decision remains selected.
+6. Only then run the full counterfactual simulator and efficacy gates. A green
+   unit/HTTP bridge cannot substitute for throughput, false-fit, false-deny,
+   TPS, latency, preemption-proxy, and leak comparisons.
+
+The profile fixture manifest records source URL/revision, license/provenance,
+original template bytes and SHA-256, tokenizer/config hashes, oracle runtime
+and source revision, request JSON, rendered bytes hash, final token-ID hash and
+count, block size, and special-token policy. Production startup reads only a
+pre-provisioned read-only bundle and verifies every file before construction;
+the builder fetch helper is never a production download path. No vLLM file,
+image, repository, or deployment is modified to create the oracle.
+
+Every red and green record contains exact PIG commit, clean/dirty status,
+commands, exit statuses, builder/container/toolchain identity, relevant fixture
+hashes, and SHA-256 of logs/status files. The builder sequence builds the Rust
+artifact first, wires the explicit C ABI library/include path for Go, then runs
+focused Go, focused race, full Go, full race, `cargo fmt --check`, locked Rust
+tests, tracked-format checks, and `git show --check`. Windows performs no Go,
+Rust, oracle, benchmark, or simulation execution.
 
 ### 6.4 Unsupported requests
 
@@ -2680,9 +2869,67 @@ Pass 3, evidence validity, document consistency, and next gate:
 - Release boundary: the branch is pushed, but runtime remains PIG-v0.9.0. No
   v0.9.1 tag, image, registry artifact, or deployment is authorized or created.
   The six production CVMs remain historical inputs only.
-- Next executable gate: add test-only server/adapter failure-containment red for
-  panic, bounded synchronous cost, close rollback, precise terminal causes, and
-  raw-body non-retention. Only after that gate is green may a strict
-  renderer/native-tokenizer/cache/coordinator adapter be installed. Then run
-  deterministic goodput, false-fit/false-deny, cache-cold, preemption-proxy, and
-  latency comparisons against current count/dynamic and v0.9.0 KV-only shadow.
+- Next executable gate: preserve a valid production-construction HTTP red that
+  fails because the real adapter is absent, then implement the Section 6.3.4
+  renderer/native-analysis/cache/coordinator vertical slice. Failure
+  containment and close lifecycle are already builder-green through `3b44e0a`
+  and `b0b31fd`; they remain regression gates rather than the next missing
+  feature. Deterministic efficacy comparison follows only after real-adapter
+  parity, identity, learning-causality, latency, and lifecycle gates pass.
+
+### 2026-07-31 real-adapter-contract three-pass re-review
+
+This cycle was triggered by the observation that an internally causal learner
+still has no effect on real HTTP prediction while the production adapter is
+absent. It reviewed the new Section 6.3.4 after each change rather than treating
+the earlier HTTP seam as completion.
+
+Pass 1, model causality and feedback:
+
+- Finding: exact tokenizer/cache/coordinator wiring alone would make static
+  prospective prediction real, but would not prove that online learning is
+  live. The existing HTTP callback carries lifecycle causes, not an attributed
+  actual-output TPS/TPOT outcome.
+- Change: construction now separates monotonic backend-state reconciliation
+  from per-reservation attributed outcomes. Aggregate metrics cannot become a
+  fabricated request outcome; missing target attribution leaves validity false.
+  Learned mode cannot be reported integrated without a real attributed source.
+- Gate: identical request/current metrics/profile/state with only eligible
+  history changed must alter a pre-forward estimate and decision/reservation
+  through the real adapter. Server fakes and post-forward learner queries fail.
+
+Pass 2, body coverage, native timeout, and lifecycle safety:
+
+- Finding: the current predictive body snapshot is coupled to
+  `JSON_CLASSIFY_BODY_BYTES`, known `Content-Length`, and classifier
+  concurrency. Oversized, chunked/unknown-length, saturated, and partial-read
+  cases receive no body, which disproportionately excludes long prompts where
+  KV/cache prediction matters. A context also cannot hard-cancel an active C
+  ABI call.
+- Change: predictive capture receives an explicit ceiling, byte budget, and
+  reasons without changing forwarded bytes. Coverage must include the declared
+  prompt envelope. In-process work is limited to measured synchronous
+  envelopes; missed active-call cancellation moves that lane to a long-lived
+  Unix helper or leaves it explicitly unknown. Close/constructor rollback and
+  late-commit prohibitions are explicit.
+- Gate: memory, deadline-before-call, deadline-during-call, close races,
+  oversized/unknown-length capture, and no-late-reservation tests precede any
+  claim that the C ABI is selected safely.
+
+Pass 3, red/green validity and reproducibility:
+
+- Finding: a test that references a not-yet-created constructor would be only a
+  compile failure, while a server fake would retest the already-green seam. Hot
+  analysis also intentionally omits token IDs, so it cannot by itself provide
+  exact oracle evidence.
+- Change: the first red uses the existing production `newProxyServer` entrypoint
+  and fails for the current missing-adapter behavior. Adapter-contract reds use
+  the real adapter type with injected components. A separate builder-only
+  retain-ID path supplies parity; hot-path and parity latency remain distinct.
+  Fixture provenance, native-first builder order, clean commit identity, status
+  files, hashes, full/race/Rust/format gates, and the no-local-execution boundary
+  are recorded.
+- Result: the document now defines the real adapter's body-to-reservation and
+  outcome-to-future-prediction contracts. No implementation, tokenizer parity,
+  simulation gain, image, v0.9.1 runtime promotion, vLLM change, or deployment
+  is claimed by this review.
