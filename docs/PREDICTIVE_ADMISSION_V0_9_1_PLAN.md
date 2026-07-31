@@ -1,7 +1,8 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: learned-scheduler, atomic transaction, coordinator-feedback, and typed
-terminal-release slices are builder-green; HTTP shadow reachability is the
+Status: internal learned scheduling/atomic coordination and injected HTTP
+off/shadow reachability with upstream-header parity are builder-green; shadow
+failure containment and a real tokenizer/cache/coordinator adapter are the
 current P0
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
@@ -116,10 +117,30 @@ reachable from the PIG HTTP request path:
 | Production HTTP shadow path | `server.ServeHTTP -> classifyRequest -> shadowKVRequest -> runtime/kvshadow.Manager`. | Uses the v0.9.0 byte interval and sampled backend state, not the new predictive packages. |
 | Existing capacity/TTFT learning | `capacity.CleanLearnCap` and `latency.LearnCap` adjust a global dynamic limit from observed TPS, waiting, KV, preemption, and TTFT. | Feedback-only global-cap learning; it does not predict the post-admit effect of the current request. |
 
-This means the present branch contains useful contracts and prototypes, but it
-does not yet implement predictive admission. Passing their isolated tests does
-not prove that learning, tokenizer output, or cache state changes any real or
+This meant the branch at `92d1daf` contained useful contracts and prototypes,
+but did not implement predictive admission. Passing those isolated tests did
+not prove that learning, tokenizer output, or cache state changed any real or
 shadow HTTP decision.
+
+### 3.1.1 Current HTTP boundary at `0974efe`
+
+The current server has a deliberately injected reachability seam:
+
+~~~
+ServeHTTP
+  -> bounded request classification and isolated predictive body snapshot
+  -> predictiveAdmissionShadow.DecideAndReserve
+  -> existing authoritative QoS gate
+  -> semantic first-output and typed terminal callbacks
+~~~
+
+`off` creates no predictive adapter or body snapshot, and the tested shadow
+path preserves upstream body and header behavior plus client-visible status,
+headers, and body. However, production construction deliberately supplies no
+adapter and fails startup if shadow is requested. The server does not yet
+construct the strict renderer, native tokenizer, cache mirror, learned
+scheduler, or `Coordinator`. Therefore this is application reachability, not
+yet an end-to-end predictive controller.
 
 ### 3.2 P0 prediction-authenticity gate
 
@@ -1745,6 +1766,13 @@ Completed and builder-green:
   once for success, local QoS reject, cancellation, disconnect, upstream
   failure, timeout, or expiry; invalid causes preserve the reservation, and
   non-success causes permanently block completed-outcome learning.
+- `PREDICTIVE_ADMISSION_MODE=off|shadow` loading and validation, injected server
+  construction, off-mode zero predictive construction/body retention, isolated
+  body snapshotting, pre-QoS reservation, streaming semantic transition, and
+  tested typed terminal release are builder-green through `5759488`;
+- upstream behavioral parity is builder-green at `0974efe`: prediction-only
+  output-token metadata is separate from authoritative classification fields,
+  so shadow does not add `X-PIG-Output-Tokens` or change early-SSE policy.
 
 Still pending and not claimed:
 
@@ -1765,10 +1793,13 @@ Still pending and not claimed:
 - one request-path digest protocol: the legacy Go token-ID/HMAC helper remains
   an internal test helper and must not be mixed with native BLAKE3 opaque block
   analyses in a shared cache-mirror epoch;
-- off/shadow HTTP request-path integration and proof that off mode performs
-  zero predictive work;
-- any `PREDICTIVE_ADMISSION_MODE` configuration loader/validator; the current
-  application exposes only `KV_ADMISSION_MODE` and reports PIG-v0.9.0;
+- panic, latency-budget, constructor rollback/close, precise timeout, and raw
+  body lifetime containment for a real synchronous shadow adapter;
+- a production adapter connecting strict rendering, native token/block
+  analysis, cache preflight, learned scheduling, coordinator reservation, and
+  typed reconciliation to the injected HTTP seam;
+- runtime-version promotion: the application still reports PIG-v0.9.0 until
+  the real adapter and deterministic efficacy gate pass;
 - calibrated scheduler/TPS/TTFT/TPOT profiles from a real upstream;
 - Docker smoke, image publication, any CVM deployment, and enforcement.
 
@@ -2139,7 +2170,7 @@ SHA-256 354f73351016e37df4f53187a9769118985a2861213043c61f232152282e3c63
 SHA-256 4ca05f26f0339c09f62cb355b6a68847b344457f8d9e2cab0448ff3b5a42339d
 ~~~
 
-The next test-only HTTP red adds
+The executed test-only HTTP red added
 `internal/config/pigconfig/config_predictive_admission_test.go` and
 `internal/app/server/predictive_shadow_integration_test.go`. It defines:
 
@@ -2160,6 +2191,47 @@ startup with shadow mode remains fail-closed until a real renderer/tokenizer/
 coordinator adapter exists; no no-op production shadow is permitted. Therefore
 this slice proves call-graph reachability and compatibility, not tokenizer
 parity or deployability.
+
+Valid initial HTTP red evidence at `81e9e9d`:
+
+~~~
+/work/pig-v091-evidence/81e9e9d-predictive-http-shadow-red.log
+SHA-256 f58c7961a2addb4b09ed197782fcd977123f999344d95ed412fc198bbbca203e
+
+/work/pig-v091-evidence/81e9e9d-predictive-http-shadow-red.status
+SHA-256 4e2df3f3815468fd82cf6e5b928674e1e20338cade9d9960b87f166179b72595
+~~~
+
+The first implementation commit `774ddd0` passed all Go/Rust tests but failed
+tracked gofmt and is not green. Formatting commit `5759488` passed the original
+full gate, but the post-HTTP review found that its test did not compare the
+prediction-only upstream header side effect. The superseding compatibility red
+at `d1369e2` is valid:
+
+~~~
+/work/pig-v091-evidence/d1369e2-predictive-shadow-header-parity-red.log
+SHA-256 bbaa2c8c753bfc5255c9a1aeaa2dd293f4fd436ffcf6291556402d72ba3d1147
+
+/work/pig-v091-evidence/d1369e2-predictive-shadow-header-parity-red.status
+SHA-256 0100e714965ac8fcfeecbb86d14e9a22e40123ad732deaca545d964ff051f00c
+~~~
+
+It fails at the intended assertion with `off=""` and `shadow="64"`. The exact
+`0974efe` correction then passed `git show --check`, tracked gofmt, focused Go,
+focused race, full Go, full race, Rust fmt, and locked Rust tests:
+
+~~~
+/work/pig-v091-evidence/0974efe-predictive-http-shadow-header-parity-green.log
+SHA-256 dca0780985e58da0bffcc6066f30f705b616fbd71333d92d5567b33c26bf9ece
+
+/work/pig-v091-evidence/0974efe-predictive-http-shadow-header-parity-green.status
+SHA-256 2e900ec9e512c2062d83acb41137e3354b4d8ef9c3c92a13f38f5bbff66d5528
+~~~
+
+The clean builder was Ubuntu 24.04.4 in container `6aff8e9be30d`, with Go
+1.24.5, Rust 1.97.0, and Cargo 1.97.0. No local Go/Rust test, image build,
+registry publication, CVM mutation, production request, or vLLM modification
+is part of this evidence.
 
 ## 20. Version, Git, and release boundary
 
@@ -2470,3 +2542,94 @@ Pass 3, evidence and completion boundary:
 - Change: the status now says learned causality is builder-green while the
   integrated transaction remains P0. No HTTP, image, version-runtime,
   production, or real-GPU claim was added.
+
+### 2026-07-31 post-HTTP-shadow three-pass re-review
+
+This cycle inspects the first real server call graph at `5759488`, the
+compatibility defect and correction through `d1369e2`/`0974efe`, the exact
+builder evidence, and the still-missing production adapter. Each pass is
+written before the next pass starts.
+
+Pass 1, prediction causality and request compatibility:
+
+- Finding: `PREDICTIVE_ADMISSION_MODE=shadow` now creates an injected
+  reservation after bounded JSON classification and before the existing QoS
+  gate. Streaming semantic first output and tested terminal exits reach the
+  reservation; `off` neither constructs the adapter nor retains a predictive
+  body. This closes only the HTTP reachability seam. The injected fake is not a
+  renderer, tokenizer, cache mirror, coordinator, or learned scheduler adapter.
+- Issue found: `5759488` reused prediction-only parsed output tokens in the
+  authoritative `Classification.OutputTokens` fields. With output-lane
+  classification otherwise disabled, shadow could still add
+  `X-PIG-Output-Tokens` upstream and could influence early-SSE policy. This
+  violated the zero-behavior-change shadow contract even though the lane itself
+  remained unchanged.
+- Test and change: test-only `d1369e2` holds body, response, and current metrics
+  constant and fails only because the upstream header is `off=""` versus
+  `shadow="64"`. `0974efe` separates predictive output-token metadata from the
+  fields consumed by existing forwarding and queue policy. The exact commit
+  passes focused/full Go, both race gates, tracked gofmt, Rust fmt, and locked
+  Rust tests on the remote builder.
+- Remaining boundary: no production factory exists, so real shadow startup
+  intentionally fails closed. Real tokenizer/cache/learned prediction still
+  cannot affect an HTTP forecast, decision, or reservation at this point; the
+  prediction-authenticity goal is not complete.
+
+Pass 2, lifecycle, failure containment, and privacy:
+
+- Finding: the server-owned guard serializes semantic transition and terminal
+  release, suppresses duplicates, and prevents a semantic transition after a
+  terminal event. A reservation starts before local QoS admission; a local QoS
+  reject releases it as `local_qos_reject`; successful tested responses release
+  as `completed`; client disconnect and non-success results use non-learning
+  causes. The request body snapshot has separate backing storage from the body
+  forwarded upstream and is absent for off, unknown-length, oversized,
+  saturated, and read-failure paths.
+- Issues found: injected `DecideAndReserve`, `MarkPrefillComplete`, and
+  `Terminate` calls are synchronous and not panic-contained. A future slow or
+  panicking adapter could therefore add unbounded latency or alter the client
+  response even in shadow. Timeout versus generic upstream failure is not yet
+  classified precisely. The factory runs before later server construction can
+  fail and has no `Close` rollback contract, which would leak a future adapter
+  that owns workers or native resources. Finally, the interface cannot prevent
+  an adapter from retaining raw body bytes; privacy currently depends on the
+  injected implementation.
+- Changes to the executable order: a real adapter cannot be installed next.
+  First add deterministic failure-injection tests for decide/semantic/terminal
+  panic containment, a calibrated synchronous cost budget with a
+  profile-disable circuit breaker, explicit timeout classification, and an
+  idempotent adapter close/constructor-rollback contract. The adapter must
+  convert the ephemeral body to opaque analysis and drop all raw references
+  before returning. Shadow failure must produce a bounded observation and fall
+  back to the unchanged current QoS path; it must never create capacity
+  headroom or change a client-visible result.
+- Remaining lifecycle work: automatic expiry, atomic epoch reset/quarantine,
+  invariant metrics, and fully attributed HTTP outcomes remain required before
+  production shadow. The current explicit defer is sufficient only for the
+  tested injected reachability slice.
+
+Pass 3, evidence validity, document consistency, and next gate:
+
+- Issues found: the top-level status and Section 19.1 still described HTTP mode
+  loading and reachability as absent after those gates became green. The first
+  `774ddd0` builder run could also be misread as green because every executable
+  test passed even though tracked gofmt failed. Finally, the original HTTP test
+  compared upstream body but not prediction-only upstream headers, allowing the
+  Pass 1 defect through.
+- Changes: Sections 3.1.1, 19.1, and this execution record now distinguish the
+  historical `92d1daf` audit, injected HTTP reachability, and the missing real
+  adapter. `774ddd0` is explicitly non-green. The valid `81e9e9d` HTTP red,
+  `d1369e2` compatibility red, and final `0974efe` green have exact paths,
+  hashes, commit identities, environment, and gate scope recorded. The new
+  header comparison closes the evidence gap without claiming routing,
+  tokenizer parity, learned HTTP causality, simulation efficacy, or GPU
+  accuracy.
+- Release boundary: the branch is pushed, but runtime remains PIG-v0.9.0. No
+  v0.9.1 tag, image, registry artifact, or deployment is authorized or created.
+  The six production CVMs remain historical inputs only.
+- Next executable gate: add test-only server/adapter failure-containment red for
+  panic, bounded synchronous cost, close rollback, precise terminal causes, and
+  raw-body non-retention. Only after that gate is green may a strict
+  renderer/native-tokenizer/cache/coordinator adapter be installed. Then run
+  deterministic goodput, false-fit/false-deny, cache-cold, preemption-proxy, and
+  latency comparisons against current count/dynamic and v0.9.0 KV-only shadow.
