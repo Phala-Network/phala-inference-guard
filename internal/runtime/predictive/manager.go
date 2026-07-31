@@ -95,6 +95,12 @@ type Snapshot struct {
 	Virtual            domain.VirtualStateInterval
 }
 
+type managerAdmissionResult struct {
+	Decision      domain.Decision
+	Prediction    SchedulerPrediction
+	HasPrediction bool
+}
+
 func NewManager(manifestID string, base domain.VirtualState, constraints domain.Constraints, scheduler Scheduler) *Manager {
 	return &Manager{
 		manifestID: manifestID,
@@ -110,32 +116,36 @@ func NewManager(manifestID string, base domain.VirtualState, constraints domain.
 }
 
 func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.RequestCost) domain.Decision {
+	return m.decideAndReserve(now, requestID, cost).Decision
+}
+
+func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.RequestCost) managerAdmissionResult {
 	if m == nil {
-		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
+		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if m.manifestID == "" || cost.ManifestID == "" || cost.ManifestID != m.manifestID {
-		return domain.Decision{Reason: domain.ReasonTokenizerProfileUnknown}
+		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonTokenizerProfileUnknown}}
 	}
 	if requestID == "" || !validRequestCost(cost) {
-		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
+		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
 	}
 	if _, exists := m.reservations[requestID]; exists {
-		return domain.Decision{Reason: domain.ReasonDuplicateRequest}
+		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonDuplicateRequest}}
 	}
 	if m.scheduler == nil {
-		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
+		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
 	}
 	schedulerIdentity := m.scheduler.Identity()
 	if schedulerIdentity.Validate() != nil {
-		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
+		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
 	}
 	state := m.virtualStateIntervalLocked().Upper
 	prediction := m.scheduler.Predict(now, state, cost)
 	if prediction.Identity != schedulerIdentity || !validSchedulerPrediction(prediction) {
-		return domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}
+		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
 	}
 	projection := domain.Projection{
 		PhysicalKVUpper: addInt64Saturating(state.PhysicalKVUpper, cost.KV.PhysicalKVUpper),
@@ -158,7 +168,11 @@ func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.
 			Assimilation:     assimilationUnabsorbed,
 		}
 	}
-	return decision
+	return managerAdmissionResult{
+		Decision:      decision,
+		Prediction:    prediction,
+		HasPrediction: true,
+	}
 }
 
 func (m *Manager) ReservationPrediction(requestID string) (SchedulerPrediction, bool) {

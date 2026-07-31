@@ -33,10 +33,12 @@ type AdmissionProposal struct {
 }
 
 type AdmissionResult struct {
-	Decision  domain.Decision
-	Cost      domain.RequestCost
-	CacheHits domain.CacheHitInterval
-	Reserved  bool
+	Decision      domain.Decision
+	Prediction    SchedulerPrediction
+	HasPrediction bool
+	Cost          domain.RequestCost
+	CacheHits     domain.CacheHitInterval
+	Reserved      bool
 }
 
 type CoordinatorSnapshot struct {
@@ -143,13 +145,15 @@ func (c *Coordinator) DecideAndReserve(now time.Time, proposal AdmissionProposal
 		ActiveContextTokensUpper: addInt64Saturating(proposal.Analysis.ExactInputTokens, proposal.DecodeHorizonUpper),
 		Confidence:               proposal.Confidence,
 	}
-	decision := c.manager.DecideAndReserve(now, proposal.RequestID, cost)
+	managerResult := c.manager.decideAndReserve(now, proposal.RequestID, cost)
 	result := AdmissionResult{
-		Decision:  decision,
-		Cost:      cost,
-		CacheHits: hits,
+		Decision:      managerResult.Decision,
+		Prediction:    managerResult.Prediction,
+		HasPrediction: managerResult.HasPrediction,
+		Cost:          cost,
+		CacheHits:     hits,
 	}
-	if decision.Reason != domain.ReasonFit {
+	if result.Decision.Reason != domain.ReasonFit {
 		return result
 	}
 	committedHits, err := c.cache.BeginAnalyzedRequest(proposal.RequestID, proposal.Analysis)

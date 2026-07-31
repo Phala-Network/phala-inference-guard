@@ -36,6 +36,7 @@ type realPredictiveShadowConfig struct {
 type predictiveAttemptSnapshot struct {
 	Attempts    uint64
 	Fits        uint64
+	Risks       uint64
 	Unknown     uint64
 	LastReason  domainpredictive.Reason
 	LastSource  runtimepredictive.PredictionSource
@@ -43,13 +44,14 @@ type predictiveAttemptSnapshot struct {
 }
 
 type realPredictiveShadow struct {
-	mu          sync.Mutex
-	renderer    predictiveRequestRenderer
-	analyzer    predictiveTokenAnalyzer
-	coordinator *runtimepredictive.Coordinator
-	now         func() time.Time
-	closed      bool
-	attempts    predictiveAttemptSnapshot
+	mu           sync.Mutex
+	renderer     predictiveRequestRenderer
+	analyzer     predictiveTokenAnalyzer
+	coordinator  *runtimepredictive.Coordinator
+	now          func() time.Time
+	closed       bool
+	attempts     predictiveAttemptSnapshot
+	reservations map[string]struct{}
 }
 
 type realPredictiveReservation struct {
@@ -71,19 +73,82 @@ func newRealPredictiveShadow(config realPredictiveShadowConfig) (*realPredictive
 		config.Now = time.Now
 	}
 	return &realPredictiveShadow{
-		renderer:    config.Renderer,
-		analyzer:    config.Analyzer,
-		coordinator: config.Coordinator,
-		now:         config.Now,
+		renderer:     config.Renderer,
+		analyzer:     config.Analyzer,
+		coordinator:  config.Coordinator,
+		now:          config.Now,
+		reservations: make(map[string]struct{}),
 	}, nil
 }
 
-func (s *realPredictiveShadow) DecideAndReserve(context.Context, string, predictiveShadowInput) predictiveShadowReservation {
-	return nil
+func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID string, input predictiveShadowInput) predictiveShadowReservation {
+	if s == nil || requestID == "" {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
+		return nil
+	}
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
+		return nil
+	}
+
+	rendered, err := s.renderer.Render(ctx, input)
+	if rendered.Rendered != nil {
+		defer clear(rendered.Rendered)
+	}
+	if err != nil {
+		s.recordUnknown(domainpredictive.ReasonTokenizerProfileUnknown)
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
+		return nil
+	}
+	analysis, err := s.analyzer.Analyze(ctx, rendered.Class, rendered.Rendered, rendered.Features)
+	if err != nil {
+		s.recordUnknown(domainpredictive.ReasonTokenizerProfileUnknown)
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		s.recordUnknownLocked(domainpredictive.ReasonPredictorProfileUnknown)
+		return nil
+	}
+	result := s.coordinator.DecideAndReserve(s.now(), runtimepredictive.AdmissionProposal{
+		RequestID:          requestID,
+		Analysis:           analysis,
+		DecodeHorizonUpper: rendered.DecodeHorizonUpper,
+		Confidence:         rendered.Confidence,
+	})
+	s.recordResultLocked(result)
+	if !result.Reserved {
+		return nil
+	}
+	s.reservations[requestID] = struct{}{}
+	return &realPredictiveReservation{owner: s, requestID: requestID}
 }
 
 func (s *realPredictiveShadow) ObserveOutcome(requestID string, outcome runtimepredictive.SchedulerOutcome) bool {
-	if s == nil || s.coordinator == nil {
+	if s == nil || s.coordinator == nil || requestID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
+	if _, exists := s.reservations[requestID]; !exists {
 		return false
 	}
 	return s.coordinator.ObserveOutcome(requestID, outcome)
@@ -103,13 +168,29 @@ func (s *realPredictiveShadow) Close() error {
 		return nil
 	}
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return nil
+	}
 	s.closed = true
-	s.mu.Unlock()
+	for requestID := range s.reservations {
+		if s.coordinator.Terminate(requestID, runtimepredictive.TerminalExpired) {
+			delete(s.reservations, requestID)
+		}
+	}
 	return nil
 }
 
 func (r *realPredictiveReservation) MarkPrefillComplete() bool {
 	if r == nil || r.owner == nil {
+		return false
+	}
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	if r.owner.closed {
+		return false
+	}
+	if _, exists := r.owner.reservations[r.requestID]; !exists {
 		return false
 	}
 	return r.owner.coordinator.MarkPrefillComplete(r.requestID)
@@ -119,5 +200,50 @@ func (r *realPredictiveReservation) Terminate(cause runtimepredictive.TerminalCa
 	if r == nil || r.owner == nil {
 		return false
 	}
-	return r.owner.coordinator.Terminate(r.requestID, cause)
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	if _, exists := r.owner.reservations[r.requestID]; !exists {
+		return false
+	}
+	if !r.owner.coordinator.Terminate(r.requestID, cause) {
+		return false
+	}
+	delete(r.owner.reservations, r.requestID)
+	return true
+}
+
+func (s *realPredictiveShadow) recordUnknown(reason domainpredictive.Reason) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recordUnknownLocked(reason)
+}
+
+func (s *realPredictiveShadow) recordUnknownLocked(reason domainpredictive.Reason) {
+	s.attempts.Attempts++
+	s.attempts.Unknown++
+	s.attempts.LastReason = reason
+	s.attempts.LastSource = ""
+	s.attempts.LastSamples = 0
+}
+
+func (s *realPredictiveShadow) recordResultLocked(result runtimepredictive.AdmissionResult) {
+	s.attempts.Attempts++
+	s.attempts.LastReason = result.Decision.Reason
+	s.attempts.LastSource = result.Prediction.Source
+	s.attempts.LastSamples = result.Prediction.Samples
+	if result.Reserved {
+		s.attempts.Fits++
+		return
+	}
+	switch result.Decision.Reason {
+	case domainpredictive.ReasonTokenizerProfileUnknown,
+		domainpredictive.ReasonCacheStateUnknown,
+		domainpredictive.ReasonPredictorProfileUnknown:
+		s.attempts.Unknown++
+	default:
+		s.attempts.Risks++
+	}
 }
