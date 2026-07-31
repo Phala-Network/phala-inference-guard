@@ -14,3 +14,6 @@
 # Local go build outputs from the repository root.
 /phala-inference-guard
 /phala-inference-guard.exe
+
+# Native tokenizer build output is generated only on the remote builder.
+/native/tokenizer/target/
