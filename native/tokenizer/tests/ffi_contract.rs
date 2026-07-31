@@ -7,8 +7,10 @@ use std::{
 use ahash::AHashMap;
 use pig_tokenizer_native::ffi::{
     PIG_TOKENIZER_OK, PigTokenizationAnalysisHandle, PigTokenizationAnalysisView,
-    PigTokenizerHandle, pig_tokenizer_abi_version, pig_tokenizer_analysis_destroy,
-    pig_tokenizer_analysis_view, pig_tokenizer_analyze, pig_tokenizer_destroy, pig_tokenizer_open,
+    PigTokenizerCountHandle, PigTokenizerHandle, pig_tokenizer_abi_version,
+    pig_tokenizer_analysis_destroy, pig_tokenizer_analysis_view, pig_tokenizer_analyze,
+    pig_tokenizer_count, pig_tokenizer_count_destroy, pig_tokenizer_count_open,
+    pig_tokenizer_destroy, pig_tokenizer_open,
 };
 use tokenizers::{Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace};
 
@@ -23,7 +25,7 @@ fn c_abi_opens_analyzes_views_and_destroys_without_token_ids() {
     let mut tokenizer_handle: *mut PigTokenizerHandle = ptr::null_mut();
     let mut error_buffer = [0_i8; 256];
 
-    assert_eq!(pig_tokenizer_abi_version(), 1);
+    assert_eq!(pig_tokenizer_abi_version(), 2);
     let open_status = unsafe {
         pig_tokenizer_open(
             tokenizer_path_c.as_ptr(),
@@ -95,6 +97,60 @@ fn c_abi_opens_analyzes_views_and_destroys_without_token_ids() {
     assert!(tokenizer_handle.is_null());
     assert_eq!(
         unsafe { pig_tokenizer_destroy(&mut tokenizer_handle) },
+        PIG_TOKENIZER_OK
+    );
+
+    fs::remove_file(tokenizer_path).unwrap();
+}
+
+#[test]
+fn c_abi_counts_without_digest_context_or_analysis_handle() {
+    let tokenizer_path = write_tokenizer_fixture();
+    let tokenizer_path_c = CString::new(tokenizer_path.to_string_lossy().as_bytes()).unwrap();
+    let mut counter_handle: *mut PigTokenizerCountHandle = ptr::null_mut();
+    let mut error_buffer = [0_i8; 256];
+
+    assert_eq!(pig_tokenizer_abi_version(), 2);
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count_open(
+                tokenizer_path_c.as_ptr(),
+                &mut counter_handle,
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_OK,
+        "open counter error = {error_buffer:?}"
+    );
+    assert!(!counter_handle.is_null());
+
+    let input = b"hello world";
+    let mut token_count = 0_u64;
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count(
+                counter_handle,
+                input.as_ptr(),
+                input.len(),
+                0,
+                &mut token_count,
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_OK,
+        "count error = {error_buffer:?}"
+    );
+    assert_eq!(token_count, 2);
+
+    assert_eq!(
+        unsafe { pig_tokenizer_count_destroy(&mut counter_handle) },
+        PIG_TOKENIZER_OK
+    );
+    assert!(counter_handle.is_null());
+    assert_eq!(
+        unsafe { pig_tokenizer_count_destroy(&mut counter_handle) },
         PIG_TOKENIZER_OK
     );
 

@@ -109,6 +109,18 @@ impl NativeTokenizer {
         Ok(encoding.get_ids().to_vec())
     }
 
+    pub fn count(
+        &self,
+        input: &str,
+        add_special_tokens: bool,
+    ) -> Result<usize, NativeTokenizerError> {
+        let encoding = self
+            .tokenizer
+            .encode(input, add_special_tokens)
+            .map_err(|error| NativeTokenizerError::new(format!("encode input: {error}")))?;
+        Ok(encoding.get_ids().len())
+    }
+
     pub fn analyze(
         &self,
         input: &str,
@@ -234,6 +246,7 @@ mod tests {
         let token_ids = native.encode("hello world", false).expect("encode");
 
         assert_eq!(token_ids, vec![1, 2]);
+        assert_eq!(native.count("hello world", false).unwrap(), 2);
     }
 
     #[test]

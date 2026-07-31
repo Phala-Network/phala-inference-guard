@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	nativeABIVersion   = 1
+	nativeABIVersion   = 2
 	nativeErrorBytes   = 512
 	cacheDigestBytes   = 32
 	maximumCGoByteCopy = math.MaxInt32
