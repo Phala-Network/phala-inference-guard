@@ -990,18 +990,58 @@ package. These measurements support maintainability, dependency, and binary
 surface reductions only. They do not prove higher GPU utilization or serving
 throughput.
 
-The previous deterministic fixed-trace baseline remains 5,856 completion-token
-goodput for current thresholds, 3,040 for v0.9.0 KV-only, and 12,256 for the
-predictive policy, with zero predictive TPS/TTFT/TPOT/KV safety violations,
-preemption proxies, false accepts, or reservation leaks. That result is not yet
-re-attributed to this SOLID refactor. The exact final commit must reproduce the
-five production Gemma4 renderer/count oracle cases, exact final IDs with zero
-mismatches, repeated-prefix cold charging, the 12,256 goodput result, and the
-full count/vector benchmark before the source goal is complete.
+Source commit `60ab3c1bb4c9e01c4a8eff59097e8bc24a659bcd` then passed one
+clean-checkout, all-green remote-builder matrix. It reproduced 5,856
+completion-token goodput for current thresholds, 3,040 for v0.9.0 KV-only, and
+12,256 for the predictive policy. Predictive TPS, TTFT, TPOT, KV-hard,
+preemption-proxy, false-accept, and reservation-leak counts were all zero. The
+repeated-prefix scenario retained full cold charging and 1,024 predictive
+goodput.
 
-Pass-3 result: the focused evidence is valid for its named scope, red failures
-are behavior-specific, and all throughput/goodput claims remain separated from
-source deletion and binary size. The next gate is commit and push of the
-source-only candidate followed by a clean remote-builder full matrix on that
-exact commit. No image, publication, deployment, production access, or cache
+The same matrix passed:
+
+- `git show --check`, clean checkout, PIG-v0.9.1 source version, tracked gofmt,
+  Python compilation, Rust format, locked release build, and locked all-target
+  tests;
+- immutable tokenizer/config/template/oracle hashes;
+- the no-cache architecture gate, 44-source-file `836/-4,905` report, direct
+  dependency report, smaller binary assertions, and exactly four exported
+  count-only ABI-3 functions;
+- all default Go tests and races and all `pig_native` Go tests and races;
+- all five production Gemma4 renderer/count oracle cases, their race run, and
+  exact final token IDs with `mismatches=0`;
+- deterministic goodput tests, structured goodput validation, and the new
+  five-case `count_only + vec_ids + count_to_vec_ratio` benchmark schema with
+  no `block_analysis` field.
+
+Material exact-source evidence is:
+
+- full matrix log
+  `/work/pig-v091-evidence/60ab3c1-pig-v0.9.1-solid-final-gates.log`,
+  SHA-256 `6c1203c5a249db20a3b45237517e92aa1d0bc0956fb1d649c5195157013b388c`;
+- status, SHA-256
+  `e12b8286a75b90ff487078065b0795c881661476d38b5369b659c8bf06bb8259`;
+- structured goodput report, SHA-256
+  `088c4f7ab7d6b10266c7f2d6e6300d8ac055b54dd582f820e25bd7e19927e3ce`;
+- exact-final-ID report, SHA-256
+  `b3adeee6101b5b3a3a87b8c4dacbb3399fa058125202b79cfe86dc53424f4488`;
+- count/vector benchmark report, SHA-256
+  `df7da99447f6b76e58e6db7ed9db621239b75ff12548316c309b8719333c43db`.
+
+The final all-green benchmark measured count-only p95 of 43.336 us at 49
+tokens, 8.982 ms at 3,074, 122.427 ms at 24,578, 485.082 ms at 65,538, and
+1.770 s at 131,074. The preceding same-commit run measured approximately 1.410
+s at 131,074, while the older recorded baseline was approximately 1.489 s.
+That spread is too large to claim a stable 128k latency improvement or
+regression from this SOLID refactor. Exact counts, token IDs, schema, and
+goodput are release gates; these standalone sequential CPU timings are retained
+as raw performance evidence and are not GPU utilization or production serving
+measurements.
+
+Pass-3 result: all behavior-specific reds have matching greens, the exact
+source commit passed the complete builder matrix, and throughput/goodput claims
+remain separated from source deletion, binary size, and noisy standalone
+latency. A documentation-only evidence commit may follow; it must prove that
+all executable paths are byte-identical to `60ab3c1` before inheriting this
+matrix. No image, publication, deployment, production access, or cache
 prediction is authorized or implied.
