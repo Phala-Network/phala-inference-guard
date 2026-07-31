@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
@@ -108,6 +109,59 @@ func TestGemma4TextRendererRejectsLossyOrUnsupportedInputs(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := renderer.Render(context.Background(), predictiveShadowInput{Path: test.path, Body: []byte(test.body)}); err == nil {
 				t.Fatal("unsupported input rendered successfully")
+			}
+		})
+	}
+}
+
+func TestValidateUniqueJSONKeysForPrevalidatedJSON(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		duplicate bool
+	}{
+		{
+			name: "nested values containing structural characters",
+			body: `{"outer":{"nested":[true,false,null,-1.25e+2,"quoted \\\" { [ ] } , : text"]},"e":1,"é":2}`,
+		},
+		{
+			name:      "solidus escape",
+			body:      `{"a/b":1,"a\/b":2}`,
+			duplicate: true,
+		},
+		{
+			name:      "unicode escape",
+			body:      `{"é":1,"\u00e9":2}`,
+			duplicate: true,
+		},
+		{
+			name:      "surrogate pair escape",
+			body:      `{"😀":1,"\ud83d\ude00":2}`,
+			duplicate: true,
+		},
+		{
+			name:      "backslash escape",
+			body:      `{"a\\b":1,"a\u005cb":2}`,
+			duplicate: true,
+		},
+		{
+			name:      "duplicate inside nested array object",
+			body:      `{"outer":[{"x":1,"x":2}]}`,
+			duplicate: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			body := []byte(test.body)
+			if !json.Valid(body) {
+				t.Fatal("test input is not valid JSON")
+			}
+			err := validateUniqueJSONKeys(body)
+			if test.duplicate && err == nil {
+				t.Fatal("semantic duplicate key was accepted")
+			}
+			if !test.duplicate && err != nil {
+				t.Fatalf("unique JSON rejected: %v", err)
 			}
 		})
 	}
