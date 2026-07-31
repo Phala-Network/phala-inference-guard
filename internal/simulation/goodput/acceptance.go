@@ -10,21 +10,21 @@ const (
 )
 
 type Metrics struct {
-	Arrivals                    int
-	Admitted                    int
-	Completed                   int
-	SLOCompliantCompletions     int
-	CompletionTokenGoodput      int64
-	ExistingOrNewTPSViolations  int
-	TTFTViolations              int
-	TPOTViolations              int
-	KVHardViolations            int
-	PreemptionProxyEvents       int
-	FalseAccepts                int
-	FalseDenies                 int
-	ReservationLeaks            int
-	PeakProjectedKVTokens       int64
-	MinimumProjectedKVHeadroom  int64
+	Arrivals                   int
+	Admitted                   int
+	Completed                  int
+	SLOCompliantCompletions    int
+	CompletionTokenGoodput     int64
+	ExistingOrNewTPSViolations int
+	TTFTViolations             int
+	TPOTViolations             int
+	KVHardViolations           int
+	PreemptionProxyEvents      int
+	FalseAccepts               int
+	FalseDenies                int
+	ReservationLeaks           int
+	PeakProjectedKVTokens      int64
+	MinimumProjectedKVHeadroom int64
 }
 
 func (m Metrics) SafetyViolations() int {
