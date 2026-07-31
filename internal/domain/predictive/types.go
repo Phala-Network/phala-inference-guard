@@ -258,8 +258,11 @@ type Projection struct {
 }
 
 type VirtualState struct {
-	PhysicalKVUpper int64
-	ActiveKVUpper   int64
+	PhysicalKVUpper       int64
+	ActiveKVUpper         int64
+	DecodeSequences       int
+	ActiveContextTokens   int64
+	UncachedPrefillTokens int64
 }
 
 type VirtualStateInterval struct {
@@ -268,11 +271,13 @@ type VirtualStateInterval struct {
 }
 
 type RequestCost struct {
-	ManifestID           string
-	InputTokens          int64
-	KV                   KVIncrement
-	UncachedPrefillUpper int64
-	Confidence           float64
+	ManifestID             string
+	InputTokens            int64
+	KV                     KVIncrement
+	UncachedPrefillUpper   int64
+	CachedPrefillExpected  int64
+	DecodeHorizonUpper     int64
+	Confidence             float64
 }
 
 type SchedulerEstimate struct {

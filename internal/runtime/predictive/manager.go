@@ -9,7 +9,11 @@ import (
 )
 
 type Scheduler interface {
-	Predict(state domain.VirtualState, request domain.RequestCost) domain.SchedulerEstimate
+	Predict(now time.Time, state domain.VirtualState, request domain.RequestCost) SchedulerPrediction
+}
+
+type SchedulerObserver interface {
+	Observe(prediction SchedulerPrediction, outcome SchedulerOutcome) error
 }
 
 type assimilationState uint8
@@ -24,6 +28,8 @@ type reservation struct {
 	ID               string
 	Created          time.Time
 	Cost             domain.RequestCost
+	Prediction       SchedulerPrediction
+	OutcomeObserved  bool
 	AdmittedSequence uint64
 	Assimilation     assimilationState
 }
@@ -88,9 +94,9 @@ func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.
 		return domain.Decision{Reason: domain.ReasonDuplicateRequest}
 	}
 	state := m.virtualStateIntervalLocked().Upper
-	estimate := domain.SchedulerEstimate{}
+	prediction := SchedulerPrediction{}
 	if m.scheduler != nil {
-		estimate = m.scheduler.Predict(state, cost)
+		prediction = m.scheduler.Predict(now, state, cost)
 	}
 	projection := domain.Projection{
 		PhysicalKVUpper: state.PhysicalKVUpper + cost.KV.PhysicalKVUpper,
@@ -98,9 +104,9 @@ func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.
 	}
 	decision := domain.Evaluate(domain.EvaluationInput{
 		Projection:  projection,
-		Scheduler:   estimate,
+		Scheduler:   prediction.Estimate,
 		Constraints: m.constraints,
-		Confidence:  cost.Confidence,
+		Confidence:  minimumConfidence(cost.Confidence, prediction.Confidence),
 	})
 	if decision.Reason == domain.ReasonFit {
 		m.eventSequence++
@@ -108,11 +114,54 @@ func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.
 			ID:               requestID,
 			Created:          now,
 			Cost:             cost,
+			Prediction:       prediction,
 			AdmittedSequence: m.eventSequence,
 			Assimilation:     assimilationUnabsorbed,
 		}
 	}
 	return decision
+}
+
+func (m *Manager) ReservationPrediction(requestID string) (SchedulerPrediction, bool) {
+	if m == nil || requestID == "" {
+		return SchedulerPrediction{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, exists := m.reservations[requestID]
+	if !exists {
+		return SchedulerPrediction{}, false
+	}
+	return item.Prediction, true
+}
+
+func (m *Manager) ObserveOutcome(requestID string, outcome SchedulerOutcome) bool {
+	if m == nil || requestID == "" {
+		return false
+	}
+	observer, ok := m.scheduler.(SchedulerObserver)
+	if !ok {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if item, exists := m.reservations[requestID]; exists {
+		if item.OutcomeObserved || observer.Observe(item.Prediction, outcome) != nil {
+			return false
+		}
+		item.OutcomeObserved = true
+		m.reservations[requestID] = item
+		return true
+	}
+	if item, exists := m.completed[requestID]; exists {
+		if item.Reservation.OutcomeObserved || observer.Observe(item.Reservation.Prediction, outcome) != nil {
+			return false
+		}
+		item.Reservation.OutcomeObserved = true
+		m.completed[requestID] = item
+		return true
+	}
+	return false
 }
 
 func (m *Manager) Complete(requestID string) bool {
@@ -252,4 +301,14 @@ func subtractFloorZero(value, decrement int64) int64 {
 		return 0
 	}
 	return value - decrement
+}
+
+func minimumConfidence(left, right float64) float64 {
+	if left <= 0 || right <= 0 {
+		return 0
+	}
+	if left < right {
+		return left
+	}
+	return right
 }

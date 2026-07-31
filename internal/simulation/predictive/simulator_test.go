@@ -10,13 +10,17 @@ import (
 
 type prefillSensitiveScheduler struct{}
 
-func (prefillSensitiveScheduler) Predict(_ domain.VirtualState, request domain.RequestCost) domain.SchedulerEstimate {
+func (prefillSensitiveScheduler) Predict(now time.Time, _ domain.VirtualState, request domain.RequestCost) runtimepredictive.SchedulerPrediction {
 	tps := 30 - float64(request.UncachedPrefillUpper)/5_000
-	return domain.SchedulerEstimate{
-		ExistingUserTPSLower: tps,
-		AllUserTPSLower:      tps,
-		TTFTUpper:            100 * time.Millisecond,
-		TPOTUpper:            25 * time.Millisecond,
+	return runtimepredictive.SchedulerPrediction{
+		PredictedAt: now,
+		Estimate: domain.SchedulerEstimate{
+			ExistingUserTPSLower: tps,
+			AllUserTPSLower:      tps,
+			TTFTUpper:            100 * time.Millisecond,
+			TPOTUpper:            25 * time.Millisecond,
+		},
+		Confidence: 0.99,
 	}
 }
 
@@ -101,12 +105,16 @@ func TestScenarioCertainCacheHitProtectsPrefillTPS(t *testing.T) {
 
 type constantSafeScheduler struct{}
 
-func (constantSafeScheduler) Predict(_ domain.VirtualState, _ domain.RequestCost) domain.SchedulerEstimate {
-	return domain.SchedulerEstimate{
-		ExistingUserTPSLower: 30,
-		AllUserTPSLower:      30,
-		TTFTUpper:            100 * time.Millisecond,
-		TPOTUpper:            25 * time.Millisecond,
+func (constantSafeScheduler) Predict(now time.Time, _ domain.VirtualState, _ domain.RequestCost) runtimepredictive.SchedulerPrediction {
+	return runtimepredictive.SchedulerPrediction{
+		PredictedAt: now,
+		Estimate: domain.SchedulerEstimate{
+			ExistingUserTPSLower: 30,
+			AllUserTPSLower:      30,
+			TTFTUpper:            100 * time.Millisecond,
+			TPOTUpper:            25 * time.Millisecond,
+		},
+		Confidence: 0.99,
 	}
 }
 

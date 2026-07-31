@@ -10,12 +10,16 @@ import (
 
 type safeScheduler struct{}
 
-func (safeScheduler) Predict(state domain.VirtualState, request domain.RequestCost) domain.SchedulerEstimate {
-	return domain.SchedulerEstimate{
-		ExistingUserTPSLower: 30,
-		AllUserTPSLower:      30,
-		TTFTUpper:            100 * time.Millisecond,
-		TPOTUpper:            25 * time.Millisecond,
+func (safeScheduler) Predict(now time.Time, state domain.VirtualState, request domain.RequestCost) SchedulerPrediction {
+	return SchedulerPrediction{
+		PredictedAt: now,
+		Estimate: domain.SchedulerEstimate{
+			ExistingUserTPSLower: 30,
+			AllUserTPSLower:      30,
+			TTFTUpper:            100 * time.Millisecond,
+			TPOTUpper:            25 * time.Millisecond,
+		},
+		Confidence: 0.99,
 	}
 }
 

@@ -17,10 +17,11 @@ const (
 )
 
 type Event struct {
-	At   time.Duration
-	Kind EventKind
-	ID   string
-	Cost domain.RequestCost
+	At     time.Duration
+	Kind   EventKind
+	ID     string
+	Cost   domain.RequestCost
+	Sample runtimepredictive.SampleWindow
 }
 
 type Scenario struct {
@@ -31,9 +32,10 @@ type Scenario struct {
 }
 
 type Result struct {
-	Decisions    []domain.Decision
-	Completions  int
-	SampleEvents int
+	Decisions     []domain.Decision
+	Completions   int
+	SampleEvents  int
+	FinalSnapshot runtimepredictive.Snapshot
 }
 
 func Run(start time.Time, scenario Scenario, scheduler runtimepredictive.Scheduler) (Result, error) {
@@ -60,10 +62,14 @@ func Run(start time.Time, scenario Scenario, scheduler runtimepredictive.Schedul
 			}
 			result.Completions++
 		case EventSample:
+			if err := manager.ReconcileSample(event.Sample); err != nil {
+				return Result{}, fmt.Errorf("event %d reconciles invalid sample: %w", index, err)
+			}
 			result.SampleEvents++
 		default:
 			return Result{}, fmt.Errorf("event %d has unknown kind %q", index, event.Kind)
 		}
 	}
+	result.FinalSnapshot = manager.Snapshot()
 	return result, nil
 }
