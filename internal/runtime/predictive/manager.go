@@ -29,7 +29,7 @@ type reservation struct {
 }
 
 type completedReservation struct {
-	Reservation      reservation
+	Reservation       reservation
 	CompletedSequence uint64
 }
 
