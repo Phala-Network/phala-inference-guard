@@ -12,7 +12,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive/nativeffi"
 )
 
-func TestRealPredictiveShadowRunsGemma4RendererNativeAnalyzerAndCacheAwareCoordinator(t *testing.T) {
+func TestRealPredictiveShadowChargesRepeatedNativePrefixesAsFullColdCost(t *testing.T) {
 	renderer, err := newGemma4TextRenderer(gemma4TextRendererConfig{
 		BOSToken:             "<bos>",
 		DefaultDecodeHorizon: 16,
@@ -81,6 +81,7 @@ func TestRealPredictiveShadowRunsGemma4RendererNativeAnalyzerAndCacheAwareCoordi
 	if firstSnapshot.Manager.Virtual.Upper.UncachedPrefillTokens != analysis.ExactInputTokens {
 		t.Fatalf("first uncached prefill = %d, want exact input %d", firstSnapshot.Manager.Virtual.Upper.UncachedPrefillTokens, analysis.ExactInputTokens)
 	}
+	firstReservedKV := firstSnapshot.Manager.ReservedPhysicalKV
 	if !first.MarkPrefillComplete() {
 		t.Fatal("first native reservation did not enter decode")
 	}
@@ -93,11 +94,11 @@ func TestRealPredictiveShadowRunsGemma4RendererNativeAnalyzerAndCacheAwareCoordi
 	if secondSnapshot.Manager.Reservations != 2 || secondSnapshot.Cache.Requests != 2 || secondSnapshot.Cache.ActiveBlocks != len(analysis.FullBlockDigests) {
 		t.Fatalf("second native reservation snapshot = %+v", secondSnapshot)
 	}
-	if secondSnapshot.Manager.Virtual.Upper.UncachedPrefillTokens != analysis.PartialBlockTokens {
-		t.Fatalf("cache-aware uncached prefill = %d, want partial block only %d", secondSnapshot.Manager.Virtual.Upper.UncachedPrefillTokens, analysis.PartialBlockTokens)
+	if secondSnapshot.Manager.Virtual.Upper.UncachedPrefillTokens != analysis.ExactInputTokens {
+		t.Fatalf("repeated-prefix uncached prefill = %d, want full exact input %d", secondSnapshot.Manager.Virtual.Upper.UncachedPrefillTokens, analysis.ExactInputTokens)
 	}
-	if secondSnapshot.Manager.Virtual.Upper.UncachedPrefillTokens >= analysis.ExactInputTokens {
-		t.Fatalf("active full-block cache reuse did not reduce prefill: virtual=%+v analysis=%+v", secondSnapshot.Manager.Virtual.Upper, analysis)
+	if secondSnapshot.Manager.ReservedPhysicalKV != firstReservedKV*2 {
+		t.Fatalf("repeated-prefix reserved KV = %d, want twice first full-cold cost %d", secondSnapshot.Manager.ReservedPhysicalKV, firstReservedKV*2)
 	}
 
 	if !second.Terminate(runtimepredictive.TerminalCompleted) || !first.Terminate(runtimepredictive.TerminalCompleted) {
