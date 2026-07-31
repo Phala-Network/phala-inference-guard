@@ -1,8 +1,6 @@
 use ahash::AHashMap;
 use pig_tokenizer_native::{BlockDigestContext, NativeTokenizer};
-use tokenizers::{
-    Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace,
-};
+use tokenizers::{Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace};
 
 #[test]
 fn analysis_returns_count_chained_full_blocks_and_partial_metadata_without_ids() {
@@ -10,17 +8,17 @@ fn analysis_returns_count_chained_full_blocks_and_partial_metadata_without_ids()
     let context = digest_context("profile-1", "backend-1", 4);
 
     let analysis = native
-        .analyze(
-            "a b c d e f g h i j",
-            false,
-            &context,
-            false,
-        )
+        .analyze("a b c d e f g h i j", false, &context, false)
         .expect("analyze");
 
     assert_eq!(analysis.token_count, 10);
     assert_eq!(analysis.full_block_digests.len(), 2);
-    assert!(analysis.full_block_digests.iter().all(|digest| *digest != [0; 32]));
+    assert!(
+        analysis
+            .full_block_digests
+            .iter()
+            .all(|digest| *digest != [0; 32])
+    );
     let partial = analysis.partial_block.expect("partial block");
     assert_eq!(partial.token_count, 2);
     assert_ne!(partial.digest, [0; 32]);
@@ -42,10 +40,22 @@ fn chained_digests_preserve_only_the_prefix_before_a_changed_token() {
         .analyze("a b c d e f x h", false, &context, false)
         .expect("second changed");
 
-    assert_ne!(base.full_block_digests[0], first_changed.full_block_digests[0]);
-    assert_ne!(base.full_block_digests[1], first_changed.full_block_digests[1]);
-    assert_eq!(base.full_block_digests[0], second_changed.full_block_digests[0]);
-    assert_ne!(base.full_block_digests[1], second_changed.full_block_digests[1]);
+    assert_ne!(
+        base.full_block_digests[0],
+        first_changed.full_block_digests[0]
+    );
+    assert_ne!(
+        base.full_block_digests[1],
+        first_changed.full_block_digests[1]
+    );
+    assert_eq!(
+        base.full_block_digests[0],
+        second_changed.full_block_digests[0]
+    );
+    assert_ne!(
+        base.full_block_digests[1],
+        second_changed.full_block_digests[1]
+    );
 }
 
 #[test]
@@ -77,7 +87,10 @@ fn digest_identity_and_optional_token_ids_are_explicit() {
         .expect("different epoch");
 
     assert_eq!(first.token_ids, Some(vec![1, 2, 3, 4]));
-    assert_ne!(first.full_block_digests, different_manifest.full_block_digests);
+    assert_ne!(
+        first.full_block_digests,
+        different_manifest.full_block_digests
+    );
     assert_ne!(first.full_block_digests, different_epoch.full_block_digests);
 }
 

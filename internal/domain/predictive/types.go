@@ -95,26 +95,26 @@ func (c TokenizerCapabilities) Validate(multimodalProfile string) error {
 }
 
 type TokenizerManifest struct {
-	ProfileID             string
-	ServedModel           string
-	ModelRepository       string
-	ModelRevision         string
-	TokenizerRepository   string
-	TokenizerRevision     string
-	TokenizerSHA256       string
-	TokenizerConfigSHA256 string
-	SpecialTokensSHA256   string
-	TemplateSHA256        string
-	TemplateRuntime       string
+	ProfileID              string
+	ServedModel            string
+	ModelRepository        string
+	ModelRevision          string
+	TokenizerRepository    string
+	TokenizerRevision      string
+	TokenizerSHA256        string
+	TokenizerConfigSHA256  string
+	SpecialTokensSHA256    string
+	TemplateSHA256         string
+	TemplateRuntime        string
 	TemplateRuntimeVersion string
-	SpecialTokenPolicy    SpecialTokenPolicy
-	SpecialTokens         SpecialTokenBindings
-	Capabilities          TokenizerCapabilities
-	BackendKind           string
-	BackendVersion        string
-	BlockSize             int64
-	MultimodalProfile     string
-	PredictorVersion      string
+	SpecialTokenPolicy     SpecialTokenPolicy
+	SpecialTokens          SpecialTokenBindings
+	Capabilities           TokenizerCapabilities
+	BackendKind            string
+	BackendVersion         string
+	BlockSize              int64
+	MultimodalProfile      string
+	PredictorVersion       string
 }
 
 func (m TokenizerManifest) Validate() error {

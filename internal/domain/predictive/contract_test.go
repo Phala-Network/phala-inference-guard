@@ -7,19 +7,19 @@ import (
 
 func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 	base := TokenizerManifest{
-		ProfileID:             "gemma4-vllm",
-		ServedModel:           "google/gemma-4-31B-it",
-		ModelRepository:       "RedHatAI/gemma-4-31B-it-FP8-dynamic",
-		ModelRevision:         "model-rev",
-		TokenizerRepository:   "RedHatAI/gemma-4-31B-it-FP8-dynamic",
-		TokenizerRevision:     "tokenizer-rev",
-		TokenizerSHA256:       "tokenizer-sha",
-		TokenizerConfigSHA256: "tokenizer-config-sha",
-		SpecialTokensSHA256:   "special-tokens-sha",
-		TemplateSHA256:        "template-sha",
-		TemplateRuntime:       "minijinja-vllm-profile",
+		ProfileID:              "gemma4-vllm",
+		ServedModel:            "google/gemma-4-31B-it",
+		ModelRepository:        "RedHatAI/gemma-4-31B-it-FP8-dynamic",
+		ModelRevision:          "model-rev",
+		TokenizerRepository:    "RedHatAI/gemma-4-31B-it-FP8-dynamic",
+		TokenizerRevision:      "tokenizer-rev",
+		TokenizerSHA256:        "tokenizer-sha",
+		TokenizerConfigSHA256:  "tokenizer-config-sha",
+		SpecialTokensSHA256:    "special-tokens-sha",
+		TemplateSHA256:         "template-sha",
+		TemplateRuntime:        "minijinja-vllm-profile",
 		TemplateRuntimeVersion: "v1",
-		SpecialTokenPolicy:    SpecialTokenPolicyOmit,
+		SpecialTokenPolicy:     SpecialTokenPolicyOmit,
 		SpecialTokens: SpecialTokenBindings{
 			BOS: TokenBinding{Value: "<bos>", ID: 2},
 			EOS: TokenBinding{Value: "<eos>", ID: 1},
@@ -35,11 +35,11 @@ func TestTokenizerManifestCompatibilityRequiresExactProfile(t *testing.T) {
 			JSONSchema:      true,
 			Reasoning:       true,
 		},
-		BackendKind:           "vllm",
-		BackendVersion:        "0.25.1",
-		BlockSize:             64,
-		MultimodalProfile:     "text-only",
-		PredictorVersion:      "v0.9.1-test",
+		BackendKind:       "vllm",
+		BackendVersion:    "0.25.1",
+		BlockSize:         64,
+		MultimodalProfile: "text-only",
+		PredictorVersion:  "v0.9.1-test",
 	}
 	if !base.Compatible(base) {
 		t.Fatal("identical manifest must be compatible")

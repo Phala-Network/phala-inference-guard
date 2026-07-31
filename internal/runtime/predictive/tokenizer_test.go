@@ -237,17 +237,17 @@ func TestTokenizerRuntimeRejectsInvalidProfileAndTokenIDs(t *testing.T) {
 }
 
 type fakeTokenizerEngine struct {
-	mu          sync.Mutex
-	manifest    domain.TokenizerManifest
-	ids         []int64
-	warmErr     error
-	encodeErr   error
-	warmCalls   int
-	encodeCalls int
+	mu                   sync.Mutex
+	manifest             domain.TokenizerManifest
+	ids                  []int64
+	warmErr              error
+	encodeErr            error
+	warmCalls            int
+	encodeCalls          int
 	lastAddSpecialTokens bool
-	started     chan struct{}
-	startOnce   sync.Once
-	release     chan struct{}
+	started              chan struct{}
+	startOnce            sync.Once
+	release              chan struct{}
 }
 
 func (f *fakeTokenizerEngine) Manifest() domain.TokenizerManifest {
@@ -296,19 +296,19 @@ func (f *fakeTokenizerEngine) EncodeCalls() int {
 
 func completeTokenizerManifest(profileID string) domain.TokenizerManifest {
 	return domain.TokenizerManifest{
-		ProfileID:             profileID,
-		ServedModel:           "google/gemma-4-31B-it",
-		ModelRepository:       "RedHatAI/gemma-4-31B-it-FP8-dynamic",
-		ModelRevision:         "model-revision",
-		TokenizerRepository:   "RedHatAI/gemma-4-31B-it-FP8-dynamic",
-		TokenizerRevision:     "tokenizer-revision",
-		TokenizerSHA256:       "tokenizer-sha",
-		TokenizerConfigSHA256: "tokenizer-config-sha",
-		SpecialTokensSHA256:   "special-tokens-sha",
-		TemplateSHA256:        "template-sha",
-		TemplateRuntime:       "minijinja-vllm-profile",
+		ProfileID:              profileID,
+		ServedModel:            "google/gemma-4-31B-it",
+		ModelRepository:        "RedHatAI/gemma-4-31B-it-FP8-dynamic",
+		ModelRevision:          "model-revision",
+		TokenizerRepository:    "RedHatAI/gemma-4-31B-it-FP8-dynamic",
+		TokenizerRevision:      "tokenizer-revision",
+		TokenizerSHA256:        "tokenizer-sha",
+		TokenizerConfigSHA256:  "tokenizer-config-sha",
+		SpecialTokensSHA256:    "special-tokens-sha",
+		TemplateSHA256:         "template-sha",
+		TemplateRuntime:        "minijinja-vllm-profile",
 		TemplateRuntimeVersion: "v1",
-		SpecialTokenPolicy:    domain.SpecialTokenPolicyOmit,
+		SpecialTokenPolicy:     domain.SpecialTokenPolicyOmit,
 		SpecialTokens: domain.SpecialTokenBindings{
 			BOS: domain.TokenBinding{Value: "<bos>", ID: 2},
 			EOS: domain.TokenBinding{Value: "<eos>", ID: 1},
@@ -324,11 +324,11 @@ func completeTokenizerManifest(profileID string) domain.TokenizerManifest {
 			JSONSchema:      true,
 			Reasoning:       true,
 		},
-		BackendKind:           "vllm",
-		BackendVersion:        "0.25.1",
-		BlockSize:             4,
-		MultimodalProfile:     "text-only",
-		PredictorVersion:      "v0.9.1-test",
+		BackendKind:       "vllm",
+		BackendVersion:    "0.25.1",
+		BlockSize:         4,
+		MultimodalProfile: "text-only",
+		PredictorVersion:  "v0.9.1-test",
 	}
 }
 

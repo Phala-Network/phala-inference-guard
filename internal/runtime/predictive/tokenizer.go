@@ -12,10 +12,10 @@ import (
 )
 
 var (
-	ErrTokenizerManifestMismatch = errors.New("tokenizer manifest mismatch")
-	ErrUnsupportedRequestClass   = errors.New("unsupported tokenizer request class")
+	ErrTokenizerManifestMismatch  = errors.New("tokenizer manifest mismatch")
+	ErrUnsupportedRequestClass    = errors.New("unsupported tokenizer request class")
 	ErrUnsupportedRequestFeatures = errors.New("unsupported tokenizer request features")
-	ErrInvalidTokenizerOutput    = errors.New("invalid tokenizer output")
+	ErrInvalidTokenizerOutput     = errors.New("invalid tokenizer output")
 )
 
 type RequestClass string
