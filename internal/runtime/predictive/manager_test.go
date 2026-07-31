@@ -131,6 +131,20 @@ func TestDuplicateAndDoubleCompleteAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsMismatchedTokenizerManifestWithoutReservation(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	cost := testRequest()
+	cost.ManifestID = "stale-profile"
+
+	decision := manager.DecideAndReserve(time.Unix(0, 0), "stale", cost)
+	if decision.Reason != domain.ReasonTokenizerProfileUnknown {
+		t.Fatalf("reason = %s, want %s", decision.Reason, domain.ReasonTokenizerProfileUnknown)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 {
+		t.Fatalf("stale manifest changed manager state: %+v", snapshot)
+	}
+}
+
 func TestSampleAssimilatesReservationPresentAcrossWholePollWindow(t *testing.T) {
 	manager := NewManager(domain.VirtualState{
 		PhysicalKVUpper: 50_000,

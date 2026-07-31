@@ -33,6 +33,12 @@ func simulationConstraints() domain.Constraints {
 	}
 }
 
+func TestScenarioRequiresTokenizerManifestIdentity(t *testing.T) {
+	if _, err := Run(time.Unix(0, 0), Scenario{}, constantSafeScheduler{}); err == nil {
+		t.Fatal("scenario without tokenizer manifest identity must fail")
+	}
+}
+
 func TestScenarioCompletionReopensBeforeNextPoll(t *testing.T) {
 	scenario := Scenario{
 		Initial: domain.VirtualState{
