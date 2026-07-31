@@ -113,12 +113,12 @@ func TestStaticSchedulerAppliesPrefillPenaltyToEveryPostJoinUser(t *testing.T) {
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
 	state := domain.VirtualState{DecodeSequences: 2}
 	cost := domain.RequestCost{
-		ManifestID:            "test-profile",
-		InputTokens:           1_000,
-		UncachedPrefillUpper:  1_000,
-		DecodeHorizonUpper:    256,
+		ManifestID:           "test-profile",
+		InputTokens:          1_000,
+		UncachedPrefillUpper: 1_000,
+		DecodeHorizonUpper:   256,
 		DecodeSequencesUpper: 1,
-		Confidence:            0.99,
+		Confidence:           0.99,
 	}
 	prediction := scheduler.Predict(now, state, cost)
 	wantTPS := (testLearnedProfile().BaseCompletionTPS - testLearnedProfile().PrefillTPSPenaltyPerKToken) / 3
@@ -162,8 +162,8 @@ func TestZeroTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testi
 		ActiveContextTokensUpper: 1_016,
 		Confidence:               0.99,
 	})
-	if decision.Reason != domain.ReasonNewTPSAtRisk {
-		t.Fatalf("zero-TPS reason = %s, want %s", decision.Reason, domain.ReasonNewTPSAtRisk)
+	if decision.Reason != domain.ReasonNewTPSAtRisk || decision.Scheduler.AllUserTPSLower != 0 {
+		t.Fatalf("zero-TPS decision = %+v, want explicit %s at 0 TPS", decision, domain.ReasonNewTPSAtRisk)
 	}
 }
 
