@@ -9,6 +9,6 @@ crate-type = ["rlib", "cdylib"]
 
 [dependencies]
 ahash = "0.8.12"
-hmac = "0.12.1"
+blake3 = "1.8.2"
 sha2 = "0.10.9"
 tokenizers = { version = "0.22.2", default-features = false, features = ["onig"] }

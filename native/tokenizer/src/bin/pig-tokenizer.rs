@@ -48,7 +48,9 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         "analyze-bench" => {
             if arguments.len() != 7 {
-                return Err("analyze-bench requires warmup, iteration, and block-size values".into());
+                return Err(
+                    "analyze-bench requires warmup, iteration, and block-size values".into(),
+                );
             }
             let warmup: usize = arguments[4].parse()?;
             let iterations: usize = arguments[5].parse()?;

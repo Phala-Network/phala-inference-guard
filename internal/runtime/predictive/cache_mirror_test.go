@@ -295,6 +295,15 @@ func TestCacheMirrorRejectsInvalidLifecycleInputs(t *testing.T) {
 	if _, err := NewCacheMirror(CacheMirrorConfig{}); err == nil {
 		t.Fatal("empty configuration must fail")
 	}
+	if _, err := NewCacheMirror(CacheMirrorConfig{
+		CapacityBlocks: 1,
+		BlockSize:      4,
+		ManifestID:     "test-profile",
+		BackendEpoch:   "backend-1",
+		HashKey:        []byte("only-sixteen-key"),
+	}); err == nil {
+		t.Fatal("non-32-byte cache mirror key must fail")
+	}
 	mirror := newTestCacheMirror(t, 4, 2)
 	if _, err := mirror.BeginRequest("", []int64{1, 2}); err == nil {
 		t.Fatal("empty request id must fail")

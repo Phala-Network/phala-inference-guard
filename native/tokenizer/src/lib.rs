@@ -1,10 +1,7 @@
 use std::{error::Error, fmt, path::Path};
 
-use hmac::{Hmac, Mac};
 use sha2::{Digest, Sha256};
 use tokenizers::Tokenizer;
-
-type HmacSha256 = Hmac<Sha256>;
 
 const BLOCK_DIGEST_DOMAIN: &[u8] = b"pig-kv-token-block-v1";
 const FULL_BLOCK_TAG: u8 = 1;
@@ -25,7 +22,7 @@ pub struct BlockDigestContext {
     manifest_id: String,
     backend_epoch: String,
     block_size: usize,
-    key: Vec<u8>,
+    key: [u8; 32],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,16 +64,18 @@ impl BlockDigestContext {
                 "block digest block size must be positive".to_string(),
             ));
         }
-        if key.len() < 16 {
+        if key.len() != 32 {
             return Err(NativeTokenizerError::new(
-                "block digest key must contain at least 16 bytes".to_string(),
+                "block digest key must contain exactly 32 bytes".to_string(),
             ));
         }
+        let mut owned_key = [0_u8; 32];
+        owned_key.copy_from_slice(key);
         Ok(Self {
             manifest_id,
             backend_epoch,
             block_size,
-            key: key.to_vec(),
+            key: owned_key,
         })
     }
 
@@ -124,7 +123,7 @@ impl NativeTokenizer {
         let mut previous = [0_u8; 32];
         let mut chunks = token_ids.chunks_exact(context.block_size);
         for block in &mut chunks {
-            let digest = block_digest(context, FULL_BLOCK_TAG, &previous, block)?;
+            let digest = block_digest(context, FULL_BLOCK_TAG, &previous, block);
             full_block_digests.push(digest);
             previous = digest;
         }
@@ -134,7 +133,7 @@ impl NativeTokenizer {
         } else {
             Some(PartialBlockMetadata {
                 token_count: remainder.len(),
-                digest: block_digest(context, PARTIAL_BLOCK_TAG, &previous, remainder)?,
+                digest: block_digest(context, PARTIAL_BLOCK_TAG, &previous, remainder),
             })
         };
         let input_sha256: [u8; 32] = Sha256::digest(input.as_bytes()).into();
@@ -153,9 +152,8 @@ fn block_digest(
     block_tag: u8,
     previous: &[u8; 32],
     token_ids: &[u32],
-) -> Result<[u8; 32], NativeTokenizerError> {
-    let mut digest = HmacSha256::new_from_slice(&context.key)
-        .map_err(|error| NativeTokenizerError::new(format!("initialize block digest: {error}")))?;
+) -> [u8; 32] {
+    let mut digest = blake3::Hasher::new_keyed(&context.key);
     digest.update(BLOCK_DIGEST_DOMAIN);
     update_length_prefixed(&mut digest, context.manifest_id.as_bytes());
     update_length_prefixed(&mut digest, context.backend_epoch.as_bytes());
@@ -166,13 +164,10 @@ fn block_digest(
     for token_id in token_ids {
         digest.update(&u64::from(*token_id).to_le_bytes());
     }
-    let bytes = digest.finalize().into_bytes();
-    let mut output = [0_u8; 32];
-    output.copy_from_slice(&bytes);
-    Ok(output)
+    *digest.finalize().as_bytes()
 }
 
-fn update_length_prefixed(digest: &mut HmacSha256, value: &[u8]) {
+fn update_length_prefixed(digest: &mut blake3::Hasher, value: &[u8]) {
     digest.update(&(value.len() as u64).to_le_bytes());
     digest.update(value);
 }

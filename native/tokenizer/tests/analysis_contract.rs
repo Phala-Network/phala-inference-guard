@@ -100,6 +100,7 @@ fn invalid_digest_context_is_rejected_before_encoding() {
     assert!(BlockDigestContext::new("profile-1", "", 4, &[7; 32]).is_err());
     assert!(BlockDigestContext::new("profile-1", "backend-1", 0, &[7; 32]).is_err());
     assert!(BlockDigestContext::new("profile-1", "backend-1", 4, &[7; 15]).is_err());
+    assert!(BlockDigestContext::new("profile-1", "backend-1", 4, &[7; 33]).is_err());
 }
 
 fn digest_context(manifest_id: &str, backend_epoch: &str, block_size: usize) -> BlockDigestContext {

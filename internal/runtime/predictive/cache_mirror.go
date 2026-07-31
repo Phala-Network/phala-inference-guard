@@ -141,8 +141,8 @@ func NewCacheMirror(config CacheMirrorConfig) (*CacheMirror, error) {
 			return nil, fmt.Errorf("generate cache mirror hash key: %w", err)
 		}
 	}
-	if len(hashKey) < 16 {
-		return nil, fmt.Errorf("cache mirror hash key must contain at least 16 bytes")
+	if len(hashKey) != sha256.Size {
+		return nil, fmt.Errorf("cache mirror hash key must contain exactly %d bytes", sha256.Size)
 	}
 	return &CacheMirror{
 		capacityBlocks: config.CapacityBlocks,
