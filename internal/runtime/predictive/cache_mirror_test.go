@@ -356,11 +356,11 @@ func assertHitInterval(t *testing.T, got, want domain.CacheHitInterval) {
 
 func testTokenBlockAnalysis(inputTokens int64, digests ...CacheBlockDigest) TokenBlockAnalysis {
 	analysis := TokenBlockAnalysis{
-		ManifestID:        "test-profile",
-		BackendEpoch:      "backend-1",
-		BlockSize:         4,
-		ExactInputTokens:  inputTokens,
-		FullBlockDigests:  append([]CacheBlockDigest(nil), digests...),
+		ManifestID:         "test-profile",
+		BackendEpoch:       "backend-1",
+		BlockSize:          4,
+		ExactInputTokens:   inputTokens,
+		FullBlockDigests:   append([]CacheBlockDigest(nil), digests...),
 		PartialBlockTokens: inputTokens % 4,
 	}
 	if analysis.PartialBlockTokens > 0 {
