@@ -17,8 +17,8 @@ func TestLearnedSchedulerChangesAdmissionWithCurrentMetricsHeldConstant(t *testi
 
 	coldManager := NewManager("test-profile", state, constraints, scheduler)
 	cold := coldManager.DecideAndReserve(now, "cold", cost)
-	if cold.Reason != domain.ReasonNewTPSAtRisk {
-		t.Fatalf("cold reason = %s, want %s (estimate=%+v)", cold.Reason, domain.ReasonNewTPSAtRisk, cold.Scheduler)
+	if cold.Reason != domain.ReasonExistingTPSAtRisk {
+		t.Fatalf("cold reason = %s, want %s (estimate=%+v)", cold.Reason, domain.ReasonExistingTPSAtRisk, cold.Scheduler)
 	}
 
 	for index := 0; index < testResidualConfig().MinimumSamples; index++ {

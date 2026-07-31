@@ -125,7 +125,6 @@ type SchedulerFeatures struct {
 	DecodeSequences         int
 	ActiveContextTokens     int64
 	UncachedPrefillTokens   int64
-	CachedPrefillExpected   int64
 	PhysicalKVUpper         int64
 	ActiveKVUpper           int64
 	DecodeHorizonUpper      int64
@@ -167,7 +166,6 @@ type featureCell struct {
 	DecodeSequences         int
 	ActiveContextTokens     int64
 	UncachedPrefillTokens   int64
-	CachedPrefillExpected   int64
 	PhysicalKVUpper         int64
 	ActiveKVUpper           int64
 	DecodeHorizonUpper      int64
@@ -316,19 +314,20 @@ func (s *LearnedScheduler) staticEstimate(features SchedulerFeatures) domain.Sch
 	if prefillCapacity < 0 {
 		prefillCapacity = 0
 	}
-	existingTPS := prefillCapacity
 	existingTPSNotApplicable := features.ExistingDecodeSequences == 0
-	if features.ExistingDecodeSequences > 0 {
-		existingTPS = prefillCapacity / float64(features.ExistingDecodeSequences)
-	}
 	postJoinSequences := features.DecodeSequences
 	if postJoinSequences < 1 {
 		postJoinSequences = 1
 	}
+	postJoinTPS := prefillCapacity / float64(postJoinSequences)
+	existingTPS := postJoinTPS
+	if existingTPSNotApplicable {
+		existingTPS = 0
+	}
 	return domain.SchedulerEstimate{
 		ExistingUserTPSLower:         existingTPS,
 		ExistingUserTPSNotApplicable: existingTPSNotApplicable,
-		AllUserTPSLower:              s.profile.BaseCompletionTPS / float64(postJoinSequences),
+		AllUserTPSLower:              postJoinTPS,
 		TTFTUpper:                    addDurationSaturating(s.profile.BaseTTFT, multiplyDurationSaturating(s.profile.TTFTPerUncachedPrefillToken, features.UncachedPrefillTokens)),
 		TPOTUpper:                    addDurationSaturating(s.profile.BaseTPOT, multiplyDurationSaturating(s.profile.TPOTPerExistingDecodeSequence, int64(features.ExistingDecodeSequences))),
 		WorkspaceRiskUpper:           s.profile.WorkspaceRiskUpper,
@@ -342,7 +341,6 @@ func (s *LearnedScheduler) featureCell(features SchedulerFeatures) featureCell {
 		DecodeSequences:         bucketInt(features.DecodeSequences, s.config.DecodeSequenceBucket),
 		ActiveContextTokens:     bucketInt64(features.ActiveContextTokens, s.config.ContextTokenBucket),
 		UncachedPrefillTokens:   bucketInt64(features.UncachedPrefillTokens, s.config.PrefillTokenBucket),
-		CachedPrefillExpected:   bucketInt64(features.CachedPrefillExpected, s.config.PrefillTokenBucket),
 		PhysicalKVUpper:         bucketInt64(features.PhysicalKVUpper, s.config.KVTokenBucket),
 		ActiveKVUpper:           bucketInt64(features.ActiveKVUpper, s.config.KVTokenBucket),
 		DecodeHorizonUpper:      bucketInt64(features.DecodeHorizonUpper, s.config.PrefillTokenBucket),
@@ -359,7 +357,6 @@ func schedulerFeatures(state domain.VirtualState, request domain.RequestCost) Sc
 		DecodeSequences:         addIntSaturating(nonNegativeInt(state.DecodeSequences), requestSequences),
 		ActiveContextTokens:     addInt64Saturating(nonNegativeInt64(state.ActiveContextTokens), nonNegativeInt64(request.ActiveContextTokensUpper)),
 		UncachedPrefillTokens:   addInt64Saturating(nonNegativeInt64(state.UncachedPrefillTokens), nonNegativeInt64(request.UncachedPrefillUpper)),
-		CachedPrefillExpected:   nonNegativeInt64(request.CachedPrefillExpected),
 		PhysicalKVUpper:         addInt64Saturating(nonNegativeInt64(state.PhysicalKVUpper), nonNegativeInt64(request.KV.PhysicalKVUpper)),
 		ActiveKVUpper:           addInt64Saturating(nonNegativeInt64(state.ActiveKVUpper), nonNegativeInt64(request.KV.ActiveKVUpper)),
 		DecodeHorizonUpper:      nonNegativeInt64(request.DecodeHorizonUpper),
