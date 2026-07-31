@@ -22,14 +22,15 @@ type predictiveRequestRenderer interface {
 	Render(context.Context, predictiveShadowInput) (predictiveRenderedRequest, error)
 }
 
-type predictiveTokenAnalyzer interface {
-	Analyze(context.Context, runtimepredictive.RequestClass, []byte, runtimepredictive.RequestFeatures) (runtimepredictive.TokenBlockAnalysis, error)
+type predictiveTokenCounter interface {
+	Count(context.Context, runtimepredictive.RequestClass, []byte, runtimepredictive.RequestFeatures) (runtimepredictive.TokenCountAnalysis, error)
+	Close() error
 }
 
 type realPredictiveShadowConfig struct {
 	Renderer    predictiveRequestRenderer
-	Analyzer    predictiveTokenAnalyzer
-	Coordinator *runtimepredictive.Coordinator
+	Counter     predictiveTokenCounter
+	Coordinator *runtimepredictive.CountCoordinator
 	Now         func() time.Time
 }
 
@@ -46,8 +47,8 @@ type predictiveAttemptSnapshot struct {
 type realPredictiveShadow struct {
 	mu           sync.Mutex
 	renderer     predictiveRequestRenderer
-	analyzer     predictiveTokenAnalyzer
-	coordinator  *runtimepredictive.Coordinator
+	counter      predictiveTokenCounter
+	coordinator  *runtimepredictive.CountCoordinator
 	now          func() time.Time
 	closed       bool
 	attempts     predictiveAttemptSnapshot
@@ -63,8 +64,8 @@ func newRealPredictiveShadow(config realPredictiveShadowConfig) (*realPredictive
 	if config.Renderer == nil {
 		return nil, fmt.Errorf("predictive request renderer is required")
 	}
-	if config.Analyzer == nil {
-		return nil, fmt.Errorf("predictive token analyzer is required")
+	if config.Counter == nil {
+		return nil, fmt.Errorf("predictive token counter is required")
 	}
 	if config.Coordinator == nil {
 		return nil, fmt.Errorf("predictive coordinator is required")
@@ -74,7 +75,7 @@ func newRealPredictiveShadow(config realPredictiveShadowConfig) (*realPredictive
 	}
 	return &realPredictiveShadow{
 		renderer:     config.Renderer,
-		analyzer:     config.Analyzer,
+		counter:      config.Counter,
 		coordinator:  config.Coordinator,
 		now:          config.Now,
 		reservations: make(map[string]struct{}),
@@ -109,7 +110,7 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
 		return nil
 	}
-	analysis, err := s.analyzer.Analyze(ctx, rendered.Class, rendered.Rendered, rendered.Features)
+	analysis, err := s.counter.Count(ctx, rendered.Class, rendered.Rendered, rendered.Features)
 	if err != nil {
 		s.recordUnknown(domainpredictive.ReasonTokenizerProfileUnknown)
 		return nil
@@ -125,7 +126,7 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		s.recordUnknownLocked(domainpredictive.ReasonPredictorProfileUnknown)
 		return nil
 	}
-	result := s.coordinator.DecideAndReserve(s.now(), runtimepredictive.AdmissionProposal{
+	result := s.coordinator.DecideAndReserve(s.now(), runtimepredictive.CountAdmissionProposal{
 		RequestID:          requestID,
 		Analysis:           analysis,
 		DecodeHorizonUpper: rendered.DecodeHorizonUpper,
@@ -178,7 +179,7 @@ func (s *realPredictiveShadow) Close() error {
 			delete(s.reservations, requestID)
 		}
 	}
-	return nil
+	return s.counter.Close()
 }
 
 func (r *realPredictiveReservation) MarkPrefillComplete() bool {
@@ -229,7 +230,7 @@ func (s *realPredictiveShadow) recordUnknownLocked(reason domainpredictive.Reaso
 	s.attempts.LastSamples = 0
 }
 
-func (s *realPredictiveShadow) recordResultLocked(result runtimepredictive.AdmissionResult) {
+func (s *realPredictiveShadow) recordResultLocked(result runtimepredictive.CountAdmissionResult) {
 	s.attempts.Attempts++
 	s.attempts.LastReason = result.Decision.Reason
 	s.attempts.LastSource = result.Prediction.Source
@@ -240,7 +241,6 @@ func (s *realPredictiveShadow) recordResultLocked(result runtimepredictive.Admis
 	}
 	switch result.Decision.Reason {
 	case domainpredictive.ReasonTokenizerProfileUnknown,
-		domainpredictive.ReasonCacheStateUnknown,
 		domainpredictive.ReasonPredictorProfileUnknown:
 		s.attempts.Unknown++
 	default:

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -21,12 +20,11 @@ type adapterTestRenderer struct {
 	err   error
 }
 
-type adapterTestAnalyzer struct {
+type adapterTestCounter struct {
 	mu         sync.Mutex
 	calls      int
 	manifestID string
 	epoch      string
-	blockSize  int
 }
 
 type adapterTestClock struct {
@@ -63,24 +61,25 @@ func (r *adapterTestRenderer) Calls() int {
 	return r.calls
 }
 
-func (a *adapterTestAnalyzer) Analyze(_ context.Context, _ runtimepredictive.RequestClass, rendered []byte, _ runtimepredictive.RequestFeatures) (runtimepredictive.TokenBlockAnalysis, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.calls++
-	digest := sha256.Sum256(rendered)
-	return runtimepredictive.TokenBlockAnalysis{
-		ManifestID:       a.manifestID,
-		BackendEpoch:     a.epoch,
-		BlockSize:        a.blockSize,
-		ExactInputTokens: int64(a.blockSize),
-		FullBlockDigests: []runtimepredictive.CacheBlockDigest{runtimepredictive.CacheBlockDigest(digest)},
+func (c *adapterTestCounter) Count(_ context.Context, _ runtimepredictive.RequestClass, _ []byte, _ runtimepredictive.RequestFeatures) (runtimepredictive.TokenCountAnalysis, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.calls++
+	return runtimepredictive.TokenCountAnalysis{
+		ManifestID:       c.manifestID,
+		BackendEpoch:     c.epoch,
+		ExactInputTokens: 4,
 	}, nil
 }
 
-func (a *adapterTestAnalyzer) Calls() int {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.calls
+func (c *adapterTestCounter) Calls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func (c *adapterTestCounter) Close() error {
+	return nil
 }
 
 func (c *adapterTestClock) Now() time.Time {
@@ -105,11 +104,11 @@ func TestRealPredictiveShadowRunsExactTransactionBeforeQoS(t *testing.T) {
 
 	clock := &adapterTestClock{now: time.Unix(100, 0)}
 	renderer := &adapterTestRenderer{}
-	analyzer := newAdapterTestAnalyzer()
+	counter := newAdapterTestCounter()
 	coordinator := newAdapterTestCoordinator(t)
 	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
 		Renderer:    renderer,
-		Analyzer:    analyzer,
+		Counter:     counter,
 		Coordinator: coordinator,
 		Now:         clock.Now,
 	})
@@ -138,22 +137,22 @@ func TestRealPredictiveShadowRunsExactTransactionBeforeQoS(t *testing.T) {
 	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
 		t.Fatalf("response/backend calls = %d/%d, want 429/0", recorder.Code, backendCalls)
 	}
-	if renderer.Calls() != 1 || analyzer.Calls() != 1 {
-		t.Fatalf("renderer/analyzer calls = %d/%d, want 1/1", renderer.Calls(), analyzer.Calls())
+	if renderer.Calls() != 1 || counter.Calls() != 1 {
+		t.Fatalf("renderer/counter calls = %d/%d, want 1/1", renderer.Calls(), counter.Calls())
 	}
 	snapshot := coordinator.Snapshot()
-	if snapshot.Manager.Reservations != 0 || snapshot.Cache.Requests != 0 || snapshot.Manager.EventSequence != 2 {
+	if snapshot.Manager.Reservations != 0 || snapshot.Manager.EventSequence != 2 {
 		t.Fatalf("post-local-reject coordinator snapshot = %+v", snapshot)
 	}
 }
 
 func TestRealPredictiveShadowRejectsUnsupportedBeforeAnalysis(t *testing.T) {
 	renderer := &adapterTestRenderer{err: fmt.Errorf("unsupported request features")}
-	analyzer := newAdapterTestAnalyzer()
+	counter := newAdapterTestCounter()
 	coordinator := newAdapterTestCoordinator(t)
 	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
 		Renderer:    renderer,
-		Analyzer:    analyzer,
+		Counter:     counter,
 		Coordinator: coordinator,
 	})
 	if err != nil {
@@ -164,14 +163,14 @@ func TestRealPredictiveShadowRejectsUnsupportedBeforeAnalysis(t *testing.T) {
 		Path: "/v1/chat/completions",
 		Body: []byte(`{"messages":[{"role":"user","content":[{"type":"image_url"}]}]}`),
 	})
-	if reservation != nil || renderer.Calls() != 1 || analyzer.Calls() != 0 {
-		t.Fatalf("unsupported reservation/render/analyze = %T/%d/%d", reservation, renderer.Calls(), analyzer.Calls())
+	if reservation != nil || renderer.Calls() != 1 || counter.Calls() != 0 {
+		t.Fatalf("unsupported reservation/render/count = %T/%d/%d", reservation, renderer.Calls(), counter.Calls())
 	}
 	attempt := adapter.Snapshot()
 	if attempt.Attempts != 1 || attempt.Unknown != 1 || attempt.LastReason != domainpredictive.ReasonTokenizerProfileUnknown {
 		t.Fatalf("unsupported attempt = %+v", attempt)
 	}
-	if snapshot := coordinator.Snapshot(); snapshot.Manager.EventSequence != 0 || snapshot.Manager.Reservations != 0 || snapshot.Cache.Requests != 0 {
+	if snapshot := coordinator.Snapshot(); snapshot.Manager.EventSequence != 0 || snapshot.Manager.Reservations != 0 {
 		t.Fatalf("unsupported request mutated coordinator = %+v", snapshot)
 	}
 }
@@ -181,7 +180,7 @@ func TestRealPredictiveShadowEligibleHistoryChangesPreForwardDecision(t *testing
 	coldClock := &adapterTestClock{now: finalTime}
 	cold, err := newRealPredictiveShadow(realPredictiveShadowConfig{
 		Renderer:    &adapterTestRenderer{},
-		Analyzer:    newAdapterTestAnalyzer(),
+		Counter:     newAdapterTestCounter(),
 		Coordinator: newAdapterTestCoordinator(t),
 		Now:         coldClock.Now,
 	})
@@ -192,7 +191,7 @@ func TestRealPredictiveShadowEligibleHistoryChangesPreForwardDecision(t *testing
 	trainedClock := &adapterTestClock{now: finalTime.Add(-3 * time.Second)}
 	trained, err := newRealPredictiveShadow(realPredictiveShadowConfig{
 		Renderer:    &adapterTestRenderer{},
-		Analyzer:    newAdapterTestAnalyzer(),
+		Counter:     newAdapterTestCounter(),
 		Coordinator: newAdapterTestCoordinator(t),
 		Now:         trainedClock.Now,
 	})
@@ -253,19 +252,18 @@ func TestRealPredictiveShadowEligibleHistoryChangesPreForwardDecision(t *testing
 	}
 }
 
-func newAdapterTestAnalyzer() *adapterTestAnalyzer {
-	return &adapterTestAnalyzer{
+func newAdapterTestCounter() *adapterTestCounter {
+	return &adapterTestCounter{
 		manifestID: "adapter-test-manifest",
 		epoch:      "adapter-test-epoch",
-		blockSize:  4,
 	}
 }
 
-func newAdapterTestCoordinator(t *testing.T) *runtimepredictive.Coordinator {
+func newAdapterTestCoordinator(t *testing.T) *runtimepredictive.CountCoordinator {
 	return newAdapterTestCoordinatorWithTPSTarget(t, 80)
 }
 
-func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64) *runtimepredictive.Coordinator {
+func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64) *runtimepredictive.CountCoordinator {
 	t.Helper()
 	identity := adapterTestIdentity()
 	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
@@ -299,7 +297,7 @@ func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64)
 	if err != nil {
 		t.Fatalf("new learned scheduler: %v", err)
 	}
-	coordinator, err := runtimepredictive.NewCoordinator(runtimepredictive.CoordinatorConfig{
+	coordinator, err := runtimepredictive.NewCountCoordinator(runtimepredictive.CountCoordinatorConfig{
 		Identity: runtimepredictive.CoordinatorIdentity{
 			ManifestID:   "adapter-test-manifest",
 			BackendEpoch: "adapter-test-epoch",
@@ -316,9 +314,7 @@ func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64)
 			PreemptionRiskBudget: 1,
 			MinimumConfidence:    1,
 		},
-		Scheduler:           scheduler,
-		CacheCapacityBlocks: 128,
-		CacheHashKey:        []byte("0123456789abcdef0123456789abcdef"),
+		Scheduler: scheduler,
 	})
 	if err != nil {
 		t.Fatalf("new coordinator: %v", err)
