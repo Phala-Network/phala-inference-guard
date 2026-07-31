@@ -1,13 +1,15 @@
 # PIG v0.9.1 Tokenizer-First Predictive Admission Plan
 
-Status: active reviewed plan; existing renderer/tokenizer parity is reusable,
-but the cache-free admission path has not been implemented
+Status: implemented release candidate; count-only HTTP prediction, fresh vLLM
+reconciliation, attributed semantic-TTFT learning, and deterministic goodput
+gates are builder-green; the final clean-builder release matrix remains pending
 
 Supersedes: `PREDICTIVE_ADMISSION_V0_9_1_PLAN.md`
 
 Version target: PIG-v0.9.1
 
-Runtime version before all gates pass: PIG-v0.9.0
+Release-candidate source version: PIG-v0.9.1; it remains unpublished and
+undeployed until the exact final-commit gates pass
 
 Control mode: off or shadow only
 
@@ -165,6 +167,18 @@ If `max_kv_tokens`, backend epoch, or a required sample is missing, stale, or
 identity-mismatched, predictive admission returns unknown and grants no extra
 headroom. Hard emergency guards from current PIG remain independent.
 
+The hash-pinned schema-2 profile also owns the observer timing contract:
+
+- metrics poll interval;
+- maximum sample age;
+- metrics request timeout;
+- preemption cooldown.
+
+These values are not inherited from the older dynamic/KV environment settings.
+The same manifest therefore produces the same freshness and cooldown behavior
+across processes. A vLLM preemption-counter reset invalidates the prior fresh
+sample immediately and requires a new stable sample before prediction resumes.
+
 ## 6. Per-request prospective cost
 
 For one supported request:
@@ -289,6 +303,21 @@ an observed completion outcome.
 Feedback calibrates future predictions; it is never the late trigger intended
 to protect a request that has already been forwarded.
 
+The integrated HTTP path currently has one per-request outcome that is both
+semantically valid and attributable without changing upstream request bytes:
+semantic streaming TTFT. It is recorded at first semantic output but submitted
+to the learner only if that owned reservation later terminates as a successful
+completion. Local reject, cancel, disconnect, timeout, upstream failure, late,
+duplicate, and wrong-identity observations cannot train the model.
+
+PIG does not infer actual completion tokens from `max_tokens`, SSE chunk count,
+or aggregate backend metrics. Consequently live TPS and TPOT residual cells
+remain on the conservative static service curve unless a future request already
+carries a reliable, backend-produced, per-request completion-usage outcome.
+This is an intentional non-fabrication boundary, not a claim that TPS/TPOT are
+unprotected: their static post-admit forecasts are still evaluated before
+forwarding.
+
 ## 9. Decision order
 
 For each supported request, under one transaction boundary:
@@ -332,6 +361,21 @@ Initial builder gates:
 | Deadline/close race | zero late reservations and zero leaks |
 
 These are engineering gates, not production latency claims.
+
+The completed production-tokenizer benchmark supersedes any interpretation
+that long prompts are sub-millisecond. Steady-state count-only p95 was:
+
+| Exact input tokens | Count-only p95 |
+|---:|---:|
+| 49 | 52.539 us |
+| 3,074 | 8.612 ms |
+| 24,578 | 132.639 ms |
+| 65,538 | 587.303 ms |
+| 131,074 | 1.516 s |
+
+Tokenizer load time is excluded from per-request steady state. The deterministic
+TTFT ground truth charges these p95 values to exact-token policies, while the
+static predictive TTFT curve is configured as a conservative upper envelope.
 
 ## 11. Test-first phases
 
@@ -398,7 +442,9 @@ prefixes are intentionally charged as cold in every tokenizer-first policy.
   checks, latency gates, and deterministic simulations on a clean builder
   checkout;
 - audit evidence and the Git diff;
-- keep runtime at PIG-v0.9.0 and stop if any gate fails;
+- keep runtime at PIG-v0.9.0 until component and efficacy gates pass, then
+  promote the source candidate to PIG-v0.9.1 and rerun the exact final matrix;
+  revert the promotion if any final gate fails;
 - do not build an image, publish, or deploy without a later explicit user
   instruction.
 
@@ -471,6 +517,37 @@ If the 5% goodput gate is not reached without cache prediction, the result is a
 valid no-go for this simple design. The gate is not weakened and cache-aware
 complexity is not silently reintroduced.
 
+The builder-green deterministic candidate at commit `5ba63af` produced:
+
+The fixed model uses 1,000,000 maximum KV tokens, 900,000 protected tokens,
+64-token blocks, a 120 completion-token/s base curve, 25 token/s per-user
+target, 3 s TTFT SLO, and 35 ms TPOT SLO except where a named scenario
+explicitly changes one value. The current-threshold comparator uses its sampled
+80% KV intake guard plus a two-request local count cap. The v0.9.0 comparator
+uses the repository's real `kvshadow.Manager` and byte-estimate interval; both
+exact-token policies use the real `CountCoordinator`. Every policy receives the
+same arrivals, terminal causes, poll schedule, and cache-cold ground truth.
+This deliberately isolates admission behavior; it is not a claim that these
+service-curve constants describe any of the six production CVMs.
+
+| Policy | Admitted | Completed | SLO-compliant | Completion-token goodput | Safety violations | False accepts | Minimum KV headroom |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Current threshold | 34 | 28 | 26 | 5,856 | 2 | 2 | 80,000 |
+| v0.9.0 KV-only | 65 | 60 | 20 | 3,040 | 72 | 20 | -40,320 |
+| Exact-token KV plus QoS | 48 | 44 | 44 | 12,256 | 0 | 0 | 19,840 |
+
+This is a deterministic CPU/service-curve result, not a real-GPU benchmark.
+The predictive policy improved completion-token goodput by about 109.3% versus
+the current threshold model and 303.2% versus v0.9.0 KV-only in this fixed
+suite, with strict improvement in seven named scenarios and no long-prompt
+suite regression. The intentionally stressful bursts explain the large margin;
+only the pass/fail conclusion against the predeclared 5% gate is used for this
+release decision.
+
+The structured report is
+`/work/pig-v091-evidence/5ba63af-completion-goodput-report.json` with SHA-256
+`088c4f7ab7d6b10266c7f2d6e6300d8ac055b54dd582f820e25bd7e19927e3ce`.
+
 ## 14. Deliverables
 
 - this reviewed plan;
@@ -540,3 +617,79 @@ Review result: the plan is internally consistent with the simplified request.
 It removes cache prediction rather than hiding it, remains prospective rather
 than feedback-only, protects single-user TPS/latency as well as KV, and keeps
 simulation/builder/no-production boundaries explicit.
+
+## 16. Post-implementation three-pass review
+
+### Execution pass 1: model causality and objective
+
+Finding: the learner changed decisions in direct tests, but the real HTTP
+reservation interface originally exposed no outcome method. That made learning
+production-unreachable even though the pre-forward predictor itself was live.
+
+Revision: successful streaming requests now carry owned semantic TTFT through
+the real reservation and submit it only after successful completion. A fixed
+state/fixed request test proves three eligible outcomes change the next
+pre-forward decision from static fit to calibrated TTFT risk. Failed requests
+with the same semantic observation do not train. TPS/TPOT remain static rather
+than accepting fabricated per-request outcomes.
+
+Finding: a safety-only result could still lower useful throughput.
+
+Revision: the independent `internal/simulation/goodput` suite runs four
+policies on identical cache-cold traces, counts only SLO-compliant completion
+tokens, charges tokenizer p95 to TTFT, and enforces the original 5%/three-
+scenario/long-prompt gates. It passed with 12,256 predictive goodput versus
+5,856 and 3,040 for the two required baselines.
+
+### Execution pass 2: safety, identity, and lifecycle
+
+Finding: a falling vLLM preemption counter returned without reconciliation but
+left the preceding sample authorized as fresh. A restarted/reset backend could
+therefore receive predictive headroom from pre-reset state.
+
+Revision: counter reset now clears freshness and old preemption time. Tests
+cover capacity mismatch, missing token capacity, stale/future clocks,
+preemption cooldown, reset/recovery, in-flight Close cancellation, concurrent
+sample watermarks, and exactly-one-upstream URL selection.
+
+Finding: observer poll/age/timeout/cooldown came from mutable legacy config,
+while model, tokenizer, capacity, and QoS came from the immutable manifest.
+
+Revision: schema version 2 pins all four observer timings. Unknown and duplicate
+JSON keys, profile/asset hashes, image digest, renderer, special-token policy,
+KV alignment/order, horizon, timing, and scheduler failures are fail-closed.
+Native construction tests prove legacy timing values cannot override the
+manifest.
+
+### Execution pass 3: evidence and claims
+
+Finding: the first aggregate reporter used a negative number as both a valid KV
+headroom result and an uninitialized sentinel. A later scenario could overwrite
+the real minimum even though the goodput decision itself was unchanged.
+
+Revision: aggregation now tracks initialization separately. The corrected
+v0.9.0 KV-only minimum is -40,320 tokens, while predictive QoS remains +19,840.
+Tests also require zero predictive false accepts, full cold cost for four
+identical prefixes, and the measured 49/3k/24k/65k/131k tokenizer p95 values.
+
+Finding: several otherwise-correct builder runs contained a formatting failure
+or test-harness syntax error.
+
+Revision: those runs are explicitly invalid evidence. Valid behavioral reds
+and clean greens use later exact commits. Current material green evidence is:
+
+- attributed semantic TTFT: commit `0d98721`, log SHA-256
+  `06b916c6ebbc290e398a059679b26eb63046dd0e2e1c00a739b5cc1d492a1f82`;
+- deterministic goodput: commit `5ba63af`, log SHA-256
+  `d1166beabfd882ff481ae7c42257ea3998b00c734c2b2d55843c92afe6b234f0`;
+- observer negative/race suite: commit `30c2d51`, log SHA-256
+  `15d0e8d699c08be4b1da0314b5b54c42e2032538c197bc5cb4ebe58e83894aab`;
+- schema-2 profile/default/native/race suite: commit `1aee2ff`, log SHA-256
+  `0cc8d144c4b19c229b0508e152959852ad4c9938ae8941203414b5cd84af530c`.
+
+Review result: the implementation is prospective and cache-cold, protects QoS
+while increasing deterministic completion goodput, and fails closed on state or
+identity uncertainty. The source-only PIG-v0.9.1 promotion is included in the
+release candidate; remaining work is the exact final-commit full matrix. No
+image, registry publication, deployment, restart, or production inference test
+is authorized or implied.

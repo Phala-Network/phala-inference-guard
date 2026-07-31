@@ -12,7 +12,7 @@ func validateKVAdmissionConfig(cfg Config) error {
 		return nil
 	}
 	if cfg.KVAdmissionMode != "off" && cfg.KVAdmissionMode != "shadow" {
-		return fmt.Errorf("KV_ADMISSION_MODE must be one of off or shadow; enforce is not supported in v0.9.0")
+		return fmt.Errorf("KV_ADMISSION_MODE must be one of off or shadow; enforce is not supported in v0.9.1")
 	}
 	if err := validateKVAdmissionBudget("VLLM", cfg.KVAdmissionPolicy.VLLM); err != nil {
 		return err
