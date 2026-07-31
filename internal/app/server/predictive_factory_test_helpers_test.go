@@ -25,7 +25,7 @@ func writePredictiveFactoryTestProfile(t *testing.T, cfg *config) {
 		t.Fatalf("write chat template: %v", err)
 	}
 	profile := map[string]any{
-		"schema_version":                          1,
+		"schema_version":                          2,
 		"manifest_id":                             "factory-test-manifest",
 		"profile_id":                              "factory-test-profile",
 		"predictor_version":                       "factory-test-predictor-v1",
@@ -47,6 +47,10 @@ func writePredictiveFactoryTestProfile(t *testing.T, cfg *config) {
 		"model_maximum_length":                    262144,
 		"maximum_kv_tokens":                       1000000,
 		"protected_kv_tokens":                     900000,
+		"metrics_poll_interval_milliseconds":      250,
+		"metrics_maximum_age_milliseconds":        750,
+		"metrics_request_timeout_milliseconds":    500,
+		"preemption_cooldown_milliseconds":        1000,
 		"default_decode_horizon":                  128,
 		"maximum_decode_horizon":                  262144,
 		"base_completion_tps":                     120.0,
