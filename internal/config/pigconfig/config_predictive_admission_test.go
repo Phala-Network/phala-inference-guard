@@ -10,8 +10,20 @@ func TestLoadPredictiveAdmissionDefaultsOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PredictiveAdmissionMode != "off" {
-		t.Fatalf("predictive mode = %q, want off", cfg.PredictiveAdmissionMode)
+	if cfg.PredictiveAdmissionMode != "off" || cfg.PredictiveAdmissionProfilePath != "" || cfg.PredictiveAdmissionProfileSHA256 != "" {
+		t.Fatalf("predictive defaults = mode %q path %q SHA %q, want off with no profile", cfg.PredictiveAdmissionMode, cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256)
+	}
+}
+
+func TestLoadPredictiveAdmissionProfileIdentity(t *testing.T) {
+	t.Setenv("PREDICTIVE_ADMISSION_PROFILE_PATH", " /profiles/gemma4.json ")
+	t.Setenv("PREDICTIVE_ADMISSION_PROFILE_SHA256", " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PredictiveAdmissionProfilePath != "/profiles/gemma4.json" || cfg.PredictiveAdmissionProfileSHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("predictive profile identity = %q/%q", cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256)
 	}
 }
 

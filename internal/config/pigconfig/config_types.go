@@ -120,4 +120,6 @@ type Config struct {
 	KVAdmissionPolicy                  kvadmission.Policy
 	KVAdmissionEstimator               kvadmission.EstimatorConfig
 	PredictiveAdmissionMode            string
+	PredictiveAdmissionProfilePath     string
+	PredictiveAdmissionProfileSHA256   string
 }
