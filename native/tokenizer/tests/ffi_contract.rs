@@ -6,11 +6,12 @@ use std::{
 
 use ahash::AHashMap;
 use pig_tokenizer_native::ffi::{
-    PIG_TOKENIZER_OK, PigTokenizationAnalysisHandle, PigTokenizationAnalysisView,
-    PigTokenizerCountHandle, PigTokenizerHandle, pig_tokenizer_abi_version,
-    pig_tokenizer_analysis_destroy, pig_tokenizer_analysis_view, pig_tokenizer_analyze,
-    pig_tokenizer_count, pig_tokenizer_count_destroy, pig_tokenizer_count_open,
-    pig_tokenizer_destroy, pig_tokenizer_open,
+    PIG_TOKENIZER_INVALID_ARGUMENT, PIG_TOKENIZER_LOAD_ERROR, PIG_TOKENIZER_OK,
+    PigTokenizationAnalysisHandle, PigTokenizationAnalysisView, PigTokenizerCountHandle,
+    PigTokenizerHandle, pig_tokenizer_abi_version, pig_tokenizer_analysis_destroy,
+    pig_tokenizer_analysis_view, pig_tokenizer_analyze, pig_tokenizer_count,
+    pig_tokenizer_count_destroy, pig_tokenizer_count_open, pig_tokenizer_destroy,
+    pig_tokenizer_open,
 };
 use tokenizers::{Tokenizer, models::wordlevel::WordLevel, pre_tokenizers::whitespace::Whitespace};
 
@@ -152,6 +153,143 @@ fn c_abi_counts_without_digest_context_or_analysis_handle() {
     assert_eq!(
         unsafe { pig_tokenizer_count_destroy(&mut counter_handle) },
         PIG_TOKENIZER_OK
+    );
+
+    fs::remove_file(tokenizer_path).unwrap();
+}
+
+#[test]
+fn count_abi_rejects_invalid_boundaries_without_returning_a_count() {
+    let tokenizer_path = write_tokenizer_fixture();
+    let tokenizer_path_c = CString::new(tokenizer_path.to_string_lossy().as_bytes()).unwrap();
+    let missing_path = tokenizer_path.with_extension("missing");
+    let missing_path_c = CString::new(missing_path.to_string_lossy().as_bytes()).unwrap();
+    let mut counter_handle: *mut PigTokenizerCountHandle = ptr::null_mut();
+    let mut error_buffer = [0_i8; 256];
+
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count_open(
+                missing_path_c.as_ptr(),
+                &mut counter_handle,
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_LOAD_ERROR
+    );
+    assert!(counter_handle.is_null());
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count_open(
+                tokenizer_path_c.as_ptr(),
+                ptr::null_mut(),
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count_open(
+                tokenizer_path_c.as_ptr(),
+                &mut counter_handle,
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_OK
+    );
+
+    let valid_input = b"hello";
+    let invalid_utf8 = [0xff_u8];
+    let mut token_count = 99_u64;
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count(
+                counter_handle,
+                invalid_utf8.as_ptr(),
+                invalid_utf8.len(),
+                0,
+                &mut token_count,
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_INVALID_ARGUMENT
+    );
+    assert_eq!(token_count, 0);
+
+    token_count = 99;
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count(
+                counter_handle,
+                valid_input.as_ptr(),
+                valid_input.len(),
+                2,
+                &mut token_count,
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_INVALID_ARGUMENT
+    );
+    assert_eq!(token_count, 0);
+
+    token_count = 99;
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count(
+                counter_handle,
+                ptr::null(),
+                1,
+                0,
+                &mut token_count,
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_INVALID_ARGUMENT
+    );
+    assert_eq!(token_count, 0);
+
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count(
+                counter_handle,
+                valid_input.as_ptr(),
+                valid_input.len(),
+                0,
+                ptr::null_mut(),
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        unsafe {
+            pig_tokenizer_count(
+                ptr::null_mut(),
+                valid_input.as_ptr(),
+                valid_input.len(),
+                0,
+                &mut token_count,
+                error_buffer.as_mut_ptr(),
+                error_buffer.len(),
+            )
+        },
+        PIG_TOKENIZER_INVALID_ARGUMENT
+    );
+    assert_eq!(
+        unsafe { pig_tokenizer_count_destroy(&mut counter_handle) },
+        PIG_TOKENIZER_OK
+    );
+    assert_eq!(
+        unsafe { pig_tokenizer_count_destroy(ptr::null_mut()) },
+        PIG_TOKENIZER_INVALID_ARGUMENT
     );
 
     fs::remove_file(tokenizer_path).unwrap();
