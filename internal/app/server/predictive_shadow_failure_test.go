@@ -107,10 +107,12 @@ func TestPredictiveShadowScrubsEphemeralBodyAfterDecision(t *testing.T) {
 }
 
 func TestPredictiveShadowClassifiesProxyDeadlineAsTimeout(t *testing.T) {
+	releaseBackend := make(chan struct{})
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done()
+		<-releaseBackend
 	}))
 	defer backend.Close()
+	defer close(releaseBackend)
 
 	cfg := testProxyConfig(backend.URL)
 	cfg.PredictiveAdmissionMode = "shadow"
