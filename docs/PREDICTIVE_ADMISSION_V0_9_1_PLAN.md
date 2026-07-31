@@ -1,7 +1,8 @@
 # PIG v0.9.1 Predictive Admission Shadow Plan
 
-Status: third review cycle and learned-scheduler causality slice are
-builder-green; integrated admission transaction is the current P0
+Status: learned-scheduler causality and atomic transaction slices are
+builder-green; coordinator feedback causality and HTTP shadow reachability are
+the current P0 sequence
 Version target: PIG-v0.9.1
 Control mode: off or shadow only
 Routing: explicitly out of scope
@@ -1720,6 +1721,19 @@ Completed and builder-green:
   and exactly-once outcome learning for active or completed reservations;
 - predictive simulator sample events now call `Manager.ReconcileSample` and
   return the final manager snapshot instead of incrementing a counter only.
+- an identity-bound `Coordinator` at `519b219` now owns cache preflight,
+  cache-aware vLLM block projection, learned scheduler prediction, phase-rich
+  virtual state, and manager/cache commit under one outer lock;
+- every committed coordinator reservation contributes physical/active KV,
+  decode sequences, active context, and uncached prefill to the next
+  same-window prediction; semantic first output removes prefill while
+  completion releases all owned phase state;
+- scheduler identity and returned prediction identity are checked before
+  reservation; no-existing-user TPS is explicitly non-applicable while the
+  joining user's all-user TPS constraint remains binding;
+- cache preflight is non-mutating, so a scheduler reject does not pin, evict,
+  or touch cache state; near-capacity concurrent admissions serialize and only
+  one commits.
 
 Still pending and not claimed:
 
@@ -1730,16 +1744,21 @@ Still pending and not claimed:
   request feature class;
 - a Go C ABI or Unix-socket native engine and its cancellation/crash-isolation
   comparison;
-- complete request-path population of the phase-rich reservation fields in
-  Section 11; the current Builder-green manager reserves the minimal
-  `RequestCost` contract only;
+- coordinator-owned outcome and sample reconciliation APIs; the coordinator
+  currently encapsulates its manager but cannot yet feed an attributed outcome
+  or backend sample through that ownership boundary, so online learning cannot
+  yet close its loop at the coordinator boundary;
+- an integrated coordinator causality test that holds proposal/cache/current
+  state fixed and proves eligible learned history changes the coordinator's
+  forecast and decision; the existing causality proof is at the manager layer;
 - hierarchical feature-cell backoff, effective sample weighting, measured
   one-sided coverage, and distribution-shift/error circuit breakers; the first
   green learner deliberately supports bounded exact cells only;
 - production-calibrated scheduler priors and residual targets; current values
   in tests/simulation are deterministic fixtures, not GPU evidence;
-- the cross-component transaction coordinator from Section 11.1; current
-  cache-mirror and minimal reservation mutations are separately locked;
+- cancellation, local-QoS reject, upstream failure, expiry, reset, and sample
+  race coverage for the coordinator lifecycle beyond semantic first output and
+  ordinary completion;
 - one request-path digest protocol: the legacy Go token-ID/HMAC helper remains
   an internal test helper and must not be mixed with native BLAKE3 opaque block
   analyses in a shared cache-mirror epoch;
@@ -1843,6 +1862,120 @@ but neither is yet reachable from the HTTP server. The first calibrator has
 bounded exact feature cells and one-sided residual quantiles; hierarchical
 backoff, empirical coverage/shift control, phase-rich concurrent reservations,
 cache transaction integration, and real profile calibration remain open.
+
+### 19.3 Executed slice: atomic predictive transaction
+
+The test-only red commit `9537b23e130d8941ca7d3afd09e5cb53a71f43a2`
+added `internal/runtime/predictive/coordinator_test.go`. It required one
+coordinator to bind the tokenizer/cache epoch and scheduler identity, derive
+cache-aware request cost, make cumulative prospective TPS decisions, and
+commit or release cache plus phase-rich manager state atomically. The intended
+red was a focused Go compile failure for the missing production coordinator
+API, not a shell or toolchain failure.
+
+The green commit `519b2197c640dabcee2e6f92069815a8b24b06e5`
+implements that transaction. Its order is deliberately:
+
+~~~
+validate immutable proposal and exact identities
+  -> non-mutating cache/capacity preflight
+  -> derive certain-hit vLLM KV plus prefill/decode/context cost
+  -> learned scheduler predicts and manager reserves
+  -> only on fit, commit the already-preflighted cache references
+~~~
+
+This avoids an apparent rollback that would leave an eviction or LRU touch
+behind. A same-window fit immediately contributes its phase state to the next
+counterfactual. Semantic first output and ordinary completion are coordinated
+across manager and cache ownership.
+
+Pass 1 re-review, model causality and objective alignment:
+
+- Finding: cache certainty now changes uncached prefill and physical KV before
+  scheduling, committed decode/context/prefill state changes the next request's
+  all-user and existing-user TPS forecast, and a third same-window request can
+  change from fit to `new_tps_at_risk`. This is prospective admission state,
+  not a later learned global-cap adjustment.
+- Finding: when there are zero existing decode users, the existing-user TPS
+  constraint is explicitly non-applicable; the candidate's all-user TPS still
+  binds. This removes the prior false `existing_tps_at_risk` classification
+  without creating headroom for a below-target new user.
+- Remaining issue: eligible learned residuals are proven causal through
+  `Manager.DecideAndReserve`, and the coordinator calls that manager with a
+  `LearnedScheduler`, but no single coordinator test trains/reconciles the
+  model and demonstrates the changed counterfactual. More importantly, the
+  coordinator exposes neither attributed-outcome nor sample reconciliation,
+  so its encapsulated learner cannot yet receive real feedback.
+- Change: coordinator feedback APIs plus an integrated learned-causality test
+  are now the next P0 before HTTP wiring; Phase 5 is not marked complete.
+
+Pass 2 re-review, transaction and lifecycle safety:
+
+- Finding: scheduler rejection occurs after a read-only cache preflight and
+  before cache commit, so the rejected transaction leaves manager and cache
+  snapshots unchanged. Cache capacity failure also occurs before eviction or
+  LRU mutation. The post-fit cache commit is protected by the coordinator's
+  exclusive ownership; its latest-reservation rollback is an invariant-only
+  fallback, not the normal rejection path.
+- Finding: scheduler identity, returned-prediction identity, tokenizer
+  manifest, backend epoch, block size, token-analysis shape, confidence, and
+  non-negative cost bounds fail before mutation. Saturating additions and
+  floor-zero releases avoid integer overflow and underflow. Concurrent
+  near-capacity admission, prefill transition, and ordinary completion are
+  serialized by one coordinator lock and pass race tests.
+- Remaining issue: only first-output and ordinary completion are implemented
+  at this boundary. Cancellation, local QoS reject, upstream failure, timeout,
+  expiry, epoch reset, sample assimilation, and cache reset still lack one
+  coordinator lifecycle contract. A manager/cache presence mismatch currently
+  returns `false`, which prevents a false success but does not yet emit the
+  typed invariant/quarantine signal required for HTTP operation.
+- Change: the next lifecycle slice must add coordinator-owned sample/outcome
+  reconciliation first, then typed idempotent terminal causes and reset/error
+  handling with failure-injection and race tests. HTTP shadow cannot be wired
+  before these ownership exits exist.
+
+Pass 3 re-review, evidence validity and next executable gate:
+
+- Finding: the `9537b23` red is valid: an exact clean checkout exits 1 while
+  compiling the focused predictive packages because the planned production
+  coordinator types and constructor are absent. The `519b219` green is also
+  valid: an exact clean checkout passes `git show --check`, tracked gofmt,
+  focused Go, focused race, full Go, full race, Rust fmt, and locked Rust tests.
+- Evidence: the builder was Ubuntu 24.04.4 in container `6aff8e9be30d`, with Go
+  1.24.5, Rust 1.97.0, and Cargo 1.97.0. No Windows Go/Rust test, Docker image,
+  registry publication, CVM deployment, or inference request is part of this
+  result.
+- Remaining issue: the deterministic tests prove transaction mechanics, not
+  hierarchical calibration, empirical forecast coverage, scheduler latency,
+  end-to-end tokenizer/template parity, HTTP reachability, simulation goodput,
+  or real GPU accuracy. The runtime version therefore remains PIG-v0.9.0.
+- Change: the next test-only red extends
+  `internal/runtime/predictive/coordinator_test.go` and must fail for missing
+  coordinator `ObserveOutcome`, `ReconcileSample`, and event-watermark APIs. It
+  will prove that three eligible adverse outcomes observed through the
+  coordinator change a later fixed counterfactual from fit to TPS risk, that
+  wrong-identity/duplicate outcomes change no learned state, and that a sample
+  plus completion cannot double-add, double-subtract, or leak any phase state.
+
+Valid transaction red evidence:
+
+~~~
+/work/pig-v091-evidence/9537b23-atomic-predictive-transaction-red.log
+SHA-256 48059263677c4e3e9d6b5155dad826f6e77b90d3ab522dca6ae41aee22e06cda
+
+/work/pig-v091-evidence/9537b23-atomic-predictive-transaction-red.status
+SHA-256 77cd77913d06e253e8fb03c60f38b71bb90e1a9932fc2a3abc39458bde3f4245
+~~~
+
+Valid transaction green evidence:
+
+~~~
+/work/pig-v091-evidence/519b219-atomic-predictive-transaction-green.log
+SHA-256 1e93ff2c916e22c7460b685fa986d911ef4d29abe23d1807582524dbd51e62c8
+
+/work/pig-v091-evidence/519b219-atomic-predictive-transaction-green.status
+SHA-256 b3006b12135432db08c314332a518d6d1eb81c386d6c5d726d92bf8a419752b8
+~~~
 
 ## 20. Version, Git, and release boundary
 
