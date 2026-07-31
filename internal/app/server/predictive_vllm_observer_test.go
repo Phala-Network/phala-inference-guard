@@ -220,8 +220,8 @@ func TestPredictiveVLLMObserverCloseCancelsInflightFetch(t *testing.T) {
 
 func TestPredictiveVLLMMetricsURLRequiresExactlyOneUpstream(t *testing.T) {
 	for name, cfg := range map[string]config{
-		"none": {},
-		"two": {Backends: []backendConfig{{MetricsURL: "http://one/metrics"}, {MetricsURL: "http://two/metrics"}}},
+		"none":    {},
+		"two":     {Backends: []backendConfig{{MetricsURL: "http://one/metrics"}, {MetricsURL: "http://two/metrics"}}},
 		"missing": {Backends: []backendConfig{{Upstream: "http://one"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
