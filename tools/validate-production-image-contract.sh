@@ -7,6 +7,7 @@ cd "$repo_root"
 dockerfile=${PIG_DOCKERFILE:-Dockerfile}
 image=${PIG_IMAGE_UNDER_TEST:-pig-production-contract:local}
 expected_version=${EXPECTED_VERSION:-}
+expected_label_version=${expected_version#v}
 
 fail() {
     printf '%s\n' "PIG production image contract failed: $*" >&2
@@ -26,8 +27,8 @@ fi
 label_version=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")
 [ -n "$label_version" ] && [ "$label_version" != '<no value>' ] ||
     fail 'image is missing org.opencontainers.image.version'
-if [ -n "$expected_version" ] && [ "$label_version" != "$expected_version" ]; then
-    fail "image label version $label_version does not match expected $expected_version"
+if [ -n "$expected_version" ] && [ "$label_version" != "$expected_label_version" ]; then
+    fail "image label version $label_version does not match expected tag $expected_version"
 fi
 
 visible_devices=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" |
