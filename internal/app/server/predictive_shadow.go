@@ -41,10 +41,29 @@ type predictiveAdmissionTelemetrySnapshot struct {
 	PredictionDuration *durationHistogram
 	RendererDuration   *durationHistogram
 	TokenizerDuration  *durationHistogram
+	TPSOutcomes        predictiveTPSOutcomeSnapshot
+}
+
+type predictiveTPSOutcomeSnapshot struct {
+	Backend  uint64
+	Local    uint64
+	Missing  uint64
+	Rejected uint64
 }
 
 type predictiveSemanticTTFTObserver interface {
 	ObserveSemanticTTFT(time.Duration) bool
+}
+
+type predictiveCompletionObservation struct {
+	CompletionTokens      int64
+	ElapsedSinceRequest   time.Duration
+	BackendMeanITL        time.Duration
+	BackendGenerationTime time.Duration
+}
+
+type predictiveCompletionObserver interface {
+	ObserveCompletion(predictiveCompletionObservation) bool
 }
 
 type serverDependencies struct {
@@ -58,18 +77,26 @@ func predictiveAdmissionEnabled(mode string) bool {
 type guardedPredictiveReservation struct {
 	mu                    sync.Mutex
 	reservation           predictiveShadowReservation
+	forwardAttempted      bool
 	forwarded             bool
 	prefillComplete       bool
 	semanticTTFTObserved  bool
+	completionObserved    bool
 	terminated            bool
 	onForwardCallFailure  func()
 	onSemanticCallFailure func()
+	onCompletionFailure   func()
 	onTerminalCallFailure func()
 }
 
 func observePredictiveSemanticTTFT(reservation predictiveShadowReservation, ttft time.Duration) bool {
 	observer, ok := reservation.(predictiveSemanticTTFTObserver)
 	return ok && observer.ObserveSemanticTTFT(ttft)
+}
+
+func observePredictiveCompletion(reservation predictiveShadowReservation, observation predictiveCompletionObservation) bool {
+	observer, ok := reservation.(predictiveCompletionObserver)
+	return ok && observer.ObserveCompletion(observation)
 }
 
 func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predictiveShadowInput) (result predictiveShadowReservation) {
@@ -96,6 +123,9 @@ func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predicti
 		onSemanticCallFailure: func() {
 			s.predictiveShadowFailures.semantic.Add(1)
 		},
+		onCompletionFailure: func() {
+			s.predictiveShadowFailures.completion.Add(1)
+		},
 		onTerminalCallFailure: func() {
 			s.predictiveShadowFailures.terminal.Add(1)
 		},
@@ -108,11 +138,12 @@ func (r *guardedPredictiveReservation) MarkForwarded() bool {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.forwarded || r.terminated {
+	if r.forwardAttempted || r.terminated {
 		return false
 	}
-	r.forwarded = true
-	return callPredictiveShadow(r.onForwardCallFailure, r.reservation.MarkForwarded)
+	r.forwardAttempted = true
+	r.forwarded = callPredictiveShadow(r.onForwardCallFailure, r.reservation.MarkForwarded)
+	return r.forwarded
 }
 
 func (r *guardedPredictiveReservation) MarkPrefillComplete() bool {
@@ -134,7 +165,7 @@ func (r *guardedPredictiveReservation) ObserveSemanticTTFT(ttft time.Duration) b
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.semanticTTFTObserved || r.terminated {
+	if !r.forwarded || r.semanticTTFTObserved || r.terminated {
 		return false
 	}
 	observer, ok := r.reservation.(predictiveSemanticTTFTObserver)
@@ -144,6 +175,25 @@ func (r *guardedPredictiveReservation) ObserveSemanticTTFT(ttft time.Duration) b
 	r.semanticTTFTObserved = true
 	return callPredictiveShadow(r.onSemanticCallFailure, func() bool {
 		return observer.ObserveSemanticTTFT(ttft)
+	})
+}
+
+func (r *guardedPredictiveReservation) ObserveCompletion(observation predictiveCompletionObservation) bool {
+	if r == nil || r.reservation == nil || observation.CompletionTokens <= 0 || observation.ElapsedSinceRequest <= 0 {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.forwarded || r.completionObserved || r.terminated {
+		return false
+	}
+	observer, ok := r.reservation.(predictiveCompletionObserver)
+	if !ok {
+		return false
+	}
+	r.completionObserved = true
+	return callPredictiveShadow(r.onCompletionFailure, func() bool {
+		return observer.ObserveCompletion(observation)
 	})
 }
 

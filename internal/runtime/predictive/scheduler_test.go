@@ -52,8 +52,8 @@ func TestLearnedSchedulerChangesAdmissionWithCurrentMetricsHeldConstant(t *testi
 	if learned.Projection != cold.Projection {
 		t.Fatalf("current KV projection changed: cold=%+v learned=%+v", cold.Projection, learned.Projection)
 	}
-	if learned.Scheduler.AllUserTPSLower <= cold.Scheduler.AllUserTPSLower {
-		t.Fatalf("learned TPS %.3f did not exceed cold %.3f", learned.Scheduler.AllUserTPSLower, cold.Scheduler.AllUserTPSLower)
+	if learned.Scheduler.NewUserTPSLower <= cold.Scheduler.NewUserTPSLower {
+		t.Fatalf("learned TPS %.3f did not exceed cold %.3f", learned.Scheduler.NewUserTPSLower, cold.Scheduler.NewUserTPSLower)
 	}
 }
 
@@ -74,8 +74,7 @@ func TestAdverseLearnedResidualChangesFitToTPSRisk(t *testing.T) {
 	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
 		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
 		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index+1)*time.Second))
-		outcome.ExistingUserTPS = prediction.Prior.ExistingUserTPSLower * 0.60
-		outcome.AllUserTPS = prediction.Prior.AllUserTPSLower * 0.60
+		outcome.UserTPS = prediction.Prior.NewUserTPSLower * 0.60
 		outcome.TTFT = prediction.Prior.TTFTUpper * 3 / 2
 		outcome.TPOT = prediction.Prior.TPOTUpper * 3 / 2
 		if err := scheduler.Observe(prediction, outcome); err != nil {
@@ -85,8 +84,11 @@ func TestAdverseLearnedResidualChangesFitToTPSRisk(t *testing.T) {
 
 	learnedManager := NewManager("test-profile", state, testLearnedConstraints(), scheduler)
 	learned := learnedManager.DecideAndReserve(now.Add(5*time.Second), "adverse", cost)
-	if learned.Reason != domain.ReasonExistingTPSAtRisk && learned.Reason != domain.ReasonNewTPSAtRisk {
-		t.Fatalf("adverse reason = %s, want TPS risk (estimate=%+v)", learned.Reason, learned.Scheduler)
+	if learned.Reason != domain.ReasonExistingTPSAtRisk {
+		t.Fatalf("adverse reason = %s, want existing-user TPS risk (estimate=%+v)", learned.Reason, learned.Scheduler)
+	}
+	if learned.Scheduler.ExistingUserTPSLower >= prior.Scheduler.ExistingUserTPSLower || learned.Scheduler.NewUserTPSLower >= prior.Scheduler.NewUserTPSLower {
+		t.Fatalf("one per-user residual did not lower both TPS bounds: prior=%+v learned=%+v", prior.Scheduler, learned.Scheduler)
 	}
 }
 
@@ -187,8 +189,8 @@ func TestStaticSchedulerAppliesPrefillPenaltyToEveryPostJoinUser(t *testing.T) {
 	if math.Abs(prediction.Estimate.ExistingUserTPSLower-wantTPS) > 1e-9 {
 		t.Fatalf("existing-user TPS = %.6f, want post-join prefill-adjusted %.6f", prediction.Estimate.ExistingUserTPSLower, wantTPS)
 	}
-	if math.Abs(prediction.Estimate.AllUserTPSLower-wantTPS) > 1e-9 {
-		t.Fatalf("all-user TPS = %.6f, want post-join prefill-adjusted %.6f", prediction.Estimate.AllUserTPSLower, wantTPS)
+	if math.Abs(prediction.Estimate.NewUserTPSLower-wantTPS) > 1e-9 {
+		t.Fatalf("new-user TPS = %.6f, want post-join prefill-adjusted %.6f", prediction.Estimate.NewUserTPSLower, wantTPS)
 	}
 }
 
@@ -230,7 +232,7 @@ func TestZeroTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testi
 		FutureContextTokensUpper: 16,
 		Confidence:               0.99,
 	})
-	if decision.Reason != domain.ReasonNewTPSAtRisk || decision.Scheduler.AllUserTPSLower != 0 {
+	if decision.Reason != domain.ReasonNewTPSAtRisk || decision.Scheduler.NewUserTPSLower != 0 {
 		t.Fatalf("zero-TPS decision = %+v, want explicit %s at 0 TPS", decision, domain.ReasonNewTPSAtRisk)
 	}
 }

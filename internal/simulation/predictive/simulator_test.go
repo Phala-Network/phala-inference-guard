@@ -79,7 +79,7 @@ func (constantSafeScheduler) Predict(now time.Time, _ domain.VirtualState, _ dom
 		PredictedAt: now,
 		Estimate: domain.SchedulerEstimate{
 			ExistingUserTPSLower: 30,
-			AllUserTPSLower:      30,
+			NewUserTPSLower:      30,
 			TTFTUpper:            100 * time.Millisecond,
 			TPOTUpper:            25 * time.Millisecond,
 		},

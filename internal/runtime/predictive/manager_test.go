@@ -14,6 +14,14 @@ type mismatchedPredictionScheduler struct {
 	safeScheduler
 }
 
+type panickingOutcomeScheduler struct {
+	safeScheduler
+}
+
+func (panickingOutcomeScheduler) Observe(SchedulerPrediction, SchedulerOutcome) error {
+	panic("injected scheduler outcome panic")
+}
+
 func (safeScheduler) Identity() ModelIdentity {
 	return safeSchedulerIdentity()
 }
@@ -24,7 +32,7 @@ func (safeScheduler) Predict(now time.Time, state domain.VirtualState, request d
 		PredictedAt: now,
 		Estimate: domain.SchedulerEstimate{
 			ExistingUserTPSLower: 30,
-			AllUserTPSLower:      30,
+			NewUserTPSLower:      30,
 			TTFTUpper:            100 * time.Millisecond,
 			TPOTUpper:            25 * time.Millisecond,
 		},
@@ -71,6 +79,36 @@ func testRequest() domain.RequestCost {
 		DecodeSequencesUpper:     1,
 		ActiveContextTokensUpper: 10_000,
 		Confidence:               0.99,
+	}
+}
+
+func TestManagerTerminalObserverPanicStillReleasesReservation(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), panickingOutcomeScheduler{})
+	now := time.Unix(500, 0)
+	if decision := manager.DecideAndReserve(now, "panic-terminal", testRequest()); decision.Reason != domain.ReasonFit {
+		t.Fatalf("panic-terminal admission reason = %s, want fit", decision.Reason)
+	}
+	if !manager.MarkForwarded("panic-terminal") {
+		t.Fatal("panic-terminal reservation was not forwarded")
+	}
+	outcome := SchedulerOutcome{
+		Identity:     safeSchedulerIdentity(),
+		ObservedAt:   now.Add(time.Second),
+		Attributed:   true,
+		UserTPS:      30,
+		UserTPSValid: true,
+	}
+	panicked := false
+	terminated := false
+	func() {
+		defer func() { panicked = recover() != nil }()
+		terminated = manager.TerminateWithOutcome("panic-terminal", TerminalCompleted, &outcome)
+	}()
+	if panicked || !terminated {
+		t.Fatalf("terminal observer panic escaped/rejected = %t/%t", panicked, terminated)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 {
+		t.Fatalf("terminal observer panic leaked reservation: %+v", snapshot)
 	}
 }
 

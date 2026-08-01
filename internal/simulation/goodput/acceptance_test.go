@@ -1,9 +1,11 @@
 package goodput
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -158,6 +160,73 @@ func TestObservedKVGrowsWithActualDecodeProgress(t *testing.T) {
 	}
 	if got := state.currentKV(active.terminalAt); got != 1_088 {
 		t.Fatalf("KV at completion = %d, want rounded 1,049-token actual context", got)
+	}
+}
+
+func TestPredictiveTPSLearningPreventsKnownViolationAndRecoversGoodput(t *testing.T) {
+	profile := (scenarioSpec{BaseCompletionTPS: 40}).serviceProfile()
+	controller, err := newExactController(PolicyPredictiveQoS, profile)
+	if err != nil {
+		t.Fatalf("new predictive controller: %v", err)
+	}
+	train := func(prefix string, started time.Time, tps float64) {
+		t.Helper()
+		for index := 0; index < 4; index++ {
+			now := started.Add(time.Duration(index) * time.Second)
+			if err := controller.Observe(now, observedState{}); err != nil {
+				t.Fatalf("observe %s sample %d: %v", prefix, index, err)
+			}
+			candidate := request(fmt.Sprintf("%s-%d", prefix, index), 0, 49, 64, 64)
+			admitted, reason := controller.Admit(now, candidate)
+			if !admitted {
+				t.Fatalf("training %s sample %d rejected as %s", prefix, index, reason)
+			}
+			controller.MarkForwarded(candidate.ID)
+			controller.MarkSemantic(candidate.ID)
+			controller.Terminate(now.Add(500*time.Millisecond), candidate.ID, runtimepredictive.TerminalCompleted, simulatedRequestOutcome{
+				completionTokens: candidate.ActualOutput,
+				userTPS:          tps,
+				ttft:             100 * time.Millisecond,
+				tpot:             time.Duration(float64(time.Second) / tps),
+			})
+		}
+	}
+
+	start := simulationBaseTime.Add(10 * time.Minute)
+	train("slow", start, 20)
+	riskAt := start.Add(4 * time.Second)
+	if err := controller.Observe(riskAt, observedState{}); err != nil {
+		t.Fatalf("observe learned risk state: %v", err)
+	}
+	risky := request("known-slow-risk", 0, 49, 64, 64)
+	if admitted, reason := controller.Admit(riskAt, risky); admitted || reason != string(domainpredictive.ReasonNewTPSAtRisk) {
+		t.Fatalf("known slow TPS admission = %t/%s, want false/%s", admitted, reason, domainpredictive.ReasonNewTPSAtRisk)
+	}
+	if controller.Reservations() != 0 {
+		t.Fatalf("TPS risk rejection leaked %d reservations", controller.Reservations())
+	}
+
+	recoveryStart := start.Add(2 * time.Minute)
+	train("recovered", recoveryStart, 60)
+	recoveredAt := recoveryStart.Add(4 * time.Second)
+	if err := controller.Observe(recoveredAt, observedState{}); err != nil {
+		t.Fatalf("observe recovered state: %v", err)
+	}
+	recovered := request("recovered-goodput", 0, 49, 64, 64)
+	admitted, reason := controller.Admit(recoveredAt, recovered)
+	if !admitted || reason != string(domainpredictive.ReasonFit) {
+		t.Fatalf("recovered safe TPS admission = %t/%s, want true/%s", admitted, reason, domainpredictive.ReasonFit)
+	}
+	controller.MarkForwarded(recovered.ID)
+	controller.MarkSemantic(recovered.ID)
+	controller.Terminate(recoveredAt.Add(500*time.Millisecond), recovered.ID, runtimepredictive.TerminalCompleted, simulatedRequestOutcome{
+		completionTokens: recovered.ActualOutput,
+		userTPS:          60,
+		ttft:             100 * time.Millisecond,
+		tpot:             time.Second / 60,
+	})
+	if controller.Reservations() != 0 {
+		t.Fatalf("recovered completion leaked %d reservations", controller.Reservations())
 	}
 }
 

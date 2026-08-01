@@ -147,18 +147,16 @@ type SchedulerPrediction struct {
 }
 
 type SchedulerOutcome struct {
-	Identity             ModelIdentity
-	ObservedAt           time.Time
-	Attributed           bool
-	Censored             bool
-	ExistingUserTPS      float64
-	ExistingUserTPSValid bool
-	AllUserTPS           float64
-	AllUserTPSValid      bool
-	TTFT                 time.Duration
-	TTFTValid            bool
-	TPOT                 time.Duration
-	TPOTValid            bool
+	Identity     ModelIdentity
+	ObservedAt   time.Time
+	Attributed   bool
+	Censored     bool
+	UserTPS      float64
+	UserTPSValid bool
+	TTFT         time.Duration
+	TTFTValid    bool
+	TPOT         time.Duration
+	TPOTValid    bool
 }
 
 type LearnedSchedulerSnapshot struct {
@@ -179,16 +177,14 @@ type featureCell struct {
 }
 
 type residualSample struct {
-	ObservedAt       time.Time
-	Censored         bool
-	ExistingTPSRatio float64
-	AllTPSRatio      float64
-	TTFTRatio        float64
-	TPOTRatio        float64
-	ExistingTPSValid bool
-	AllTPSValid      bool
-	TTFTValid        bool
-	TPOTValid        bool
+	ObservedAt   time.Time
+	Censored     bool
+	UserTPSRatio float64
+	TTFTRatio    float64
+	TPOTRatio    float64
+	UserTPSValid bool
+	TTFTValid    bool
+	TPOTValid    bool
 }
 
 type residualCell struct {
@@ -264,8 +260,9 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 		s.mu.Unlock()
 		return prediction
 	}
-	var existingRatios, allRatios, ttftRatios, tpotRatios []float64
+	var userRatios, ttftRatios, tpotRatios []float64
 	freshCensored := false
+	freshTPSCensored := false
 	for _, sample := range cell.Samples {
 		age := now.Sub(sample.ObservedAt)
 		if age < 0 || age > s.config.MaxAge {
@@ -273,13 +270,13 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 		}
 		if sample.Censored {
 			freshCensored = true
+			freshTPSCensored = true
 			continue
 		}
-		if sample.ExistingTPSValid {
-			existingRatios = appendResidualRatio(existingRatios, sample.ExistingTPSRatio, len(cell.Samples))
-		}
-		if sample.AllTPSValid {
-			allRatios = appendResidualRatio(allRatios, sample.AllTPSRatio, len(cell.Samples))
+		if sample.UserTPSValid {
+			userRatios = appendResidualRatio(userRatios, sample.UserTPSRatio, len(cell.Samples))
+		} else {
+			freshTPSCensored = true
 		}
 		if sample.TTFTValid {
 			ttftRatios = appendResidualRatio(ttftRatios, sample.TTFTRatio, len(cell.Samples))
@@ -291,15 +288,11 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	s.mu.Unlock()
 
 	calibratedSamples := 0
-	if len(existingRatios) >= s.config.MinimumSamples {
-		existingMultiplier := clampFloat(quantileInPlace(existingRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
-		prediction.Estimate.ExistingUserTPSLower = prior.ExistingUserTPSLower * existingMultiplier
-		calibratedSamples = minimumPositiveInt(calibratedSamples, len(existingRatios))
-	}
-	if len(allRatios) >= s.config.MinimumSamples {
-		allMultiplier := clampFloat(quantileInPlace(allRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
-		prediction.Estimate.AllUserTPSLower = prior.AllUserTPSLower * allMultiplier
-		calibratedSamples = minimumPositiveInt(calibratedSamples, len(allRatios))
+	if len(userRatios) >= s.config.MinimumSamples {
+		userMultiplier := clampFloat(quantileInPlace(userRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
+		prediction.Estimate.ExistingUserTPSLower = prior.ExistingUserTPSLower * userMultiplier
+		prediction.Estimate.NewUserTPSLower = prior.NewUserTPSLower * userMultiplier
+		calibratedSamples = minimumPositiveInt(calibratedSamples, len(userRatios))
 	}
 	if len(ttftRatios) >= s.config.MinimumSamples {
 		ttftMultiplier := clampFloat(quantileInPlace(ttftRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
@@ -314,9 +307,11 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	if calibratedSamples == 0 {
 		return prediction
 	}
-	if freshCensored {
+	if freshTPSCensored {
 		prediction.Estimate.ExistingUserTPSLower = math.Min(prediction.Estimate.ExistingUserTPSLower, prior.ExistingUserTPSLower)
-		prediction.Estimate.AllUserTPSLower = math.Min(prediction.Estimate.AllUserTPSLower, prior.AllUserTPSLower)
+		prediction.Estimate.NewUserTPSLower = math.Min(prediction.Estimate.NewUserTPSLower, prior.NewUserTPSLower)
+	}
+	if freshCensored {
 		if prediction.Estimate.TTFTUpper < prior.TTFTUpper {
 			prediction.Estimate.TTFTUpper = prior.TTFTUpper
 		}
@@ -437,7 +432,7 @@ func (s *LearnedScheduler) staticEstimate(features SchedulerFeatures) domain.Sch
 	return domain.SchedulerEstimate{
 		ExistingUserTPSLower:         existingTPS,
 		ExistingUserTPSNotApplicable: existingTPSNotApplicable,
-		AllUserTPSLower:              postJoinTPS,
+		NewUserTPSLower:              postJoinTPS,
 		TTFTUpper:                    addDurationSaturating(addDurationSaturating(s.profile.BaseTTFT, multiplyDurationSaturating(s.profile.TTFTPerUncachedPrefillToken, features.UncachedPrefillTokens)), features.AccruedLocalAdmissionLatency),
 		TPOTUpper:                    addDurationSaturating(s.profile.BaseTPOT, multiplyDurationSaturating(s.profile.TPOTPerExistingDecodeSequence, int64(features.ExistingDecodeSequences))),
 		WorkspaceRiskUpper:           s.profile.WorkspaceRiskUpper,
@@ -477,22 +472,13 @@ func schedulerFeatures(state domain.VirtualState, request domain.RequestCost) Sc
 func residualFromOutcome(prediction SchedulerPrediction, outcome SchedulerOutcome) (residualSample, error) {
 	sample := residualSample{ObservedAt: outcome.ObservedAt}
 	valid := 0
-	if outcome.ExistingUserTPSValid {
-		ratio, err := positiveRatio(outcome.ExistingUserTPS, prediction.Prior.ExistingUserTPSLower, "existing-user TPS")
+	if outcome.UserTPSValid {
+		ratio, err := positiveRatio(outcome.UserTPS, prediction.Prior.NewUserTPSLower, "per-user TPS")
 		if err != nil {
 			return residualSample{}, err
 		}
-		sample.ExistingTPSRatio = ratio
-		sample.ExistingTPSValid = true
-		valid++
-	}
-	if outcome.AllUserTPSValid {
-		ratio, err := positiveRatio(outcome.AllUserTPS, prediction.Prior.AllUserTPSLower, "all-user TPS")
-		if err != nil {
-			return residualSample{}, err
-		}
-		sample.AllTPSRatio = ratio
-		sample.AllTPSValid = true
+		sample.UserTPSRatio = ratio
+		sample.UserTPSValid = true
 		valid++
 	}
 	if outcome.TTFTValid {

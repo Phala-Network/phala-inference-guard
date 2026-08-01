@@ -7,7 +7,7 @@ import (
 
 var learnedSchedulerBenchmarkPrediction SchedulerPrediction
 
-func BenchmarkLearnedSchedulerPredictCalibratedTTFT(b *testing.B) {
+func BenchmarkLearnedSchedulerPredictCalibratedTPSAndLatency(b *testing.B) {
 	scheduler, err := NewLearnedScheduler(testLearnedProfile(), testResidualConfig())
 	if err != nil {
 		b.Fatalf("new learned scheduler: %v", err)
@@ -19,9 +19,11 @@ func BenchmarkLearnedSchedulerPredictCalibratedTTFT(b *testing.B) {
 	samples := make([]residualSample, scheduler.config.MaximumSamplesPerCell)
 	for index := range samples {
 		samples[index] = residualSample{
-			ObservedAt: now.Add(-time.Duration(index) * time.Second),
-			TTFTRatio:  0.80 + float64(index%4)*0.05,
-			TTFTValid:  true,
+			ObservedAt:   now.Add(-time.Duration(index) * time.Second),
+			UserTPSRatio: 0.70 + float64(index%4)*0.05,
+			UserTPSValid: true,
+			TTFTRatio:    0.80 + float64(index%4)*0.05,
+			TTFTValid:    true,
 		}
 	}
 	scheduler.cells[key] = &residualCell{CreatedSequence: 1, Samples: samples}

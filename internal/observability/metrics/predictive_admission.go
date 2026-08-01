@@ -25,10 +25,15 @@ type PredictiveAdmissionInput struct {
 	LearningRejected      uint64
 	LearningInvalidations uint64
 	LearningCells         int
+	TPSBackend            uint64
+	TPSLocal              uint64
+	TPSMissing            uint64
+	TPSRejected           uint64
 	FailureClose          uint64
 	FailureDecide         uint64
 	FailureForward        uint64
 	FailureSemantic       uint64
+	FailureCompletion     uint64
 	FailureTerminal       uint64
 	PredictionDuration    *histogram.DurationHistogram
 	RendererDuration      *histogram.DurationHistogram
@@ -57,10 +62,15 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_learning_samples_total{result=%q} %d\n", "rejected", input.LearningRejected)
 	fmt.Fprintf(w, "pig_predictive_learning_invalidations_total %d\n", input.LearningInvalidations)
 	fmt.Fprintf(w, "pig_predictive_learning_cells %d\n", input.LearningCells)
+	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "backend", input.TPSBackend)
+	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "local", input.TPSLocal)
+	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "missing", input.TPSMissing)
+	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "rejected", input.TPSRejected)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "decide", input.FailureDecide)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "forward", input.FailureForward)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "semantic", input.FailureSemantic)
+	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "completion", input.FailureCompletion)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "terminal", input.FailureTerminal)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_prediction_duration_seconds", input.PredictionDuration)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_renderer_duration_seconds", input.RendererDuration)

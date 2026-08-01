@@ -123,11 +123,18 @@ type simulationController interface {
 	Admit(time.Time, requestSpec) (bool, string)
 	MarkForwarded(string)
 	MarkSemantic(string)
-	Terminate(string, runtimepredictive.TerminalCause)
+	Terminate(time.Time, string, runtimepredictive.TerminalCause, simulatedRequestOutcome)
 	Observe(time.Time, observedState) error
 	Reservations() int
 	ReservedPhysicalKVUpper() int64
 	UsesExactTokenizer() bool
+}
+
+type simulatedRequestOutcome struct {
+	completionTokens int64
+	userTPS          float64
+	ttft             time.Duration
+	tpot             time.Duration
 }
 
 type simulationEventKind uint8
@@ -207,7 +214,7 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 			}
 			updateReservedKV(&metrics, controller.ReservedPhysicalKVUpper())
 			if event.request.LocalReject {
-				controller.Terminate(event.request.ID, runtimepredictive.TerminalLocalQoSReject)
+				controller.Terminate(now, event.request.ID, runtimepredictive.TerminalLocalQoSReject, simulatedRequestOutcome{})
 				continue
 			}
 			controller.MarkForwarded(event.request.ID)
@@ -260,7 +267,12 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 			if active == nil {
 				continue
 			}
-			controller.Terminate(event.id, event.cause)
+			controller.Terminate(now, event.id, event.cause, simulatedRequestOutcome{
+				completionTokens: active.spec.ActualOutput,
+				userTPS:          active.tps,
+				ttft:             active.ttft,
+				tpot:             active.tpot,
+			})
 			delete(state.active, event.id)
 			if event.cause == runtimepredictive.TerminalCompleted {
 				metrics.Completed++
@@ -552,7 +564,7 @@ func (c *currentThresholdController) MarkSemantic(string) {}
 
 func (c *currentThresholdController) MarkForwarded(string) {}
 
-func (c *currentThresholdController) Terminate(id string, _ runtimepredictive.TerminalCause) {
+func (c *currentThresholdController) Terminate(_ time.Time, id string, _ runtimepredictive.TerminalCause, _ simulatedRequestOutcome) {
 	delete(c.active, id)
 }
 
@@ -614,7 +626,7 @@ func (c *v090KVController) MarkSemantic(string) {}
 
 func (c *v090KVController) MarkForwarded(string) {}
 
-func (c *v090KVController) Terminate(id string, _ runtimepredictive.TerminalCause) {
+func (c *v090KVController) Terminate(_ time.Time, id string, _ runtimepredictive.TerminalCause, _ simulatedRequestOutcome) {
 	c.manager.Release(id)
 }
 
@@ -649,6 +661,8 @@ func (c *v090KVController) UsesExactTokenizer() bool { return false }
 
 type exactController struct {
 	coordinator    *runtimepredictive.CountCoordinator
+	identity       runtimepredictive.ModelIdentity
+	learnsTPS      bool
 	lastSample     time.Time
 	maxAge         time.Duration
 	cooldownUntil  time.Time
@@ -720,7 +734,7 @@ func newExactController(policy PolicyName, profile serviceProfile) (*exactContro
 	if err != nil {
 		return nil, err
 	}
-	return &exactController{coordinator: coordinator, maxAge: 750 * time.Millisecond, epochHealthy: true, exactTokenizer: true}, nil
+	return &exactController{coordinator: coordinator, identity: identity, learnsTPS: policy == PolicyPredictiveQoS, maxAge: 750 * time.Millisecond, epochHealthy: true, exactTokenizer: true}, nil
 }
 
 func (c *exactController) Admit(now time.Time, request requestSpec) (bool, string) {
@@ -749,8 +763,34 @@ func (c *exactController) MarkForwarded(id string) {
 	c.coordinator.MarkForwarded(id)
 }
 
-func (c *exactController) Terminate(id string, cause runtimepredictive.TerminalCause) {
-	c.coordinator.Terminate(id, cause)
+func (c *exactController) Terminate(now time.Time, id string, cause runtimepredictive.TerminalCause, observed simulatedRequestOutcome) {
+	if !c.learnsTPS || cause == runtimepredictive.TerminalLocalQoSReject {
+		c.coordinator.Terminate(id, cause)
+		return
+	}
+	outcome := &runtimepredictive.SchedulerOutcome{
+		Identity:   c.identity,
+		ObservedAt: now,
+		Attributed: true,
+	}
+	if cause == runtimepredictive.TerminalCompleted {
+		if observed.ttft > 0 {
+			outcome.TTFT = observed.ttft
+			outcome.TTFTValid = true
+		}
+		if observed.completionTokens > 1 && observed.userTPS > 0 && observed.tpot > 0 {
+			outcome.UserTPS = observed.userTPS
+			outcome.UserTPSValid = true
+			outcome.TPOT = observed.tpot
+			outcome.TPOTValid = true
+		}
+		if !outcome.TTFTValid && !outcome.UserTPSValid && !outcome.TPOTValid {
+			outcome.Censored = true
+		}
+	} else {
+		outcome.Censored = true
+	}
+	c.coordinator.TerminateWithOutcome(id, cause, outcome)
 }
 
 func (c *exactController) Observe(now time.Time, observed observedState) error {
@@ -802,7 +842,7 @@ func (s constantSimulationScheduler) Predict(now time.Time, _ domainpredictive.V
 	estimate := domainpredictive.SchedulerEstimate{
 		ExistingUserTPSLower:         1_000_000,
 		ExistingUserTPSNotApplicable: true,
-		AllUserTPSLower:              1_000_000,
+		NewUserTPSLower:              1_000_000,
 		TTFTUpper:                    time.Nanosecond,
 		TPOTUpper:                    time.Nanosecond,
 	}

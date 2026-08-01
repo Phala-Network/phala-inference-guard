@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -23,11 +24,13 @@ type recordingPredictiveShadow struct {
 }
 
 type recordingPredictiveReservation struct {
-	mu           sync.Mutex
-	forwarded    int
-	semantic     int
-	semanticTTFT []time.Duration
-	causes       []runtimepredictive.TerminalCause
+	mu                      sync.Mutex
+	forwarded               int
+	semantic                int
+	semanticTTFT            []time.Duration
+	completions             []predictiveCompletionObservation
+	completionAfterSemantic []bool
+	causes                  []runtimepredictive.TerminalCause
 }
 
 type rejectingPredictiveAdmission struct {
@@ -106,6 +109,14 @@ func (r *recordingPredictiveReservation) ObserveSemanticTTFT(ttft time.Duration)
 	return len(r.semanticTTFT) == 1
 }
 
+func (r *recordingPredictiveReservation) ObserveCompletion(observation predictiveCompletionObservation) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.completions = append(r.completions, observation)
+	r.completionAfterSemantic = append(r.completionAfterSemantic, r.semantic > 0)
+	return len(r.completions) == 1
+}
+
 func (r *recordingPredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -137,6 +148,32 @@ func (s *recordingPredictiveShadow) semanticTTFTSnapshot(t *testing.T) []time.Du
 	request.mu.Lock()
 	defer request.mu.Unlock()
 	return append([]time.Duration(nil), request.semanticTTFT...)
+}
+
+func (s *recordingPredictiveShadow) completionSnapshot(t *testing.T) []predictiveCompletionObservation {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) != 1 {
+		t.Fatalf("predictive requests = %d, want 1", len(s.requests))
+	}
+	request := s.requests[0]
+	request.mu.Lock()
+	defer request.mu.Unlock()
+	return append([]predictiveCompletionObservation(nil), request.completions...)
+}
+
+func (s *recordingPredictiveShadow) completionOrderingSnapshot(t *testing.T) []bool {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) != 1 {
+		t.Fatalf("predictive requests = %d, want 1", len(s.requests))
+	}
+	request := s.requests[0]
+	request.mu.Lock()
+	defer request.mu.Unlock()
+	return append([]bool(nil), request.completionAfterSemantic...)
 }
 
 func (s *recordingPredictiveShadow) forwardedSnapshot(t *testing.T) int {
@@ -556,6 +593,216 @@ func TestPredictiveShadowMarksSemanticStreamingOutput(t *testing.T) {
 	ttft := shadow.semanticTTFTSnapshot(t)
 	if len(ttft) != 1 || ttft[0] <= 0 {
 		t.Fatalf("stream attributed semantic TTFT = %v, want one positive observation", ttft)
+	}
+}
+
+func TestPredictiveShadowObservesFinalStreamingUsageForTPS(t *testing.T) {
+	response := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":8,\"completion_tokens\":5,\"total_tokens\":13},\"metrics\":{\"generation_time_ms\":80,\"mean_itl_ms\":20,\"tokens_per_second\":25}}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(response))
+	}))
+	defer backend.Close()
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "shadow"
+	shadow := &recordingPredictiveShadow{}
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return shadow, nil },
+	})
+	if err != nil {
+		t.Fatalf("new shadow server: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[],"stream":true,"stream_options":{"include_usage":true},"max_tokens":8}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != response {
+		t.Fatalf("stream response changed: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	observations := shadow.completionSnapshot(t)
+	if len(observations) != 1 {
+		t.Fatalf("completion observations = %v, want one final usage observation", observations)
+	}
+	observation := observations[0]
+	if observation.CompletionTokens != 5 || observation.BackendMeanITL != 20*time.Millisecond || observation.BackendGenerationTime != 80*time.Millisecond || observation.ElapsedSinceRequest <= 0 {
+		t.Fatalf("completion observation = %+v", observation)
+	}
+}
+
+func TestPredictiveShadowObservesNonStreamingUsageForTPS(t *testing.T) {
+	response := `{"id":"x","object":"chat.completion","choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":8,"completion_tokens":5,"total_tokens":13},"metrics":{"generation_time_ms":80,"mean_itl_ms":20}}`
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(response))
+	}))
+	defer backend.Close()
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "shadow"
+	shadow := &recordingPredictiveShadow{}
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return shadow, nil },
+	})
+	if err != nil {
+		t.Fatalf("new shadow server: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[],"max_tokens":8}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != response {
+		t.Fatalf("non-stream response changed: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	observations := shadow.completionSnapshot(t)
+	if len(observations) != 1 || observations[0].CompletionTokens != 5 || observations[0].BackendMeanITL != 20*time.Millisecond || observations[0].BackendGenerationTime != 80*time.Millisecond {
+		t.Fatalf("non-stream completion observations = %+v", observations)
+	}
+}
+
+func TestPredictiveStreamingLocalTPSObservationFollowsSemanticOutputInSameRead(t *testing.T) {
+	response := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"completion_tokens\":5}}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(response))
+	}))
+	defer backend.Close()
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "shadow"
+	shadow := &recordingPredictiveShadow{}
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return shadow, nil },
+	})
+	if err != nil {
+		t.Fatalf("new shadow server: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[],"stream":true,"stream_options":{"include_usage":true},"max_tokens":8}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != response {
+		t.Fatalf("stream response changed: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	observations := shadow.completionSnapshot(t)
+	ordering := shadow.completionOrderingSnapshot(t)
+	if len(observations) != 1 || observations[0].CompletionTokens != 5 || observations[0].BackendMeanITL != 0 || len(ordering) != 1 || !ordering[0] {
+		t.Fatalf("local observation/order = %+v/%v, want one usage after semantic output", observations, ordering)
+	}
+}
+
+func TestPredictiveStreamingCopyFailureCannotCompleteTPSOutcome(t *testing.T) {
+	response := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"completion_tokens\":5},\"metrics\":{\"generation_time_ms\":80,\"mean_itl_ms\":20}}\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(response)+1))
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, response)
+	}))
+	defer backend.Close()
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "shadow"
+	shadow := &recordingPredictiveShadow{}
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return shadow, nil },
+	})
+	if err != nil {
+		t.Fatalf("new shadow server: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[],"stream":true,"stream_options":{"include_usage":true},"max_tokens":8}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || recorder.Body.String() != response {
+		t.Fatalf("truncated upstream response changed: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if observations := shadow.completionSnapshot(t); len(observations) != 0 {
+		t.Fatalf("completion observations = %+v, want no committed usage from a truncated stream", observations)
+	}
+	_, _, causes := shadow.snapshot(t)
+	if len(causes) != 1 || causes[0] != runtimepredictive.TerminalUpstreamFailure {
+		t.Fatalf("truncated upstream terminal causes = %v, want upstream failure", causes)
+	}
+}
+
+func TestPredictiveHTTPBackendTPSLearningRejectsLaterRiskBeforeUpstream(t *testing.T) {
+	response := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"completion_tokens\":5},\"metrics\":{\"generation_time_ms\":80,\"mean_itl_ms\":20}}\n\n" +
+		"data: [DONE]\n\n"
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(response))
+	}))
+	defer backend.Close()
+	clock := &adapterTestClock{now: time.Unix(4_000, 0)}
+	coordinator, scheduler := newAdapterTestCoordinatorAndSchedulerWithTargets(t, 75, time.Second)
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     newAdapterTestCounter(),
+		Coordinator: coordinator,
+		Learner:     scheduler,
+		Now:         clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("new predictive adapter: %v", err)
+	}
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return adapter, nil },
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	serve := func() *httptest.ResponseRecorder {
+		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[],"stream":true,"stream_options":{"include_usage":true},"max_tokens":8}`))
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Accept", "text/event-stream")
+		recorder := httptest.NewRecorder()
+		srv.ServeHTTP(recorder, request)
+		return recorder
+	}
+
+	for index := 0; index < 3; index++ {
+		recorder := serve()
+		if recorder.Code != http.StatusOK || recorder.Body.String() != response {
+			t.Fatalf("training response %d changed: status=%d body=%q", index, recorder.Code, recorder.Body.String())
+		}
+		clock.Advance(time.Second)
+	}
+	if backendCalls != 3 {
+		t.Fatalf("training backend calls = %d, want 3", backendCalls)
+	}
+	rejected := serve()
+	if rejected.Code != http.StatusTooManyRequests {
+		t.Fatalf("learned TPS risk status = %d body=%q, want 429", rejected.Code, rejected.Body.String())
+	}
+	if backendCalls != 3 {
+		t.Fatalf("learned TPS risk reached upstream: backend calls = %d", backendCalls)
+	}
+	attempt := adapter.Snapshot()
+	if attempt.LastReason != domainpredictive.ReasonNewTPSAtRisk || attempt.LastSource != runtimepredictive.PredictionSourceCalibrated || attempt.LastSamples != 3 {
+		t.Fatalf("learned HTTP decision = %+v", attempt)
 	}
 }
 

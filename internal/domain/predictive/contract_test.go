@@ -13,7 +13,7 @@ func TestEvaluateProtectsExistingUsersBeforeOtherSoftConstraints(t *testing.T) {
 		},
 		Scheduler: SchedulerEstimate{
 			ExistingUserTPSLower: 24.9,
-			AllUserTPSLower:      30,
+			NewUserTPSLower:      30,
 			TTFTUpper:            200 * time.Millisecond,
 			TPOTUpper:            30 * time.Millisecond,
 		},
@@ -40,7 +40,7 @@ func TestEvaluateFitsOnlyWhenEveryBoundPasses(t *testing.T) {
 		},
 		Scheduler: SchedulerEstimate{
 			ExistingUserTPSLower: 27,
-			AllUserTPSLower:      26,
+			NewUserTPSLower:      26,
 			TTFTUpper:            500 * time.Millisecond,
 			TPOTUpper:            35 * time.Millisecond,
 			WorkspaceRiskUpper:   0.01,

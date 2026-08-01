@@ -1,4 +1,4 @@
-# PIG v0.9.2 Tokenizer-First Predictive Admission Plan
+# PIG v0.9.3 Tokenizer-First Predictive Admission Plan
 
 Status: builder-validated PIG-v0.9.2 source release candidate. The v0.9.1
 source-only candidate was not releasable: its reconciliation and simulation
@@ -2019,3 +2019,651 @@ Recording this proof changes the plan once more but no executable source. One
 final unrecorded manifest comparison must therefore run after this section;
 its result is the commit/push handoff evidence rather than another recursive
 document edit.
+
+## 20. PIG-v0.9.3 TPS-first learning and deployable-image goal
+
+Status: implementation and builder-local image complete; document-only
+executable-identity proof, source commit, and source push remain pending at this
+recording point. PIG-v0.9.2 remains the immutable builder-validated source baseline at commit
+`86b98c800a395535df6fec32317693432ca533a8`. PIG-v0.9.3 is not complete until
+one exact source archive passes the full builder and image matrix below. No
+CVM, Router, upstream, registry, or production endpoint is changed by this
+goal.
+
+### 20.1 Approved objective and priority order
+
+The optimization objective remains SLO-compliant completion-token goodput, but
+single-user decode TPS is now the first QoS signal. Admission must still happen
+before forwarding. Feedback may only calibrate a later prediction.
+
+The implementation order is:
+
+1. obtain a trustworthy, per-request, completion-token and decode-duration
+   observation from the configured vLLM OpenAI response;
+2. qualify it against the owned reservation, exact backend/profile identity,
+   successful terminal state, single-choice contract, and decode horizon;
+3. update one bounded per-user TPS residual distribution;
+4. consume its conservative lower quantile in the next pre-forward prediction
+   for both the existing-user and joining-user TPS constraints;
+5. retain TTFT, TPOT, KV, workspace, and preemption protection;
+6. package the already-validated Rust count-only tokenizer into a runnable
+   Linux image and prove that predictive mode uses the native ABI rather than
+   the unavailable stub.
+
+Raw aggregate backend TPS, SSE chunk count, bytes, requested `max_tokens`, or
+retokenized output text are not trusted per-request TPS targets. Cache remains
+outside this goal. PIG continues to predict one configured upstream and does
+not route.
+
+### 20.2 Trusted TPS outcome contract
+
+The target hierarchy is deliberately narrow:
+
+1. **Backend decode timing.** When a successful, single-choice vLLM response
+   contains final `usage.completion_tokens` and finite positive per-request
+   `metrics.mean_itl_ms` or an equivalent internally consistent decode
+   duration, TPS is `(completion_tokens - 1) / decode_duration`. TPOT is the
+   reciprocal interval. The first output token is excluded from the decode
+   interval denominator.
+2. **PIG-observed streaming interval.** When final exact usage is present but
+   backend decode timing is absent, a successful SSE response may use the
+   interval from the first semantic output observed at PIG to the final usage
+   event. TPS is again `(completion_tokens - 1) / interval`. This interval
+   includes transport and final-event overhead, so it is conservative for TPS
+   and pessimistic for TPOT.
+3. **No target.** Non-streaming responses without backend decode timing, streams
+   without final usage, one-token completions, malformed/duplicate usage,
+   invalid or non-finite timing, output beyond the reserved decode horizon,
+   cancellations, disconnects, timeouts, upstream failures, local rejects,
+   identity drift, and repeated terminal observations cannot train TPS.
+
+Controlled actual testing must request OpenAI stream usage, or run a compatible
+vLLM mode that emits final usage. PIG-v0.9.3 will observe that standard response
+without rewriting client request bytes or fabricating missing usage. If future
+traffic lacks usage, the static TPS prior remains active and the missing-signal
+coverage is observable.
+
+The existing `AllUserTPS` name is misleading because the value is a per-user
+post-join lower bound, not aggregate throughput. v0.9.3 will replace it with an
+explicit joining-user TPS name and use one qualified per-user TPS residual for
+both joining-user and existing-user predictions. This is a semantic cleanup,
+not a new fairness claim: the static profile already assumes equal per-user
+decode service in a feature cell, and the lower residual quantile plus
+uncertainty bounds remain conservative.
+
+### 20.3 HTTP and lifecycle design
+
+Protocol parsing, admission ownership, and scheduling remain separate:
+
+- an OpenAI response-usage observer incrementally parses bounded JSON or SSE
+  frames and emits a value object only; it has no scheduler or reservation
+  dependency;
+- the HTTP adapter attaches exactly one guarded observation sink to the owned
+  reservation before forwarding and wraps only eligible successful responses;
+- the reservation stores at most one qualified usage/timing candidate;
+- `Terminate(completed)` atomically combines the candidate with semantic TTFT
+  and submits one outcome; every other terminal cause supplies only bounded
+  censored safety evidence;
+- the learned scheduler validates identity, timestamp, finiteness, and target
+  presence, then updates a bounded feature cell;
+- duplicate response events, repeated EOF, `Close`, retry, panic, and terminal
+  replay are idempotent and cannot double-train.
+
+Streaming parsing retains only one bounded event. Non-stream JSON observation
+retains at most a configured internal constant; an oversized body continues to
+the client unchanged but yields no learning target. Response bytes, headers,
+status, flush cadence, and SSE comments remain unchanged by observation.
+
+### 20.4 Prediction causality and TPS safety gates
+
+Tests must hold the current vLLM metrics and request features constant and prove
+all of the following:
+
+- enough slower qualified TPS outcomes lower the next pre-forward TPS estimate
+  and can change `fit` to `existing_tps_at_risk` or `new_tps_at_risk`;
+- enough faster qualified outcomes may recover safe headroom only within the
+  configured multiplier and confidence bounds;
+- a fresh censored event prevents optimistic TPS relaxation;
+- missing, stale, invalid, mismatched, duplicate, cancelled, failed, or
+  unattributed usage cannot relax admission;
+- the same qualified per-user residual protects both an already decoding user
+  and the joining request in the matching post-admit feature cell;
+- TPS learning cannot change KV reservation size or bypass hard KV, TTFT, TPOT,
+  workspace, preemption, or confidence constraints;
+- zero usage instrumentation executes in `off` mode.
+
+The deterministic goodput suite must continue to exceed both baselines, produce
+zero false fits and reservation leaks, and add scenarios where static TPS is
+optimistic, learned TPS prevents a violation, and later conservative recovery
+raises goodput without preemption.
+
+### 20.5 Efficiency and SOLID gates
+
+The response observer must be O(response bytes), single-pass, bounded-memory,
+and allocation-bounded per SSE event. It must not tokenize generated text,
+retain a complete stream, sort on the HTTP hot path, or hold the admission
+manager lock while parsing. Usage parsing and scheduler observation occur
+outside the response write critical section except for one short idempotent
+reservation update.
+
+The implementation is rejected if protocol JSON/SSE parsing is placed in the
+scheduler, if the response observer owns admission state, if the proxy directly
+updates calibrator cells, or if one interface grows unrelated routing/cache/
+deployment responsibilities. Focused benchmarks must record SSE observation
+cost, scheduler prediction cost, and allocations. Builder CPU measurements are
+not production-GPU throughput claims.
+
+### 20.6 Deployable native-tokenizer image contract
+
+The current v0.9.2 Dockerfile builds the `!pig_native` stub and therefore cannot
+run predictive mode. PIG-v0.9.3 requires a reproducible multi-stage image:
+
+1. build `native/tokenizer` with the locked Rust dependency graph;
+2. build Go with `CGO_ENABLED=1` and the `pig_native` build tag against the
+   resulting `libpig_tokenizer_native` ABI;
+3. copy only the PIG executable, native shared library, and required runtime
+   libraries into the final distroless image;
+4. do not bake a mutable production model/profile into the image; mount the
+   hash-pinned profile and tokenizer/template assets read-only at deployment;
+5. prove the final image starts in `off` and `shadow`, reports `PIG-v0.9.3`,
+   opens ABI version 3, and fails closed on missing or mismatched assets;
+6. prove the image contains no compiler, Cargo registry, source tree, test
+   fixture, secret, or writable learned-state file;
+7. record image ID, content digest, layer history, package/native dependency
+   audit, size, and a source-archive SHA-256.
+
+This goal authorizes a builder-local deployable image. Registry publication,
+Compose integration, CVM deployment, and live inference remain separate stages
+and require explicit authorization.
+
+### 20.7 Test-first execution and evidence order
+
+1. Add focused HTTP red tests proving final vLLM usage currently does not reach
+   the owned reservation or change future TPS prediction.
+2. Add parser, qualification, cancellation, duplicate, truncation, and race
+   reds. Preserve a builder log whose failure is the intended missing behavior.
+3. Implement the smallest complete response-to-next-admission vertical slice.
+4. Run focused default/native tests and races, then update deterministic
+   simulations and benchmarks.
+5. Implement the multi-stage image and run container-native startup, ABI,
+   profile-hash, no-source-mount, and response-observation smoke tests.
+6. Run one exact-archive full Go/Rust/native/race/simulation/benchmark/image
+   matrix on the remote builder.
+7. Complete and record three sequential reviews, revising this section after
+   each: model/causality, safety/lifecycle/SOLID, and evidence/release scope.
+8. Only after all applicable gates pass, bump the source runtime to
+   `PIG-v0.9.3`, audit staged paths, commit, and push the source branch. Do not
+   publish or deploy the image under this authorization.
+
+### 20.8 Acceptance criteria
+
+- zero deterministic TPS, TTFT, TPOT, KV-hard, preemption-proxy, lifecycle,
+  false-fit, duplicate-learning, or reservation-leak violations;
+- at least the existing 5% aggregate completion-goodput improvement over both
+  the current-threshold and v0.9.0 KV-only baselines;
+- qualified HTTP TPS outcomes measurably change a later pre-forward decision
+  with current metrics held fixed;
+- exact completion usage and backend/local timing sources are counted
+  separately; missing and rejected sources are observable;
+- off mode performs no predictive response parsing;
+- response bytes and SSE event order are byte-identical with observation on;
+- focused and full Go tests/races, Rust locked tests/release build, native ABI
+  and exact tokenizer oracles, deterministic goodput, static checks, and
+  performance gates pass on one immutable builder archive;
+- the final container starts predictive mode with the real native tokenizer and
+  cannot start it with the stub or with identity/hash drift;
+- source commit, builder archive, builder-local image, registry publication,
+  Compose integration, deployment, and live readiness are reported as distinct
+  completion layers.
+
+### 20.9 Initial TPS HTTP red evidence
+
+Candidate `v093-tps-red-20260801062146` ran the first behavior-only red on the
+remote `linux/amd64` builder with Go 1.24.5. Its source archive SHA-256 was
+`506f29e2aab06719339cca308eb104eecdff1e39faf2be7ead730222c55e43c7`.
+The test backend emitted one semantic chat delta, a final empty-choice usage
+event with five completion tokens, 80 ms backend generation time and 20 ms
+mean ITL, then `[DONE]`. PIG forwarded the response byte-for-byte and completed
+the owned reservation, but recorded zero completion observations. The only test
+failure was the intended assertion:
+
+~~~text
+completion observations = [], want one final usage observation
+~~~
+
+The immutable red log and status SHA-256 values were respectively
+`1e7155bd043f948da476badc0a336be4c31583be87ce5016008cc306ac107a6b`
+and
+`14aa549a69de3171ad50dac20ee7f092e3099d4c1d22d5851267530fef20a384`.
+This is valid evidence that v0.9.2's HTTP path cannot train TPS from an otherwise
+qualified vLLM usage response; no compile, dependency, formatting, or builder
+failure contributed to the red.
+
+### 20.10 Review pass 1: TPS model, protocol causality, and focused evidence
+
+The first v0.9.3 model/causality review followed the complete path from the
+OpenAI response through reservation qualification, scheduler residual learning,
+and the next pre-forward decision. It found and corrected three cases that the
+initial focused green had not covered:
+
+1. a completed response with semantic TTFT but without qualified per-user TPS
+   produced a non-censored partial sample, so older optimistic TPS residuals
+   could continue to relax the next admission. Any fresh non-global outcome
+   without `UserTPSValid` now acts as TPS-specific censored evidence while still
+   allowing valid TTFT/TPOT targets to train;
+2. a streaming upstream could deliver a syntactically final usage event and
+   then fail its response copy. The 2xx status previously classified that
+   lifecycle as completed. `proxyResult` now carries an internal proxy-failure
+   bit, and timeout, client disconnect, proxy failure, and successful 2xx are
+   classified in that conservative order before termination;
+3. the streaming parser emitted the first final usage immediately, so a second
+   final usage could not revoke the first sample. It now retains one bounded
+   candidate, records the candidate event time, and emits only after normal EOF
+   when exactly one candidate was seen. A truncated stream, duplicate final
+   usage, cancellation, or copy failure therefore submits no TPS target.
+
+The first two behavioral reds used candidate
+`v093-formatted-focused-20260801072707`, archive SHA-256
+`896aad72b60634910deff9da13d43dd3794e8ab5743bfe282e6adda5eaa7d00a`.
+The only failures were the intended optimistic-TPS and completed-on-copy-error
+assertions. Its log and status SHA-256 values were
+`5f687eaea4018d333df5c23f70bd479ba7283a965ba129292b2cf30965888ed8`
+and `4329c2d1c45fac5df7390f1bd4e6191a05b601294316649b7a6f1371336aab95`.
+The duplicate-final red used candidate
+`v093-formatted-focused-20260801073349`, archive SHA-256
+`704c8c6677765e362ec2df809fa736bd6338e5a2c1531f1fd386fad5f7890aea`;
+its intended single failure was `duplicate final usage callbacks = 1, want 0`.
+The log and status SHA-256 values were
+`cf9e29263ae9ed514a7210c9c1d54024091f2c0fd8dd994c14d97479daaa6d77`
+and `e58d1c29387842529ef3da35f662135158e6cb7579aea3a4196e52a36f475756`.
+
+The corrected focused candidate was
+`v093-formatted-focused-20260801073543`, exact archive SHA-256
+`5291c03f430b545b6333f3e3e156d9be113223b164741b4e0cf2e1af6f9cf423`.
+On Go 1.24.5 `linux/amd64`, `gofmt -l` returned no files; all focused OpenAI,
+domain, scheduler, HTTP server, predictive simulation, goodput simulation, and
+predictive-metrics packages passed, followed by race passes for the OpenAI
+parser, scheduler, and HTTP server. The immutable log and status SHA-256 values
+were `0c399f4d51d27925bf6678f488c3ddf3e98d275c6550982a1a696687c01ae5c1`
+and `a9c7a5bd58cb5e2e9b4a9509f63a61b56d529a37ae8d491c58f5261b7e0df248`.
+
+Five single-core two-second benchmark repetitions measured the SSE observer at
+14,935-15,034 ns/op, 2,000 B/op, and 34 allocs/op. The calibrated TPS/latency
+scheduler prediction measured 1,013-1,130 ns/op, 256 B/op, and 2 allocs/op.
+These are builder CPU microbenchmarks, not claims about GPU serving throughput.
+The 64-byte observer increase from the earlier candidate stores one value and
+event timestamp so duplicate/truncated streams can be rejected without losing
+the exact local TPS endpoint; it remains fixed-size and bounded.
+
+### 20.11 Review pass 2: lifecycle, SOLID, and efficiency
+
+The second review traced forward ownership, semantic/completion observation,
+terminal release, panic isolation, concurrent close, and bounded learner state.
+It retained the existing SOLID boundaries: the OpenAI package parses protocol
+only, the HTTP adapter owns response observation, the reservation qualifies one
+owned outcome, the manager owns atomic lifecycle and release, and the scheduler
+owns bounded residual learning. No routing, cache, deployment, or generated-text
+tokenization responsibility was added.
+
+Three lifecycle findings were corrected:
+
+1. the guarded semantic-TTFT method now independently requires successful
+   forward ownership instead of relying on a concrete reservation to reject a
+   premature call;
+2. `MarkForwarded` now separates a one-shot forward attempt from successful
+   ownership. A false or panicking delegate never opens semantic or completion
+   observation, while terminal cleanup remains available;
+3. scheduler-observer calls are isolated at the manager boundary. An observer
+   error or panic cannot escape `TerminateWithOutcome` or prevent the owned
+   reservation from being released. Failed standalone observation remains
+   uncommitted and can never mark an outcome as learned.
+
+The first two lifecycle reds ran together in candidate
+`v093-formatted-focused-20260801074049`, archive SHA-256
+`ce444382fa1f8631d049ee11f205bb84c730216c448d763cffee05bcb2007590`.
+The intended failures were an escaped observer panic with an unreleased
+reservation and semantic feedback accepted before forward ownership. Its log
+and status SHA-256 values were
+`6c93bada4ea2ba53de47ebdcf965cc7f60bfaebdb917da6a9032d4ed875fd311`
+and `124e4f53dee76914e18ee2e24030c00414ad14efc0a24f9c6c2521a87bf5d9b3`.
+The failed-forward ownership red used candidate
+`v093-formatted-focused-20260801074401`, archive SHA-256
+`734610dbb9e45076218f59b7420a7a684c16ff3ec9acfd1610a5167c32faaf4a`;
+its only failure was that a false forward still granted completion ownership.
+Its log and status hashes were
+`0ff382542b59f60385d0f3b30f85fa79b6b594a93a343f92fefb870dd375733f`
+and `7c821e01b4982b8e4d0980acb93e31251c7e3fbb6552f07483b2ba3e03c48474`.
+
+Candidate `v093-formatted-focused-20260801074448`, archive SHA-256
+`d17e29d92550faff5a2a08fb6c8cbbfae2405018ed422de63fb0e79e3b466a84`,
+then passed the full focused package and race set. Its log and status SHA-256
+values were `a9be17d3060422e04b012965a1590972a0ada4d31bf2c15f3766582ae24b68f7`
+and `84c3dd1bdd77392229110f8652722cbe3fb2716367175c8284bae13e2844ea09`.
+The final pass-2 benchmarks remained bounded: the response observer used
+2,000 B/op and 34 allocs/op; learned prediction used 256 B/op and 2 allocs/op.
+No manager lock is held while parsing or writing response bytes, and every
+learner cell/sample collection remains bounded by the immutable profile.
+
+### 20.12 Pre-version full clean-builder matrix
+
+Candidate `v093-full-20260801075114` ran the complete release matrix on the same
+exact executable source archive used by the final pass-2 focused candidate:
+
+~~~text
+source HEAD: 86b98c800a395535df6fec32317693432ca533a8
+source archive SHA-256: d17e29d92550faff5a2a08fb6c8cbbfae2405018ed422de63fb0e79e3b466a84
+builder: linux/amd64, Go 1.24.5, rustc/cargo 1.97.0, Python 3.12.3
+runtime version at this gate: PIG-v0.9.2
+~~~
+
+Every gate passed: archive/secret/source audits, byte-identical gofmt, whitespace,
+profile/no-cache/dependency audits, default `go vet`, build, all tests and all
+races, Rust format/locked all-target tests/release build, native ABI/exported
+surface, default and native full Go vet/build/test/race, five production Gemma4
+renderer/count oracles and exact final token IDs, deterministic goodput, an
+independent JSON validator, tokenizer count/vector parity, and renderer,
+scheduler, lifecycle-queue, native-count, and completion-observer benchmarks.
+
+The deterministic 19-scenario aggregate was:
+
+| Policy | SLO completion-token goodput | TPS/TTFT/TPOT/KV/preemption safety events | False accepts | Leaks |
+|---|---:|---:|---:|---:|
+| current threshold | 38,624 | 2 | 2 | 0 |
+| v0.9.0 KV-only | 35,808 | 70 | 20 | 0 |
+| exact-token KV-only | 35,296 | 74 | 20 | 0 |
+| predictive QoS | 44,992 | 0 | 0 | 0 |
+
+Thus predictive goodput improved by approximately 16.5% over the current
+threshold and 25.7% over v0.9.0 KV-only while producing zero simulated TPS,
+TTFT, TPOT, KV-hard, preemption-proxy, false-fit, and reservation-leak events.
+It strictly improved seven named scenarios, including high-KV-headroom/low-TPS,
+TTFT pressure, and calibration distribution shift.
+
+Material immutable artifact SHA-256 values were:
+
+~~~text
+full log: d89858c22944df0a66f30a7228794b5fc005602df6710a852a44cc116b2a66e9
+status: 1d6fc535b898b1ee2b8f2e0cb1447a63f20f8bd85d519eb7a923dc4956cb3188
+format patch (empty): e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+goodput report: 24d984169544cb16d952ff50c010cc86570fca1ca4a9d3e80b681adb0f1346cc
+independent goodput validation: 47435da4edc0dfe7f888765fe5d06fc495780e7de5a16c4ca831980d7e621d43
+five-case count benchmark: 74d93c23655d691ad893ec0194e77854afed0d1496113149cb0de890ea3faa91
+runtime benchmark: 353a3161d142eeef874b44defa913f3b3fad3d611c0a24c051892c5488673a2f
+completion benchmark: 4be5a0b7eb223767926bd418336eab05f1c6dbf521539b7a68697b083e5c593e
+exact final token IDs: e81f81eb9dfda57f5b07aa9becb41956cb6b2f75c5d82de219d0ef410c4edafe
+native exported surface: 693fc16b6327425a90e3d2cca2e26e5b25f7e4bd007442e25f7047232dd582e8
+~~~
+
+This is the required green gate before changing the runtime version. It is not
+the final v0.9.3 archive or image because the executable still reports v0.9.2.
+
+### 20.13 Final PIG-v0.9.3 focused and race evidence
+
+After every pass-1 and pass-2 correction was complete, the runtime and OCI
+version were changed to `PIG-v0.9.3` and `0.9.3`. Candidate
+`v093-formatted-focused-20260801075953` then ran on the exact source archive:
+
+~~~text
+source HEAD: 86b98c800a395535df6fec32317693432ca533a8
+source archive SHA-256: 305cba38799619c71d0770f4d7171d5f8c32a32863611600c0c6eb91422caf56
+runtime version: PIG-v0.9.3
+environment: linux/amd64, Go 1.24.5
+exit: 0
+~~~
+
+Tracked and untracked Go source was already byte-formatted: `gofmt -l` returned
+no file. Focused OpenAI protocol, predictive domain, learned scheduler, HTTP
+server, predictive simulation, goodput simulation, and predictive metrics
+packages all passed. The OpenAI completion observer, predictive scheduler, and
+HTTP server race suites also passed.
+
+Five single-core repetitions measured:
+
+| Hot path | Time | Heap | Allocations |
+|---|---:|---:|---:|
+| SSE completion observer | 14,925-15,556 ns/op | 2,000 B/op | 34 allocs/op |
+| learned TPS/latency prediction | 973.8-1,074 ns/op | 256 B/op | 2 allocs/op |
+
+The focused log and status SHA-256 values were respectively
+`622a96929f72737185222ef9ca0387cab498c95701a48bae62a2b235583e1e57`
+and
+`eb27744c6e04f177d636e70d43ff121f08eef64950dbb1dacda26a5b6444ac75`.
+These are builder CPU microbenchmarks and bounded-allocation evidence, not GPU
+latency or serving-throughput measurements.
+
+### 20.14 Final PIG-v0.9.3 complete clean-builder matrix
+
+Candidate `v093-full-20260801080108` ran the complete release matrix without a
+source or plan change after the final focused candidate. Its status returned
+zero and named the same exact archive SHA-256
+`305cba38799619c71d0770f4d7171d5f8c32a32863611600c0c6eb91422caf56`.
+The source version gate explicitly found `const version = "PIG-v0.9.3"`.
+
+The environment was `linux/amd64`, Go 1.24.5, rustc/cargo 1.97.0, and Python
+3.12.3. Every applicable gate passed:
+
+1. archive path/content, secret, source-manifest, formatting, whitespace,
+   version, profile, no-cache, and dependency audits;
+2. default `go vet ./...`, `go build ./...`, all Go tests, and all Go race
+   tests;
+3. Rust `cargo fmt --check`, locked all-target tests, and locked release build;
+4. native ABI/exported-surface audit, full native Go vet/build/test/race, five
+   pinned production Gemma4 renderer/count oracles, oracle race, and exact
+   final-token-ID parity;
+5. deterministic 19-scenario goodput, an independent JSON validator, five-case
+   tokenizer count/vector parity and benchmarks, renderer benchmark, learned
+   scheduler benchmark, retired-reservation queue benchmark, native counter
+   benchmark, and completion-observer benchmark.
+
+The independently validated simulation aggregate was:
+
+| Policy | SLO completion-token goodput | TPS/TTFT/TPOT/KV/preemption safety events | False accepts | Leaks |
+|---|---:|---:|---:|---:|
+| current threshold | 38,624 | 2 | 2 | 0 |
+| v0.9.0 KV-only | 35,808 | 70 | 20 | 0 |
+| exact-token KV-only | 35,296 | 74 | 20 | 0 |
+| predictive QoS | 44,992 | 0 | 0 | 0 |
+
+The predictive policy therefore produced approximately 16.5% more
+SLO-compliant completion-token goodput than the current threshold and 25.7%
+more than v0.9.0 KV-only in this deterministic suite, while its simulated TPS,
+TTFT, TPOT, KV-hard, preemption-proxy, false-fit, and leak counts remained zero.
+This is controlled simulation evidence, not a claim that live production will
+have the same gain.
+
+The final full-matrix benchmark ranges remained bounded:
+
+| Hot path | Time | Heap | Allocations |
+|---|---:|---:|---:|
+| SSE completion observer | 15,085-16,923 ns/op | 2,000 B/op | 34 allocs/op |
+| learned TPS/latency prediction | 974.5-1,059 ns/op | 256 B/op | 2 allocs/op |
+| retired reservation queue | 12.11-14.42 ns/op | 0 B/op | 0 allocs/op |
+| native short count | 6,026-8,771 ns/op | 520 B/op | 2 allocs/op |
+
+Material immutable SHA-256 values were:
+
+~~~text
+full log: 2f2a590de289f88cdd4d21f36dd63004d7e74d19dbca33371e9f88abf2f72cde
+status: a23f19d840747cf4113a4def4bdd5b7352d66f73f4c81a706167705d8842bdd9
+format patch (empty): e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+archive listing: 1563ad79644ca8e2bf888c35a0f868929aa5a94f73f8f7b1878b145b9225bb74
+source manifest: 4a3bba701ce7b54f5a7f526a436f2d81b39e6a302e01fc986320c733a4517ef1
+source audit: 59d8e6c0e0a5fa7c11977174aeb073a291c93457b359c922f677a1e6deac1034
+Go dependencies: 470f047f3ee7b7e5f8b18f74cbf29826993c3606f6746f4d5c403103c9c52bc4
+Cargo dependencies: 417f74dde7b8f8acd9e94285dcb6f15e248888f3e0303eeeadf61cfb59692077
+goodput report: 24d984169544cb16d952ff50c010cc86570fca1ca4a9d3e80b681adb0f1346cc
+independent goodput validation: 47435da4edc0dfe7f888765fe5d06fc495780e7de5a16c4ca831980d7e621d43
+tokenizer count benchmark: 890aaaed18d40ca7cdfa42871c801eaa668a440b362c22a10cca7d0c93ef0db8
+renderer benchmark: e6761e83db5aca89602c6d30b0f48a2726696a0859e5c77faa880352cd964d4b
+runtime benchmark: 7c19865b653fe918b19415d52e2b9f4d0eee01752cc9af4bfb653c61ee6fbdec
+completion benchmark: 050fa0a70b3e3b4d99c40b640319ab6ffd34d206a2a3ab9d52aa4113948538b0
+exact final token IDs: cf3c158500e07723f502a133d1675c86438024ab78c7d7865e34d6b932a54918
+native exported surface: 693fc16b6327425a90e3d2cca2e26e5b25f7e4bd007442e25f7047232dd582e8
+~~~
+
+### 20.15 Builder-local deployable image and container closure
+
+Candidate `v093-image-20260801081108` built the final image from the exact same
+archive used by Sections 20.13 and 20.14. The image evidence status returned
+zero:
+
+~~~text
+source HEAD: 86b98c800a395535df6fec32317693432ca533a8
+source archive SHA-256: 305cba38799619c71d0770f4d7171d5f8c32a32863611600c0c6eb91422caf56
+tag: pig-v093-candidate:v093-image-20260801081108
+image ID: sha256:e9f88f3979ece61b65dfff26bb25b63c09c80dee8c225be78b3e9f3bcdb288bc
+image size: 35,195,623 bytes
+docker-save SHA-256: b02e211a142a9b85e62a268dcf11e2619b7119e6a3f047d2244e6a84222d3580
+runtime and OCI version: PIG-v0.9.3 / 0.9.3
+~~~
+
+All three build bases were digest-pinned. Rust built the locked native library;
+Go built with `CGO_ENABLED=1` and `-tags=pig_native`; the distroless final stage
+added only the PIG executable, `libpig_tokenizer_native.so`, and required
+`libgcc_s.so.1` above the pinned runtime base. Both executable and library were
+valid Linux amd64 ELF files, dependency resolution contained no `not found`,
+the native library exposed `pig_tokenizer_abi_version`, and an independent
+dynamic call returned ABI version `3`.
+
+The image passed `/healthz` in `off` and `shadow`, and both logs reported
+`PIG-v0.9.3`. Shadow mode opened a hash-pinned external tokenizer/profile on a
+read-only volume while the container root remained read-only. A missing profile
+and a profile SHA-256 mismatch both stopped startup. Exported-filesystem and
+layer audits found no Go/Cargo manifest, source tree, fixture directory, Cargo
+registry, Go/Rust/C compiler, or mutable learned-state asset; an explicit
+`/bin/sh` entrypoint check failed as required for the distroless image.
+
+Material image evidence SHA-256 values were:
+
+~~~text
+image log: cdb8549f5b22208a86900214a9a2eae1315125076cbd37569685787a818cdd09
+image status: 73a27ad1fce5d4f4474e0cfbb69efec6121ac2b6a99c9b6098c220385cbf009f
+exported filesystem listing: e54e3984fe0e239a0017e79e46fbe0f0c0c4a3168f16128fe84c80c2d5cbf9c4
+PIG dependency report: d4053c5b6ef614c1da26a5ee10ee252f72f4f52e49a43f5f674dacdc6cf5a001
+native dependency report: 47f40549038b24bda9fa48455c7dbb63d04ad4ffe296a92c934aebea2afc9996
+missing-profile log: 3197a4fe6212531785a0baf73661fda0774a310abc43b7e49d5e0437c7a7af32
+profile-mismatch log: fe9cfdbe2a767411a3153775a4963a0d68df79948aa2572c0fb623c3b93cac2a
+extracted PIG binary: 633a8a6369af4e683f5b1143266c15dd25e0568d692c5a06f235f894f56d6b5f
+extracted native library: 02d17f65ac9c1f5386e4f960e59be422d8ee19953949814f9531b88c867d4e05
+~~~
+
+A supplementary container closure used this already-built image, a local-only
+fake vLLM, a read-only root, and read-only hash-pinned assets. Candidate
+`v093-image-response-smoke-green-20260801082600` returned zero and proved one
+request traversed the real native tokenizer and pre-forward predictor, produced
+one `fit`, received an exact 2xx JSON completion usage target, recorded one
+backend TPS outcome, accepted one learning sample, and released the reservation
+back to zero. The response remained exact. Its immutable values were:
+
+~~~text
+response SHA-256: 5d4e1448359cf2891bac3a14a38e8782ebd0c3b862dab6b329149310e06a05f0
+PIG metrics SHA-256: 658968cd139b50b7ed91b9f7930cabb195127e62b98e3cbe4982f6c04d26f2c7
+fixture server SHA-256: d909948351fbec85c33f07a1372de8a82b8aed13f573cf6867148c19cff6b15e
+closure log SHA-256: 826888557dce0d8e8386a45cd72ec0297ed486f64092e116a3c533c337934c5f
+closure status SHA-256: 8a59fc75464644dbe892dba6c47398cabed0015f2f86c433c7c565c67e749d1f
+~~~
+
+Two earlier supplemental attempts are deliberately excluded from green release
+evidence. The first fetched the fake upstream's `/metrics` rather than PIG's
+`/pig/metrics`; the second corrected the path but omitted the required bearer
+credential and received HTTP 401. Both forwarded the exact response and neither
+changed source or image bytes. They were test-harness errors, not behavioral
+reds and not evidence against the product.
+
+### 20.16 Review pass 3: evidence validity and release scope
+
+The third sequential review re-read the protocol observer, HTTP ownership and
+terminal path, learned scheduler, metrics, Dockerfile, applicable tests, exact
+builder statuses, and image artifacts. It found no remaining release-blocking
+source defect after the pass-1 and pass-2 corrections.
+
+The evidence is valid within these boundaries:
+
+1. focused, race, complete matrix, and final image all name exact archive
+   `305cba38799619c71d0770f4d7171d5f8c32a32863611600c0c6eb91422caf56`;
+   no executable or plan byte changed between those four main gates;
+2. protocol parsing remains incremental, single-pass, and bounded; HTTP code
+   owns response observation; reservation code owns target qualification;
+   scheduler code owns bounded residual learning. None acquired routing, cache,
+   deployment, or generated-text tokenization responsibility;
+3. successful forward ownership is required before semantic or completion
+   feedback. Copy failure, timeout, disconnect, cancellation, upstream failure,
+   identity drift, duplicate/truncated usage, and unowned or out-of-horizon
+   usage cannot become an optimistic TPS target;
+4. the learned per-user TPS residual changes a later pre-forward decision, but
+   static priors remain active on missing or untrusted signal and hard KV,
+   TTFT, TPOT, workspace, preemption, and confidence constraints remain
+   independent;
+5. fixed-cardinality metrics distinguish backend, local, missing, and rejected
+   TPS outcomes without user, request, or model label cardinality;
+6. the image ID is builder-local and has no registry repository digest. The
+   Docker-save SHA-256 is an evidence digest, not a published image reference;
+7. deterministic goodput and CPU microbenchmarks establish regression and
+   acceptance-gate behavior only. They do not establish live GPU utilization,
+   production SLOs, or the magnitude of a production throughput gain.
+
+The source is therefore ready for source commit/push and the image is ready for
+a separately authorized registry-publication and controlled deployment stage.
+It is not yet a published or live-ready production artifact.
+
+### 20.17 Completion layers and remaining handoff gates
+
+At the point this section was written:
+
+| Completion layer | State |
+|---|---|
+| plan/design | complete |
+| source implementation | complete |
+| focused builder tests and races | complete |
+| complete clean-builder matrix | complete |
+| three sequential review passes | complete |
+| builder-local native image | complete |
+| container-native request/TPS-learning closure | complete |
+| document-only executable identity proof | pending after this document edit |
+| source commit | pending |
+| source push | pending |
+| registry image publication | not performed; not authorized |
+| Compose integration | not performed; not authorized |
+| CVM deployment or restart | not performed; not authorized |
+| live readiness or production evidence | not performed; no production request sent |
+
+Because this evidence recording changes the plan after the exact executable
+archive was tested, one builder-side document-only manifest proof must compare
+the current tree to the tested archive. It must prove that only this plan differs
+and every executable/source object remains byte-identical. After that proof,
+local staged-path, ignored-artifact, secret, and whitespace audits must pass
+before commit and push. No smaller executable test may replace the complete
+matrix recorded above.
+
+### 20.18 Document-only executable identity proof
+
+Candidate `v093-doc-proof-20260801082920` passed the builder-side
+document-only proof. Its current archive SHA-256 was
+`3b4dc761dfca4c5a755437b3415a0fa754d05e12a43eeb435d234c4faa2a8029`;
+it was compared against tested full-matrix and image archive
+`305cba38799619c71d0770f4d7171d5f8c32a32863611600c0c6eb91422caf56`.
+
+After excluding only
+`docs/TOKENIZER_FIRST_PREDICTIVE_ADMISSION_V0_9_1_PLAN.md`, every source
+manifest line was byte-identical. The complete manifest diff contained exactly
+the old and new SHA-256 lines for that plan: it changed from
+`661e8ff270b2d6798da7a05ae55f1b2e24bb4aac89b3c0ad45f84180aba587df`
+to
+`b099fe29c55bd66737c0129fba07e7b278d2bc78af5c44844f2d13b53622c2c1`.
+
+Archive audit, executable-manifest identity, final-document evidence, runtime
+`PIG-v0.9.3`, tracked Go formatting, Rust formatting, staged-equivalent
+whitespace, and no-cache architecture gates all returned zero. Immutable
+SHA-256 values were:
+
+~~~text
+proof log: 9156c3dcf522880bf0d4a40b056fa92011c736ad3534f9303defa0e57f100707
+proof status: 82f9956b9e0d4f46a865f6b33102bfaa671755465e332d739ccf1f3e40d8e3e1
+final source manifest: 1aefacdd512dd53c15ad88659d1f56e36d4fd5151247bcfb5b225dccdc6e6e5f
+manifest diff: 113587898860961c4f44d7d65b58b3a3b9e77e27bbbe0424f6ffc2e2400d7514
+~~~
+
+Writing this proof changes the plan once more but changes no executable source.
+One final unrecorded builder manifest comparison must therefore pass before
+staging. Its result belongs to the commit/push handoff rather than another
+recursive document edit.

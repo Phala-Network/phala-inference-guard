@@ -103,7 +103,7 @@ func TestCopyResponseBodyMarksDecodeOnFirstSemanticDelta(t *testing.T) {
 	}
 	marked := 0
 	body := strings.NewReader("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
-	err = srv.copyResponseBody(context.Background(), httptest.NewRecorder(), body, true, semantic.New(time.Now()), func() { marked++ })
+	err = srv.copyResponseBody(context.Background(), httptest.NewRecorder(), body, true, semantic.New(time.Now()), func() { marked++ }, nil)
 	if err != nil {
 		t.Fatalf("copyResponseBody: %v", err)
 	}

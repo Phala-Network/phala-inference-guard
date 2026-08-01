@@ -42,7 +42,7 @@ type RequestCost struct {
 type SchedulerEstimate struct {
 	ExistingUserTPSLower         float64
 	ExistingUserTPSNotApplicable bool
-	AllUserTPSLower              float64
+	NewUserTPSLower              float64
 	TTFTUpper                    time.Duration
 	TPOTUpper                    time.Duration
 	WorkspaceRiskUpper           float64

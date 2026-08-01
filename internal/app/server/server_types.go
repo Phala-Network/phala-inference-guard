@@ -19,7 +19,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
 
-const version = "PIG-v0.9.2"
+const version = "PIG-v0.9.3"
 
 const maxQoSQueueWait = 500 * time.Millisecond
 
@@ -49,14 +49,16 @@ type proxyResult struct {
 	firstByte   time.Duration
 	firstByteOK bool
 	timedOut    bool
+	proxyFailed bool
 }
 
 type predictiveShadowFailureCounters struct {
-	close    atomic.Uint64
-	decide   atomic.Uint64
-	forward  atomic.Uint64
-	semantic atomic.Uint64
-	terminal atomic.Uint64
+	close      atomic.Uint64
+	decide     atomic.Uint64
+	forward    atomic.Uint64
+	semantic   atomic.Uint64
+	completion atomic.Uint64
+	terminal   atomic.Uint64
 }
 
 func loadConfig() (config, error) {

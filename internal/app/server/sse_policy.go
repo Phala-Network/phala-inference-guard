@@ -22,6 +22,7 @@ func (s *proxyServer) streamBridgeAllowed() bool {
 
 func (s *proxyServer) modifyBackendResponse(response *http.Response) error {
 	s.classifyUpstreamErrorResponse(response)
+	observePredictiveResponse(response)
 	if !s.shouldInjectSSEKeepAlive(response) {
 		return nil
 	}

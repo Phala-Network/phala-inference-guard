@@ -18,6 +18,15 @@ type SchedulerObserver interface {
 	Observe(prediction SchedulerPrediction, outcome SchedulerOutcome) error
 }
 
+func observeSchedulerOutcome(observer SchedulerObserver, prediction SchedulerPrediction, outcome SchedulerOutcome) (accepted bool) {
+	defer func() {
+		if recover() != nil {
+			accepted = false
+		}
+	}()
+	return observer.Observe(prediction, outcome) == nil
+}
+
 type SchedulerLearningInvalidator interface {
 	InvalidateLearning()
 }
@@ -275,7 +284,7 @@ func (m *Manager) ObserveOutcome(requestID string, outcome SchedulerOutcome) boo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item, exists := m.reservations[requestID]
-	if !exists || !item.Forwarded || item.OutcomeObserved || observer.Observe(item.Prediction, outcome) != nil {
+	if !exists || !item.Forwarded || item.OutcomeObserved || !observeSchedulerOutcome(observer, item.Prediction, outcome) {
 		return false
 	}
 	item.OutcomeObserved = true
@@ -305,7 +314,7 @@ func (m *Manager) TerminateWithOutcome(requestID string, cause TerminalCause, ou
 		return false
 	}
 	if outcome != nil && cause.allowsOutcome(item.Forwarded, *outcome) && !item.OutcomeObserved {
-		if observer, ok := m.scheduler.(SchedulerObserver); ok && observer.Observe(item.Prediction, *outcome) == nil {
+		if observer, ok := m.scheduler.(SchedulerObserver); ok && observeSchedulerOutcome(observer, item.Prediction, *outcome) {
 			item.OutcomeObserved = true
 		}
 	}
@@ -538,7 +547,7 @@ func validRequestCost(cost domain.RequestCost) bool {
 
 func validSchedulerPrediction(prediction SchedulerPrediction) bool {
 	estimate := prediction.Estimate
-	return nonNegativeFinite(estimate.ExistingUserTPSLower) && nonNegativeFinite(estimate.AllUserTPSLower) && estimate.TTFTUpper > 0 && estimate.TPOTUpper > 0 && nonNegativeFinite(estimate.WorkspaceRiskUpper) && nonNegativeFinite(estimate.PreemptionRiskUpper) && positiveFinite(prediction.Confidence) && prediction.Confidence <= 1
+	return nonNegativeFinite(estimate.ExistingUserTPSLower) && nonNegativeFinite(estimate.NewUserTPSLower) && estimate.TTFTUpper > 0 && estimate.TPOTUpper > 0 && nonNegativeFinite(estimate.WorkspaceRiskUpper) && nonNegativeFinite(estimate.PreemptionRiskUpper) && positiveFinite(prediction.Confidence) && prediction.Confidence <= 1
 }
 
 func minimumConfidence(left, right float64) float64 {

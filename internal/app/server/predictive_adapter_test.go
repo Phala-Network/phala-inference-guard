@@ -89,6 +89,10 @@ type semanticTTFTPredictiveReservation interface {
 	ObserveSemanticTTFT(time.Duration) bool
 }
 
+type completionPredictiveReservation interface {
+	ObserveCompletion(predictiveCompletionObservation) bool
+}
+
 func (r *adapterTestRenderer) Render(_ context.Context, input predictiveShadowInput) (predictiveRenderedRequest, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -524,6 +528,141 @@ func TestRealPredictiveShadowDoesNotLearnSemanticTTFTFromFailedRequests(t *testi
 	defer final.Terminate(runtimepredictive.TerminalExpired)
 	if attempt := adapter.Snapshot(); attempt.LastReason != domainpredictive.ReasonFit || attempt.LastSource != runtimepredictive.PredictionSourceStatic {
 		t.Fatalf("post-failure decision = %+v, want unchanged static fit", attempt)
+	}
+}
+
+func TestRealPredictiveShadowLearnsBackendTPSBeforeNextDecision(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(3_200, 0)}
+	coordinator, scheduler := newAdapterTestCoordinatorAndSchedulerWithTargets(t, 75, time.Second)
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     newAdapterTestCounter(),
+		Coordinator: coordinator,
+		Learner:     scheduler,
+		Now:         clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	input := predictiveShadowInput{Path: "/v1/chat/completions", Body: []byte(`{"messages":[{"role":"user","content":"backend TPS cell"}]}`)}
+	for index := 0; index < 3; index++ {
+		reservation := adapter.DecideAndReserve(context.Background(), fmt.Sprintf("backend-tps-%d", index), input)
+		if reservation == nil || !reservation.MarkForwarded() {
+			t.Fatalf("backend TPS training reservation %d was not forwarded", index)
+		}
+		completion, ok := reservation.(completionPredictiveReservation)
+		if !ok || !completion.ObserveCompletion(predictiveCompletionObservation{
+			CompletionTokens:      5,
+			ElapsedSinceRequest:   120 * time.Millisecond,
+			BackendMeanITL:        20 * time.Millisecond,
+			BackendGenerationTime: 80 * time.Millisecond,
+		}) {
+			t.Fatalf("backend TPS observation %d was not accepted", index)
+		}
+		clock.Advance(time.Second)
+		if !reservation.Terminate(runtimepredictive.TerminalCompleted) {
+			t.Fatalf("backend TPS training reservation %d did not complete", index)
+		}
+	}
+	if final := adapter.DecideAndReserve(context.Background(), "backend-tps-final", input); final != nil {
+		final.Terminate(runtimepredictive.TerminalExpired)
+		t.Fatal("learned slow backend TPS did not protect the next request")
+	}
+	attempt := adapter.Snapshot()
+	if attempt.LastReason != domainpredictive.ReasonNewTPSAtRisk || attempt.LastSource != runtimepredictive.PredictionSourceCalibrated || attempt.LastSamples != 3 {
+		t.Fatalf("post-backend-TPS decision = %+v", attempt)
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.TPSOutcomes.Backend != 3 || telemetry.TPSOutcomes.Local != 0 || telemetry.TPSOutcomes.Missing != 0 || telemetry.TPSOutcomes.Rejected != 0 {
+		t.Fatalf("backend TPS telemetry = %+v", telemetry.TPSOutcomes)
+	}
+}
+
+func TestRealPredictiveShadowLearnsConservativeLocalStreamingTPS(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(3_300, 0)}
+	coordinator, scheduler := newAdapterTestCoordinatorAndSchedulerWithTargets(t, 75, time.Second)
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     newAdapterTestCounter(),
+		Coordinator: coordinator,
+		Learner:     scheduler,
+		Now:         clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	input := predictiveShadowInput{Path: "/v1/chat/completions", Streaming: true, Body: []byte(`{"messages":[{"role":"user","content":"local TPS cell"}],"stream":true}`)}
+	for index := 0; index < 3; index++ {
+		reservation := adapter.DecideAndReserve(context.Background(), fmt.Sprintf("local-tps-%d", index), input)
+		if reservation == nil || !reservation.MarkForwarded() {
+			t.Fatalf("local TPS training reservation %d was not forwarded", index)
+		}
+		semantic := reservation.(semanticTTFTPredictiveReservation)
+		completion := reservation.(completionPredictiveReservation)
+		if !semantic.ObserveSemanticTTFT(50*time.Millisecond) || !completion.ObserveCompletion(predictiveCompletionObservation{
+			CompletionTokens:    6,
+			ElapsedSinceRequest: 150 * time.Millisecond,
+		}) {
+			t.Fatalf("local TPS observation %d was not accepted", index)
+		}
+		clock.Advance(time.Second)
+		if !reservation.Terminate(runtimepredictive.TerminalCompleted) {
+			t.Fatalf("local TPS training reservation %d did not complete", index)
+		}
+	}
+	if final := adapter.DecideAndReserve(context.Background(), "local-tps-final", input); final != nil {
+		final.Terminate(runtimepredictive.TerminalExpired)
+		t.Fatal("learned conservative local TPS did not protect the next request")
+	}
+	if attempt := adapter.Snapshot(); attempt.LastReason != domainpredictive.ReasonNewTPSAtRisk || attempt.LastSource != runtimepredictive.PredictionSourceCalibrated {
+		t.Fatalf("post-local-TPS decision = %+v", attempt)
+	}
+	if telemetry := adapter.PredictiveAdmissionTelemetry().TPSOutcomes; telemetry.Local != 3 || telemetry.Backend != 0 || telemetry.Missing != 0 || telemetry.Rejected != 0 {
+		t.Fatalf("local TPS telemetry = %+v", telemetry)
+	}
+}
+
+func TestRealPredictiveShadowRejectsOutOfHorizonTPSWithoutOptimisticLearning(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(3_400, 0)}
+	coordinator, scheduler := newAdapterTestCoordinatorAndSchedulerWithTargets(t, 75, time.Second)
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     newAdapterTestCounter(),
+		Coordinator: coordinator,
+		Learner:     scheduler,
+		Now:         clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	input := predictiveShadowInput{Path: "/v1/chat/completions", Body: []byte(`{"messages":[{"role":"user","content":"invalid TPS cell"}]}`)}
+	for index := 0; index < 3; index++ {
+		reservation := adapter.DecideAndReserve(context.Background(), fmt.Sprintf("invalid-tps-%d", index), input)
+		if reservation == nil || !reservation.MarkForwarded() {
+			t.Fatalf("invalid TPS reservation %d was not forwarded", index)
+		}
+		if reservation.(completionPredictiveReservation).ObserveCompletion(predictiveCompletionObservation{
+			CompletionTokens:    17,
+			ElapsedSinceRequest: 10 * time.Millisecond,
+			BackendMeanITL:      time.Millisecond,
+		}) {
+			t.Fatalf("out-of-horizon TPS observation %d was accepted", index)
+		}
+		clock.Advance(time.Second)
+		if !reservation.Terminate(runtimepredictive.TerminalCompleted) {
+			t.Fatalf("invalid TPS reservation %d did not complete", index)
+		}
+	}
+	final := adapter.DecideAndReserve(context.Background(), "invalid-tps-final", input)
+	if final == nil {
+		t.Fatalf("invalid TPS evidence changed the static fit: %+v", adapter.Snapshot())
+	}
+	defer final.Terminate(runtimepredictive.TerminalExpired)
+	if attempt := adapter.Snapshot(); attempt.LastSource != runtimepredictive.PredictionSourceStatic || attempt.LastReason != domainpredictive.ReasonFit {
+		t.Fatalf("post-invalid-TPS decision = %+v", attempt)
+	}
+	if telemetry := adapter.PredictiveAdmissionTelemetry().TPSOutcomes; telemetry.Rejected != 3 || telemetry.Backend != 0 || telemetry.Local != 0 || telemetry.Missing != 0 {
+		t.Fatalf("invalid TPS telemetry = %+v", telemetry)
 	}
 }
 

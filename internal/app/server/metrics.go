@@ -59,13 +59,14 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 
 func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmissionInput {
 	input := metrics.PredictiveAdmissionInput{
-		Mode:            s.cfg.PredictiveAdmissionMode,
-		EnforcedRejects: s.predictiveEnforcedRejects.Load(),
-		FailureClose:    s.predictiveShadowFailures.close.Load(),
-		FailureDecide:   s.predictiveShadowFailures.decide.Load(),
-		FailureForward:  s.predictiveShadowFailures.forward.Load(),
-		FailureSemantic: s.predictiveShadowFailures.semantic.Load(),
-		FailureTerminal: s.predictiveShadowFailures.terminal.Load(),
+		Mode:              s.cfg.PredictiveAdmissionMode,
+		EnforcedRejects:   s.predictiveEnforcedRejects.Load(),
+		FailureClose:      s.predictiveShadowFailures.close.Load(),
+		FailureDecide:     s.predictiveShadowFailures.decide.Load(),
+		FailureForward:    s.predictiveShadowFailures.forward.Load(),
+		FailureSemantic:   s.predictiveShadowFailures.semantic.Load(),
+		FailureCompletion: s.predictiveShadowFailures.completion.Load(),
+		FailureTerminal:   s.predictiveShadowFailures.terminal.Load(),
 	}
 	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
 	if !ok {
@@ -86,6 +87,10 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.LearningRejected = snapshot.Learning.SamplesRejected
 	input.LearningInvalidations = snapshot.Learning.Invalidations
 	input.LearningCells = snapshot.Learning.Cells
+	input.TPSBackend = snapshot.TPSOutcomes.Backend
+	input.TPSLocal = snapshot.TPSOutcomes.Local
+	input.TPSMissing = snapshot.TPSOutcomes.Missing
+	input.TPSRejected = snapshot.TPSOutcomes.Rejected
 	input.PredictionDuration = snapshot.PredictionDuration
 	input.RendererDuration = snapshot.RendererDuration
 	input.TokenizerDuration = snapshot.TokenizerDuration

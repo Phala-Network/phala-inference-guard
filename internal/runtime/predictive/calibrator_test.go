@@ -41,8 +41,8 @@ func TestLearnedSchedulerUsesEligibleResidualsAndFallsBackWhenStale(t *testing.T
 	if calibrated.Source != PredictionSourceCalibrated || calibrated.Samples != 3 {
 		t.Fatalf("calibrated source/samples = %s/%d, want calibrated/3", calibrated.Source, calibrated.Samples)
 	}
-	if calibrated.Estimate.AllUserTPSLower <= calibrated.Prior.AllUserTPSLower {
-		t.Fatalf("calibrated all-user TPS = %.3f, want above prior %.3f", calibrated.Estimate.AllUserTPSLower, calibrated.Prior.AllUserTPSLower)
+	if calibrated.Estimate.NewUserTPSLower <= calibrated.Prior.NewUserTPSLower || calibrated.Estimate.ExistingUserTPSLower <= calibrated.Prior.ExistingUserTPSLower {
+		t.Fatalf("one per-user residual did not raise both TPS bounds: prior=%+v estimate=%+v", calibrated.Prior, calibrated.Estimate)
 	}
 	if calibrated.Estimate.TTFTUpper >= calibrated.Prior.TTFTUpper {
 		t.Fatalf("calibrated TTFT = %s, want below prior %s", calibrated.Estimate.TTFTUpper, calibrated.Prior.TTFTUpper)
@@ -67,7 +67,7 @@ func TestLearnedSchedulerRejectsWrongEpochInvalidAndUnattributedOutcomes(t *test
 	}
 
 	invalid := healthyLearnedOutcome(prediction, now.Add(2*time.Second))
-	invalid.AllUserTPS = math.NaN()
+	invalid.UserTPS = math.NaN()
 	if err := scheduler.Observe(prediction, invalid); err == nil {
 		t.Fatal("NaN outcome must fail")
 	}
@@ -88,7 +88,7 @@ func TestLearnedSchedulerRejectsWrongEpochInvalidAndUnattributedOutcomes(t *test
 	}
 }
 
-func TestLearnedSchedulerCalibratesAvailableTargetsIndependently(t *testing.T) {
+func TestLearnedSchedulerCalibratesPerUserTPSAndLatencyTargets(t *testing.T) {
 	now := time.Unix(2_500, 0)
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
 	state := domain.VirtualState{}
@@ -99,15 +99,15 @@ func TestLearnedSchedulerCalibratesAvailableTargetsIndependently(t *testing.T) {
 		predictedAt := now.Add(time.Duration(index) * time.Second)
 		prediction := scheduler.Predict(predictedAt, state, cost)
 		outcome := SchedulerOutcome{
-			Identity:        prediction.Identity,
-			ObservedAt:      predictedAt.Add(500 * time.Millisecond),
-			Attributed:      true,
-			AllUserTPS:      prediction.Prior.AllUserTPSLower * 1.20,
-			AllUserTPSValid: true,
-			TTFT:            prediction.Prior.TTFTUpper * 8 / 10,
-			TTFTValid:       true,
-			TPOT:            prediction.Prior.TPOTUpper * 8 / 10,
-			TPOTValid:       true,
+			Identity:     prediction.Identity,
+			ObservedAt:   predictedAt.Add(500 * time.Millisecond),
+			Attributed:   true,
+			UserTPS:      prediction.Prior.NewUserTPSLower * 1.20,
+			UserTPSValid: true,
+			TTFT:         prediction.Prior.TTFTUpper * 8 / 10,
+			TTFTValid:    true,
+			TPOT:         prediction.Prior.TPOTUpper * 8 / 10,
+			TPOTValid:    true,
 		}
 		if err := scheduler.Observe(prediction, outcome); err != nil {
 			t.Fatalf("observe partial target set %d: %v", index, err)
@@ -118,10 +118,7 @@ func TestLearnedSchedulerCalibratesAvailableTargetsIndependently(t *testing.T) {
 	if calibrated.Source != PredictionSourceCalibrated || calibrated.Samples != testResidualConfig().MinimumSamples {
 		t.Fatalf("partial calibrated source/samples = %s/%d", calibrated.Source, calibrated.Samples)
 	}
-	if calibrated.Estimate.ExistingUserTPSLower != calibrated.Prior.ExistingUserTPSLower {
-		t.Fatalf("unobserved existing-user TPS changed: prior=%f estimate=%f", calibrated.Prior.ExistingUserTPSLower, calibrated.Estimate.ExistingUserTPSLower)
-	}
-	if calibrated.Estimate.AllUserTPSLower <= calibrated.Prior.AllUserTPSLower || calibrated.Estimate.TTFTUpper >= calibrated.Prior.TTFTUpper || calibrated.Estimate.TPOTUpper >= calibrated.Prior.TPOTUpper {
+	if calibrated.Estimate.NewUserTPSLower <= calibrated.Prior.NewUserTPSLower || calibrated.Estimate.TTFTUpper >= calibrated.Prior.TTFTUpper || calibrated.Estimate.TPOTUpper >= calibrated.Prior.TPOTUpper {
 		t.Fatalf("available targets were not independently calibrated: %+v", calibrated)
 	}
 }
@@ -187,11 +184,43 @@ func TestFreshCensoredOutcomeDisablesOptimisticHeadroom(t *testing.T) {
 	}
 
 	guarded := scheduler.Predict(now.Add(5*time.Second), state, cost)
-	if guarded.Estimate.ExistingUserTPSLower > guarded.Prior.ExistingUserTPSLower || guarded.Estimate.AllUserTPSLower > guarded.Prior.AllUserTPSLower {
+	if guarded.Estimate.ExistingUserTPSLower > guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower > guarded.Prior.NewUserTPSLower {
 		t.Fatalf("censored cell retained optimistic TPS headroom: %+v", guarded)
 	}
 	if guarded.Estimate.TTFTUpper < guarded.Prior.TTFTUpper || guarded.Estimate.TPOTUpper < guarded.Prior.TPOTUpper {
 		t.Fatalf("censored cell retained optimistic latency headroom: %+v", guarded)
+	}
+}
+
+func TestFreshPartialOutcomeWithoutTPSDisablesOptimisticTPSHeadroom(t *testing.T) {
+	now := time.Unix(2_825, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	state := learnedTestState()
+	cost := learnedTestCost()
+	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
+		predictedAt := now.Add(time.Duration(index) * time.Second)
+		prediction := scheduler.Predict(predictedAt, state, cost)
+		if err := scheduler.Observe(prediction, healthyLearnedOutcome(prediction, predictedAt.Add(500*time.Millisecond))); err != nil {
+			t.Fatalf("observe healthy sample %d: %v", index, err)
+		}
+	}
+	optimistic := scheduler.Predict(now.Add(4*time.Second), state, cost)
+	if optimistic.Estimate.NewUserTPSLower <= optimistic.Prior.NewUserTPSLower {
+		t.Fatalf("healthy samples did not establish optimistic TPS headroom: %+v", optimistic)
+	}
+	if err := scheduler.Observe(optimistic, SchedulerOutcome{
+		Identity:   optimistic.Identity,
+		ObservedAt: now.Add(4500 * time.Millisecond),
+		Attributed: true,
+		TTFT:       optimistic.Prior.TTFTUpper,
+		TTFTValid:  true,
+	}); err != nil {
+		t.Fatalf("observe fresh TTFT-only outcome: %v", err)
+	}
+
+	guarded := scheduler.Predict(now.Add(5*time.Second), state, cost)
+	if guarded.Estimate.ExistingUserTPSLower > guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower > guarded.Prior.NewUserTPSLower {
+		t.Fatalf("fresh outcome without TPS retained optimistic TPS headroom: %+v", guarded)
 	}
 }
 
@@ -313,16 +342,14 @@ func learnedTestCost() domain.RequestCost {
 
 func healthyLearnedOutcome(prediction SchedulerPrediction, observedAt time.Time) SchedulerOutcome {
 	return SchedulerOutcome{
-		Identity:             prediction.Identity,
-		ObservedAt:           observedAt,
-		Attributed:           true,
-		ExistingUserTPS:      prediction.Prior.ExistingUserTPSLower * 1.20,
-		ExistingUserTPSValid: true,
-		AllUserTPS:           prediction.Prior.AllUserTPSLower * 1.20,
-		AllUserTPSValid:      true,
-		TTFT:                 prediction.Prior.TTFTUpper * 8 / 10,
-		TTFTValid:            true,
-		TPOT:                 prediction.Prior.TPOTUpper * 8 / 10,
-		TPOTValid:            true,
+		Identity:     prediction.Identity,
+		ObservedAt:   observedAt,
+		Attributed:   true,
+		UserTPS:      prediction.Prior.NewUserTPSLower * 1.20,
+		UserTPSValid: true,
+		TTFT:         prediction.Prior.TTFTUpper * 8 / 10,
+		TTFTValid:    true,
+		TPOT:         prediction.Prior.TPOTUpper * 8 / 10,
+		TPOTValid:    true,
 	}
 }

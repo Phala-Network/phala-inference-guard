@@ -38,8 +38,8 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 	status := http.StatusOK
 
 	select {
-	case result := <-resultCh:
-		if result.err != nil {
+	case upstream := <-resultCh:
+		if upstream.err != nil {
 			if s.recordClientDisconnect(ctx, clientDisconnectPhaseUpstream, true) {
 				return proxyResult{status: clientClosedRequestStatus, total: time.Since(started)}
 			}
@@ -49,16 +49,21 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 		}
 		recorder := httpx.NewStatusRecorder(w)
 		var copyErr error
-		status, copyErr = s.writeUpstreamResponse(ctx, recorder, result.response, true, requestStarted, onSemantic)
+		status, copyErr = s.writeUpstreamResponse(ctx, recorder, upstream.response, true, requestStarted, onSemantic)
 		if copyErr != nil {
 			if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 				status = clientClosedRequestStatus
 			} else {
 				s.recordProxyCopyError(backend)
+				result.proxyFailed = true
 			}
 		}
 		firstByte, firstByteOK := recorder.FirstByteSince(started)
-		return proxyResult{status: status, total: time.Since(started), firstByte: firstByte, firstByteOK: firstByteOK}
+		result.status = status
+		result.total = time.Since(started)
+		result.firstByte = firstByte
+		result.firstByteOK = firstByteOK
+		return result
 	case <-headerTimer.C:
 		if allowEarlyBridge && s.cfg.SSEEarlyBridgeEnabled && s.streamBridgeAllowed() {
 			sse.WriteHeaders(w)
@@ -73,8 +78,13 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 				} else {
 					s.sseBridgeCopyErr.Add(1)
 					s.recordProxyCopyError(backend)
+					result.proxyFailed = true
 				}
-				return proxyResult{status: status, total: time.Since(started), firstByte: firstByte, firstByteOK: true}
+				result.status = status
+				result.total = time.Since(started)
+				result.firstByte = firstByte
+				result.firstByteOK = true
+				return result
 			}
 		}
 	}
@@ -87,7 +97,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 		s.recordProxyUpstreamError(backend)
 		if wroteEarly {
 			s.sseBridgeUpstreamErr.Add(1)
-			return proxyResult{status: http.StatusOK, total: time.Since(started), firstByte: firstByte, firstByteOK: true}
+			return proxyResult{status: http.StatusOK, total: time.Since(started), firstByte: firstByte, firstByteOK: true, proxyFailed: true}
 		}
 		openai.WriteTooManyRequests(w)
 		return proxyResult{status: http.StatusTooManyRequests, total: time.Since(started), firstByte: time.Since(started), firstByteOK: true}
@@ -101,26 +111,37 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 				status = clientClosedRequestStatus
 			} else {
 				s.recordProxyCopyError(backend)
+				result.proxyFailed = true
 			}
 		}
 		firstByte, firstByteOK := recorder.FirstByteSince(started)
-		return proxyResult{status: status, total: time.Since(started), firstByte: firstByte, firstByteOK: firstByteOK}
+		result.status = status
+		result.total = time.Since(started)
+		result.firstByte = firstByte
+		result.firstByteOK = firstByteOK
+		return result
 	}
+	completion := newPredictiveStreamingCompletionObserver(upstream.response)
 	stopClosingOnCancel := closeBodyOnContextDone(ctx, upstream.response.Body)
 	defer stopClosingOnCancel()
 	defer upstream.response.Body.Close()
 	if !semantic.Eligible(upstream.response, true) {
 		s.sseBridgeInvalid.Add(1)
-		return proxyResult{status: http.StatusOK, total: time.Since(started), firstByte: firstByte, firstByteOK: true}
+		return proxyResult{status: http.StatusOK, total: time.Since(started), firstByte: firstByte, firstByteOK: true, proxyFailed: true}
 	}
 	semanticTTFT := semantic.New(requestStarted)
-	if copyErr := s.copyResponseBody(ctx, w, upstream.response.Body, true, semanticTTFT, onSemantic); copyErr != nil {
+	if copyErr := s.copyResponseBody(ctx, w, upstream.response.Body, true, semanticTTFT, onSemantic, completion); copyErr != nil {
 		if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 			status = clientClosedRequestStatus
 		} else {
 			s.sseBridgeCopyErr.Add(1)
 			s.recordProxyCopyError(backend)
+			result.proxyFailed = true
 		}
 	}
-	return proxyResult{status: status, total: time.Since(started), firstByte: firstByte, firstByteOK: true}
+	result.status = status
+	result.total = time.Since(started)
+	result.firstByte = firstByte
+	result.firstByteOK = true
+	return result
 }

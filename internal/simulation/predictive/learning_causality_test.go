@@ -106,17 +106,15 @@ func TestSimulationDecisionChangesOnlyAfterEligibleLearning(t *testing.T) {
 	for index := 0; index < config.MinimumSamples; index++ {
 		prediction := trainedScheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
 		outcome := runtimepredictive.SchedulerOutcome{
-			Identity:             prediction.Identity,
-			ObservedAt:           now.Add(time.Duration(index+1) * time.Second),
-			Attributed:           true,
-			ExistingUserTPS:      prediction.Prior.ExistingUserTPSLower * 1.20,
-			ExistingUserTPSValid: true,
-			AllUserTPS:           prediction.Prior.AllUserTPSLower * 1.20,
-			AllUserTPSValid:      true,
-			TTFT:                 prediction.Prior.TTFTUpper * 8 / 10,
-			TTFTValid:            true,
-			TPOT:                 prediction.Prior.TPOTUpper * 8 / 10,
-			TPOTValid:            true,
+			Identity:     prediction.Identity,
+			ObservedAt:   now.Add(time.Duration(index+1) * time.Second),
+			Attributed:   true,
+			UserTPS:      prediction.Prior.NewUserTPSLower * 1.20,
+			UserTPSValid: true,
+			TTFT:         prediction.Prior.TTFTUpper * 8 / 10,
+			TTFTValid:    true,
+			TPOT:         prediction.Prior.TPOTUpper * 8 / 10,
+			TPOTValid:    true,
 		}
 		if err := trainedScheduler.Observe(prediction, outcome); err != nil {
 			t.Fatalf("observe %d: %v", index, err)

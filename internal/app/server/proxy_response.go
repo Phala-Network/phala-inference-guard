@@ -7,11 +7,12 @@ import (
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/http"
+	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/sse"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/semantic"
 )
 
-func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWriter, body io.Reader, streaming bool, semanticTTFT *semantic.Observer, onSemantic func()) error {
+func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWriter, body io.Reader, streaming bool, semanticTTFT *semantic.Observer, onSemantic func(), completion *openai.CompletionUsageObserver) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -48,9 +49,15 @@ func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWrite
 					semanticTTFT = nil
 				}
 			}
+			if completion != nil {
+				completion.Observe(buffer[:n])
+			}
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
+				if completion != nil {
+					completion.Finish()
+				}
 				return nil
 			}
 			return readErr
@@ -60,6 +67,7 @@ func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWrite
 
 func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, started time.Time, onSemantic func()) error {
 	body := response.Body
+	completion := newPredictiveStreamingCompletionObserver(response)
 	var semanticTTFT *semantic.Observer
 	if semantic.Eligible(response, streaming) {
 		semanticTTFT = semantic.New(started)
@@ -71,7 +79,7 @@ func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w h
 	stopClosingOnCancel := closeBodyOnContextDone(ctx, body)
 	defer stopClosingOnCancel()
 	defer body.Close()
-	return s.copyResponseBody(ctx, w, body, streaming, semanticTTFT, onSemantic)
+	return s.copyResponseBody(ctx, w, body, streaming, semanticTTFT, onSemantic, completion)
 }
 
 func closeBodyOnContextDone(ctx context.Context, body io.Closer) func() {
@@ -84,6 +92,7 @@ func closeBodyOnContextDone(ctx context.Context, body io.Closer) func() {
 
 func (s *proxyServer) writeUpstreamResponse(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, semanticStarted time.Time, onSemantic func()) (int, error) {
 	s.classifyUpstreamErrorResponse(response)
+	observePredictiveResponse(response)
 	httpx.CopyHeader(w.Header(), response.Header)
 	if streaming && s.shouldInjectSSEKeepAlive(response) {
 		w.Header().Del("Content-Length")

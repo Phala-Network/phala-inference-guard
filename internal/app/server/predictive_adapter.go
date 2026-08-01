@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -81,15 +82,28 @@ type realPredictiveShadow struct {
 	predictionDuration durationHistogram
 	rendererDuration   durationHistogram
 	tokenizerDuration  durationHistogram
+	tpsOutcomes        predictiveTPSOutcomeSnapshot
 }
 
+type predictiveTPSTargetSource uint8
+
+const (
+	predictiveTPSTargetNone predictiveTPSTargetSource = iota
+	predictiveTPSTargetBackend
+	predictiveTPSTargetLocal
+)
+
 type realPredictiveReservation struct {
-	owner             *realPredictiveShadow
-	requestID         string
-	identity          runtimepredictive.ModelIdentity
-	semanticTTFT      time.Duration
-	semanticTTFTValid bool
-	forwarded         bool
+	owner                       *realPredictiveShadow
+	requestID                   string
+	identity                    runtimepredictive.ModelIdentity
+	decodeHorizonUpper          int64
+	semanticTTFT                time.Duration
+	semanticTTFTValid           bool
+	completion                  predictiveCompletionObservation
+	completionObserved          bool
+	completionStructurallyValid bool
+	forwarded                   bool
 }
 
 func newRealPredictiveShadow(config realPredictiveShadowConfig) (*realPredictiveShadow, error) {
@@ -200,9 +214,10 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 	s.reservations[requestID] = struct{}{}
 	s.mu.Unlock()
 	return &realPredictiveReservation{
-		owner:     s,
-		requestID: requestID,
-		identity:  result.Prediction.Identity,
+		owner:              s,
+		requestID:          requestID,
+		identity:           result.Prediction.Identity,
+		decodeHorizonUpper: rendered.DecodeHorizonUpper,
 	}
 }
 
@@ -221,12 +236,14 @@ func (s *realPredictiveShadow) PredictiveAdmissionTelemetry() predictiveAdmissio
 	}
 	s.mu.Lock()
 	attempts := s.attempts
+	tpsOutcomes := s.tpsOutcomes
 	s.mu.Unlock()
 	telemetry := predictiveAdmissionTelemetrySnapshot{
 		Attempts:           attempts,
 		PredictionDuration: &s.predictionDuration,
 		RendererDuration:   &s.rendererDuration,
 		TokenizerDuration:  &s.tokenizerDuration,
+		TPSOutcomes:        tpsOutcomes,
 	}
 	if coordinator, ok := s.coordinator.(predictiveCoordinatorSnapshotter); ok {
 		telemetry.Manager = coordinator.Snapshot().Manager
@@ -303,7 +320,7 @@ func (r *realPredictiveReservation) ObserveSemanticTTFT(ttft time.Duration) bool
 	}
 	r.owner.mu.Lock()
 	defer r.owner.mu.Unlock()
-	if r.owner.closed || r.semanticTTFTValid {
+	if r.owner.closed || !r.forwarded || r.semanticTTFTValid {
 		return false
 	}
 	if _, exists := r.owner.reservations[r.requestID]; !exists {
@@ -312,6 +329,24 @@ func (r *realPredictiveReservation) ObserveSemanticTTFT(ttft time.Duration) bool
 	r.semanticTTFT = ttft
 	r.semanticTTFTValid = true
 	return true
+}
+
+func (r *realPredictiveReservation) ObserveCompletion(observation predictiveCompletionObservation) bool {
+	if r == nil || r.owner == nil {
+		return false
+	}
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	if r.owner.closed || !r.forwarded || r.completionObserved {
+		return false
+	}
+	if _, exists := r.owner.reservations[r.requestID]; !exists {
+		return false
+	}
+	r.completionObserved = true
+	r.completion = observation
+	r.completionStructurallyValid = validPredictiveCompletionObservation(observation, r.decodeHorizonUpper)
+	return r.completionStructurallyValid
 }
 
 func (r *realPredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {
@@ -324,15 +359,37 @@ func (r *realPredictiveReservation) Terminate(cause runtimepredictive.TerminalCa
 		return false
 	}
 	var outcome *runtimepredictive.SchedulerOutcome
-	if cause == runtimepredictive.TerminalCompleted && r.semanticTTFTValid {
-		outcome = &runtimepredictive.SchedulerOutcome{
+	if cause == runtimepredictive.TerminalCompleted {
+		completed := runtimepredictive.SchedulerOutcome{
 			Identity:   r.identity,
 			ObservedAt: r.owner.now(),
 			Attributed: true,
-			TTFT:       r.semanticTTFT,
-			TTFTValid:  true,
 		}
-	} else if r.forwarded {
+		hasTarget := false
+		if r.semanticTTFTValid {
+			completed.TTFT = r.semanticTTFT
+			completed.TTFTValid = true
+			hasTarget = true
+		}
+		tps, tpot, source, tpsValid := r.qualifiedTPS()
+		if tpsValid {
+			completed.UserTPS = tps
+			completed.UserTPSValid = true
+			completed.TPOT = tpot
+			completed.TPOTValid = true
+			hasTarget = true
+		}
+		if r.forwarded {
+			r.recordTPSOutcomeLocked(source, tpsValid)
+		}
+		if hasTarget {
+			outcome = &completed
+		}
+	}
+	if cause != runtimepredictive.TerminalCompleted && r.forwarded {
+		r.owner.tpsOutcomes.Rejected++
+	}
+	if outcome == nil && r.forwarded {
 		outcome = &runtimepredictive.SchedulerOutcome{
 			Identity:   r.identity,
 			ObservedAt: r.owner.now(),
@@ -345,6 +402,99 @@ func (r *realPredictiveReservation) Terminate(cause runtimepredictive.TerminalCa
 	}
 	delete(r.owner.reservations, r.requestID)
 	return true
+}
+
+func (r *realPredictiveReservation) qualifiedTPS() (float64, time.Duration, predictiveTPSTargetSource, bool) {
+	if r == nil || !r.completionObserved || !r.completionStructurallyValid {
+		return 0, 0, predictiveTPSTargetNone, false
+	}
+	intervals := r.completion.CompletionTokens - 1
+	decodeDuration := time.Duration(0)
+	source := predictiveTPSTargetNone
+	if r.completion.BackendMeanITL > 0 {
+		decodeDuration = multiplyPositiveDuration(r.completion.BackendMeanITL, intervals)
+		source = predictiveTPSTargetBackend
+	} else if r.completion.BackendGenerationTime > 0 {
+		decodeDuration = r.completion.BackendGenerationTime
+		source = predictiveTPSTargetBackend
+	} else if r.semanticTTFTValid && r.completion.ElapsedSinceRequest > r.semanticTTFT {
+		decodeDuration = r.completion.ElapsedSinceRequest - r.semanticTTFT
+		source = predictiveTPSTargetLocal
+	}
+	if decodeDuration <= 0 {
+		return 0, 0, predictiveTPSTargetNone, false
+	}
+	tps := float64(intervals) / decodeDuration.Seconds()
+	if tps <= 0 || math.IsNaN(tps) || math.IsInf(tps, 0) {
+		return 0, 0, predictiveTPSTargetNone, false
+	}
+	tapot := dividePositiveDuration(decodeDuration, intervals)
+	if tapot <= 0 {
+		return 0, 0, predictiveTPSTargetNone, false
+	}
+	return tps, tapot, source, true
+}
+
+func (r *realPredictiveReservation) recordTPSOutcomeLocked(source predictiveTPSTargetSource, valid bool) {
+	if r == nil || r.owner == nil {
+		return
+	}
+	if valid {
+		switch source {
+		case predictiveTPSTargetBackend:
+			r.owner.tpsOutcomes.Backend++
+		case predictiveTPSTargetLocal:
+			r.owner.tpsOutcomes.Local++
+		default:
+			r.owner.tpsOutcomes.Rejected++
+		}
+		return
+	}
+	if r.completionObserved && !r.completionStructurallyValid {
+		r.owner.tpsOutcomes.Rejected++
+		return
+	}
+	r.owner.tpsOutcomes.Missing++
+}
+
+func validPredictiveCompletionObservation(observation predictiveCompletionObservation, decodeHorizonUpper int64) bool {
+	if observation.CompletionTokens <= 1 || decodeHorizonUpper <= 0 || observation.CompletionTokens > decodeHorizonUpper || observation.ElapsedSinceRequest <= 0 || observation.BackendMeanITL < 0 || observation.BackendGenerationTime < 0 {
+		return false
+	}
+	if observation.BackendMeanITL == 0 || observation.BackendGenerationTime == 0 {
+		return true
+	}
+	expected := multiplyPositiveDuration(observation.BackendMeanITL, observation.CompletionTokens-1)
+	if expected <= 0 {
+		return false
+	}
+	difference := expected - observation.BackendGenerationTime
+	if difference < 0 {
+		difference = -difference
+	}
+	tolerance := expected / 10
+	if tolerance < 2*time.Millisecond {
+		tolerance = 2 * time.Millisecond
+	}
+	return difference <= tolerance
+}
+
+func multiplyPositiveDuration(value time.Duration, count int64) time.Duration {
+	if value <= 0 || count <= 0 || count > math.MaxInt64/int64(value) {
+		return 0
+	}
+	return value * time.Duration(count)
+}
+
+func dividePositiveDuration(value time.Duration, divisor int64) time.Duration {
+	if value <= 0 || divisor <= 0 {
+		return 0
+	}
+	result := value / time.Duration(divisor)
+	if result <= 0 {
+		return time.Nanosecond
+	}
+	return result
 }
 
 func (s *realPredictiveShadow) recordUnknown(reason domainpredictive.Reason) {

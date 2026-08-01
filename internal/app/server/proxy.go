@@ -120,11 +120,18 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.reject(w, ln, "backend_priority_injection")
 		return
 	}
-	if predictiveReservation != nil && !predictiveReservation.MarkForwarded() && s.cfg.PredictiveAdmissionMode == "enforce" {
-		predictiveCause = runtimepredictive.TerminalLocalQoSReject
-		s.predictiveEnforcedRejects.Add(1)
-		s.reject(w, s.globalLn, "predictive_admission")
-		return
+	predictiveForwarded := false
+	if predictiveReservation != nil {
+		predictiveForwarded = predictiveReservation.MarkForwarded()
+		if !predictiveForwarded && s.cfg.PredictiveAdmissionMode == "enforce" {
+			predictiveCause = runtimepredictive.TerminalLocalQoSReject
+			s.predictiveEnforcedRejects.Add(1)
+			s.reject(w, s.globalLn, "predictive_admission")
+			return
+		}
+	}
+	if predictiveForwarded {
+		r = attachPredictiveResponseObserver(r, predictiveReservation, requestStart, classification.Streaming)
 	}
 	s.globalLn.ObserveAccepted()
 	ln.ObserveAccepted()
@@ -133,7 +140,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	markDecode, doneActive := s.trackActiveRequest(prefillGrace)
 	defer doneActive()
 	markSemanticOutput := markDecode
-	if predictiveReservation != nil {
+	if predictiveForwarded {
 		markSemanticOutput = func() {
 			markDecode()
 			predictiveReservation.MarkPrefillComplete()
@@ -157,6 +164,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		predictiveCause = runtimepredictive.TerminalTimeout
 	} else if result.status == clientClosedRequestStatus {
 		predictiveCause = runtimepredictive.TerminalClientDisconnected
+	} else if result.proxyFailed {
+		predictiveCause = runtimepredictive.TerminalUpstreamFailure
 	} else if result.status >= http.StatusOK && result.status < http.StatusMultipleChoices {
 		predictiveCause = runtimepredictive.TerminalCompleted
 	} else {

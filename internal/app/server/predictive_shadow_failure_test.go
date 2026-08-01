@@ -49,11 +49,76 @@ func (r *failureInjectingPredictiveReservation) MarkForwarded() bool {
 	return true
 }
 
+func (r *failureInjectingPredictiveReservation) ObserveCompletion(predictiveCompletionObservation) bool {
+	if r.phase == "completion" {
+		panic("injected predictive completion panic")
+	}
+	return true
+}
+
 func (r *failureInjectingPredictiveReservation) Terminate(runtimepredictive.TerminalCause) bool {
 	if r.phase == "terminal" {
 		panic("injected predictive terminal panic")
 	}
 	return true
+}
+
+func TestGuardedPredictiveCompletionObservationRequiresOwnershipAndIsIdempotent(t *testing.T) {
+	underlying := &recordingPredictiveReservation{}
+	guarded := &guardedPredictiveReservation{reservation: underlying}
+	observation := predictiveCompletionObservation{CompletionTokens: 5, ElapsedSinceRequest: 100 * time.Millisecond, BackendMeanITL: 20 * time.Millisecond}
+	if guarded.ObserveCompletion(observation) {
+		t.Fatal("completion observation was accepted before forward ownership")
+	}
+	if !guarded.MarkForwarded() || !guarded.ObserveCompletion(observation) {
+		t.Fatal("first owned completion observation was not accepted")
+	}
+	if guarded.ObserveCompletion(observation) {
+		t.Fatal("duplicate completion observation was accepted")
+	}
+	if !guarded.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("owned reservation did not terminate")
+	}
+	if guarded.ObserveCompletion(observation) {
+		t.Fatal("completion observation was accepted after termination")
+	}
+	underlying.mu.Lock()
+	defer underlying.mu.Unlock()
+	if len(underlying.completions) != 1 {
+		t.Fatalf("underlying completion observations = %v, want exactly one", underlying.completions)
+	}
+}
+
+func TestGuardedPredictiveSemanticObservationRequiresForwardOwnership(t *testing.T) {
+	underlying := &recordingPredictiveReservation{}
+	guarded := &guardedPredictiveReservation{reservation: underlying}
+	if guarded.ObserveSemanticTTFT(10 * time.Millisecond) {
+		t.Fatal("semantic observation was accepted before forward ownership")
+	}
+	if !guarded.MarkForwarded() || !guarded.ObserveSemanticTTFT(10*time.Millisecond) {
+		t.Fatal("first owned semantic observation was not accepted")
+	}
+	if guarded.ObserveSemanticTTFT(20 * time.Millisecond) {
+		t.Fatal("duplicate semantic observation was accepted")
+	}
+}
+
+func TestGuardedPredictiveFailedForwardNeverGrantsObservationOwnership(t *testing.T) {
+	underlying := &failureInjectingPredictiveReservation{phase: "forward_false"}
+	guarded := &guardedPredictiveReservation{reservation: underlying}
+	if guarded.MarkForwarded() {
+		t.Fatal("injected failed forward unexpectedly succeeded")
+	}
+	if guarded.ObserveSemanticTTFT(10 * time.Millisecond) {
+		t.Fatal("failed forward granted semantic observation ownership")
+	}
+	if guarded.ObserveCompletion(predictiveCompletionObservation{
+		CompletionTokens:    5,
+		ElapsedSinceRequest: 100 * time.Millisecond,
+		BackendMeanITL:      20 * time.Millisecond,
+	}) {
+		t.Fatal("failed forward granted completion observation ownership")
+	}
 }
 
 func TestPredictiveShadowDecidePanicDoesNotChangeResponse(t *testing.T) {
@@ -209,6 +274,31 @@ func TestPredictiveShadowSemanticPanicDoesNotChangeStreamingResponse(t *testing.
 	recorder := servePredictiveFailureRequest(srv, true)
 	if recorder.Code != http.StatusOK || recorder.Body.String() != chunk {
 		t.Fatalf("semantic panic changed response: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestPredictiveShadowCompletionPanicDoesNotChangeStreamingResponse(t *testing.T) {
+	response := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
+		"data: {\"choices\":[],\"usage\":{\"completion_tokens\":5},\"metrics\":{\"mean_itl_ms\":20}}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(response))
+	}))
+	defer backend.Close()
+
+	srv := newFailureInjectingShadowServer(t, backend.URL, &failureInjectingPredictiveShadow{phase: "completion"})
+	recorder := servePredictiveFailureRequest(srv, true)
+	if recorder.Code != http.StatusOK || recorder.Body.String() != response {
+		t.Fatalf("completion panic changed response: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if got := srv.predictiveShadowFailures.completion.Load(); got != 1 {
+		t.Fatalf("predictive completion failures = %d, want 1", got)
+	}
+	var output strings.Builder
+	srv.writeLocalMetrics(&output)
+	if !strings.Contains(output.String(), `pig_predictive_admission_failures_total{phase="completion"} 1`) {
+		t.Fatalf("completion panic metric missing: %s", output.String())
 	}
 }
 
