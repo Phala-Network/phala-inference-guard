@@ -840,11 +840,90 @@ artifact and Git diff for secrets before completion.
   `bc8be03112cb56e189c3a2970fcd0d8e7d075ffc94eb20db41efaeacc8bc1691`,
   and `9e563bdba61d0b8745fecff29d22c2f9ba48855e14927fda6d3bf351ddadb326`.
   The final audit's live-token and generic-secret scans are clean;
-- v0.10.1 has therefore passed the Router-disabled shadow gate and is eligible
-  only for the Router-disabled enforce phase. Router-disabled enforce and its
-  full cold-first/recovery gates, Router enablement, the first real routed
-  request, and a newly timed continuous 30-minute canary remain. `use1-cb` is
-  still disabled, and no Router mutation or real-traffic canary has occurred.
+- v0.10.1 therefore passed the Router-disabled shadow gate. A fresh enforce
+  predeploy audit at `2026-08-01T21:41:24.7551479Z` reconfirmed the exact shadow
+  Compose, disabled Router target, unchanged enabled set/digest, idle/open
+  backend, zero reservations and observations, and zero preemptions. The
+  enforce candidate was proven byte-for-byte equal to the live Compose after
+  exactly one `PREDICTIVE_ADMISSION_MODE=shadow -> enforce` replacement;
+- one Compose-only enforce deploy without `.env` completed successfully in
+  approximately 255 seconds. The platform operation finished before service
+  readiness: models and PIG metrics remained startup 503 until both became 200
+  at `2026-08-01T21:52:32.9916929Z`. vLLM loading exceeded the bounded 300
+  second dependency probe once, so PIG recorded one pre-readiness probe timeout
+  and then started as `PIG-v0.10.1` with `predictive_admission=enforce` at
+  `2026-08-01T21:52:24.287197393Z`. There was no repeated deploy and no
+  post-readiness restart;
+- the enforce cold baseline was exact: attempts, fit/risk/unknown/rejects,
+  scheduler and input-size samples were zero; mode was enforce, intake was
+  open, KV capacity was `862437`, and reservations, observations,
+  running/waiting, KV use, and preemptions were zero. A 124-byte cold request
+  returned 200 and reached vLLM exactly once. A `1600124`-byte JSON request with
+  a short prompt, eight-token output horizon, and only trailing whitespace was
+  rejected pre-forward with 429 and `kv_over_budget`; vLLM success and prompt
+  token counters did not change. The immediately following 124-byte request
+  returned 200. Intake stayed open and all terminal/failure counters stayed
+  zero, proving cold progress, pre-forward enforcement, no sticky zero, and no
+  reservation leak without GPU pressure;
+- the first no-pause protocol harness retained a real bounded TPS-protection
+  observation: normal, stream-with-usage, tool and structured requests returned
+  200, while the immediately following small CJK request returned 429 with
+  `existing_tps_at_risk` from the static predictor. At that decision the prior
+  completion was still present in the 100 ms observer window, so the cold
+  counterfactual represented two decode sequences at ten TPS each. This was a
+  named current TPS constraint, not KV pressure or sticky intake closure. Once
+  terminal idle was explicitly observed, a complete five-case repeat returned
+  200 for every case. The next 100 one-second-spaced requests produced no new
+  risk or enforced rejection. Preserve the original 429 evidence and monitor
+  real canary `existing_tps_at_risk` rejections against simultaneous Router/PIG
+  running state; repeated rejection while the observed backend is idle remains
+  a canary blocker;
+- the first low-flow latency assertion was also retained as invalid evidence,
+  not hidden: it used only 20 observations for a p99 claim and used cumulative
+  histogram counts polluted by the deliberate 1.6 MB risk probe. The harness
+  now uses before/after histogram deltas for the exercised normal-size interval
+  and at least 100 samples for p99. Its corrected 100-request run returned
+  100/100 HTTP 200, added no risk/unknown/enforced rejection or preemption,
+  kept intake open and terminal state zero, retained learned input-size state,
+  rejected a safe low-side sample without invalidation, and respected the
+  per-cell sample bound of 64. Prediction was 99/100 at or below both 0.25 ms
+  and 1 ms; estimator/classification was 100/100 at or below both thresholds.
+  This passes the declared p95/p99 gates while keeping the intentionally large
+  rejection probe as separate body-ingress evidence;
+- three additional streaming-with-terminal-usage requests all returned 200
+  with 33 completion tokens. The first prediction remained static and produced
+  the third reliable local TPS sample; the second and third used calibrated
+  fit predictions. Scheduler accepts and local TPS outcomes each increased by
+  three, final source was `calibrated` with four samples for the last decision,
+  and risk/unknown/invalidation/preemption and terminal state did not change;
+- final enforce metrics contain 136 attempts, 134 fit decisions, the one
+  deliberate KV risk and one bounded immediate TPS risk, zero unknowns, 134
+  successful vLLM completions, five accepted local TPS outcomes, zero scheduler
+  rejection/invalidation, 124 accepted and ten safely rejected input-size
+  samples, zero input-size invalidation, a bounded 64 stored samples, 13 cold
+  and 123 learned estimates, and a last calibrated learned fit. Predictive
+  intake is open; every admission failure phase, reservation, shadow
+  observation, running/waiting, KV use, and preemption is zero;
+- the final read-only audit at `2026-08-01T22:10:29.3207221Z` reconfirmed CVM
+  `running`, `in_progress=false`, live enforce Compose SHA-256
+  `041aa8aeff89ae5a255ec6c982e5994fcf89315c53fa803109364c9b7658f4c5`,
+  immutable PIG image/image ID, all four serving containers running,
+  authenticated models/PIG/vLLM metrics 200, unauthorized metrics 401, Router
+  digest unchanged, enabled set still `use1-4c,use1-9b`, and `use1-cb` disabled
+  at running zero and processed `234715`. After the readiness cutoff, PIG,
+  vLLM, and HAProxy logs contained zero 5xx, panic/fatal, OOM/Xid/engine death,
+  connection failure, or lifecycle error; HAProxy recorded only the two
+  intentional enforce 429 responses. Current log SHA-256 values are
+  `517ca4ef533b90d1ef2e32d3fb5e69109fa6384411c264762e1208d8e7b0adfb`,
+  `b6850ba296e80c0f940d51cdbfa30e600d9433002b0cdc631fc54759d8cceb2c`,
+  and `e02b0175686708dfe8b35bf268fb1c0668d247dbcbe729a91351ce28305f8cd4`.
+  The 76-file enforce evidence scan found no live token, literal bearer, or
+  private key;
+- v0.10.1 has therefore passed both Router-disabled deployment phases and is
+  temporarily eligible only for the authorized `use1-cb` Router canary. Router
+  enablement, the first real routed request, and a newly timed continuous
+  30-minute canary remain. `use1-cb` is still disabled and no real Router
+  traffic has reached this enforce instance.
 
 ## 15. Recorded plan reviews
 
@@ -1000,8 +1079,8 @@ now complete. Fresh live preflight retained the Router-disabled and idle target,
 captured the current byte-exact rollback, and proved the shadow candidate has
 only the two authorized changes. The subsequent v0.10.1 shadow deployment and
 complete direct gates passed as recorded in current state. The same immutable
-image is eligible only for Router-disabled enforce and is not yet approved for
-Router traffic.
+image was eligible only for Router-disabled enforce at that review point and
+was not then approved for Router traffic.
 
 ### Pass 1 v0.10.1 shadow review — repeated 2026-08-02
 
@@ -1039,3 +1118,43 @@ are clean. The only valid promotion is from disabled-route shadow to
 disabled-route enforce using the one-field candidate diff. `use1-cb` must not
 be enabled until enforce repeats its cold-first, sparse recovery, protocol, TPS,
 latency, pre-forward rejection, zero-terminal-state, and no-preemption gates.
+
+### Pass 1 v0.10.1 enforce review — repeated 2026-08-02
+
+The model and causality review proved the enforce decision path with upstream
+counters, not merely PIG response codes. A cold small request advanced both PIG
+and vLLM exactly once; the controlled KV-risk request advanced the PIG risk and
+enforced-reject counters but left vLLM requests and prompt tokens unchanged;
+the next small request advanced both again. Current feedback did not rewrite
+any prior decision. Streaming terminal usage then changed only subsequent
+predictions from static to calibrated. This closes the pre-forward and
+next-request-only causal gates before Router traffic.
+
+### Pass 2 v0.10.1 enforce review — repeated 2026-08-02
+
+The safety, efficiency, and SOLID review preserved two initially failing
+harness observations instead of promoting them. The immediate CJK 429 had the
+named `existing_tps_at_risk` constraint during a bounded observer overlap; an
+idle-aware full protocol repeat and 100 sparse requests proved recovery and no
+repeated low-flow lock. The first p99 assertion mixed cumulative large-body
+history with 20 normal requests, which cannot support an empirical p99 claim.
+Interval-delta histograms over 100 requests passed the configured p95/p99
+thresholds. These corrections changed only ignored evidence harnesses, not PIG
+source or the deployed image. Learned state remained bounded, low-side samples
+did not invalidate mature state, and every lifecycle/failure/preemption counter
+remained safe. The observer-overlap 429 remains an explicit canary efficiency
+signal rather than being erased.
+
+### Pass 3 v0.10.1 enforce review — repeated 2026-08-02
+
+The evidence and release review separated deploy completion, model loading,
+the one bounded pre-readiness PIG probe timeout, PIG/backend readiness, and
+post-readiness health. It re-queried the live Compose, image IDs, endpoints,
+Router membership/digest, cold and final metrics, container logs, and secrets.
+The target stayed disabled throughout enforce and no source, image, Router,
+weight, policy, bearer, timeout, vLLM, or other-upstream change occurred. The
+candidate is now eligible for exactly one next mutation: snapshot the Router
+again and enable only `use1-cb`. The 30-minute timer must still wait for the
+first processed real Router request, and any repeated idle TPS rejection,
+self-lock, SLO regression, preemption, leak, fatal error, or lower comparable
+goodput restarts the full disable/drain/repair/test loop.
