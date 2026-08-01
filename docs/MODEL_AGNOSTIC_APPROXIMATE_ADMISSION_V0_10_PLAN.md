@@ -778,10 +778,73 @@ artifact and Git diff for secrets before completion.
   The enforce candidate changes only `shadow -> enforce` from that candidate
   and has SHA-256
   `041aa8aeff89ae5a255ec6c982e5994fcf89315c53fa803109364c9b7658f4c5`;
-- Router-disabled shadow deployment, complete live shadow gates,
-  Router-disabled enforce and its complete gates, Router enablement, and the
-  first-real-request-started 30-minute canary remain. `use1-cb` is still
-  disabled and no v0.10.1 live mutation has occurred.
+- the sole authorized CVM was deployed once with the immutable v0.10.1 image in
+  Router-disabled `shadow` mode. The deploy CLI did not exit cleanly after the
+  platform response, so no second deploy was started. The platform reported
+  `running`, `in_progress=false`, and ready after approximately 257 seconds;
+  authenticated `/v1/models` recovered to HTTP 200 at
+  `2026-08-01T21:13:04.9837737Z`;
+- the live Compose SHA-256 is
+  `6e304b5803a92af3598209f380f93be177bebb30aa946c38a063221d0e590f07`.
+  The running PIG container uses
+  `ghcr.io/phala-network/phala-inference-guard:v0.10.1@sha256:3aca2bb90bc75fe7be9ab4fbb02202aa678855461eabd3bd768c0e682a5a8f83`,
+  image ID
+  `sha256:47f03bf3b517297b5c29c0c9569eaf46328bc9c59e969f6296223cfe8bddb717`;
+  vLLM, PIG, HAProxy, and dstack-ingress are running. The enforce candidate
+  remains SHA-256
+  `041aa8aeff89ae5a255ec6c982e5994fcf89315c53fa803109364c9b7658f4c5`
+  and differs from the live shadow Compose only by `shadow -> enforce`;
+- all five direct protocol gates passed: normal chat, streaming with terminal
+  usage, tool call, structured output, and CJK. Only status, usage, and protocol
+  shape were retained; response bodies were discarded. Authenticated models,
+  PIG metrics, and vLLM metrics returned 200; both unauthenticated metrics paths
+  returned 401;
+- twenty strictly serial, single-concurrency, low-output requests all returned
+  200. One additional qualified sample reached input-size maturity, the next
+  request changed from cold to learned, and a safe low-side sample was rejected
+  without invalidation or deletion of mature learning. This closed the sparse
+  low-flow false-lock, sticky-zero, and recovery gates without adding a
+  preemption;
+- streaming-with-terminal-usage learning produced reliable local TPS outcomes.
+  After three qualified samples the scheduler source changed from `static` to
+  `calibrated`; a corrected three-request repeat ended with calibrated sample
+  count `9`, three additional scheduler accepts and local TPS outcomes, no
+  invalidation, no risk/unknown decision, and zero terminal reservations and
+  shadow observations. The earlier harness-only expectation that the source
+  string would be `learned` is invalid terminology evidence, not a product
+  failure;
+- the final cumulative shadow metrics contain 34 attempts and 34 fit decisions,
+  zero risk/unknown/enforced rejection, 30 accepted and four safely rejected
+  input-size samples, zero input-size invalidations, 30 stored samples, six
+  cold and 28 learned estimates, and a last learned estimate. Scheduler
+  learning contains ten accepted outcomes, ten local TPS outcomes, zero
+  scheduler invalidations, source `calibrated`, and nine samples for the last
+  decision. All 34 prediction observations and all 34 estimator observations
+  were at or below 0.25 ms, so both p95 and p99 are at most 0.25 ms and the
+  1 ms p99 gate also passes;
+- the final read-only drift audit at `2026-08-01T21:35:02.9662467Z` reconfirmed
+  CVM `running`, `in_progress=false`, the same live Compose and image identity,
+  Router digest
+  `sha256:1b62b992f37b1f3c3ddc3894373cf2a10368d64350b689052c642c2712967c3f`,
+  enabled set `use1-4c,use1-9b`, `use1-cb` disabled with route running zero and
+  processed count `234715`, direct endpoint/auth gates, predictive intake open,
+  and zero reservations, shadow observations, backend running/waiting, KV use,
+  and preemptions. The disabled target's Router-side PIG state remains
+  stale/not-collected as expected while direct protected metrics are healthy;
+- direct post-readiness PIG, vLLM, and HAProxy log audits found zero 5xx,
+  panic/fatal, OOM/Xid/engine-death, connection failure, or reservation/shadow
+  lifecycle error. The only post-readiness HAProxy `<NOSRV>` lines are the six
+  intentional local 401 responses for unauthenticated metrics. Current log
+  SHA-256 values are respectively
+  `1fd0da49a3ac9188f3563396624871db1500768a6b530fb6e9029c0251b395ef`,
+  `bc8be03112cb56e189c3a2970fcd0d8e7d075ffc94eb20db41efaeacc8bc1691`,
+  and `9e563bdba61d0b8745fecff29d22c2f9ba48855e14927fda6d3bf351ddadb326`.
+  The final audit's live-token and generic-secret scans are clean;
+- v0.10.1 has therefore passed the Router-disabled shadow gate and is eligible
+  only for the Router-disabled enforce phase. Router-disabled enforce and its
+  full cold-first/recovery gates, Router enablement, the first real routed
+  request, and a newly timed continuous 30-minute canary remain. `use1-cb` is
+  still disabled, and no Router mutation or real-traffic canary has occurred.
 
 ## 15. Recorded plan reviews
 
@@ -871,10 +934,11 @@ r29 does not alter an executable or Docker build input and must be verified as
 such before inheriting those results.
 
 The image identity, smoke, publication, and source/tag provenance findings are
-now closed by r30. The remaining release findings are deployed shadow,
-disabled-route enforce cold/recovery gates, and the real-traffic canary. The plan
-remains authoritative, but the candidate is not approved for Router traffic
-until every preceding live gate passes.
+now closed by r30. The deployed v0.10.1 shadow findings are also closed by the
+live gates recorded below. The remaining release findings are disabled-route
+enforce cold/recovery gates and the real-traffic canary. The plan remains
+authoritative, but the candidate is not approved for Router traffic until every
+preceding live gate passes.
 
 ### Pass 1 live correction — repeated 2026-08-02 after v0.10.0 shadow
 
@@ -934,5 +998,44 @@ promoted to product green. The plan-only commit/object-identity proof, official
 tag workflow publication, immutable-digest pull and registry-image smoke are
 now complete. Fresh live preflight retained the Router-disabled and idle target,
 captured the current byte-exact rollback, and proved the shadow candidate has
-only the two authorized changes. The candidate is eligible for Router-disabled
-shadow deployment, but is still not approved for enforce or Router traffic.
+only the two authorized changes. The subsequent v0.10.1 shadow deployment and
+complete direct gates passed as recorded in current state. The same immutable
+image is eligible only for Router-disabled enforce and is not yet approved for
+Router traffic.
+
+### Pass 1 v0.10.1 shadow review — repeated 2026-08-02
+
+The model and causality review checked the live request path rather than only
+the presence of estimator and learner metrics. Direct requests produced 34
+pre-forward predictions, input-size learning changed only subsequent requests
+from cold to learned, and streaming terminal usage matured the TPS scheduler
+from static to calibrated after the documented minimum sample count. A safe
+low-side outcome did not rewrite the completed request or erase mature state.
+The live evidence therefore matches the pre-forward/current-reservation and
+next-request-only feedback contract. This review does not infer Router behavior
+from direct traffic and authorizes only the next disabled-route phase.
+
+### Pass 2 v0.10.1 shadow review — repeated 2026-08-02
+
+The safety, efficiency, and SOLID review checked sparse progress, low-side
+sample handling, bounded learned state, terminal convergence, and the separate
+estimator/scheduler responsibilities. Twenty low-flow requests passed without
+self-lock; all lifecycle/failure counters remained zero; reservations and
+shadow observations returned to zero; no preemption occurred; and all 34
+prediction and estimator observations fell in the 0.25 ms bucket. The plan-only
+evidence update changes no executable boundary. No new abstraction or hot-path
+optimization is justified before enforce because the measured live overhead is
+already below the declared gates and no safety finding remains in shadow.
+
+### Pass 3 v0.10.1 shadow review — repeated 2026-08-02
+
+The evidence and release review separated startup transients from readiness:
+the dependency probe and HAProxy 503s occurred while vLLM was loading, then
+models and protected metrics became ready and every post-readiness 5xx/fatal/
+OOM/Xid/lifecycle-error count remained zero. It also re-queried Compose,
+container image IDs, Router membership, route counters, auth behavior, terminal
+metrics, and logs instead of inheriting the deployment snapshot. Secret scans
+are clean. The only valid promotion is from disabled-route shadow to
+disabled-route enforce using the one-field candidate diff. `use1-cb` must not
+be enabled until enforce repeats its cold-first, sparse recovery, protocol, TPS,
+latency, pre-forward rejection, zero-terminal-state, and no-preemption gates.
