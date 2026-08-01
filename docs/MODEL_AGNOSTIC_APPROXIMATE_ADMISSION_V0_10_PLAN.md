@@ -739,11 +739,49 @@ artifact and Git diff for secrets before completion.
   resolve the immutable registry digest, pull by digest on the builder and
   repeat the registry-image identity/off/shadow/enforce/sub-ms/low-ratio
   learning smoke before any CVM redeployment;
-- a plan-only commit/push, executable-object identity proof against `01f07d7`,
-  annotated `v0.10.1` tag, successful publication, immutable-digest registry
-  smoke, redeployed Router-disabled shadow, Router-disabled enforce, Router
-  enablement, and the first-real-request-started 30-minute canary remain later
-  gates. `use1-cb` is still disabled and no v0.10.1 live mutation has occurred.
+- the image-evidence plan update was committed and pushed as plan-only commit
+  `2e4063da0d7356b09226372bd7adf55d258b7660`. Git objects for `Dockerfile`,
+  `go.mod`, `go.sum`, `cmd/`, and `internal/` are byte-identical to executable
+  commit `01f07d7...`. Annotated tag `v0.10.1` points to `2e4063d...`; official
+  `Publish Image` workflow run `30717843162` completed successfully;
+- GHCR resolves `v0.10.1` to immutable digest
+  `sha256:3aca2bb90bc75fe7be9ab4fbb02202aa678855461eabd3bd768c0e682a5a8f83`.
+  A fresh builder digest pull produced image ID
+  `sha256:47f03bf3b517297b5c29c0c9569eaf46328bc9c59e969f6296223cfe8bddb717`,
+  size `29151279`, OCI version `0.10.1`, `CGO_ENABLED=0`, and no prohibited
+  model/tokenizer/native-asset path. Registry-image off/shadow/enforce,
+  protocol/auth, shadow-risk forwarding, enforce pre-forward 429, low-ratio
+  learning preservation, and terminal-zero gates all passed. Learning counts
+  were accepted `5`, rejected `1`, stored `5`, invalidations `0`, cold `4`, and
+  learned `3`; all 7 prediction and estimator observations were at or below
+  1 ms. Prediction was 7/7 and estimator 6/7 at or below 0.25 ms. This small
+  smoke characterizes the buckets but does not replace the larger live p95/p99
+  gate. The registry evidence archive SHA-256 is
+  `0735abcab4d948e04cbdf74e3b61aaaaa6f16d13388bc249605930feabfe968e`;
+- fresh read-only live preflight at `2026-08-01T20:59:18.1568963Z` found the
+  authorized CVM `running`, `in_progress=false`, and still on v0.10.0 shadow
+  Compose SHA-256
+  `1a5052afea8fe83b8b182eabe0b6f5f558fd6e03dfc0981ea67639cca434c620`.
+  Router config digest was
+  `sha256:1b62b992f37b1f3c3ddc3894373cf2a10368d64350b689052c642c2712967c3f`;
+  only `use1-4c,use1-9b` were enabled, `use1-cb` remained disabled with
+  route-running zero and processed baseline `234715`. Router reported the
+  disabled target metrics stale/not-ok, while direct authenticated models and
+  both metrics endpoints returned 200 and unauthenticated metrics returned
+  401. Direct PIG/backend state was intake-open with zero running, waiting, KV,
+  preemptions, reservations and shadow observations. Re-query all of these
+  values immediately before mutation rather than assuming this snapshot holds;
+- byte-exact rollback SHA-256 is the current Compose hash above. The v0.10.1
+  shadow candidate changes only the PIG tag+digest and startup-probe timeout
+  `10000 -> 300000` and has SHA-256
+  `6e304b5803a92af3598209f380f93be177bebb30aa946c38a063221d0e590f07`.
+  The enforce candidate changes only `shadow -> enforce` from that candidate
+  and has SHA-256
+  `041aa8aeff89ae5a255ec6c982e5994fcf89315c53fa803109364c9b7658f4c5`;
+- Router-disabled shadow deployment, complete live shadow gates,
+  Router-disabled enforce and its complete gates, Router enablement, and the
+  first-real-request-started 30-minute canary remain. `use1-cb` is still
+  disabled and no v0.10.1 live mutation has occurred.
 
 ## 15. Recorded plan reviews
 
@@ -892,6 +930,9 @@ goodput results. The reviewed executable candidate was committed and pushed as
 `01f07d7...`; corrected image harness r7d then passed the complete builder-local
 image gate against its exact committed archive. The preceding r7/r7b/r7c
 results remain explicitly non-final harness evidence and are not silently
-promoted to product green. A plan-only commit/object-identity proof, official
-tag workflow publication, immutable-digest pull and registry-image smoke remain
-before CVM redeployment. The candidate is still not approved for Router traffic.
+promoted to product green. The plan-only commit/object-identity proof, official
+tag workflow publication, immutable-digest pull and registry-image smoke are
+now complete. Fresh live preflight retained the Router-disabled and idle target,
+captured the current byte-exact rollback, and proved the shadow candidate has
+only the two authorized changes. The candidate is eligible for Router-disabled
+shadow deployment, but is still not approved for enforce or Router traffic.
