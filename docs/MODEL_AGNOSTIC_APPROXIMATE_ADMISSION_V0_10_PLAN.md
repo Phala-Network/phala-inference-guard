@@ -435,7 +435,8 @@ artifact and Git diff for secrets before completion.
 - v0.10 plan active;
 - model-neutral JSON cost classification, bounded input-size calibration,
   `prompt_tokens` feedback parsing, generic upper-bound reservation, and the
-  approximate HTTP adapter are implemented in the uncommitted working tree;
+  approximate HTTP adapter are committed on
+  `5e2283d3cecb0a0a83af0e41e818f4841891d323`;
 - the default factory now uses a bounded vLLM startup probe, observed model/KV
   identity, block-aligned protected capacity, model-neutral scheduler,
   calibrator, coordinator and observer; capacity or block-size drift permanently
@@ -464,12 +465,14 @@ artifact and Git diff for secrets before completion.
   outcomes, censors overlapping QoS outcomes, caps held-open observations,
   creates no record for enforce rejects, and clears observations without a fake
   KV release on shutdown;
-- the deterministic model-neutral estimator/calibrator/reservation/feedback
-  simulation passed with aggregate SLO-compliant completion-token goodput
-  `39520` for the current threshold baseline, `36704` for v0.9.0 KV-only, and
-  `43232` for v0.10 predictive, with zero recorded TPS/TTFT/TPOT/KV/preemption,
-  false-accept, or reservation-leak violations. These are simulation results,
-  not live GPU throughput claims;
+- the final committed-archive deterministic simulation recorded aggregate
+  SLO-compliant completion-token goodput `39520` for the current-threshold
+  baseline, `36704` for v0.9.0 KV-only, and `43232` for v0.10 predictive. The
+  v0.10 policy recorded zero TPS/TTFT/TPOT/KV/preemption-proxy violations, zero
+  false accepts, and zero reservation leaks; the current-threshold baseline had
+  two TTFT violations and two false accepts, while the KV-only baseline had 32
+  TPS, four TTFT, 32 TPOT, one KV-hard, and one preemption-proxy violation.
+  These are deterministic simulation results, not live GPU throughput claims;
 - intermediate exact archive
   `d97a62751ff4bd030b0f8ea359cc5ffbd6839e8b9bf7a9480263e00f35bc1627`
   passed the focused packages, `go vet ./...`, `go test ./... -count=1`, the
@@ -514,12 +517,28 @@ artifact and Git diff for secrets before completion.
   streaming completion-usage parsing was approximately 28.006--42.409
   microseconds with 2009 B/op and 34 allocs/op. These are remote-builder CPU
   microbenchmarks, not service-chain latency or GPU-throughput evidence;
-- README, advanced configuration, observability, startup mode logging, resource
-  bounds, and this current-state record changed after the executable r28
-  archive. A final exact committed-archive matrix is therefore still required;
-- exact committed-archive rerun, commit/push/publication, binary/image build and
-  smoke, Compose shadow and enforce deployment, Router enablement, and the
-  first-real-request-started 30-minute canary all remain pending;
+- exact clean commit `5e2283d3cecb0a0a83af0e41e818f4841891d323` was exported as
+  `pig-v010-commit-5e2283d-20260802-r29.tar.gz` with archive SHA-256
+  `77c46ec1ac9bd27f09f63b9f0cec55ed14cf105777eab03624b53a9e92057553`;
+- that committed archive passed the remote gofmt gate, focused packages,
+  verbose deterministic simulation, `go vet ./...`, `go test ./... -count=1`,
+  targeted race, `go build ./...`, full `go test -race ./... -count=1`, and the
+  complete benchmark matrix. The focused and complete log SHA-256 values are
+  `324dc1ca293067df8e893862c2d2923644f3bc10759dd0345df819a43f15d403`
+  and `f2146b2d821acc666bdfb0c98fc5b397759c6fe71e065329605dcfd5e19ee8b4`;
+- final r29 estimator maxima across the recorded runs were approximately 0.264
+  microseconds at 1 KiB, 0.757 microseconds at 16 KiB, 2.550 microseconds at 64
+  KiB, 35.896 microseconds at 1 MiB, and 63.020 microseconds at 2 MiB, all with
+  zero allocation. The full admission lifecycle was at most approximately
+  3.865 microseconds. These remain builder CPU microbenchmarks, not service-chain
+  latency or GPU-throughput evidence;
+- this post-r29 plan-only update changes no executable, test, Dockerfile, or
+  build-input file. Before image construction, prove the new HEAD's executable
+  and Docker build-input trees are byte-identical to `5e2283d...`; the r29
+  source/test evidence may then be inherited only for those identical inputs;
+- plan-only commit/push, binary/image build and smoke, registry publication,
+  Compose shadow and disabled-route enforce deployment, Router enablement, and
+  the first-real-request-started 30-minute canary all remain pending;
 - no v0.10 image, publication, Compose, deployment, or live evidence exists.
 
 ## 15. Recorded plan reviews
@@ -603,11 +622,12 @@ defects, so release approval is reopened rather than inherited:
   cold/recovery gates before Router enablement and the real 30-minute canary.
 
 The 2026-08-02 repeat closed the source-level shadow-observation, race-fixture,
-resource-bound, full-race, and benchmark findings on exact executable archive
-r28. It did not close the committed-archive, image, deployed shadow, deployed
-enforce, or live-canary gates.
+resource-bound, full-race, simulation, benchmark, and committed-archive findings
+on exact commit `5e2283d...` and archive r29. The plan-only evidence update after
+r29 does not alter an executable or Docker build input and must be verified as
+such before inheriting those results.
 
-These three corrective findings remain open until their focused, full, race,
-simulation, benchmark, image, deployed shadow, and deployed enforce evidence is
-recorded. The plan remains authoritative, but the candidate is not yet approved
-for Router traffic.
+The remaining release findings are image identity/smoke/publication, deployed
+shadow, disabled-route enforce cold/recovery gates, and the real-traffic canary.
+The plan remains authoritative, but the candidate is not approved for Router
+traffic until every preceding live gate passes.
