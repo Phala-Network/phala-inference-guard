@@ -61,6 +61,7 @@ func TestGemma4RendererAndCountOnlyNativePathMatchProductionOracle(t *testing.T)
 	}
 
 	renderer, err := newGemma4TextRenderer(gemma4TextRendererConfig{
+		ServedModel:          "google/gemma-4-31B-it",
 		BOSToken:             "<bos>",
 		DefaultDecodeHorizon: 128,
 		MaximumDecodeHorizon: 262_144,

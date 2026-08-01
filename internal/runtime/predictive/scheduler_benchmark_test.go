@@ -24,7 +24,7 @@ func BenchmarkLearnedSchedulerPredictCalibratedTTFT(b *testing.B) {
 			TTFTValid:  true,
 		}
 	}
-	scheduler.cells[key] = samples
+	scheduler.cells[key] = &residualCell{CreatedSequence: 1, Samples: samples}
 	b.ReportAllocs()
 	b.ResetTimer()
 	for b.Loop() {

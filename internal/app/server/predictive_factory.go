@@ -15,6 +15,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		return nil, err
 	}
 	renderer, err := newGemma4TextRenderer(gemma4TextRendererConfig{
+		ServedModel:          profile.manifest.ServedModel,
 		BOSToken:             profile.manifest.BOSToken,
 		DefaultDecodeHorizon: profile.manifest.DefaultDecodeHorizon,
 		MaximumDecodeHorizon: profile.manifest.MaximumDecodeHorizon,
@@ -42,6 +43,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		Identity:                 identity,
 		MinimumSamples:           profile.manifest.CalibratorMinimumSamples,
 		MaximumSamplesPerCell:    profile.manifest.CalibratorMaximumSamplesPerCell,
+		MaximumCells:             profile.manifest.CalibratorMaximumCells,
 		MaxAge:                   time.Duration(profile.manifest.CalibratorMaxAgeSeconds) * time.Second,
 		LowerQuantile:            profile.manifest.CalibratorLowerQuantile,
 		UpperQuantile:            profile.manifest.CalibratorUpperQuantile,
@@ -102,7 +104,9 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	}
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
 		MetricsURL:         metricsURL,
+		ServedModel:        profile.manifest.ServedModel,
 		MaximumKVTokens:    profile.manifest.MaximumKVTokens,
+		BlockSize:          profile.manifest.BlockSize,
 		PollInterval:       time.Duration(profile.manifest.MetricsPollIntervalMilliseconds) * time.Millisecond,
 		MaximumAge:         time.Duration(profile.manifest.MetricsMaximumAgeMilliseconds) * time.Millisecond,
 		RequestTimeout:     time.Duration(profile.manifest.MetricsRequestTimeoutMilliseconds) * time.Millisecond,
@@ -117,6 +121,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		Renderer:    renderer,
 		Counter:     counter,
 		Coordinator: coordinator,
+		Learner:     scheduler,
 		Upstream:    observer,
 	})
 	if err != nil {

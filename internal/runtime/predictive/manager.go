@@ -2,6 +2,7 @@ package predictive
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
@@ -15,6 +16,10 @@ type Scheduler interface {
 
 type SchedulerObserver interface {
 	Observe(prediction SchedulerPrediction, outcome SchedulerOutcome) error
+}
+
+type SchedulerLearningInvalidator interface {
+	InvalidateLearning()
 }
 
 type assimilationState uint8
@@ -50,22 +55,72 @@ func (c TerminalCause) allowsCompletedOutcome() bool {
 	return c == TerminalCompleted
 }
 
+func (c TerminalCause) allowsOutcome(forwarded bool, outcome SchedulerOutcome) bool {
+	if outcome.Censored {
+		return forwarded && c != TerminalLocalQoSReject
+	}
+	return forwarded && c.allowsCompletedOutcome()
+}
+
 type reservation struct {
 	ID                       string
 	Created                  time.Time
 	Cost                     domain.RequestCost
 	Prediction               SchedulerPrediction
 	OutcomeObserved          bool
+	Forwarded                bool
 	PrefillComplete          bool
 	TerminalCause            TerminalCause
 	AdmittedSequence         uint64
+	ForwardedSequence        uint64
 	PrefillCompletedSequence uint64
 	Assimilation             assimilationState
 }
 
-type completedReservation struct {
-	Reservation       reservation
+const maximumRetiredReservations = 4_096
+
+type retiredReservation struct {
 	CompletedSequence uint64
+	MaterializedFloor domain.RequestCost
+}
+
+type retiredReservationQueue struct {
+	items []retiredReservation
+	head  int
+	size  int
+}
+
+func (q *retiredReservationQueue) Push(item retiredReservation) bool {
+	if q.items == nil {
+		q.items = make([]retiredReservation, maximumRetiredReservations)
+	}
+	if q.size < len(q.items) {
+		index := (q.head + q.size) % len(q.items)
+		q.items[index] = item
+		q.size++
+		return false
+	}
+	q.items[q.head] = item
+	q.head = (q.head + 1) % len(q.items)
+	return true
+}
+
+func (q *retiredReservationQueue) Pop() (retiredReservation, bool) {
+	if q.size == 0 {
+		return retiredReservation{}, false
+	}
+	item := q.items[q.head]
+	q.items[q.head] = retiredReservation{}
+	q.head = (q.head + 1) % len(q.items)
+	q.size--
+	if q.size == 0 {
+		q.head = 0
+	}
+	return item, true
+}
+
+func (q *retiredReservationQueue) Len() int {
+	return q.size
 }
 
 type SampleWindow struct {
@@ -81,18 +136,21 @@ type Manager struct {
 	constraints        domain.Constraints
 	scheduler          Scheduler
 	reservations       map[string]reservation
-	completed          map[string]completedReservation
+	retired            retiredReservationQueue
+	retiredEvictions   uint64
 	eventSequence      uint64
 	lastSampleFinished uint64
 	hasSample          bool
 }
 
 type Snapshot struct {
-	Reservations       int
-	ReservedPhysicalKV int64
-	ReservedActiveKV   int64
-	EventSequence      uint64
-	Virtual            domain.VirtualStateInterval
+	Reservations        int
+	ReservedPhysicalKV  int64
+	ReservedActiveKV    int64
+	EventSequence       uint64
+	RetiredReservations int
+	RetiredEvictions    uint64
+	Virtual             domain.VirtualStateInterval
 }
 
 type managerAdmissionResult struct {
@@ -110,7 +168,6 @@ func NewManager(manifestID string, base domain.VirtualState, constraints domain.
 		constraints:  constraints,
 		scheduler:    scheduler,
 		reservations: make(map[string]reservation),
-		completed:    make(map[string]completedReservation),
 	}
 }
 
@@ -173,6 +230,23 @@ func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.
 	}
 }
 
+func (m *Manager) MarkForwarded(requestID string) bool {
+	if m == nil || requestID == "" {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, exists := m.reservations[requestID]
+	if !exists || item.Forwarded {
+		return false
+	}
+	m.eventSequence++
+	item.Forwarded = true
+	item.ForwardedSequence = m.eventSequence
+	m.reservations[requestID] = item
+	return true
+}
+
 func (m *Manager) MarkPrefillComplete(requestID string) bool {
 	if m == nil || requestID == "" {
 		return false
@@ -180,17 +254,12 @@ func (m *Manager) MarkPrefillComplete(requestID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item, exists := m.reservations[requestID]
-	if !exists || item.PrefillComplete {
+	if !exists || !item.Forwarded || item.PrefillComplete {
 		return false
 	}
 	m.eventSequence++
 	item.PrefillComplete = true
 	item.PrefillCompletedSequence = m.eventSequence
-	if item.Assimilation == assimilationAbsorbed {
-		prefill := prefillStateCost(item.Cost)
-		m.base.Lower = subtractState(m.base.Lower, prefill)
-		m.base.Upper = subtractState(m.base.Upper, prefill)
-	}
 	m.reservations[requestID] = item
 	return true
 }
@@ -205,23 +274,13 @@ func (m *Manager) ObserveOutcome(requestID string, outcome SchedulerOutcome) boo
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if item, exists := m.reservations[requestID]; exists {
-		if item.OutcomeObserved || observer.Observe(item.Prediction, outcome) != nil {
-			return false
-		}
-		item.OutcomeObserved = true
-		m.reservations[requestID] = item
-		return true
+	item, exists := m.reservations[requestID]
+	if !exists || !item.Forwarded || item.OutcomeObserved || observer.Observe(item.Prediction, outcome) != nil {
+		return false
 	}
-	if item, exists := m.completed[requestID]; exists {
-		if !item.Reservation.TerminalCause.allowsCompletedOutcome() || item.Reservation.OutcomeObserved || observer.Observe(item.Reservation.Prediction, outcome) != nil {
-			return false
-		}
-		item.Reservation.OutcomeObserved = true
-		m.completed[requestID] = item
-		return true
-	}
-	return false
+	item.OutcomeObserved = true
+	m.reservations[requestID] = item
+	return true
 }
 
 func (m *Manager) Complete(requestID string) bool {
@@ -229,6 +288,10 @@ func (m *Manager) Complete(requestID string) bool {
 }
 
 func (m *Manager) Terminate(requestID string, cause TerminalCause) bool {
+	return m.TerminateWithOutcome(requestID, cause, nil)
+}
+
+func (m *Manager) TerminateWithOutcome(requestID string, cause TerminalCause, outcome *SchedulerOutcome) bool {
 	if m == nil {
 		return false
 	}
@@ -241,21 +304,37 @@ func (m *Manager) Terminate(requestID string, cause TerminalCause) bool {
 	if !exists {
 		return false
 	}
+	if outcome != nil && cause.allowsOutcome(item.Forwarded, *outcome) && !item.OutcomeObserved {
+		if observer, ok := m.scheduler.(SchedulerObserver); ok && observer.Observe(item.Prediction, *outcome) == nil {
+			item.OutcomeObserved = true
+		}
+	}
 	m.eventSequence++
 	item.TerminalCause = cause
-	activeCost := reservationStateCost(item)
-	switch item.Assimilation {
-	case assimilationAbsorbed:
-		m.base.Lower = subtractState(m.base.Lower, activeCost)
-		m.base.Upper = subtractState(m.base.Upper, activeCost)
-	case assimilationAmbiguous:
-		m.base.Lower = subtractState(m.base.Lower, activeCost)
+	if item.Assimilation == assimilationAbsorbed && item.PrefillComplete {
+		materialized := materializedStateFloor(item.Cost)
+		m.base.Lower = subtractState(m.base.Lower, materialized)
+		m.base.Upper = subtractState(m.base.Upper, materialized)
+		if m.retired.Push(retiredReservation{
+			CompletedSequence: m.eventSequence,
+			MaterializedFloor: materialized,
+		}) {
+			m.retiredEvictions++
+		}
 	}
 	delete(m.reservations, requestID)
-	m.completed[requestID] = completedReservation{
-		Reservation:       item,
-		CompletedSequence: m.eventSequence,
+	return true
+}
+
+func (m *Manager) InvalidateLearning() bool {
+	if m == nil {
+		return false
 	}
+	invalidator, ok := m.scheduler.(SchedulerLearningInvalidator)
+	if !ok {
+		return false
+	}
+	invalidator.InvalidateLearning()
 	return true
 }
 
@@ -268,13 +347,13 @@ func (m *Manager) EventSequence() uint64 {
 	return m.eventSequence
 }
 
-func (m *Manager) StartSampleWindow() (uint64, domain.VirtualState) {
+func (m *Manager) StartSampleWindow() uint64 {
 	if m == nil {
-		return 0, domain.VirtualState{}
+		return 0
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.eventSequence, m.virtualStateIntervalLocked().Upper
+	return m.eventSequence
 }
 
 func (m *Manager) ReconcileSample(sample SampleWindow) error {
@@ -303,38 +382,33 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 	}
 	for id, item := range m.reservations {
 		switch {
-		case item.AdmittedSequence <= sample.StartedSequence:
+		case !item.Forwarded || !item.PrefillComplete:
+			item.Assimilation = assimilationUnabsorbed
+		case item.ForwardedSequence <= sample.StartedSequence && item.PrefillCompletedSequence <= sample.StartedSequence:
 			item.Assimilation = assimilationAbsorbed
-		case item.AdmittedSequence > sample.FinishedSequence:
+		case item.ForwardedSequence > sample.FinishedSequence || item.PrefillCompletedSequence > sample.FinishedSequence:
 			item.Assimilation = assimilationUnabsorbed
 		default:
 			item.Assimilation = assimilationAmbiguous
 		}
-		if item.Assimilation == assimilationAbsorbed && item.PrefillComplete {
-			prefill := prefillStateCost(item.Cost)
-			switch {
-			case item.PrefillCompletedSequence > sample.FinishedSequence:
-				m.base.Lower = subtractState(m.base.Lower, prefill)
-				m.base.Upper = subtractState(m.base.Upper, prefill)
-			case item.PrefillCompletedSequence > sample.StartedSequence:
-				m.base.Lower = subtractState(m.base.Lower, prefill)
-			}
-		}
 		m.reservations[id] = item
 	}
-	for id, item := range m.completed {
+	retiredCount := m.retired.Len()
+	for range retiredCount {
+		item, ok := m.retired.Pop()
+		if !ok {
+			break
+		}
 		switch {
 		case item.CompletedSequence <= sample.StartedSequence:
-			delete(m.completed, id)
-		case item.Reservation.AdmittedSequence > sample.FinishedSequence:
-			// The request was entirely newer than this sample window.
-		case item.Reservation.AdmittedSequence <= sample.StartedSequence && item.CompletedSequence > sample.FinishedSequence:
-			activeCost := reservationStateCost(item.Reservation)
-			m.base.Lower = subtractState(m.base.Lower, activeCost)
-			m.base.Upper = subtractState(m.base.Upper, activeCost)
+			continue
+		case item.CompletedSequence > sample.FinishedSequence:
+			m.base.Lower = subtractState(m.base.Lower, item.MaterializedFloor)
+			m.base.Upper = subtractState(m.base.Upper, item.MaterializedFloor)
 		default:
-			m.base.Lower = subtractState(m.base.Lower, reservationStateCost(item.Reservation))
+			m.base.Lower = subtractState(m.base.Lower, item.MaterializedFloor)
 		}
+		m.retired.Push(item)
 	}
 	m.lastSampleFinished = sample.FinishedSequence
 	m.hasSample = true
@@ -348,9 +422,11 @@ func (m *Manager) Snapshot() Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := Snapshot{
-		Reservations:  len(m.reservations),
-		EventSequence: m.eventSequence,
-		Virtual:       m.virtualStateIntervalLocked(),
+		Reservations:        len(m.reservations),
+		EventSequence:       m.eventSequence,
+		RetiredReservations: m.retired.Len(),
+		RetiredEvictions:    m.retiredEvictions,
+		Virtual:             m.virtualStateIntervalLocked(),
 	}
 	for _, item := range m.reservations {
 		result.ReservedPhysicalKV += item.Cost.KV.PhysicalKVUpper
@@ -362,28 +438,48 @@ func (m *Manager) Snapshot() Snapshot {
 func (m *Manager) virtualStateIntervalLocked() domain.VirtualStateInterval {
 	state := m.base
 	for _, item := range m.reservations {
-		cost := reservationStateCost(item)
 		switch item.Assimilation {
 		case assimilationUnabsorbed:
+			cost := fullReservationStateCost(item)
 			state.Lower = addState(state.Lower, cost)
 			state.Upper = addState(state.Upper, cost)
 		case assimilationAmbiguous:
+			state.Lower = addState(state.Lower, futureReservationStateCost(item))
+			state.Upper = addState(state.Upper, fullReservationStateCost(item))
+		case assimilationAbsorbed:
+			cost := futureReservationStateCost(item)
+			state.Lower = addState(state.Lower, cost)
 			state.Upper = addState(state.Upper, cost)
 		}
 	}
 	return state
 }
 
-func reservationStateCost(item reservation) domain.RequestCost {
+func fullReservationStateCost(item reservation) domain.RequestCost {
 	cost := item.Cost
-	if item.PrefillComplete && item.Assimilation != assimilationAmbiguous {
+	if item.PrefillComplete {
 		cost.UncachedPrefillUpper = 0
 	}
 	return cost
 }
 
-func prefillStateCost(cost domain.RequestCost) domain.RequestCost {
-	return domain.RequestCost{UncachedPrefillUpper: cost.UncachedPrefillUpper}
+func futureReservationStateCost(item reservation) domain.RequestCost {
+	return domain.RequestCost{
+		KV:                       item.Cost.FutureKV,
+		UncachedPrefillUpper:     0,
+		ActiveContextTokensUpper: item.Cost.FutureContextTokensUpper,
+	}
+}
+
+func materializedStateFloor(cost domain.RequestCost) domain.RequestCost {
+	return domain.RequestCost{
+		KV: domain.KVIncrement{
+			PhysicalKVUpper: cost.KV.PhysicalKVUpper - cost.FutureKV.PhysicalKVUpper,
+			ActiveKVUpper:   cost.KV.ActiveKVUpper - cost.FutureKV.ActiveKVUpper,
+		},
+		DecodeSequencesUpper:     cost.DecodeSequencesUpper,
+		ActiveContextTokensUpper: cost.ActiveContextTokensUpper - cost.FutureContextTokensUpper,
+	}
 }
 
 func addState(state domain.VirtualState, cost domain.RequestCost) domain.VirtualState {
@@ -422,10 +518,19 @@ func validRequestCost(cost domain.RequestCost) bool {
 	if cost.InputTokens < 0 || cost.UncachedPrefillUpper != cost.InputTokens {
 		return false
 	}
-	if cost.KV.PhysicalKVUpper < 0 || cost.KV.ActiveKVUpper < 0 {
+	if cost.DecodeHorizonUpper < 0 || cost.DecodeSequencesUpper != 1 || cost.InputTokens > math.MaxInt64-cost.DecodeHorizonUpper {
 		return false
 	}
-	if cost.DecodeHorizonUpper < 0 || cost.DecodeSequencesUpper < 0 || cost.ActiveContextTokensUpper < 0 {
+	if cost.ActiveContextTokensUpper != cost.InputTokens+cost.DecodeHorizonUpper || cost.FutureContextTokensUpper != cost.DecodeHorizonUpper {
+		return false
+	}
+	if cost.KV.PhysicalKVUpper < 0 || cost.KV.PhysicalKVUpper != cost.KV.ActiveKVUpper || cost.KV.PhysicalKVUpper < cost.ActiveContextTokensUpper {
+		return false
+	}
+	if cost.FutureKV.PhysicalKVUpper < 0 || cost.FutureKV.PhysicalKVUpper != cost.FutureKV.ActiveKVUpper || cost.FutureKV.PhysicalKVUpper > cost.KV.PhysicalKVUpper {
+		return false
+	}
+	if cost.KV.PhysicalKVUpper-cost.FutureKV.PhysicalKVUpper < cost.InputTokens {
 		return false
 	}
 	return positiveFinite(cost.Confidence) && cost.Confidence <= 1

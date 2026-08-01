@@ -10,6 +10,7 @@ import (
 
 func TestGemma4TextRendererMatchesPinnedProductionTemplateOracle(t *testing.T) {
 	renderer, err := newGemma4TextRenderer(gemma4TextRendererConfig{
+		ServedModel:          "google/gemma-4-31B-it",
 		BOSToken:             "<bos>",
 		DefaultDecodeHorizon: 128,
 		MaximumDecodeHorizon: 262_144,
@@ -84,6 +85,7 @@ func TestGemma4TextRendererMatchesPinnedProductionTemplateOracle(t *testing.T) {
 
 func TestGemma4TextRendererRejectsLossyOrUnsupportedInputs(t *testing.T) {
 	renderer, err := newGemma4TextRenderer(gemma4TextRendererConfig{
+		ServedModel:          "google/gemma-4-31B-it",
 		BOSToken:             "<bos>",
 		DefaultDecodeHorizon: 128,
 		MaximumDecodeHorizon: 262_144,
@@ -102,6 +104,11 @@ func TestGemma4TextRendererRejectsLossyOrUnsupportedInputs(t *testing.T) {
 		{name: "tools unsupported", path: "/v1/chat/completions", body: `{"messages":[],"tools":[{"type":"function"}]}`},
 		{name: "multimodal unsupported", path: "/v1/chat/completions", body: `{"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"x"}}]}]}`},
 		{name: "completion prompt array unsupported", path: "/v1/completions", body: `{"prompt":["a","b"]}`},
+		{name: "parallel chat choices unsupported", path: "/v1/chat/completions", body: `{"model":"google/gemma-4-31B-it","messages":[],"n":2}`},
+		{name: "parallel completion choices unsupported", path: "/v1/completions", body: `{"model":"google/gemma-4-31B-it","prompt":"hello","n":2}`},
+		{name: "completion best of unsupported", path: "/v1/completions", body: `{"model":"google/gemma-4-31B-it","prompt":"hello","best_of":2}`},
+		{name: "wrong served model", path: "/v1/chat/completions", body: `{"model":"other","messages":[]}`},
+		{name: "request chat template override", path: "/v1/chat/completions", body: `{"model":"google/gemma-4-31B-it","messages":[],"chat_template":"other"}`},
 		{name: "conflicting output horizons", path: "/v1/chat/completions", body: `{"messages":[],"max_tokens":8,"max_completion_tokens":9}`},
 		{name: "trailing JSON", path: "/v1/chat/completions", body: `{"messages":[]} {}`},
 	}

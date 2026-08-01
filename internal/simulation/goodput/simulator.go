@@ -76,10 +76,14 @@ type actualState struct {
 	initialRunning int
 	initialPrefill int64
 	active         map[string]*activeRequest
+	kvOverloaded   bool
 }
 
 type activeRequest struct {
 	spec          requestSpec
+	admittedAt    time.Duration
+	terminalAt    time.Duration
+	terminalCause runtimepredictive.TerminalCause
 	prefillActive bool
 	ttft          time.Duration
 	tps           float64
@@ -117,10 +121,12 @@ type observedState struct {
 
 type simulationController interface {
 	Admit(time.Time, requestSpec) (bool, string)
+	MarkForwarded(string)
 	MarkSemantic(string)
 	Terminate(string, runtimepredictive.TerminalCause)
 	Observe(time.Time, observedState) error
 	Reservations() int
+	ReservedPhysicalKVUpper() int64
 	UsesExactTokenizer() bool
 }
 
@@ -182,6 +188,7 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 		event := events[0]
 		events = events[1:]
 		now := simulationBaseTime.Add(event.at)
+		markRuntimeKV(&metrics, state, profile, event.at)
 		switch event.kind {
 		case eventPoll:
 			observed := state.observed(scenario, event.at)
@@ -190,7 +197,7 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 			}
 		case eventArrival:
 			metrics.Arrivals++
-			evaluation := state.evaluate(profile, controller.UsesExactTokenizer(), event.request)
+			evaluation := state.evaluate(profile, controller.UsesExactTokenizer(), event.request, event.at)
 			admitted, _ := controller.Admit(now, event.request)
 			if !admitted {
 				if evaluation.safe() && !event.request.ProfileMismatch && !event.request.Unsupported {
@@ -198,16 +205,19 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 				}
 				continue
 			}
+			updateReservedKV(&metrics, controller.ReservedPhysicalKVUpper())
 			if event.request.LocalReject {
 				controller.Terminate(event.request.ID, runtimepredictive.TerminalLocalQoSReject)
 				continue
 			}
+			controller.MarkForwarded(event.request.ID)
 			metrics.Admitted++
 			if !evaluation.safe() {
 				metrics.FalseAccepts++
 			}
 			active := &activeRequest{
 				spec:          event.request,
+				admittedAt:    event.at,
 				prefillActive: true,
 				ttft:          evaluation.ttft,
 				tps:           evaluation.userTPS,
@@ -215,7 +225,7 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 			}
 			state.active[event.request.ID] = active
 			markGroundViolations(&metrics, state, active, evaluation)
-			updateHeadroom(&metrics, profile.protected, evaluation.projectedKV)
+			markRuntimeKV(&metrics, state, profile, event.at)
 
 			cause := event.request.TerminalCause
 			if cause == "" {
@@ -229,6 +239,8 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 					lifetime = 100 * time.Millisecond
 				}
 			}
+			active.terminalAt = event.at + lifetime
+			active.terminalCause = cause
 			if evaluation.ttft > 0 && evaluation.ttft < lifetime {
 				order++
 				events = append(events, simulationEvent{at: event.at + evaluation.ttft, kind: eventSemantic, id: event.request.ID, order: order})
@@ -327,7 +339,7 @@ func (s scenarioSpec) serviceProfile() serviceProfile {
 	}
 }
 
-func (s *actualState) evaluate(profile serviceProfile, exactTokenizer bool, request requestSpec) groundEvaluation {
+func (s *actualState) evaluate(profile serviceProfile, exactTokenizer bool, request requestSpec, at time.Duration) groundEvaluation {
 	prefill := s.initialPrefill + request.InputTokens
 	for _, active := range s.active {
 		if active.prefillActive {
@@ -345,8 +357,8 @@ func (s *actualState) evaluate(profile serviceProfile, exactTokenizer bool, requ
 		ttft += tokenizerP95(request.InputTokens)
 	}
 	tpot := profile.baseTPOT + time.Duration(maxInt(0, decodeSequences-1))*profile.tpotPerExisting
-	projectedKV := s.currentKV()
-	projectedKV = addInt64(projectedKV, roundedContext(request))
+	projectedKV := s.currentKV(at)
+	projectedKV = addInt64(projectedKV, roundedTokens(request.InputTokens))
 	return groundEvaluation{
 		projectedKV: projectedKV,
 		userTPS:     userTPS,
@@ -359,10 +371,10 @@ func (s *actualState) evaluate(profile serviceProfile, exactTokenizer bool, requ
 	}
 }
 
-func (s *actualState) currentKV() int64 {
+func (s *actualState) currentKV(at time.Duration) int64 {
 	result := s.initialKV
 	for _, active := range s.active {
-		result = addInt64(result, roundedContext(active.spec))
+		result = addInt64(result, roundedMaterializedContext(active, at))
 	}
 	return result
 }
@@ -379,7 +391,7 @@ func (s *actualState) observed(scenario scenarioSpec, at time.Duration) observed
 		waiting = 1
 	}
 	return observedState{
-		kvTokens:        s.currentKV(),
+		kvTokens:        s.currentKV(at),
 		decodeSequences: s.initialRunning + len(s.active) + waiting,
 		prefillTokens:   prefill,
 		waiting:         waiting,
@@ -404,13 +416,22 @@ func markGroundViolations(metrics *Metrics, state *actualState, candidate *activ
 		candidate.ttftViolation = true
 		metrics.TTFTViolations++
 	}
-	if !evaluation.kvSafe {
+}
+
+func markRuntimeKV(metrics *Metrics, state *actualState, profile serviceProfile, at time.Duration) {
+	current := state.currentKV(at)
+	updateHeadroom(metrics, profile.protected, current)
+	overloaded := current > profile.protected
+	if overloaded && !state.kvOverloaded {
 		metrics.KVHardViolations++
 		metrics.PreemptionProxyEvents++
+	}
+	if overloaded {
 		for _, active := range state.active {
 			active.kvViolation = true
 		}
 	}
+	state.kvOverloaded = overloaded
 }
 
 func markTPSViolation(metrics *Metrics, active *activeRequest) {
@@ -437,6 +458,12 @@ func updateHeadroom(metrics *Metrics, protected, projected int64) {
 	}
 }
 
+func updateReservedKV(metrics *Metrics, reserved int64) {
+	if reserved > metrics.PeakReservedKVTokens {
+		metrics.PeakReservedKVTokens = reserved
+	}
+}
+
 func completionDuration(tokens int64, tps float64) time.Duration {
 	if tokens <= 0 {
 		return time.Millisecond
@@ -448,12 +475,29 @@ func completionDuration(tokens int64, tps float64) time.Duration {
 	return time.Duration(seconds * float64(time.Second))
 }
 
-func roundedContext(request requestSpec) int64 {
-	context := addInt64(request.InputTokens, request.OutputUpper)
-	if context <= 0 {
+func roundedMaterializedContext(active *activeRequest, at time.Duration) int64 {
+	if active == nil {
 		return 0
 	}
-	return ((context + simulationBlock - 1) / simulationBlock) * simulationBlock
+	generated := int64(0)
+	if active.terminalCause == runtimepredictive.TerminalCompleted && active.terminalAt > 0 && at >= active.terminalAt {
+		generated = active.spec.ActualOutput
+	}
+	decodeStartedAt := active.admittedAt + active.ttft
+	if generated == 0 && at > decodeStartedAt && active.tps > 0 && !math.IsNaN(active.tps) && !math.IsInf(active.tps, 0) {
+		generated = int64(math.Floor((at - decodeStartedAt).Seconds() * active.tps))
+		if generated > active.spec.ActualOutput {
+			generated = active.spec.ActualOutput
+		}
+	}
+	return roundedTokens(addInt64(active.spec.InputTokens, generated))
+}
+
+func roundedTokens(tokens int64) int64 {
+	if tokens <= 0 {
+		return 0
+	}
+	return ((tokens + simulationBlock - 1) / simulationBlock) * simulationBlock
 }
 
 func tokenizerP95(tokens int64) time.Duration {
@@ -461,11 +505,11 @@ func tokenizerP95(tokens int64) time.Duration {
 	case tokens <= 49:
 		return 52_539 * time.Nanosecond
 	case tokens <= 3_074:
-		return 8_612 * time.Microsecond
+		return 9 * time.Millisecond
 	case tokens <= 24_578:
 		return 132_639 * time.Microsecond
 	case tokens <= 65_538:
-		return 587_303 * time.Microsecond
+		return 650 * time.Millisecond
 	default:
 		return 1_516 * time.Millisecond
 	}
@@ -506,6 +550,8 @@ func (c *currentThresholdController) Admit(now time.Time, request requestSpec) (
 
 func (c *currentThresholdController) MarkSemantic(string) {}
 
+func (c *currentThresholdController) MarkForwarded(string) {}
+
 func (c *currentThresholdController) Terminate(id string, _ runtimepredictive.TerminalCause) {
 	delete(c.active, id)
 }
@@ -526,7 +572,10 @@ func (c *currentThresholdController) Observe(now time.Time, observed observedSta
 	return nil
 }
 
-func (c *currentThresholdController) Reservations() int        { return 0 }
+func (c *currentThresholdController) Reservations() int { return 0 }
+func (c *currentThresholdController) ReservedPhysicalKVUpper() int64 {
+	return 0
+}
 func (c *currentThresholdController) UsesExactTokenizer() bool { return false }
 
 type v090KVController struct {
@@ -563,6 +612,8 @@ func (c *v090KVController) Admit(now time.Time, request requestSpec) (bool, stri
 
 func (c *v090KVController) MarkSemantic(string) {}
 
+func (c *v090KVController) MarkForwarded(string) {}
+
 func (c *v090KVController) Terminate(id string, _ runtimepredictive.TerminalCause) {
 	c.manager.Release(id)
 }
@@ -590,7 +641,10 @@ func (c *v090KVController) Observe(now time.Time, observed observedState) error 
 	return nil
 }
 
-func (c *v090KVController) Reservations() int        { return c.manager.Snapshot().Reservations }
+func (c *v090KVController) Reservations() int { return c.manager.Snapshot().Reservations }
+func (c *v090KVController) ReservedPhysicalKVUpper() int64 {
+	return 0
+}
 func (c *v090KVController) UsesExactTokenizer() bool { return false }
 
 type exactController struct {
@@ -628,6 +682,7 @@ func newExactController(policy PolicyName, profile serviceProfile) (*exactContro
 			Identity:                 identity,
 			MinimumSamples:           4,
 			MaximumSamplesPerCell:    16,
+			MaximumCells:             256,
 			MaxAge:                   time.Minute,
 			LowerQuantile:            0.10,
 			UpperQuantile:            0.90,
@@ -679,8 +734,9 @@ func (c *exactController) Admit(now time.Time, request requestSpec) (bool, strin
 			BackendEpoch:     simulationEpoch,
 			ExactInputTokens: request.InputTokens,
 		},
-		DecodeHorizonUpper: request.OutputUpper,
-		Confidence:         0.99,
+		DecodeHorizonUpper:           request.OutputUpper,
+		AccruedLocalAdmissionLatency: tokenizerP95(request.InputTokens),
+		Confidence:                   0.99,
 	})
 	return result.Reserved, string(result.Decision.Reason)
 }
@@ -689,12 +745,16 @@ func (c *exactController) MarkSemantic(id string) {
 	c.coordinator.MarkPrefillComplete(id)
 }
 
+func (c *exactController) MarkForwarded(id string) {
+	c.coordinator.MarkForwarded(id)
+}
+
 func (c *exactController) Terminate(id string, cause runtimepredictive.TerminalCause) {
 	c.coordinator.Terminate(id, cause)
 }
 
 func (c *exactController) Observe(now time.Time, observed observedState) error {
-	started, _ := c.coordinator.StartSampleWindow()
+	started := c.coordinator.StartSampleWindow()
 	finished := c.coordinator.EventSequence()
 	if err := c.coordinator.ReconcileSample(runtimepredictive.SampleWindow{
 		Observed: domainpredictive.VirtualState{
@@ -702,7 +762,7 @@ func (c *exactController) Observe(now time.Time, observed observedState) error {
 			ActiveKVUpper:         observed.kvTokens,
 			DecodeSequences:       observed.decodeSequences,
 			ActiveContextTokens:   observed.kvTokens,
-			UncachedPrefillTokens: observed.prefillTokens,
+			UncachedPrefillTokens: 0,
 		},
 		StartedSequence:  started,
 		FinishedSequence: finished,
@@ -724,6 +784,10 @@ func (c *exactController) Observe(now time.Time, observed observedState) error {
 
 func (c *exactController) Reservations() int {
 	return c.coordinator.Snapshot().Manager.Reservations
+}
+
+func (c *exactController) ReservedPhysicalKVUpper() int64 {
+	return c.coordinator.Snapshot().Manager.Virtual.Upper.PhysicalKVUpper
 }
 
 func (c *exactController) UsesExactTokenizer() bool { return c.exactTokenizer }
@@ -808,6 +872,10 @@ func acceptanceScenarios() []scenarioSpec {
 			request("long-short-2", 4*time.Second, 131_074, 32, 32),
 		}},
 		{Name: "short_prompt_long_decode", Requests: burst("short-long", 6, 0, 49, 1_024, 1_024)},
+		{Name: "progressive_kv_arrival_after_scrapes", Requests: []requestSpec{
+			request("progressive-long", 0, 49, 16_384, 16_384),
+			request("progressive-after-scrapes", 2*time.Second, 49, 16_384, 16_384),
+		}},
 		{Name: "many_decode_sequences_low_kv", Requests: burst("many-decode", 8, 0, 49, 128, 128)},
 		{Name: "completion_before_poll", CurrentLimit: 1, PollInterval: 2 * time.Second, Requests: []requestSpec{
 			request("before-poll-1", 0, 49, 16, 16),

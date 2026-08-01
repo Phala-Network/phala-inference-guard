@@ -15,10 +15,10 @@ func TestDefaultNativePredictiveFactoryConstructsRealCountOnlyShadow(t *testing.
 		_, _ = fmt.Fprint(w, `
 vllm:cache_config_info{block_size="4",kv_cache_size_tokens="1000000",num_gpu_blocks="250000"} 1
 vllm:kv_cache_usage_perc 0.10
-vllm:num_requests_running 1
-vllm:num_requests_waiting 0
-vllm:num_preemptions_total 0
-vllm:generation_tokens_total 100
+vllm:num_requests_running{model_name="google/gemma-4-fixture",engine="0"} 1
+vllm:num_requests_waiting{model_name="google/gemma-4-fixture",engine="0"} 0
+vllm:num_preemptions_total{model_name="google/gemma-4-fixture",engine="0"} 0
+vllm:generation_tokens_total{model_name="google/gemma-4-fixture",engine="0"} 100
 `)
 	}))
 	defer backend.Close()

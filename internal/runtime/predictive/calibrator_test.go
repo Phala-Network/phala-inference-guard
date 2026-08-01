@@ -126,6 +126,113 @@ func TestLearnedSchedulerCalibratesAvailableTargetsIndependently(t *testing.T) {
 	}
 }
 
+func TestLearnedSchedulerGloballyBoundsCellsAndEvictsOldest(t *testing.T) {
+	now := time.Unix(2_700, 0)
+	config := testResidualConfig()
+	config.MinimumSamples = 1
+	config.MaximumCells = 2
+	config.ContextTokenBucket = 1
+	config.KVTokenBucket = 1
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), config)
+	cost := learnedTestCost()
+
+	states := []domain.VirtualState{
+		{PhysicalKVUpper: 100, ActiveKVUpper: 100, DecodeSequences: 1, ActiveContextTokens: 100},
+		{PhysicalKVUpper: 200, ActiveKVUpper: 200, DecodeSequences: 1, ActiveContextTokens: 200},
+		{PhysicalKVUpper: 300, ActiveKVUpper: 300, DecodeSequences: 1, ActiveContextTokens: 300},
+	}
+	for index, state := range states {
+		predictedAt := now.Add(time.Duration(index) * time.Second)
+		prediction := scheduler.Predict(predictedAt, state, cost)
+		if err := scheduler.Observe(prediction, healthyLearnedOutcome(prediction, predictedAt.Add(500*time.Millisecond))); err != nil {
+			t.Fatalf("observe cell %d: %v", index, err)
+		}
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.Cells != 2 {
+		t.Fatalf("globally bounded snapshot = %+v, want two cells", snapshot)
+	}
+	if oldest := scheduler.Predict(now.Add(10*time.Second), states[0], cost); oldest.Source != PredictionSourceStatic {
+		t.Fatalf("oldest cell was not evicted deterministically: %+v", oldest)
+	}
+	if newest := scheduler.Predict(now.Add(10*time.Second), states[2], cost); newest.Source != PredictionSourceCalibrated {
+		t.Fatalf("newest cell was unexpectedly evicted: %+v", newest)
+	}
+}
+
+func TestResidualCalibratorRequiresGlobalCellBound(t *testing.T) {
+	config := testResidualConfig()
+	config.MaximumCells = 0
+	if _, err := NewLearnedScheduler(testLearnedProfile(), config); err == nil {
+		t.Fatal("zero global calibrator cell bound was accepted")
+	}
+}
+
+func TestFreshCensoredOutcomeDisablesOptimisticHeadroom(t *testing.T) {
+	now := time.Unix(2_800, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	state := learnedTestState()
+	cost := learnedTestCost()
+	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
+		predictedAt := now.Add(time.Duration(index) * time.Second)
+		prediction := scheduler.Predict(predictedAt, state, cost)
+		if err := scheduler.Observe(prediction, healthyLearnedOutcome(prediction, predictedAt.Add(500*time.Millisecond))); err != nil {
+			t.Fatalf("observe healthy sample %d: %v", index, err)
+		}
+	}
+	prediction := scheduler.Predict(now.Add(4*time.Second), state, cost)
+	censored := healthyLearnedOutcome(prediction, now.Add(4500*time.Millisecond))
+	censored.Censored = true
+	if err := scheduler.Observe(prediction, censored); err != nil {
+		t.Fatalf("observe censored terminal: %v", err)
+	}
+
+	guarded := scheduler.Predict(now.Add(5*time.Second), state, cost)
+	if guarded.Estimate.ExistingUserTPSLower > guarded.Prior.ExistingUserTPSLower || guarded.Estimate.AllUserTPSLower > guarded.Prior.AllUserTPSLower {
+		t.Fatalf("censored cell retained optimistic TPS headroom: %+v", guarded)
+	}
+	if guarded.Estimate.TTFTUpper < guarded.Prior.TTFTUpper || guarded.Estimate.TPOTUpper < guarded.Prior.TPOTUpper {
+		t.Fatalf("censored cell retained optimistic latency headroom: %+v", guarded)
+	}
+}
+
+func TestCensoredOutcomeWithoutMetricTargetsIsAcceptedAsSafetyEvidence(t *testing.T) {
+	now := time.Unix(2_850, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	prediction := scheduler.Predict(now, learnedTestState(), learnedTestCost())
+	if err := scheduler.Observe(prediction, SchedulerOutcome{
+		Identity:   prediction.Identity,
+		ObservedAt: now.Add(time.Second),
+		Attributed: true,
+		Censored:   true,
+	}); err != nil {
+		t.Fatalf("observe targetless censored outcome: %v", err)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 1 || snapshot.SamplesRejected != 0 {
+		t.Fatalf("targetless censored snapshot = %+v, want one accepted safety sample", snapshot)
+	}
+}
+
+func TestLearningInvalidationDropsOldHeadroom(t *testing.T) {
+	now := time.Unix(2_900, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	state := learnedTestState()
+	cost := learnedTestCost()
+	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
+		predictedAt := now.Add(time.Duration(index) * time.Second)
+		prediction := scheduler.Predict(predictedAt, state, cost)
+		if err := scheduler.Observe(prediction, healthyLearnedOutcome(prediction, predictedAt.Add(500*time.Millisecond))); err != nil {
+			t.Fatalf("observe sample %d: %v", index, err)
+		}
+	}
+	scheduler.InvalidateLearning()
+	if snapshot := scheduler.Snapshot(); snapshot.Cells != 0 || snapshot.Invalidations != 1 {
+		t.Fatalf("post-invalidation snapshot = %+v, want zero cells and one invalidation", snapshot)
+	}
+	if prediction := scheduler.Predict(now.Add(5*time.Second), state, cost); prediction.Source != PredictionSourceStatic || prediction.Estimate != prediction.Prior {
+		t.Fatalf("invalidated scheduler retained learned headroom: %+v", prediction)
+	}
+}
+
 func testPredictorIdentity() ModelIdentity {
 	return ModelIdentity{
 		ProfileID:        "gemma-vllm-test",
@@ -154,6 +261,7 @@ func testResidualConfig() ResidualCalibratorConfig {
 		Identity:                 testPredictorIdentity(),
 		MinimumSamples:           3,
 		MaximumSamplesPerCell:    16,
+		MaximumCells:             64,
 		MaxAge:                   time.Minute,
 		LowerQuantile:            0.10,
 		UpperQuantile:            0.90,
@@ -190,12 +298,16 @@ func learnedTestState() domain.VirtualState {
 
 func learnedTestCost() domain.RequestCost {
 	return domain.RequestCost{
-		ManifestID:           "test-profile",
-		InputTokens:          1_000,
-		KV:                   domain.KVIncrement{PhysicalKVUpper: 8_256, ActiveKVUpper: 8_256},
-		UncachedPrefillUpper: 1_000,
-		DecodeHorizonUpper:   256,
-		Confidence:           0.99,
+		ManifestID:               "test-profile",
+		InputTokens:              1_000,
+		KV:                       domain.KVIncrement{PhysicalKVUpper: 1_280, ActiveKVUpper: 1_280},
+		FutureKV:                 domain.KVIncrement{PhysicalKVUpper: 256, ActiveKVUpper: 256},
+		UncachedPrefillUpper:     1_000,
+		DecodeHorizonUpper:       256,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: 1_256,
+		FutureContextTokensUpper: 256,
+		Confidence:               0.99,
 	}
 }
 

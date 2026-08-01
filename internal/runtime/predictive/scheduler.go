@@ -71,6 +71,7 @@ type ResidualCalibratorConfig struct {
 	Identity                 ModelIdentity
 	MinimumSamples           int
 	MaximumSamplesPerCell    int
+	MaximumCells             int
 	MaxAge                   time.Duration
 	LowerQuantile            float64
 	UpperQuantile            float64
@@ -91,6 +92,9 @@ func (c ResidualCalibratorConfig) Validate() error {
 	}
 	if c.MinimumSamples <= 0 || c.MaximumSamplesPerCell < c.MinimumSamples {
 		return fmt.Errorf("scheduler residual sample bounds are invalid")
+	}
+	if c.MaximumCells <= 0 {
+		return fmt.Errorf("scheduler residual global cell bound must be positive")
 	}
 	if c.MaxAge <= 0 {
 		return fmt.Errorf("scheduler residual maximum age must be positive")
@@ -121,13 +125,14 @@ const (
 )
 
 type SchedulerFeatures struct {
-	ExistingDecodeSequences int
-	DecodeSequences         int
-	ActiveContextTokens     int64
-	UncachedPrefillTokens   int64
-	PhysicalKVUpper         int64
-	ActiveKVUpper           int64
-	DecodeHorizonUpper      int64
+	ExistingDecodeSequences      int
+	DecodeSequences              int
+	ActiveContextTokens          int64
+	UncachedPrefillTokens        int64
+	AccruedLocalAdmissionLatency time.Duration
+	PhysicalKVUpper              int64
+	ActiveKVUpper                int64
+	DecodeHorizonUpper           int64
 }
 
 type SchedulerPrediction struct {
@@ -145,6 +150,7 @@ type SchedulerOutcome struct {
 	Identity             ModelIdentity
 	ObservedAt           time.Time
 	Attributed           bool
+	Censored             bool
 	ExistingUserTPS      float64
 	ExistingUserTPSValid bool
 	AllUserTPS           float64
@@ -158,6 +164,7 @@ type SchedulerOutcome struct {
 type LearnedSchedulerSnapshot struct {
 	SamplesAccepted uint64
 	SamplesRejected uint64
+	Invalidations   uint64
 	Cells           int
 }
 
@@ -173,6 +180,7 @@ type featureCell struct {
 
 type residualSample struct {
 	ObservedAt       time.Time
+	Censored         bool
 	ExistingTPSRatio float64
 	AllTPSRatio      float64
 	TTFTRatio        float64
@@ -183,13 +191,30 @@ type residualSample struct {
 	TPOTValid        bool
 }
 
+type residualCell struct {
+	CreatedSequence uint64
+	Samples         []residualSample
+}
+
 type LearnedScheduler struct {
 	mu              sync.Mutex
 	profile         StaticSchedulerProfile
 	config          ResidualCalibratorConfig
-	cells           map[featureCell][]residualSample
+	cells           map[featureCell]*residualCell
+	cellSequence    uint64
 	samplesAccepted uint64
 	samplesRejected uint64
+	invalidations   uint64
+}
+
+func (s *LearnedScheduler) InvalidateLearning() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	clear(s.cells)
+	s.invalidations++
+	s.mu.Unlock()
 }
 
 func NewLearnedScheduler(profile StaticSchedulerProfile, config ResidualCalibratorConfig) (*LearnedScheduler, error) {
@@ -205,7 +230,7 @@ func NewLearnedScheduler(profile StaticSchedulerProfile, config ResidualCalibrat
 	return &LearnedScheduler{
 		profile: profile,
 		config:  config,
-		cells:   make(map[featureCell][]residualSample),
+		cells:   make(map[featureCell]*residualCell),
 	}, nil
 }
 
@@ -234,52 +259,33 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 
 	key := s.featureCell(features)
 	s.mu.Lock()
-	samples := s.cells[key]
-	freshSamples := 0
-	existingCount, allCount, ttftCount, tpotCount := 0, 0, 0, 0
-	for _, sample := range samples {
-		age := now.Sub(sample.ObservedAt)
-		if age < 0 || age > s.config.MaxAge {
-			continue
-		}
-		freshSamples++
-		if sample.ExistingTPSValid {
-			existingCount++
-		}
-		if sample.AllTPSValid {
-			allCount++
-		}
-		if sample.TTFTValid {
-			ttftCount++
-		}
-		if sample.TPOTValid {
-			tpotCount++
-		}
-	}
-	if freshSamples < s.config.MinimumSamples {
+	cell := s.cells[key]
+	if cell == nil || len(cell.Samples) == 0 {
 		s.mu.Unlock()
 		return prediction
 	}
-	existingRatios := make([]float64, 0, existingCount)
-	allRatios := make([]float64, 0, allCount)
-	ttftRatios := make([]float64, 0, ttftCount)
-	tpotRatios := make([]float64, 0, tpotCount)
-	for _, sample := range samples {
+	var existingRatios, allRatios, ttftRatios, tpotRatios []float64
+	freshCensored := false
+	for _, sample := range cell.Samples {
 		age := now.Sub(sample.ObservedAt)
 		if age < 0 || age > s.config.MaxAge {
 			continue
 		}
+		if sample.Censored {
+			freshCensored = true
+			continue
+		}
 		if sample.ExistingTPSValid {
-			existingRatios = append(existingRatios, sample.ExistingTPSRatio)
+			existingRatios = appendResidualRatio(existingRatios, sample.ExistingTPSRatio, len(cell.Samples))
 		}
 		if sample.AllTPSValid {
-			allRatios = append(allRatios, sample.AllTPSRatio)
+			allRatios = appendResidualRatio(allRatios, sample.AllTPSRatio, len(cell.Samples))
 		}
 		if sample.TTFTValid {
-			ttftRatios = append(ttftRatios, sample.TTFTRatio)
+			ttftRatios = appendResidualRatio(ttftRatios, sample.TTFTRatio, len(cell.Samples))
 		}
 		if sample.TPOTValid {
-			tpotRatios = append(tpotRatios, sample.TPOTRatio)
+			tpotRatios = appendResidualRatio(tpotRatios, sample.TPOTRatio, len(cell.Samples))
 		}
 	}
 	s.mu.Unlock()
@@ -308,6 +314,19 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	if calibratedSamples == 0 {
 		return prediction
 	}
+	if freshCensored {
+		prediction.Estimate.ExistingUserTPSLower = math.Min(prediction.Estimate.ExistingUserTPSLower, prior.ExistingUserTPSLower)
+		prediction.Estimate.AllUserTPSLower = math.Min(prediction.Estimate.AllUserTPSLower, prior.AllUserTPSLower)
+		if prediction.Estimate.TTFTUpper < prior.TTFTUpper {
+			prediction.Estimate.TTFTUpper = prior.TTFTUpper
+		}
+		if prediction.Estimate.TPOTUpper < prior.TPOTUpper {
+			prediction.Estimate.TPOTUpper = prior.TPOTUpper
+		}
+	}
+	if prediction.Estimate == prior {
+		return prediction
+	}
 	prediction.Source = PredictionSourceCalibrated
 	prediction.Samples = calibratedSamples
 	prediction.Confidence = minimumConfidence(s.profile.Confidence, s.config.CalibratedConfidence)
@@ -327,20 +346,55 @@ func (s *LearnedScheduler) Observe(prediction SchedulerPrediction, outcome Sched
 	if outcome.ObservedAt.IsZero() || outcome.ObservedAt.Before(prediction.PredictedAt) {
 		return s.rejectOutcome(fmt.Errorf("scheduler outcome timestamp is invalid"))
 	}
-	sample, err := residualFromOutcome(prediction, outcome)
-	if err != nil {
-		return s.rejectOutcome(err)
+	var sample residualSample
+	if outcome.Censored {
+		sample = residualSample{ObservedAt: outcome.ObservedAt, Censored: true}
+	} else {
+		var err error
+		sample, err = residualFromOutcome(prediction, outcome)
+		if err != nil {
+			return s.rejectOutcome(err)
+		}
 	}
 	key := s.featureCell(prediction.Features)
 	s.mu.Lock()
-	values := append(s.cells[key], sample)
-	if excess := len(values) - s.config.MaximumSamplesPerCell; excess > 0 {
-		values = append([]residualSample(nil), values[excess:]...)
+	cell := s.cells[key]
+	if cell == nil {
+		if len(s.cells) >= s.config.MaximumCells {
+			s.evictOldestCellLocked()
+		}
+		s.cellSequence++
+		cell = &residualCell{CreatedSequence: s.cellSequence}
+		s.cells[key] = cell
 	}
-	s.cells[key] = values
+	cell.Samples = append(cell.Samples, sample)
+	if excess := len(cell.Samples) - s.config.MaximumSamplesPerCell; excess > 0 {
+		copy(cell.Samples, cell.Samples[excess:])
+		cell.Samples = cell.Samples[:s.config.MaximumSamplesPerCell]
+	}
 	s.samplesAccepted++
 	s.mu.Unlock()
 	return nil
+}
+
+func (s *LearnedScheduler) evictOldestCellLocked() {
+	var oldestKey featureCell
+	var oldestSequence uint64
+	found := false
+	for key, cell := range s.cells {
+		if cell == nil {
+			delete(s.cells, key)
+			continue
+		}
+		if !found || cell.CreatedSequence < oldestSequence {
+			oldestKey = key
+			oldestSequence = cell.CreatedSequence
+			found = true
+		}
+	}
+	if found {
+		delete(s.cells, oldestKey)
+	}
 }
 
 func (s *LearnedScheduler) Snapshot() LearnedSchedulerSnapshot {
@@ -352,6 +406,7 @@ func (s *LearnedScheduler) Snapshot() LearnedSchedulerSnapshot {
 	return LearnedSchedulerSnapshot{
 		SamplesAccepted: s.samplesAccepted,
 		SamplesRejected: s.samplesRejected,
+		Invalidations:   s.invalidations,
 		Cells:           len(s.cells),
 	}
 }
@@ -383,7 +438,7 @@ func (s *LearnedScheduler) staticEstimate(features SchedulerFeatures) domain.Sch
 		ExistingUserTPSLower:         existingTPS,
 		ExistingUserTPSNotApplicable: existingTPSNotApplicable,
 		AllUserTPSLower:              postJoinTPS,
-		TTFTUpper:                    addDurationSaturating(s.profile.BaseTTFT, multiplyDurationSaturating(s.profile.TTFTPerUncachedPrefillToken, features.UncachedPrefillTokens)),
+		TTFTUpper:                    addDurationSaturating(addDurationSaturating(s.profile.BaseTTFT, multiplyDurationSaturating(s.profile.TTFTPerUncachedPrefillToken, features.UncachedPrefillTokens)), features.AccruedLocalAdmissionLatency),
 		TPOTUpper:                    addDurationSaturating(s.profile.BaseTPOT, multiplyDurationSaturating(s.profile.TPOTPerExistingDecodeSequence, int64(features.ExistingDecodeSequences))),
 		WorkspaceRiskUpper:           s.profile.WorkspaceRiskUpper,
 		PreemptionRiskUpper:          s.profile.PreemptionRiskUpper,
@@ -408,13 +463,14 @@ func schedulerFeatures(state domain.VirtualState, request domain.RequestCost) Sc
 		requestSequences = 1
 	}
 	return SchedulerFeatures{
-		ExistingDecodeSequences: nonNegativeInt(state.DecodeSequences),
-		DecodeSequences:         addIntSaturating(nonNegativeInt(state.DecodeSequences), requestSequences),
-		ActiveContextTokens:     addInt64Saturating(nonNegativeInt64(state.ActiveContextTokens), nonNegativeInt64(request.ActiveContextTokensUpper)),
-		UncachedPrefillTokens:   addInt64Saturating(nonNegativeInt64(state.UncachedPrefillTokens), nonNegativeInt64(request.UncachedPrefillUpper)),
-		PhysicalKVUpper:         addInt64Saturating(nonNegativeInt64(state.PhysicalKVUpper), nonNegativeInt64(request.KV.PhysicalKVUpper)),
-		ActiveKVUpper:           addInt64Saturating(nonNegativeInt64(state.ActiveKVUpper), nonNegativeInt64(request.KV.ActiveKVUpper)),
-		DecodeHorizonUpper:      nonNegativeInt64(request.DecodeHorizonUpper),
+		ExistingDecodeSequences:      nonNegativeInt(state.DecodeSequences),
+		DecodeSequences:              addIntSaturating(nonNegativeInt(state.DecodeSequences), requestSequences),
+		ActiveContextTokens:          addInt64Saturating(nonNegativeInt64(state.ActiveContextTokens), nonNegativeInt64(request.ActiveContextTokensUpper)),
+		UncachedPrefillTokens:        addInt64Saturating(nonNegativeInt64(state.UncachedPrefillTokens), nonNegativeInt64(request.UncachedPrefillUpper)),
+		AccruedLocalAdmissionLatency: request.AccruedLocalAdmissionLatency,
+		PhysicalKVUpper:              addInt64Saturating(nonNegativeInt64(state.PhysicalKVUpper), nonNegativeInt64(request.KV.PhysicalKVUpper)),
+		ActiveKVUpper:                addInt64Saturating(nonNegativeInt64(state.ActiveKVUpper), nonNegativeInt64(request.KV.ActiveKVUpper)),
+		DecodeHorizonUpper:           nonNegativeInt64(request.DecodeHorizonUpper),
 	}
 }
 
@@ -476,6 +532,13 @@ func quantileInPlace(values []float64, q float64) float64 {
 		index = len(values) - 1
 	}
 	return values[index]
+}
+
+func appendResidualRatio(values []float64, value float64, capacityHint int) []float64 {
+	if values == nil {
+		values = make([]float64, 0, capacityHint)
+	}
+	return append(values, value)
 }
 
 func positiveRatio(observed, predicted float64, name string) (float64, error) {

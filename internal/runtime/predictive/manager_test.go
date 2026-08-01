@@ -67,8 +67,10 @@ func testRequest() domain.RequestCost {
 			PhysicalKVUpper: 10_000,
 			ActiveKVUpper:   10_000,
 		},
-		UncachedPrefillUpper: 10_000,
-		Confidence:           0.99,
+		UncachedPrefillUpper:     10_000,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: 10_000,
+		Confidence:               0.99,
 	}
 }
 
@@ -83,6 +85,58 @@ func TestManagerRejectsNonColdPrefillCostWithoutReservation(t *testing.T) {
 	}
 	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 {
 		t.Fatalf("non-cold request cost changed manager state: %+v", snapshot)
+	}
+}
+
+func TestManagerRejectsStructurallyInconsistentRequestCost(t *testing.T) {
+	base := domain.RequestCost{
+		ManifestID:  "test-profile",
+		InputTokens: 100,
+		KV: domain.KVIncrement{
+			PhysicalKVUpper: 512,
+			ActiveKVUpper:   512,
+		},
+		FutureKV: domain.KVIncrement{
+			PhysicalKVUpper: 384,
+			ActiveKVUpper:   384,
+		},
+		UncachedPrefillUpper:     100,
+		DecodeHorizonUpper:       400,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: 500,
+		FutureContextTokensUpper: 400,
+		Confidence:               0.99,
+	}
+	tests := []struct {
+		name   string
+		mutate func(*domain.RequestCost)
+	}{
+		{name: "zero sequences", mutate: func(cost *domain.RequestCost) { cost.DecodeSequencesUpper = 0 }},
+		{name: "multiple sequences", mutate: func(cost *domain.RequestCost) { cost.DecodeSequencesUpper = 2 }},
+		{name: "full context mismatch", mutate: func(cost *domain.RequestCost) { cost.ActiveContextTokensUpper-- }},
+		{name: "future context mismatch", mutate: func(cost *domain.RequestCost) { cost.FutureContextTokensUpper-- }},
+		{name: "full KV below context", mutate: func(cost *domain.RequestCost) {
+			cost.KV = domain.KVIncrement{PhysicalKVUpper: 499, ActiveKVUpper: 499}
+		}},
+		{name: "input KV floor under-covered", mutate: func(cost *domain.RequestCost) {
+			cost.FutureKV = domain.KVIncrement{PhysicalKVUpper: 450, ActiveKVUpper: 450}
+		}},
+		{name: "full physical and active KV diverge", mutate: func(cost *domain.RequestCost) { cost.KV.ActiveKVUpper-- }},
+		{name: "future physical and active KV diverge", mutate: func(cost *domain.RequestCost) { cost.FutureKV.ActiveKVUpper-- }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+			cost := base
+			test.mutate(&cost)
+			decision := manager.DecideAndReserve(time.Unix(0, 0), "invalid", cost)
+			if decision.Reason != domain.ReasonPredictorProfileUnknown {
+				t.Fatalf("reason = %s, want %s", decision.Reason, domain.ReasonPredictorProfileUnknown)
+			}
+			if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 {
+				t.Fatalf("invalid cost changed manager state: %+v", snapshot)
+			}
+		})
 	}
 }
 
@@ -208,9 +262,12 @@ func TestSampleAssimilatesReservationPresentAcrossWholePollWindow(t *testing.T) 
 	if got := manager.DecideAndReserve(time.Unix(0, 0), "active", testRequest()); got.Reason != domain.ReasonFit {
 		t.Fatalf("admission reason = %s, want fit", got.Reason)
 	}
+	if !manager.MarkForwarded("active") || !manager.MarkPrefillComplete("active") {
+		t.Fatal("active reservation did not reach completed prefill")
+	}
 	watermark := manager.EventSequence()
-	if watermark != 1 {
-		t.Fatalf("event sequence = %d, want 1", watermark)
+	if watermark != 3 {
+		t.Fatalf("event sequence = %d, want admission, forward, and prefill events", watermark)
 	}
 	if err := manager.ReconcileSample(SampleWindow{
 		Observed: domain.VirtualState{
@@ -236,6 +293,76 @@ func TestSampleAssimilatesReservationPresentAcrossWholePollWindow(t *testing.T) 
 	}
 }
 
+func TestSampleRetainsUnmaterializedDecodeHorizonAfterCurrentKVIsObserved(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	cost := domain.RequestCost{
+		ManifestID:  "test-profile",
+		InputTokens: 100,
+		KV: domain.KVIncrement{
+			PhysicalKVUpper: 500,
+			ActiveKVUpper:   500,
+		},
+		FutureKV: domain.KVIncrement{
+			PhysicalKVUpper: 400,
+			ActiveKVUpper:   400,
+		},
+		UncachedPrefillUpper:     100,
+		DecodeHorizonUpper:       400,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: 500,
+		FutureContextTokensUpper: 400,
+		Confidence:               0.99,
+	}
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "long-decode", cost); got.Reason != domain.ReasonFit {
+		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	if !manager.MarkForwarded("long-decode") || !manager.MarkPrefillComplete("long-decode") {
+		t.Fatal("long decode reservation did not reach completed prefill")
+	}
+	watermark := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed: domain.VirtualState{
+			PhysicalKVUpper:     100,
+			ActiveKVUpper:       100,
+			DecodeSequences:     1,
+			ActiveContextTokens: 100,
+		},
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("reconcile partial materialization: %v", err)
+	}
+	snapshot := manager.Snapshot()
+	if snapshot.Virtual.Upper.PhysicalKVUpper != 500 || snapshot.Virtual.Upper.ActiveKVUpper != 500 || snapshot.Virtual.Upper.ActiveContextTokens != 500 {
+		t.Fatalf("future decode reservation was lost after scrape: %+v", snapshot.Virtual)
+	}
+}
+
+func TestAdmittedButNotForwardedReservationIsNotAssimilated(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{
+		PhysicalKVUpper: 50_000,
+		ActiveKVUpper:   50_000,
+	}, testConstraints(), safeScheduler{})
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "local-queue", testRequest()); got.Reason != domain.ReasonFit {
+		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	watermark := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed: domain.VirtualState{
+			PhysicalKVUpper: 50_000,
+			ActiveKVUpper:   50_000,
+		},
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("reconcile local queue: %v", err)
+	}
+	snapshot := manager.Snapshot()
+	if snapshot.Virtual.Upper.PhysicalKVUpper != 60_000 || snapshot.Virtual.Upper.ActiveKVUpper != 60_000 {
+		t.Fatalf("local reservation was absorbed before forwarding: %+v", snapshot.Virtual)
+	}
+}
+
 func TestAdmissionInsideSampleWindowWidensUpperBound(t *testing.T) {
 	manager := NewManager("test-profile", domain.VirtualState{
 		PhysicalKVUpper: 50_000,
@@ -245,6 +372,9 @@ func TestAdmissionInsideSampleWindowWidensUpperBound(t *testing.T) {
 	started := manager.EventSequence()
 	if got := manager.DecideAndReserve(time.Unix(0, 0), "ambiguous", testRequest()); got.Reason != domain.ReasonFit {
 		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	if !manager.MarkForwarded("ambiguous") || !manager.MarkPrefillComplete("ambiguous") {
+		t.Fatal("ambiguous reservation did not reach completed prefill")
 	}
 	finished := manager.EventSequence()
 	if err := manager.ReconcileSample(SampleWindow{
@@ -301,6 +431,9 @@ func TestLateSampleDoesNotReintroduceCompletedOwnedWork(t *testing.T) {
 	if got := manager.DecideAndReserve(time.Unix(0, 0), "owned", testRequest()); got.Reason != domain.ReasonFit {
 		t.Fatalf("admission reason = %s, want fit", got.Reason)
 	}
+	if !manager.MarkForwarded("owned") || !manager.MarkPrefillComplete("owned") {
+		t.Fatal("owned reservation did not reach completed prefill")
+	}
 	watermark := manager.EventSequence()
 	if err := manager.ReconcileSample(SampleWindow{
 		Observed: domain.VirtualState{
@@ -340,6 +473,9 @@ func TestCompletionInsideSampleWindowRemainsConservativeUntilCleanSample(t *test
 
 	if got := manager.DecideAndReserve(time.Unix(0, 0), "windowed", testRequest()); got.Reason != domain.ReasonFit {
 		t.Fatalf("admission reason = %s, want fit", got.Reason)
+	}
+	if !manager.MarkForwarded("windowed") || !manager.MarkPrefillComplete("windowed") {
+		t.Fatal("windowed reservation did not reach completed prefill")
 	}
 	first := manager.EventSequence()
 	if err := manager.ReconcileSample(SampleWindow{
@@ -397,5 +533,78 @@ func TestReconcileRejectsInvalidOrStaleWatermarks(t *testing.T) {
 	}
 	if err := manager.ReconcileSample(SampleWindow{StartedSequence: 0, FinishedSequence: 0}); err == nil {
 		t.Fatal("stale sample must fail")
+	}
+}
+
+func TestRetiredReservationQueueIsBoundedFIFOAcrossWrap(t *testing.T) {
+	var queue retiredReservationQueue
+	for sequence := 0; sequence < maximumRetiredReservations+3; sequence++ {
+		evicted := queue.Push(retiredReservation{CompletedSequence: uint64(sequence)})
+		if want := sequence >= maximumRetiredReservations; evicted != want {
+			t.Fatalf("push %d eviction = %t, want %t", sequence, evicted, want)
+		}
+	}
+	if got := queue.Len(); got != maximumRetiredReservations {
+		t.Fatalf("retired queue length = %d, want %d", got, maximumRetiredReservations)
+	}
+	for want := 3; want < maximumRetiredReservations+3; want++ {
+		item, ok := queue.Pop()
+		if !ok || item.CompletedSequence != uint64(want) {
+			t.Fatalf("retired queue pop = %+v/%t, want sequence %d", item, ok, want)
+		}
+	}
+	if _, ok := queue.Pop(); ok || queue.Len() != 0 {
+		t.Fatalf("empty retired queue pop/length = %t/%d", ok, queue.Len())
+	}
+}
+
+func TestReconcileRetiredQueuePreservesSequenceSemantics(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	manager.eventSequence = 20
+	for _, sequence := range []uint64{5, 10, 15} {
+		manager.retired.Push(retiredReservation{
+			CompletedSequence: sequence,
+			MaterializedFloor: domain.RequestCost{KV: domain.KVIncrement{
+				PhysicalKVUpper: 100,
+				ActiveKVUpper:   100,
+			}},
+		})
+	}
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed:         domain.VirtualState{PhysicalKVUpper: 1_000, ActiveKVUpper: 1_000},
+		StartedSequence:  7,
+		FinishedSequence: 12,
+	}); err != nil {
+		t.Fatalf("mixed retirement reconcile failed: %v", err)
+	}
+	snapshot := manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 800 || snapshot.Virtual.Upper.PhysicalKVUpper != 900 {
+		t.Fatalf("mixed retirement interval = %+v, want physical KV [800,900]", snapshot.Virtual)
+	}
+	if snapshot.RetiredReservations != 2 || snapshot.RetiredEvictions != 0 {
+		t.Fatalf("mixed retirement queue snapshot = %+v", snapshot)
+	}
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed:         domain.VirtualState{PhysicalKVUpper: 800, ActiveKVUpper: 800},
+		StartedSequence:  20,
+		FinishedSequence: 20,
+	}); err != nil {
+		t.Fatalf("clean retirement reconcile failed: %v", err)
+	}
+	snapshot = manager.Snapshot()
+	if snapshot.Virtual.Lower.PhysicalKVUpper != 800 || snapshot.Virtual.Upper.PhysicalKVUpper != 800 || snapshot.RetiredReservations != 0 {
+		t.Fatalf("clean retirement snapshot = %+v, want exact physical KV 800 and empty queue", snapshot)
+	}
+}
+
+func BenchmarkRetiredReservationQueuePushAtCapacity(b *testing.B) {
+	var queue retiredReservationQueue
+	for sequence := 0; sequence < maximumRetiredReservations; sequence++ {
+		queue.Push(retiredReservation{CompletedSequence: uint64(sequence)})
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for sequence := 0; sequence < b.N; sequence++ {
+		queue.Push(retiredReservation{CompletedSequence: uint64(sequence)})
 	}
 }

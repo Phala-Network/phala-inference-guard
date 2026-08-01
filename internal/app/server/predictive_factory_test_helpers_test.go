@@ -25,7 +25,7 @@ func writePredictiveFactoryTestProfile(t *testing.T, cfg *config) {
 		t.Fatalf("write chat template: %v", err)
 	}
 	profile := map[string]any{
-		"schema_version":                          2,
+		"schema_version":                          3,
 		"manifest_id":                             "factory-test-manifest",
 		"profile_id":                              "factory-test-profile",
 		"predictor_version":                       "factory-test-predictor-v1",
@@ -70,6 +70,7 @@ func writePredictiveFactoryTestProfile(t *testing.T, cfg *config) {
 		"minimum_confidence":                      0.95,
 		"calibrator_minimum_samples":              4,
 		"calibrator_maximum_samples_per_cell":     16,
+		"calibrator_maximum_cells":                256,
 		"calibrator_max_age_seconds":              300,
 		"calibrator_lower_quantile":               0.1,
 		"calibrator_upper_quantile":               0.9,

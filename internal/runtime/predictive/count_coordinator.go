@@ -79,12 +79,20 @@ func (c *CountCoordinator) MarkPrefillComplete(requestID string) bool {
 	return c != nil && c.manager.MarkPrefillComplete(requestID)
 }
 
+func (c *CountCoordinator) MarkForwarded(requestID string) bool {
+	return c != nil && c.manager.MarkForwarded(requestID)
+}
+
 func (c *CountCoordinator) Complete(requestID string) bool {
 	return c.Terminate(requestID, TerminalCompleted)
 }
 
 func (c *CountCoordinator) Terminate(requestID string, cause TerminalCause) bool {
 	return c != nil && c.manager.Terminate(requestID, cause)
+}
+
+func (c *CountCoordinator) TerminateWithOutcome(requestID string, cause TerminalCause, outcome *SchedulerOutcome) bool {
+	return c != nil && c.manager.TerminateWithOutcome(requestID, cause, outcome)
 }
 
 func (c *CountCoordinator) EventSequence() uint64 {
@@ -94,9 +102,9 @@ func (c *CountCoordinator) EventSequence() uint64 {
 	return c.manager.EventSequence()
 }
 
-func (c *CountCoordinator) StartSampleWindow() (uint64, domain.VirtualState) {
+func (c *CountCoordinator) StartSampleWindow() uint64 {
 	if c == nil || c.manager == nil {
-		return 0, domain.VirtualState{}
+		return 0
 	}
 	return c.manager.StartSampleWindow()
 }
@@ -110,6 +118,12 @@ func (c *CountCoordinator) ReconcileSample(sample SampleWindow) error {
 
 func (c *CountCoordinator) ObserveOutcome(requestID string, outcome SchedulerOutcome) bool {
 	return c != nil && c.manager.ObserveOutcome(requestID, outcome)
+}
+
+func (c *CountCoordinator) InvalidateLearning() {
+	if c != nil && c.manager != nil {
+		c.manager.InvalidateLearning()
+	}
 }
 
 func (c *CountCoordinator) Snapshot() CountCoordinatorSnapshot {

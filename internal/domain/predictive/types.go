@@ -26,14 +26,17 @@ type VirtualStateInterval struct {
 }
 
 type RequestCost struct {
-	ManifestID               string
-	InputTokens              int64
-	KV                       KVIncrement
-	UncachedPrefillUpper     int64
-	DecodeHorizonUpper       int64
-	DecodeSequencesUpper     int
-	ActiveContextTokensUpper int64
-	Confidence               float64
+	ManifestID                   string
+	InputTokens                  int64
+	AccruedLocalAdmissionLatency time.Duration
+	KV                           KVIncrement
+	FutureKV                     KVIncrement
+	UncachedPrefillUpper         int64
+	DecodeHorizonUpper           int64
+	DecodeSequencesUpper         int
+	ActiveContextTokensUpper     int64
+	FutureContextTokensUpper     int64
+	Confidence                   float64
 }
 
 type SchedulerEstimate struct {

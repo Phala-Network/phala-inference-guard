@@ -25,6 +25,7 @@ type adapterTestCounter struct {
 	calls      int
 	manifestID string
 	epoch      string
+	delay      time.Duration
 }
 
 type adapterTestClock struct {
@@ -68,6 +69,8 @@ func (c *blockingAdmissionCoordinator) DecideAndReserve(_ time.Time, _ runtimepr
 
 func (c *blockingAdmissionCoordinator) MarkPrefillComplete(string) bool { return false }
 
+func (c *blockingAdmissionCoordinator) MarkForwarded(string) bool { return true }
+
 func (c *blockingAdmissionCoordinator) Terminate(_ string, cause runtimepredictive.TerminalCause) bool {
 	c.terminated <- cause
 	return true
@@ -75,6 +78,11 @@ func (c *blockingAdmissionCoordinator) Terminate(_ string, cause runtimepredicti
 
 func (c *blockingAdmissionCoordinator) ObserveOutcome(string, runtimepredictive.SchedulerOutcome) bool {
 	return false
+}
+
+func (c *blockingAdmissionCoordinator) TerminateWithOutcome(_ string, cause runtimepredictive.TerminalCause, _ *runtimepredictive.SchedulerOutcome) bool {
+	c.terminated <- cause
+	return true
 }
 
 type semanticTTFTPredictiveReservation interface {
@@ -111,6 +119,9 @@ func (r *adapterTestRenderer) Calls() int {
 }
 
 func (c *adapterTestCounter) Count(_ context.Context, _ runtimepredictive.RequestClass, _ []byte) (runtimepredictive.TokenCountAnalysis, error) {
+	if c.delay > 0 {
+		time.Sleep(c.delay)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.calls++
@@ -119,6 +130,50 @@ func (c *adapterTestCounter) Count(_ context.Context, _ runtimepredictive.Reques
 		BackendEpoch:     c.epoch,
 		ExactInputTokens: 4,
 	}, nil
+}
+
+func TestPredictiveEnforceChargesAccruedLocalAdmissionLatencyBeforeForward(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	counter := newAdapterTestCounter()
+	counter.delay = 25 * time.Millisecond
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     counter,
+		Coordinator: newAdapterTestCoordinatorWithTargets(t, 0, 20*time.Millisecond),
+	})
+	if err != nil {
+		t.Fatalf("new real predictive admission: %v", err)
+	}
+	cfg := testProxyConfig(backend.URL)
+	cfg.GlobalLimit = 0
+	cfg.PredictiveAdmissionMode = "enforce"
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return adapter, nil },
+	})
+	if err != nil {
+		t.Fatalf("new proxy server: %v", err)
+	}
+	defer srv.Close()
+
+	body := `{"model":"m","messages":[{"role":"user","content":"hello"}],"max_tokens":8}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("status/backend calls = %d/%d, want accrued local TTFT reject 429/0", recorder.Code, backendCalls)
+	}
+	if snapshot := adapter.Snapshot(); snapshot.LastReason != domainpredictive.ReasonTTFTAtRisk || snapshot.Risks != 1 {
+		t.Fatalf("predictive attempt = %+v, want pre-forward TTFT risk", snapshot)
+	}
 }
 
 func (c *adapterTestCounter) Calls() int {
@@ -289,6 +344,42 @@ func TestRealPredictiveShadowRejectsUnsupportedBeforeAnalysis(t *testing.T) {
 	}
 }
 
+func TestRealPredictiveShadowTelemetryCoversPredictionLearningAndReservations(t *testing.T) {
+	coordinator, scheduler := newAdapterTestCoordinatorAndSchedulerWithTargets(t, 0, time.Second)
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     newAdapterTestCounter(),
+		Coordinator: coordinator,
+		Learner:     scheduler,
+	})
+	if err != nil {
+		t.Fatalf("new real predictive shadow: %v", err)
+	}
+	reservation := adapter.DecideAndReserve(context.Background(), "telemetry", predictiveShadowInput{
+		Path: "/v1/chat/completions",
+		Body: []byte(`{"messages":[{"role":"user","content":"telemetry"}]}`),
+	})
+	if reservation == nil || !reservation.MarkForwarded() || !reservation.Terminate(runtimepredictive.TerminalUpstreamFailure) {
+		t.Fatal("telemetry reservation did not complete the forwarded censored lifecycle")
+	}
+	snapshot := adapter.PredictiveAdmissionTelemetry()
+	if snapshot.Attempts.Attempts != 1 || snapshot.Attempts.Fits != 1 || snapshot.Attempts.Risks != 0 || snapshot.Attempts.Unknown != 0 {
+		t.Fatalf("telemetry attempts = %+v", snapshot.Attempts)
+	}
+	if snapshot.Manager.Reservations != 0 || snapshot.Learning.SamplesAccepted != 1 || snapshot.Learning.SamplesRejected != 0 {
+		t.Fatalf("telemetry manager/learning = %+v/%+v", snapshot.Manager, snapshot.Learning)
+	}
+	if got := snapshot.PredictionDuration.Sample().Count; got != 1 {
+		t.Fatalf("prediction duration count = %d, want 1", got)
+	}
+	if got := snapshot.RendererDuration.Sample().Count; got != 1 {
+		t.Fatalf("renderer duration count = %d, want 1", got)
+	}
+	if got := snapshot.TokenizerDuration.Sample().Count; got != 1 {
+		t.Fatalf("tokenizer duration count = %d, want 1", got)
+	}
+}
+
 func TestRealPredictiveShadowCloseDoesNotWaitForPredictionAndRollsBackLateReservation(t *testing.T) {
 	coordinator := newBlockingAdmissionCoordinator()
 	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
@@ -360,6 +451,9 @@ func TestRealPredictiveShadowLearnsCompletedAttributedSemanticTTFTBeforeNextDeci
 		if reservation == nil {
 			t.Fatalf("training reservation %d was rejected: %+v", index, adapter.Snapshot())
 		}
+		if !reservation.MarkForwarded() {
+			t.Fatalf("training reservation %d was not marked forwarded", index)
+		}
 		semantic, ok := reservation.(semanticTTFTPredictiveReservation)
 		if !ok {
 			reservation.Terminate(runtimepredictive.TerminalExpired)
@@ -406,6 +500,9 @@ func TestRealPredictiveShadowDoesNotLearnSemanticTTFTFromFailedRequests(t *testi
 		if reservation == nil {
 			t.Fatalf("failed training reservation %d was rejected", index)
 		}
+		if !reservation.MarkForwarded() {
+			t.Fatalf("failed training reservation %d was not marked forwarded", index)
+		}
 		semantic, ok := reservation.(semanticTTFTPredictiveReservation)
 		if !ok {
 			reservation.Terminate(runtimepredictive.TerminalExpired)
@@ -430,6 +527,68 @@ func TestRealPredictiveShadowDoesNotLearnSemanticTTFTFromFailedRequests(t *testi
 	}
 }
 
+func TestRealPredictiveShadowRecordsForwardedTerminalsWithoutReliableTargetAsCensored(t *testing.T) {
+	for _, cause := range []runtimepredictive.TerminalCause{
+		runtimepredictive.TerminalCompleted,
+		runtimepredictive.TerminalClientCancelled,
+		runtimepredictive.TerminalClientDisconnected,
+		runtimepredictive.TerminalUpstreamFailure,
+		runtimepredictive.TerminalTimeout,
+	} {
+		t.Run(string(cause), func(t *testing.T) {
+			clock := &adapterTestClock{now: time.Unix(3_500, 0)}
+			coordinator, scheduler := newAdapterTestCoordinatorAndSchedulerWithTargets(t, 0, time.Second)
+			adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+				Renderer:    &adapterTestRenderer{},
+				Counter:     newAdapterTestCounter(),
+				Coordinator: coordinator,
+				Now:         clock.Now,
+			})
+			if err != nil {
+				t.Fatalf("new adapter: %v", err)
+			}
+			reservation := adapter.DecideAndReserve(context.Background(), "censored-"+string(cause), predictiveShadowInput{
+				Path: "/v1/chat/completions",
+				Body: []byte(`{"messages":[{"role":"user","content":"censored terminal"}]}`),
+			})
+			if reservation == nil || !reservation.MarkForwarded() {
+				t.Fatalf("forwarded reservation for %s was not created", cause)
+			}
+			clock.Advance(time.Second)
+			if !reservation.Terminate(cause) {
+				t.Fatalf("forwarded reservation for %s did not terminate", cause)
+			}
+			if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 1 || snapshot.SamplesRejected != 0 {
+				t.Fatalf("forwarded %s terminal learner snapshot = %+v, want one accepted censored sample", cause, snapshot)
+			}
+		})
+	}
+}
+
+func TestRealPredictiveShadowDoesNotCensorUnforwardedLocalReject(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(3_600, 0)}
+	coordinator, scheduler := newAdapterTestCoordinatorAndSchedulerWithTargets(t, 0, time.Second)
+	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
+		Renderer:    &adapterTestRenderer{},
+		Counter:     newAdapterTestCounter(),
+		Coordinator: coordinator,
+		Now:         clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	reservation := adapter.DecideAndReserve(context.Background(), "unforwarded-local", predictiveShadowInput{
+		Path: "/v1/chat/completions",
+		Body: []byte(`{"messages":[{"role":"user","content":"local reject"}]}`),
+	})
+	if reservation == nil || !reservation.Terminate(runtimepredictive.TerminalLocalQoSReject) {
+		t.Fatal("unforwarded local reservation did not terminate")
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 0 || snapshot.SamplesRejected != 0 {
+		t.Fatalf("unforwarded local reject changed learner state: %+v", snapshot)
+	}
+}
+
 func newAdapterTestCounter() *adapterTestCounter {
 	return &adapterTestCounter{
 		manifestID: "adapter-test-manifest",
@@ -446,6 +605,11 @@ func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64)
 }
 
 func newAdapterTestCoordinatorWithTargets(t *testing.T, userTPSTarget float64, ttftSLO time.Duration) *runtimepredictive.CountCoordinator {
+	coordinator, _ := newAdapterTestCoordinatorAndSchedulerWithTargets(t, userTPSTarget, ttftSLO)
+	return coordinator
+}
+
+func newAdapterTestCoordinatorAndSchedulerWithTargets(t *testing.T, userTPSTarget float64, ttftSLO time.Duration) (*runtimepredictive.CountCoordinator, *runtimepredictive.LearnedScheduler) {
 	t.Helper()
 	identity := adapterTestIdentity()
 	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
@@ -463,6 +627,7 @@ func newAdapterTestCoordinatorWithTargets(t *testing.T, userTPSTarget float64, t
 		Identity:                 identity,
 		MinimumSamples:           3,
 		MaximumSamplesPerCell:    8,
+		MaximumCells:             64,
 		MaxAge:                   time.Hour,
 		LowerQuantile:            0.1,
 		UpperQuantile:            0.9,
@@ -502,7 +667,7 @@ func newAdapterTestCoordinatorWithTargets(t *testing.T, userTPSTarget float64, t
 	if err != nil {
 		t.Fatalf("new coordinator: %v", err)
 	}
-	return coordinator
+	return coordinator, scheduler
 }
 
 func adapterTestIdentity() runtimepredictive.ModelIdentity {

@@ -81,3 +81,34 @@ sglang:kv_used_tokens +Inf
 		})
 	}
 }
+
+func TestParseSampleMarksGenerationCounterPresence(t *testing.T) {
+	withCounter := ParseSample("vllm:generation_tokens_total 123\n")
+	if !withCounter.GenerationValid || withCounter.Generation != 123 {
+		t.Fatalf("generation counter sample = %#v, want valid 123", withCounter)
+	}
+	withoutCounter := ParseSample("vllm:num_requests_running 0\n")
+	if withoutCounter.GenerationValid || withoutCounter.Generation != 0 {
+		t.Fatalf("missing generation counter sample = %#v, want invalid zero", withoutCounter)
+	}
+}
+
+func TestParseSampleMarksRequiredPredictiveCountersPresentAndExact(t *testing.T) {
+	valid := ParseSample(`
+vllm:num_requests_running 2
+vllm:num_requests_waiting 1
+vllm:num_preemptions_total 3
+`)
+	if !valid.RunningValid || !valid.WaitingValid || !valid.PreemptionsValid || valid.Running != 2 || valid.Waiting != 1 || valid.Preemptions != 3 {
+		t.Fatalf("valid predictive counters = %#v", valid)
+	}
+
+	invalid := ParseSample(`
+vllm:num_requests_running 0.5
+vllm:num_requests_waiting +Inf
+vllm:num_preemptions_total +Inf
+`)
+	if invalid.RunningValid || invalid.WaitingValid || invalid.PreemptionsValid || invalid.Running != 0 || invalid.Waiting != 0 || invalid.Preemptions != 0 {
+		t.Fatalf("invalid predictive counters did not fail closed: %#v", invalid)
+	}
+}

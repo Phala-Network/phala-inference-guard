@@ -17,7 +17,7 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-const predictiveProfileSchemaVersion = 2
+const predictiveProfileSchemaVersion = 3
 
 const predictiveGemma4RendererVersion = "gemma4-text-v1"
 
@@ -74,6 +74,7 @@ type predictiveProfileManifest struct {
 	MinimumConfidence                   float64                `json:"minimum_confidence"`
 	CalibratorMinimumSamples            int                    `json:"calibrator_minimum_samples"`
 	CalibratorMaximumSamplesPerCell     int                    `json:"calibrator_maximum_samples_per_cell"`
+	CalibratorMaximumCells              int                    `json:"calibrator_maximum_cells"`
 	CalibratorMaxAgeSeconds             int64                  `json:"calibrator_max_age_seconds"`
 	CalibratorLowerQuantile             float64                `json:"calibrator_lower_quantile"`
 	CalibratorUpperQuantile             float64                `json:"calibrator_upper_quantile"`
@@ -97,7 +98,7 @@ type loadedPredictiveProfile struct {
 
 func loadPredictiveProfile(path, expectedSHA string) (loadedPredictiveProfile, error) {
 	if strings.TrimSpace(path) == "" {
-		return loadedPredictiveProfile{}, fmt.Errorf("PREDICTIVE_ADMISSION_PROFILE_PATH is required in shadow mode")
+		return loadedPredictiveProfile{}, fmt.Errorf("PREDICTIVE_ADMISSION_PROFILE_PATH is required when predictive admission is enabled")
 	}
 	if err := validatePredictiveSHA256(expectedSHA); err != nil {
 		return loadedPredictiveProfile{}, fmt.Errorf("PREDICTIVE_ADMISSION_PROFILE_SHA256: %w", err)
@@ -256,7 +257,7 @@ func validatePredictiveProfile(profile predictiveProfileManifest) error {
 		WorkspaceRiskUpper: profile.WorkspaceRiskUpper, PreemptionRiskUpper: profile.PreemptionRiskUpper, Confidence: profile.ProfileConfidence,
 	}
 	calibrator := runtimepredictive.ResidualCalibratorConfig{
-		Identity: identity, MinimumSamples: profile.CalibratorMinimumSamples, MaximumSamplesPerCell: profile.CalibratorMaximumSamplesPerCell,
+		Identity: identity, MinimumSamples: profile.CalibratorMinimumSamples, MaximumSamplesPerCell: profile.CalibratorMaximumSamplesPerCell, MaximumCells: profile.CalibratorMaximumCells,
 		MaxAge: time.Duration(profile.CalibratorMaxAgeSeconds) * time.Second, LowerQuantile: profile.CalibratorLowerQuantile, UpperQuantile: profile.CalibratorUpperQuantile,
 		MinimumTPSMultiplier: profile.CalibratorMinimumTPSMultiplier, MaximumTPSMultiplier: profile.CalibratorMaximumTPSMultiplier,
 		MinimumLatencyMultiplier: profile.CalibratorMinimumLatencyMultiplier, MaximumLatencyMultiplier: profile.CalibratorMaximumLatencyMultiplier,

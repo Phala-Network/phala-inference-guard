@@ -3,6 +3,8 @@ package goodput
 import (
 	"testing"
 	"time"
+
+	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.T) {
@@ -15,6 +17,7 @@ func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.
 		"mixed_short_64k_128k",
 		"long_prompt_short_decode",
 		"short_prompt_long_decode",
+		"progressive_kv_arrival_after_scrapes",
 		"many_decode_sequences_low_kv",
 		"completion_before_poll",
 		"stale_waiting_after_owned_completion",
@@ -107,8 +110,8 @@ func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.
 		t.Fatal("repeated-prefix scenario disappeared after required-scenario validation")
 	}
 	wantRepeatedPeak := int64(4) * roundUpForTest(3_074+256, simulationBlock)
-	if got := repeated.Policies[PolicyPredictiveQoS].PeakProjectedKVTokens; got != wantRepeatedPeak {
-		t.Fatalf("repeated-prefix predictive peak KV = %d, want four full cache-cold costs = %d", got, wantRepeatedPeak)
+	if got := repeated.Policies[PolicyPredictiveQoS].PeakReservedKVTokens; got != wantRepeatedPeak {
+		t.Fatalf("repeated-prefix predictive peak reserved KV = %d, want four full cache-cold costs = %d", got, wantRepeatedPeak)
 	}
 }
 
@@ -118,9 +121,9 @@ func TestTokenizerLatencyEvidenceIsChargedToTTFT(t *testing.T) {
 		want   time.Duration
 	}{
 		{tokens: 49, want: 52_539 * time.Nanosecond},
-		{tokens: 3_074, want: 8_612 * time.Microsecond},
+		{tokens: 3_074, want: 9 * time.Millisecond},
 		{tokens: 24_578, want: 132_639 * time.Microsecond},
-		{tokens: 65_538, want: 587_303 * time.Microsecond},
+		{tokens: 65_538, want: 650 * time.Millisecond},
 		{tokens: 131_074, want: 1_516 * time.Millisecond},
 	} {
 		if got := tokenizerP95(test.tokens); got != test.want {
@@ -130,10 +133,31 @@ func TestTokenizerLatencyEvidenceIsChargedToTTFT(t *testing.T) {
 	profile := (scenarioSpec{}).serviceProfile()
 	state := &actualState{active: make(map[string]*activeRequest)}
 	request := request("latency-128k", 0, 131_074, 64, 64)
-	withoutTokenizer := state.evaluate(profile, false, request)
-	withTokenizer := state.evaluate(profile, true, request)
+	withoutTokenizer := state.evaluate(profile, false, request, 0)
+	withTokenizer := state.evaluate(profile, true, request, 0)
 	if delta := withTokenizer.ttft - withoutTokenizer.ttft; delta != 1_516*time.Millisecond {
 		t.Fatalf("128k tokenizer TTFT charge = %s, want 1.516s", delta)
+	}
+}
+
+func TestObservedKVGrowsWithActualDecodeProgress(t *testing.T) {
+	active := &activeRequest{
+		spec:          request("progressive", 0, 49, 100_000, 1_000),
+		admittedAt:    0,
+		terminalAt:    10_100 * time.Millisecond,
+		terminalCause: runtimepredictive.TerminalCompleted,
+		ttft:          100 * time.Millisecond,
+		tps:           100,
+	}
+	state := &actualState{active: map[string]*activeRequest{"progressive": active}}
+	if got := state.currentKV(0); got != 64 {
+		t.Fatalf("KV at admission = %d, want one rounded 49-token input block", got)
+	}
+	if got := state.currentKV(5_100 * time.Millisecond); got != 576 {
+		t.Fatalf("KV after 500 generated tokens = %d, want rounded 549-token context", got)
+	}
+	if got := state.currentKV(active.terminalAt); got != 1_088 {
+		t.Fatalf("KV at completion = %d, want rounded 1,049-token actual context", got)
 	}
 }
 

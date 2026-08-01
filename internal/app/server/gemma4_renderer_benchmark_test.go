@@ -10,6 +10,7 @@ var gemma4RendererBenchmarkBytes int
 
 func BenchmarkGemma4TextRendererLongChat(b *testing.B) {
 	renderer, err := newGemma4TextRenderer(gemma4TextRendererConfig{
+		ServedModel:          "gemma-4",
 		BOSToken:             "<bos>",
 		DefaultDecodeHorizon: 256,
 		MaximumDecodeHorizon: 131_072,

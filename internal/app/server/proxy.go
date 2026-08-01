@@ -54,12 +54,19 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	estimatorStart := time.Now()
 	classification := s.classifyRequest(r)
 	predictiveReservation := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
-		Path:            r.URL.Path,
-		Body:            classification.PredictiveBody,
-		OutputTokens:    classification.PredictiveOutputTokens,
-		HasOutputTokens: classification.PredictiveHasOutputTokens,
-		Streaming:       classification.Streaming,
+		Path:             r.URL.Path,
+		Body:             classification.PredictiveBody,
+		RequestStartedAt: requestStart,
+		OutputTokens:     classification.PredictiveOutputTokens,
+		HasOutputTokens:  classification.PredictiveHasOutputTokens,
+		Streaming:        classification.Streaming,
 	})
+	if s.cfg.PredictiveAdmissionMode == "enforce" && predictiveReservation == nil {
+		s.decisionDuration.Observe(time.Since(decisionStart))
+		s.predictiveEnforcedRejects.Add(1)
+		s.reject(w, s.globalLn, "predictive_admission")
+		return
+	}
 	predictiveCause := runtimepredictive.TerminalClientCancelled
 	if predictiveReservation != nil {
 		defer func() { predictiveReservation.Terminate(predictiveCause) }()
@@ -111,6 +118,12 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		predictiveCause = runtimepredictive.TerminalLocalQoSReject
 		s.qosGate.ObserveReject(ln, tier, "backend_priority_injection")
 		s.reject(w, ln, "backend_priority_injection")
+		return
+	}
+	if predictiveReservation != nil && !predictiveReservation.MarkForwarded() && s.cfg.PredictiveAdmissionMode == "enforce" {
+		predictiveCause = runtimepredictive.TerminalLocalQoSReject
+		s.predictiveEnforcedRejects.Add(1)
+		s.reject(w, s.globalLn, "predictive_admission")
 		return
 	}
 	s.globalLn.ObserveAccepted()

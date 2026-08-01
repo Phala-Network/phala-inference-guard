@@ -2,11 +2,26 @@ package predictive
 
 import (
 	"math"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
+
+type blockingOutcomeScheduler struct {
+	safeScheduler
+	entered  chan struct{}
+	release  chan struct{}
+	observed atomic.Uint64
+}
+
+func (s *blockingOutcomeScheduler) Observe(SchedulerPrediction, SchedulerOutcome) error {
+	close(s.entered)
+	<-s.release
+	s.observed.Add(1)
+	return nil
+}
 
 func TestLearnedSchedulerChangesAdmissionWithCurrentMetricsHeldConstant(t *testing.T) {
 	now := time.Unix(3_000, 0)
@@ -90,6 +105,9 @@ func TestManagerStoresPredictionAndLearnsFromOutcomeExactlyOnce(t *testing.T) {
 	if stored.Identity != testPredictorIdentity() || stored.PredictedAt != now {
 		t.Fatalf("admission prediction = %+v", stored)
 	}
+	if !manager.MarkForwarded("owned") {
+		t.Fatal("owned prediction was not marked forwarded before outcome")
+	}
 	outcome := healthyLearnedOutcome(stored, now.Add(time.Second))
 	if !manager.ObserveOutcome("owned", outcome) {
 		t.Fatal("first matching outcome must be learned")
@@ -105,6 +123,50 @@ func TestManagerStoresPredictionAndLearnsFromOutcomeExactlyOnce(t *testing.T) {
 	}
 	if manager.ObserveOutcome("owned", outcome) {
 		t.Fatal("completed duplicate outcome must not be learned twice")
+	}
+}
+
+func TestTerminalOutcomeCommitAndReservationReleaseAreAtomicAgainstReconciliation(t *testing.T) {
+	scheduler := &blockingOutcomeScheduler{entered: make(chan struct{}), release: make(chan struct{})}
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), scheduler)
+	result := manager.decideAndReserve(time.Unix(5_500, 0), "atomic-terminal", testRequest())
+	if result.Decision.Reason != domain.ReasonFit || !manager.MarkForwarded("atomic-terminal") {
+		t.Fatalf("atomic terminal reservation setup failed: %+v", result)
+	}
+	watermark := manager.EventSequence()
+	outcome := SchedulerOutcome{
+		Identity:   result.Prediction.Identity,
+		ObservedAt: time.Unix(5_501, 0),
+		Attributed: true,
+		Censored:   true,
+	}
+	terminated := make(chan bool, 1)
+	go func() {
+		terminated <- manager.TerminateWithOutcome("atomic-terminal", TerminalUpstreamFailure, &outcome)
+	}()
+	<-scheduler.entered
+
+	reconciled := make(chan error, 1)
+	go func() {
+		reconciled <- manager.ReconcileSample(SampleWindow{StartedSequence: watermark, FinishedSequence: watermark})
+	}()
+	select {
+	case err := <-reconciled:
+		t.Fatalf("reconciliation interleaved between outcome and terminal release: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(scheduler.release)
+	if !<-terminated {
+		t.Fatal("atomic terminal did not complete")
+	}
+	if err := <-reconciled; err != nil {
+		t.Fatalf("post-terminal reconciliation failed: %v", err)
+	}
+	if scheduler.observed.Load() != 1 {
+		t.Fatalf("atomic terminal outcomes = %d, want 1", scheduler.observed.Load())
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 {
+		t.Fatalf("atomic terminal leaked reservation: %+v", snapshot)
 	}
 }
 
@@ -130,6 +192,26 @@ func TestStaticSchedulerAppliesPrefillPenaltyToEveryPostJoinUser(t *testing.T) {
 	}
 }
 
+func TestStaticSchedulerChargesAccruedLocalAdmissionLatencyToTTFT(t *testing.T) {
+	now := time.Unix(7_000, 0)
+	profile := testLearnedProfile()
+	scheduler := mustLearnedScheduler(t, profile, testResidualConfig())
+	cost := learnedTestCost()
+	cost.AccruedLocalAdmissionLatency = 75 * time.Millisecond
+
+	prediction := scheduler.Predict(now, learnedTestState(), cost)
+	want := addDurationSaturating(
+		addDurationSaturating(profile.BaseTTFT, multiplyDurationSaturating(profile.TTFTPerUncachedPrefillToken, cost.UncachedPrefillUpper)),
+		cost.AccruedLocalAdmissionLatency,
+	)
+	if prediction.Prior.TTFTUpper != want || prediction.Estimate.TTFTUpper != want {
+		t.Fatalf("TTFT prior/estimate = %s/%s, want backend plus accrued local latency %s", prediction.Prior.TTFTUpper, prediction.Estimate.TTFTUpper, want)
+	}
+	if prediction.Features.AccruedLocalAdmissionLatency != cost.AccruedLocalAdmissionLatency {
+		t.Fatalf("scheduler accrued local latency = %s, want %s", prediction.Features.AccruedLocalAdmissionLatency, cost.AccruedLocalAdmissionLatency)
+	}
+}
+
 func TestZeroTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testing.T) {
 	now := time.Unix(8_000, 0)
 	profile := testLearnedProfile()
@@ -145,6 +227,7 @@ func TestZeroTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testi
 		DecodeHorizonUpper:       16,
 		DecodeSequencesUpper:     1,
 		ActiveContextTokensUpper: 1_016,
+		FutureContextTokensUpper: 16,
 		Confidence:               0.99,
 	})
 	if decision.Reason != domain.ReasonNewTPSAtRisk || decision.Scheduler.AllUserTPSLower != 0 {

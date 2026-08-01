@@ -54,11 +54,11 @@ func ParseSample(metricsText string) telemetry.Sample {
 		"vllm:request_time_to_first_token_seconds",
 		"sglang:time_to_first_token_seconds",
 	)
-	runningValue := firstGaugeValue(values,
+	runningValue, runningPresent := firstGaugeValueOK(values,
 		"vllm:num_requests_running",
 		"sglang:num_running_reqs",
 	)
-	waitingValue := firstGaugeValue(values,
+	waitingValue, waitingPresent := firstGaugeValueOK(values,
 		"vllm:num_requests_waiting",
 		"sglang:num_queue_reqs",
 	)
@@ -66,11 +66,27 @@ func ParseSample(metricsText string) telemetry.Sample {
 		"vllm:kv_cache_usage_perc",
 		"sglang:token_usage",
 	)
-	preemptionValue := values["vllm:num_preemptions_total"] + values["sglang:num_retracted_reqs"] + values["sglang:num_paused_reqs"]
-	generationValue := firstGaugeValue(values,
+	preemptionValue, preemptionPresent := values["vllm:num_preemptions_total"]
+	if !preemptionPresent {
+		retracted, hasRetracted := values["sglang:num_retracted_reqs"]
+		paused, hasPaused := values["sglang:num_paused_reqs"]
+		preemptionValue = retracted + paused
+		preemptionPresent = hasRetracted || hasPaused
+	}
+	running, runningValid := exactNonNegativeMetricInt(runningValue, runningPresent)
+	waiting, waitingValid := exactNonNegativeMetricInt(waitingValue, waitingPresent)
+	preemptions, preemptionsValid := exactNonNegativeMetricUint64(preemptionValue, preemptionPresent)
+	generationValue, generationValid := firstGaugeValueOK(values,
 		"vllm:generation_tokens_total",
 		"sglang:generation_tokens_total",
 	)
+	generation, generationValid := exactNonNegativeMetricUint64(generationValue, generationValid)
+	modelName, modelNameValid := parseRequiredUniqueMetricLabel(metricsText, []string{
+		"vllm:num_requests_running",
+		"vllm:num_requests_waiting",
+		"vllm:num_preemptions_total",
+		"vllm:generation_tokens_total",
+	}, "model_name")
 	_, hasVLLMGenerationCounter := values["vllm:generation_tokens_total"]
 	generationTPSValue, generationTPSDirect := values["sglang:gen_throughput"]
 	if hasVLLMGenerationCounter || !generationTPSDirect {
@@ -79,11 +95,17 @@ func ParseSample(metricsText string) telemetry.Sample {
 	}
 
 	sample := telemetry.Sample{
-		Running:             int(runningValue),
-		Waiting:             int(waitingValue),
+		ModelName:           modelName,
+		ModelNameValid:      modelNameValid,
+		Running:             running,
+		RunningValid:        runningValid,
+		Waiting:             waiting,
+		WaitingValid:        waitingValid,
 		KVCacheUsage:        kvValue,
-		Preemptions:         uint64(preemptionValue),
-		Generation:          uint64(generationValue),
+		Preemptions:         preemptions,
+		PreemptionsValid:    preemptionsValid,
+		Generation:          generation,
+		GenerationValid:     generationValid,
 		GenerationTPS:       generationTPSValue,
 		GenerationTPSDirect: generationTPSDirect,
 		TTFT:                ttft,
@@ -94,6 +116,9 @@ func ParseSample(metricsText string) telemetry.Sample {
 
 func adaptKVTokenMetrics(metricsText string, values map[string]float64, sample *telemetry.Sample) {
 	vllmCapacity, vllmCapacityOK := ParseInfoLabelFloat(metricsText, "vllm:cache_config_info", "kv_cache_size_tokens", "kv_cache_size")
+	vllmBlockSize, vllmBlockSizeOK := ParseInfoLabelFloat(metricsText, "vllm:cache_config_info", "block_size")
+	blockSize, blockSizeValid := exactNonNegativeMetricInt(vllmBlockSize, vllmBlockSizeOK)
+	blockSizeValid = blockSizeValid && blockSize > 0
 	vllmUsage, vllmUsageOK := values["vllm:kv_cache_usage_perc"]
 	if vllmCapacityOK || vllmUsageOK {
 		sample.BackendKind = "vllm"
@@ -102,6 +127,8 @@ func adaptKVTokenMetrics(metricsText string, values map[string]float64, sample *
 		capacity := int64(math.Round(vllmCapacity))
 		used := clampTokenValue(int64(math.Round(float64(capacity)*vllmUsage)), capacity)
 		sample.KVCapacityTokens = capacity
+		sample.KVBlockSize = blockSize
+		sample.KVBlockSizeValid = blockSizeValid
 		sample.KVUsedTokens = used
 		sample.KVAvailableTokens = capacity - used
 		sample.KVTokenMetricsValid = true
@@ -198,4 +225,20 @@ func finitePositive(value float64) bool {
 
 func finiteNonNegative(value float64) bool {
 	return value >= 0 && !math.IsInf(value, 0) && !math.IsNaN(value)
+}
+
+func exactNonNegativeMetricInt(value float64, present bool) (int, bool) {
+	maximum := int(^uint(0) >> 1)
+	if !present || !finiteNonNegative(value) || math.Trunc(value) != value || value > float64(maximum) {
+		return 0, false
+	}
+	return int(value), true
+}
+
+func exactNonNegativeMetricUint64(value float64, present bool) (uint64, bool) {
+	const maximumExactFloatInteger = float64(1 << 53)
+	if !present || !finiteNonNegative(value) || math.Trunc(value) != value || value > maximumExactFloatInteger {
+		return 0, false
+	}
+	return uint64(value), true
 }

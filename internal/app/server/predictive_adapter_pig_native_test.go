@@ -14,6 +14,7 @@ import (
 
 func TestRealPredictiveShadowChargesRepeatedNativePrefixesAsFullColdCost(t *testing.T) {
 	renderer, err := newGemma4TextRenderer(gemma4TextRendererConfig{
+		ServedModel:          "m",
 		BOSToken:             "<bos>",
 		DefaultDecodeHorizon: 16,
 		MaximumDecodeHorizon: 256,
@@ -80,7 +81,7 @@ func TestRealPredictiveShadowChargesRepeatedNativePrefixesAsFullColdCost(t *test
 		t.Fatalf("first uncached prefill = %d, want exact input %d", firstSnapshot.Manager.Virtual.Upper.UncachedPrefillTokens, analysis.ExactInputTokens)
 	}
 	firstReservedKV := firstSnapshot.Manager.ReservedPhysicalKV
-	if !first.MarkPrefillComplete() {
+	if !first.MarkForwarded() || !first.MarkPrefillComplete() {
 		t.Fatal("first native reservation did not enter decode")
 	}
 
@@ -122,7 +123,7 @@ func TestRealPredictiveShadowChargesRepeatedNativePrefixesAsFullColdCost(t *test
 		}
 	}()
 	protectiveFirst := protectiveAdapter.DecideAndReserve(context.Background(), "protective-first", input)
-	if protectiveFirst == nil || !protectiveFirst.MarkPrefillComplete() {
+	if protectiveFirst == nil || !protectiveFirst.MarkForwarded() || !protectiveFirst.MarkPrefillComplete() {
 		t.Fatalf("protective first request did not enter decode: attempt=%+v", protectiveAdapter.Snapshot())
 	}
 	if protectiveSecond := protectiveAdapter.DecideAndReserve(context.Background(), "protective-second", input); protectiveSecond != nil {

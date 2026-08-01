@@ -24,6 +24,7 @@ type Metrics struct {
 	FalseDenies                int   `json:"false_denies"`
 	ReservationLeaks           int   `json:"reservation_leaks"`
 	PeakProjectedKVTokens      int64 `json:"peak_projected_kv_tokens"`
+	PeakReservedKVTokens       int64 `json:"peak_reserved_kv_tokens"`
 	MinimumProjectedKVHeadroom int64 `json:"minimum_projected_kv_headroom"`
 }
 
@@ -65,6 +66,9 @@ func (s SuiteResult) Aggregate(policy PolicyName) Metrics {
 		result.ReservationLeaks += metrics.ReservationLeaks
 		if metrics.PeakProjectedKVTokens > result.PeakProjectedKVTokens {
 			result.PeakProjectedKVTokens = metrics.PeakProjectedKVTokens
+		}
+		if metrics.PeakReservedKVTokens > result.PeakReservedKVTokens {
+			result.PeakReservedKVTokens = metrics.PeakReservedKVTokens
 		}
 		if !hasHeadroom || metrics.MinimumProjectedKVHeadroom < result.MinimumProjectedKVHeadroom {
 			result.MinimumProjectedKVHeadroom = metrics.MinimumProjectedKVHeadroom

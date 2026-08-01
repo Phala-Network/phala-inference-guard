@@ -23,10 +23,13 @@ func TestCountCoordinatorChargesEveryRepeatedPrefixAsFullColdCost(t *testing.T) 
 		InputTokens:              65,
 		PhysicalKVUpper:          128,
 		ActiveKVUpper:            128,
+		FuturePhysicalKVUpper:    0,
+		FutureActiveKVUpper:      0,
 		UncachedPrefillUpper:     65,
 		DecodeHorizonUpper:       1,
 		DecodeSequencesUpper:     1,
 		ActiveContextTokensUpper: 66,
+		FutureContextTokensUpper: 1,
 		Confidence:               0.99,
 	}
 	if first.Cost != wantCost {
@@ -116,11 +119,13 @@ func TestCountCoordinatorRejectsIdentityAndProposalErrorsWithoutMutation(t *test
 		{name: "wrong epoch", proposal: countTestProposal("epoch", 5, 5), want: domain.ReasonTokenizerProfileUnknown},
 		{name: "empty request id", proposal: countTestProposal("", 5, 5), want: domain.ReasonPredictorProfileUnknown},
 		{name: "negative horizon", proposal: countTestProposal("horizon", 5, -1), want: domain.ReasonPredictorProfileUnknown},
+		{name: "negative accrued local latency", proposal: countTestProposal("local-latency", 5, 5), want: domain.ReasonPredictorProfileUnknown},
 		{name: "invalid confidence", proposal: countTestProposal("confidence", 5, 5), want: domain.ReasonPredictorProfileUnknown},
 	}
 	tests[0].proposal.Analysis.ManifestID = "other"
 	tests[1].proposal.Analysis.BackendEpoch = "other"
-	tests[4].proposal.Confidence = 0
+	tests[4].proposal.AccruedLocalAdmissionLatency = -time.Nanosecond
+	tests[5].proposal.Confidence = 0
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			result := coordinator.DecideAndReserve(time.Unix(0, 0), test.proposal)
@@ -185,6 +190,9 @@ func TestCountCoordinatorConsumesLearnedResidualBeforeForwardWithStateHeldConsta
 		result := training.DecideAndReserve(now.Add(time.Duration(index)*time.Second), proposal)
 		if !result.Reserved || result.Decision.Reason != domain.ReasonFit {
 			t.Fatalf("training admission %d = %+v", index, result)
+		}
+		if !training.MarkForwarded(requestID) {
+			t.Fatalf("mark training request %d forwarded", index)
 		}
 		outcome := healthyLearnedOutcome(result.Prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
 		if !training.ObserveOutcome(requestID, outcome) {

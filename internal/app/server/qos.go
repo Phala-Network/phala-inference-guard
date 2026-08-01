@@ -11,6 +11,9 @@ import (
 )
 
 func (s *proxyServer) currentQoSLimit() (limit int, dynamic bool, rejectCode string) {
+	if s.cfg.PredictiveAdmissionMode == "enforce" {
+		return s.globalLn.Limit(), false, ""
+	}
 	if s.cfg.DynamicEnabled && s.cfg.DynamicEnforce {
 		limit := 0
 		if s.dynamicController != nil {

@@ -34,15 +34,25 @@ type predictiveUpstreamState interface {
 
 type predictiveAdmissionCoordinator interface {
 	DecideAndReserve(time.Time, runtimepredictive.CountAdmissionProposal) runtimepredictive.CountAdmissionResult
+	MarkForwarded(string) bool
 	MarkPrefillComplete(string) bool
 	Terminate(string, runtimepredictive.TerminalCause) bool
-	ObserveOutcome(string, runtimepredictive.SchedulerOutcome) bool
+	TerminateWithOutcome(string, runtimepredictive.TerminalCause, *runtimepredictive.SchedulerOutcome) bool
+}
+
+type predictiveCoordinatorSnapshotter interface {
+	Snapshot() runtimepredictive.CountCoordinatorSnapshot
+}
+
+type predictiveLearningSnapshotter interface {
+	Snapshot() runtimepredictive.LearnedSchedulerSnapshot
 }
 
 type realPredictiveShadowConfig struct {
 	Renderer    predictiveRequestRenderer
 	Counter     predictiveTokenCounter
 	Coordinator predictiveAdmissionCoordinator
+	Learner     predictiveLearningSnapshotter
 	Upstream    predictiveUpstreamState
 	Now         func() time.Time
 }
@@ -58,15 +68,19 @@ type predictiveAttemptSnapshot struct {
 }
 
 type realPredictiveShadow struct {
-	mu           sync.Mutex
-	renderer     predictiveRequestRenderer
-	counter      predictiveTokenCounter
-	coordinator  predictiveAdmissionCoordinator
-	upstream     predictiveUpstreamState
-	now          func() time.Time
-	closed       bool
-	attempts     predictiveAttemptSnapshot
-	reservations map[string]struct{}
+	mu                 sync.Mutex
+	renderer           predictiveRequestRenderer
+	counter            predictiveTokenCounter
+	coordinator        predictiveAdmissionCoordinator
+	learner            predictiveLearningSnapshotter
+	upstream           predictiveUpstreamState
+	now                func() time.Time
+	closed             bool
+	attempts           predictiveAttemptSnapshot
+	reservations       map[string]struct{}
+	predictionDuration durationHistogram
+	rendererDuration   durationHistogram
+	tokenizerDuration  durationHistogram
 }
 
 type realPredictiveReservation struct {
@@ -75,6 +89,7 @@ type realPredictiveReservation struct {
 	identity          runtimepredictive.ModelIdentity
 	semanticTTFT      time.Duration
 	semanticTTFTValid bool
+	forwarded         bool
 }
 
 func newRealPredictiveShadow(config realPredictiveShadowConfig) (*realPredictiveShadow, error) {
@@ -91,18 +106,28 @@ func newRealPredictiveShadow(config realPredictiveShadowConfig) (*realPredictive
 		config.Now = time.Now
 	}
 	return &realPredictiveShadow{
-		renderer:     config.Renderer,
-		counter:      config.Counter,
-		coordinator:  config.Coordinator,
-		upstream:     config.Upstream,
-		now:          config.Now,
-		reservations: make(map[string]struct{}),
+		renderer:           config.Renderer,
+		counter:            config.Counter,
+		coordinator:        config.Coordinator,
+		learner:            config.Learner,
+		upstream:           config.Upstream,
+		now:                config.Now,
+		reservations:       make(map[string]struct{}),
+		predictionDuration: newDurationHistogram(),
+		rendererDuration:   newDurationHistogram(),
+		tokenizerDuration:  newDurationHistogram(),
 	}, nil
 }
 
 func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID string, input predictiveShadowInput) predictiveShadowReservation {
 	if s == nil || requestID == "" {
 		return nil
+	}
+	predictionStarted := time.Now()
+	defer func() { s.predictionDuration.Observe(time.Since(predictionStarted)) }()
+	admissionStarted := input.RequestStartedAt
+	if admissionStarted.IsZero() {
+		admissionStarted = predictionStarted
 	}
 	if err := ctx.Err(); err != nil {
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
@@ -120,7 +145,9 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		return nil
 	}
 
+	rendererStarted := time.Now()
 	rendered, err := s.renderer.Render(ctx, input)
+	s.rendererDuration.Observe(time.Since(rendererStarted))
 	if rendered.Rendered != nil {
 		defer clear(rendered.Rendered)
 	}
@@ -132,7 +159,9 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
 		return nil
 	}
+	tokenizerStarted := time.Now()
 	analysis, err := s.counter.Count(ctx, rendered.Class, rendered.Rendered)
+	s.tokenizerDuration.Observe(time.Since(tokenizerStarted))
 	if err != nil {
 		s.recordUnknown(domainpredictive.ReasonTokenizerProfileUnknown)
 		return nil
@@ -148,10 +177,11 @@ func (s *realPredictiveShadow) DecideAndReserve(ctx context.Context, requestID s
 	}
 
 	result := s.coordinator.DecideAndReserve(decisionTime, runtimepredictive.CountAdmissionProposal{
-		RequestID:          requestID,
-		Analysis:           analysis,
-		DecodeHorizonUpper: rendered.DecodeHorizonUpper,
-		Confidence:         rendered.Confidence,
+		RequestID:                    requestID,
+		Analysis:                     analysis,
+		DecodeHorizonUpper:           rendered.DecodeHorizonUpper,
+		AccruedLocalAdmissionLatency: time.Since(admissionStarted),
+		Confidence:                   rendered.Confidence,
 	})
 	s.mu.Lock()
 	if s.closed {
@@ -185,6 +215,28 @@ func (s *realPredictiveShadow) Snapshot() predictiveAttemptSnapshot {
 	return s.attempts
 }
 
+func (s *realPredictiveShadow) PredictiveAdmissionTelemetry() predictiveAdmissionTelemetrySnapshot {
+	if s == nil {
+		return predictiveAdmissionTelemetrySnapshot{}
+	}
+	s.mu.Lock()
+	attempts := s.attempts
+	s.mu.Unlock()
+	telemetry := predictiveAdmissionTelemetrySnapshot{
+		Attempts:           attempts,
+		PredictionDuration: &s.predictionDuration,
+		RendererDuration:   &s.rendererDuration,
+		TokenizerDuration:  &s.tokenizerDuration,
+	}
+	if coordinator, ok := s.coordinator.(predictiveCoordinatorSnapshotter); ok {
+		telemetry.Manager = coordinator.Snapshot().Manager
+	}
+	if s.learner != nil {
+		telemetry.Learning = s.learner.Snapshot()
+	}
+	return telemetry
+}
+
 func (s *realPredictiveShadow) Close() error {
 	if s == nil {
 		return nil
@@ -209,6 +261,25 @@ func (s *realPredictiveShadow) Close() error {
 	}
 	closeErrors = append(closeErrors, counter.Close())
 	return errors.Join(closeErrors...)
+}
+
+func (r *realPredictiveReservation) MarkForwarded() bool {
+	if r == nil || r.owner == nil {
+		return false
+	}
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	if r.owner.closed {
+		return false
+	}
+	if _, exists := r.owner.reservations[r.requestID]; !exists {
+		return false
+	}
+	if !r.owner.coordinator.MarkForwarded(r.requestID) {
+		return false
+	}
+	r.forwarded = true
+	return true
 }
 
 func (r *realPredictiveReservation) MarkPrefillComplete() bool {
@@ -252,17 +323,25 @@ func (r *realPredictiveReservation) Terminate(cause runtimepredictive.TerminalCa
 	if _, exists := r.owner.reservations[r.requestID]; !exists {
 		return false
 	}
-	if !r.owner.coordinator.Terminate(r.requestID, cause) {
-		return false
-	}
+	var outcome *runtimepredictive.SchedulerOutcome
 	if cause == runtimepredictive.TerminalCompleted && r.semanticTTFTValid {
-		r.owner.coordinator.ObserveOutcome(r.requestID, runtimepredictive.SchedulerOutcome{
+		outcome = &runtimepredictive.SchedulerOutcome{
 			Identity:   r.identity,
 			ObservedAt: r.owner.now(),
 			Attributed: true,
 			TTFT:       r.semanticTTFT,
 			TTFTValid:  true,
-		})
+		}
+	} else if r.forwarded {
+		outcome = &runtimepredictive.SchedulerOutcome{
+			Identity:   r.identity,
+			ObservedAt: r.owner.now(),
+			Attributed: true,
+			Censored:   true,
+		}
+	}
+	if !r.owner.coordinator.TerminateWithOutcome(r.requestID, cause, outcome) {
+		return false
 	}
 	delete(r.owner.reservations, r.requestID)
 	return true

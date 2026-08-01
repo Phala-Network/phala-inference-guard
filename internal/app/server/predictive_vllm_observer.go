@@ -16,7 +16,9 @@ import (
 
 type predictiveVLLMObserverConfig struct {
 	MetricsURL         string
+	ServedModel        string
 	MaximumKVTokens    int64
+	BlockSize          int
 	PollInterval       time.Duration
 	MaximumAge         time.Duration
 	RequestTimeout     time.Duration
@@ -26,15 +28,21 @@ type predictiveVLLMObserverConfig struct {
 }
 
 type predictiveSampleCoordinator interface {
-	StartSampleWindow() (uint64, domainpredictive.VirtualState)
+	StartSampleWindow() uint64
 	EventSequence() uint64
 	ReconcileSample(runtimepredictive.SampleWindow) error
+}
+
+type predictiveLearningInvalidator interface {
+	InvalidateLearning()
 }
 
 type predictiveVLLMObserver struct {
 	mu                 sync.Mutex
 	metricsURL         string
+	servedModel        string
 	maximumKVTokens    int64
+	blockSize          int
 	pollInterval       time.Duration
 	maximumAge         time.Duration
 	preemptionCooldown time.Duration
@@ -49,6 +57,8 @@ type predictiveVLLMObserver struct {
 	lastPreemption     time.Time
 	preemptions        uint64
 	hasPreemptions     bool
+	generation         uint64
+	hasGeneration      bool
 }
 
 func newPredictiveVLLMObserver(config predictiveVLLMObserverConfig) (*predictiveVLLMObserver, error) {
@@ -56,7 +66,7 @@ func newPredictiveVLLMObserver(config predictiveVLLMObserverConfig) (*predictive
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, fmt.Errorf("predictive vLLM metrics URL is invalid")
 	}
-	if config.MaximumKVTokens <= 0 || config.PollInterval <= 0 || config.MaximumAge < config.PollInterval || config.RequestTimeout <= 0 || config.PreemptionCooldown < 0 || config.Coordinator == nil {
+	if strings.TrimSpace(config.ServedModel) == "" || config.MaximumKVTokens <= 0 || config.BlockSize <= 0 || config.PollInterval <= 0 || config.MaximumAge < config.PollInterval || config.RequestTimeout <= 0 || config.PreemptionCooldown < 0 || config.Coordinator == nil {
 		return nil, fmt.Errorf("predictive vLLM observer configuration is invalid")
 	}
 	if config.Now == nil {
@@ -65,7 +75,9 @@ func newPredictiveVLLMObserver(config predictiveVLLMObserverConfig) (*predictive
 	ctx, cancel := context.WithCancel(context.Background())
 	observer := &predictiveVLLMObserver{
 		metricsURL:         config.MetricsURL,
+		servedModel:        config.ServedModel,
 		maximumKVTokens:    config.MaximumKVTokens,
+		blockSize:          config.BlockSize,
 		pollInterval:       config.PollInterval,
 		maximumAge:         config.MaximumAge,
 		preemptionCooldown: config.PreemptionCooldown,
@@ -131,37 +143,56 @@ func (o *predictiveVLLMObserver) run(ctx context.Context) {
 }
 
 func (o *predictiveVLLMObserver) poll(ctx context.Context) {
-	started, virtualAtStart := o.coordinator.StartSampleWindow()
+	started := o.coordinator.StartSampleWindow()
 	sample, err := prometheus.FetchSampleContext(ctx, o.client, o.metricsURL)
 	finished := o.coordinator.EventSequence()
 	now := o.now()
 	maximumInt := int(^uint(0) >> 1)
-	if err != nil || sample.BackendKind != "vllm" || !sample.KVTokenMetricsValid || sample.KVCapacityTokens != o.maximumKVTokens || sample.KVUsedTokens < 0 || sample.KVUsedTokens > o.maximumKVTokens || sample.Running < 0 || sample.Waiting < 0 || sample.Running > maximumInt-sample.Waiting {
+	if err != nil {
+		return
+	}
+	if sample.BackendKind != "vllm" || !sample.ModelNameValid || sample.ModelName != o.servedModel || !sample.KVTokenMetricsValid || sample.KVCapacityTokens != o.maximumKVTokens || !sample.KVBlockSizeValid || sample.KVBlockSize != o.blockSize || sample.KVUsedTokens < 0 || sample.KVUsedTokens > o.maximumKVTokens || !sample.RunningValid || !sample.WaitingValid || !sample.PreemptionsValid || sample.Running < 0 || sample.Waiting < 0 || sample.Running > maximumInt-sample.Waiting {
+		o.rejectObservedIdentity()
+		return
+	}
+	if !sample.GenerationValid {
+		o.rejectObservedIdentity()
 		return
 	}
 	o.mu.Lock()
-	if o.hasPreemptions && sample.Preemptions < o.preemptions {
+	epochReset := (o.hasPreemptions && sample.Preemptions < o.preemptions) ||
+		(o.hasGeneration && sample.Generation < o.generation)
+	if epochReset {
 		o.preemptions = sample.Preemptions
+		o.hasPreemptions = true
+		o.generation = sample.Generation
+		o.hasGeneration = true
 		o.lastSuccess = time.Time{}
 		o.lastPreemption = time.Time{}
 		o.mu.Unlock()
+		o.invalidateLearning()
 		return
 	}
 	preempted := o.hasPreemptions && sample.Preemptions > o.preemptions
 	o.preemptions = sample.Preemptions
 	o.hasPreemptions = true
+	o.generation = sample.Generation
+	o.hasGeneration = true
 	if preempted {
 		o.lastSuccess = time.Time{}
 		o.lastPreemption = now
 	}
 	o.mu.Unlock()
+	if preempted {
+		o.invalidateLearning()
+	}
 	err = o.coordinator.ReconcileSample(runtimepredictive.SampleWindow{
 		Observed: domainpredictive.VirtualState{
 			PhysicalKVUpper:       sample.KVUsedTokens,
 			ActiveKVUpper:         sample.KVUsedTokens,
 			DecodeSequences:       sample.Running + sample.Waiting,
 			ActiveContextTokens:   sample.KVUsedTokens,
-			UncachedPrefillTokens: virtualAtStart.UncachedPrefillTokens,
+			UncachedPrefillTokens: 0,
 		},
 		StartedSequence:  started,
 		FinishedSequence: finished,
@@ -175,6 +206,27 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 		return
 	}
 	o.lastSuccess = now
+}
+
+func (o *predictiveVLLMObserver) rejectObservedIdentity() {
+	o.mu.Lock()
+	hadAuthorizedState := o.hasGeneration || o.hasPreemptions || !o.lastSuccess.IsZero()
+	o.hasGeneration = false
+	o.generation = 0
+	o.hasPreemptions = false
+	o.preemptions = 0
+	o.lastSuccess = time.Time{}
+	o.lastPreemption = time.Time{}
+	o.mu.Unlock()
+	if hadAuthorizedState {
+		o.invalidateLearning()
+	}
+}
+
+func (o *predictiveVLLMObserver) invalidateLearning() {
+	if invalidator, ok := o.coordinator.(predictiveLearningInvalidator); ok {
+		invalidator.InvalidateLearning()
+	}
 }
 
 func predictiveVLLMMetricsURL(cfg config) (string, error) {

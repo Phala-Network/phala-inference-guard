@@ -52,10 +52,10 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFi
 	r.Body = readCloser{Reader: bytes.NewReader(body), Closer: originalBody}
 	r.ContentLength = originalContentLength
 	fields := c.cfg.OutputTokenFields
-	if c.cfg.PredictiveAdmissionMode == "shadow" && len(fields) == 0 {
+	if predictiveAdmissionEnabled(c.cfg.PredictiveAdmissionMode) && len(fields) == 0 {
 		fields = []string{"max_tokens", "max_completion_tokens", "max_output_tokens"}
 	}
-	if !c.cfg.ClassifyOutputTokens && c.cfg.KVAdmissionMode != "shadow" && c.cfg.PredictiveAdmissionMode != "shadow" {
+	if !c.cfg.ClassifyOutputTokens && c.cfg.KVAdmissionMode != "shadow" && !predictiveAdmissionEnabled(c.cfg.PredictiveAdmissionMode) {
 		fields = nil
 	}
 	parsed, ok := tokenclassifier.ParseJSONFields(body, fields)
@@ -70,7 +70,7 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFi
 		}
 	}
 	var predictiveBody []byte
-	if c.cfg.PredictiveAdmissionMode == "shadow" {
+	if predictiveAdmissionEnabled(c.cfg.PredictiveAdmissionMode) {
 		predictiveBody = append([]byte(nil), body...)
 	}
 	return parsed, cost, predictiveBody, ok

@@ -39,6 +39,16 @@ func (r *failureInjectingPredictiveReservation) MarkPrefillComplete() bool {
 	return true
 }
 
+func (r *failureInjectingPredictiveReservation) MarkForwarded() bool {
+	if r.phase == "forward" {
+		panic("injected predictive forward panic")
+	}
+	if r.phase == "forward_false" {
+		return false
+	}
+	return true
+}
+
 func (r *failureInjectingPredictiveReservation) Terminate(runtimepredictive.TerminalCause) bool {
 	if r.phase == "terminal" {
 		panic("injected predictive terminal panic")
@@ -57,6 +67,133 @@ func TestPredictiveShadowDecidePanicDoesNotChangeResponse(t *testing.T) {
 	recorder := servePredictiveFailureRequest(srv, false)
 	if recorder.Code != http.StatusOK || recorder.Body.String() != `{"id":"ok"}` || recorder.Header().Get("X-Upstream-Proof") != "same" {
 		t.Fatalf("decide panic changed response: status=%d headers=%v body=%q", recorder.Code, recorder.Header(), recorder.Body.String())
+	}
+}
+
+func TestPredictiveEnforceDecidePanicFailsClosedBeforeUpstream(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalls++
+		_, _ = w.Write([]byte(`{"id":"must-not-run"}`))
+	}))
+	defer backend.Close()
+
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) {
+			return &failureInjectingPredictiveShadow{phase: "decide"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	recorder := servePredictiveFailureRequest(srv, false)
+	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("enforce panic response/backend = %d/%d, want 429/0", recorder.Code, backendCalls)
+	}
+	if got := srv.predictiveShadowFailures.decide.Load(); got != 1 {
+		t.Fatalf("predictive decide failures = %d, want 1", got)
+	}
+	if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
+		t.Fatalf("predictive enforced rejects = %d, want 1", got)
+	}
+}
+
+func TestPredictiveEnforceForwardCommitPanicFailsClosedBeforeUpstream(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalls++
+		_, _ = w.Write([]byte(`{"id":"must-not-run"}`))
+	}))
+	defer backend.Close()
+
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) {
+			return &failureInjectingPredictiveShadow{phase: "forward"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	recorder := servePredictiveFailureRequest(srv, false)
+	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("enforce forward panic response/backend = %d/%d, want 429/0", recorder.Code, backendCalls)
+	}
+	if got := srv.predictiveShadowFailures.semantic.Load(); got != 0 {
+		t.Fatalf("predictive semantic failures = %d, want 0 for a forward-commit panic", got)
+	}
+	var metrics strings.Builder
+	srv.writeLocalMetrics(&metrics)
+	if !strings.Contains(metrics.String(), `pig_predictive_admission_failures_total{phase="forward"} 1`) {
+		t.Fatalf("predictive metrics do not classify the commit panic as forward: %s", metrics.String())
+	}
+	if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
+		t.Fatalf("predictive enforced rejects = %d, want 1", got)
+	}
+}
+
+func TestPredictiveEnforceForwardCommitFalseFailsClosedBeforeUpstream(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalls++
+		_, _ = w.Write([]byte(`{"id":"must-not-run"}`))
+	}))
+	defer backend.Close()
+
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) {
+			return &failureInjectingPredictiveShadow{phase: "forward_false"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	recorder := servePredictiveFailureRequest(srv, false)
+	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("enforce false forward response/backend = %d/%d, want 429/0", recorder.Code, backendCalls)
+	}
+	if got := srv.predictiveShadowFailures.semantic.Load(); got != 0 {
+		t.Fatalf("predictive semantic failures = %d, want 0", got)
+	}
+	if got := srv.predictiveShadowFailures.forward.Load(); got != 0 {
+		t.Fatalf("predictive forward panic failures = %d, want 0 for a false return", got)
+	}
+	if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
+		t.Fatalf("predictive enforced rejects = %d, want 1", got)
+	}
+}
+
+func TestPredictiveShadowForwardCommitFailureDoesNotChangeResponse(t *testing.T) {
+	for _, phase := range []string{"forward", "forward_false"} {
+		t.Run(phase, func(t *testing.T) {
+			backendCalls := 0
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				backendCalls++
+				_, _ = w.Write([]byte(`{"id":"ok"}`))
+			}))
+			defer backend.Close()
+
+			srv := newFailureInjectingShadowServer(t, backend.URL, &failureInjectingPredictiveShadow{phase: phase})
+			recorder := servePredictiveFailureRequest(srv, false)
+			if recorder.Code != http.StatusOK || recorder.Body.String() != `{"id":"ok"}` || backendCalls != 1 {
+				t.Fatalf("forward failure changed response/backend: status=%d body=%q backend=%d", recorder.Code, recorder.Body.String(), backendCalls)
+			}
+			wantFailures := uint64(0)
+			if phase == "forward" {
+				wantFailures = 1
+			}
+			if got := srv.predictiveShadowFailures.forward.Load(); got != wantFailures {
+				t.Fatalf("predictive forward panic failures = %d, want %d", got, wantFailures)
+			}
+			if got := srv.predictiveShadowFailures.semantic.Load(); got != 0 {
+				t.Fatalf("predictive semantic failures = %d, want 0", got)
+			}
+		})
 	}
 }
 

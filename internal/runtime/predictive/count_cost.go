@@ -2,32 +2,38 @@ package predictive
 
 import (
 	"math"
+	"time"
 
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 type CountAdmissionProposal struct {
-	RequestID          string
-	Analysis           TokenCountAnalysis
-	DecodeHorizonUpper int64
-	Confidence         float64
+	RequestID                    string
+	Analysis                     TokenCountAnalysis
+	DecodeHorizonUpper           int64
+	AccruedLocalAdmissionLatency time.Duration
+	Confidence                   float64
 }
 
 type CountRequestCost struct {
-	ManifestID               string
-	BackendEpoch             string
-	InputTokens              int64
-	PhysicalKVUpper          int64
-	ActiveKVUpper            int64
-	UncachedPrefillUpper     int64
-	DecodeHorizonUpper       int64
-	DecodeSequencesUpper     int
-	ActiveContextTokensUpper int64
-	Confidence               float64
+	ManifestID                   string
+	BackendEpoch                 string
+	InputTokens                  int64
+	AccruedLocalAdmissionLatency time.Duration
+	PhysicalKVUpper              int64
+	ActiveKVUpper                int64
+	FuturePhysicalKVUpper        int64
+	FutureActiveKVUpper          int64
+	UncachedPrefillUpper         int64
+	DecodeHorizonUpper           int64
+	DecodeSequencesUpper         int
+	ActiveContextTokensUpper     int64
+	FutureContextTokensUpper     int64
+	Confidence                   float64
 }
 
 func buildCountRequestCost(identity CoordinatorIdentity, modelMaximumLength int64, proposal CountAdmissionProposal) (CountRequestCost, domain.Reason) {
-	if proposal.RequestID == "" || proposal.DecodeHorizonUpper < 0 || !positiveFinite(proposal.Confidence) || proposal.Confidence > 1 {
+	if proposal.RequestID == "" || proposal.DecodeHorizonUpper < 0 || proposal.AccruedLocalAdmissionLatency < 0 || !positiveFinite(proposal.Confidence) || proposal.Confidence > 1 {
 		return CountRequestCost{}, domain.ReasonPredictorProfileUnknown
 	}
 	if err := proposal.Analysis.Validate(identity.ManifestID, identity.BackendEpoch); err != nil {
@@ -44,32 +50,47 @@ func buildCountRequestCost(identity CoordinatorIdentity, modelMaximumLength int6
 	if !ok {
 		return CountRequestCost{}, domain.ReasonPredictorProfileUnknown
 	}
+	inputKVUpper, ok := roundUpCountCost(proposal.Analysis.ExactInputTokens, int64(identity.BlockSize))
+	if !ok || inputKVUpper > kvUpper {
+		return CountRequestCost{}, domain.ReasonPredictorProfileUnknown
+	}
+	futureKVUpper := kvUpper - inputKVUpper
 	return CountRequestCost{
-		ManifestID:               identity.ManifestID,
-		BackendEpoch:             identity.BackendEpoch,
-		InputTokens:              proposal.Analysis.ExactInputTokens,
-		PhysicalKVUpper:          kvUpper,
-		ActiveKVUpper:            kvUpper,
-		UncachedPrefillUpper:     proposal.Analysis.ExactInputTokens,
-		DecodeHorizonUpper:       proposal.DecodeHorizonUpper,
-		DecodeSequencesUpper:     1,
-		ActiveContextTokensUpper: activeContext,
-		Confidence:               proposal.Confidence,
+		ManifestID:                   identity.ManifestID,
+		BackendEpoch:                 identity.BackendEpoch,
+		InputTokens:                  proposal.Analysis.ExactInputTokens,
+		AccruedLocalAdmissionLatency: proposal.AccruedLocalAdmissionLatency,
+		PhysicalKVUpper:              kvUpper,
+		ActiveKVUpper:                kvUpper,
+		FuturePhysicalKVUpper:        futureKVUpper,
+		FutureActiveKVUpper:          futureKVUpper,
+		UncachedPrefillUpper:         proposal.Analysis.ExactInputTokens,
+		DecodeHorizonUpper:           proposal.DecodeHorizonUpper,
+		DecodeSequencesUpper:         1,
+		ActiveContextTokensUpper:     activeContext,
+		FutureContextTokensUpper:     proposal.DecodeHorizonUpper,
+		Confidence:                   proposal.Confidence,
 	}, domain.ReasonFit
 }
 
 func (c CountRequestCost) managerCost() domain.RequestCost {
 	return domain.RequestCost{
-		ManifestID:  c.ManifestID,
-		InputTokens: c.InputTokens,
+		ManifestID:                   c.ManifestID,
+		InputTokens:                  c.InputTokens,
+		AccruedLocalAdmissionLatency: c.AccruedLocalAdmissionLatency,
 		KV: domain.KVIncrement{
 			PhysicalKVUpper: c.PhysicalKVUpper,
 			ActiveKVUpper:   c.ActiveKVUpper,
+		},
+		FutureKV: domain.KVIncrement{
+			PhysicalKVUpper: c.FuturePhysicalKVUpper,
+			ActiveKVUpper:   c.FutureActiveKVUpper,
 		},
 		UncachedPrefillUpper:     c.UncachedPrefillUpper,
 		DecodeHorizonUpper:       c.DecodeHorizonUpper,
 		DecodeSequencesUpper:     c.DecodeSequencesUpper,
 		ActiveContextTokensUpper: c.ActiveContextTokensUpper,
+		FutureContextTokensUpper: c.FutureContextTokensUpper,
 		Confidence:               c.Confidence,
 	}
 }

@@ -24,9 +24,44 @@ type recordingPredictiveShadow struct {
 
 type recordingPredictiveReservation struct {
 	mu           sync.Mutex
+	forwarded    int
 	semantic     int
 	semanticTTFT []time.Duration
 	causes       []runtimepredictive.TerminalCause
+}
+
+type rejectingPredictiveAdmission struct {
+	mu     sync.Mutex
+	calls  int
+	inputs []predictiveShadowInput
+}
+
+func (a *rejectingPredictiveAdmission) DecideAndReserve(_ context.Context, _ string, input predictiveShadowInput) predictiveShadowReservation {
+	a.mu.Lock()
+	a.calls++
+	owned := input
+	owned.Body = append([]byte(nil), input.Body...)
+	a.inputs = append(a.inputs, owned)
+	a.mu.Unlock()
+	return nil
+}
+
+func (a *rejectingPredictiveAdmission) Close() error { return nil }
+
+func (a *rejectingPredictiveAdmission) Snapshot() (int, predictiveShadowInput) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.inputs) == 0 {
+		return a.calls, predictiveShadowInput{}
+	}
+	return a.calls, a.inputs[len(a.inputs)-1]
+}
+
+func (r *recordingPredictiveReservation) MarkForwarded() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.forwarded++
+	return r.forwarded == 1
 }
 
 func (s *recordingPredictiveShadow) DecideAndReserve(_ context.Context, _ string, input predictiveShadowInput) predictiveShadowReservation {
@@ -104,38 +139,55 @@ func (s *recordingPredictiveShadow) semanticTTFTSnapshot(t *testing.T) []time.Du
 	return append([]time.Duration(nil), request.semanticTTFT...)
 }
 
+func (s *recordingPredictiveShadow) forwardedSnapshot(t *testing.T) int {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.requests) != 1 {
+		t.Fatalf("predictive requests = %d, want 1", len(s.requests))
+	}
+	request := s.requests[0]
+	request.mu.Lock()
+	defer request.mu.Unlock()
+	return request.forwarded
+}
+
 func TestPredictiveAdmissionOffConstructsAndRunsNoShadow(t *testing.T) {
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"ok"}`))
-	}))
-	defer backend.Close()
-	constructed := 0
-	cfg := testProxyConfig(backend.URL)
-	cfg.PredictiveAdmissionMode = "off"
-	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
-		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) {
-			constructed++
-			return nil, fmt.Errorf("off mode factory must not run")
-		},
-	})
-	if err != nil {
-		t.Fatalf("new off server: %v", err)
-	}
-	if constructed != 0 || srv.predictiveShadow != nil {
-		t.Fatalf("off mode constructed predictive work: constructed=%d shadow=%T", constructed, srv.predictiveShadow)
-	}
-	body := `{"model":"m","messages":[{"role":"user","content":"hello"}]}`
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
-	request.Header.Set("Authorization", "Bearer secret")
-	request.Header.Set("Content-Type", "application/json")
-	classification := srv.classifyRequest(request)
-	if classification.PredictiveBody != nil {
-		t.Fatalf("off mode retained %d predictive body bytes", len(classification.PredictiveBody))
-	}
-	recorder := httptest.NewRecorder()
-	srv.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || constructed != 0 {
-		t.Fatalf("off response/construction = %d/%d, want 200/0", recorder.Code, constructed)
+	for _, mode := range []string{"", "off"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte(`{"id":"ok"}`))
+			}))
+			defer backend.Close()
+			constructed := 0
+			cfg := testProxyConfig(backend.URL)
+			cfg.PredictiveAdmissionMode = mode
+			srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+				NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) {
+					constructed++
+					return nil, fmt.Errorf("disabled mode factory must not run")
+				},
+			})
+			if err != nil {
+				t.Fatalf("new disabled server: %v", err)
+			}
+			if constructed != 0 || srv.predictiveShadow != nil {
+				t.Fatalf("disabled mode constructed predictive work: constructed=%d shadow=%T", constructed, srv.predictiveShadow)
+			}
+			body := `{"model":"m","messages":[{"role":"user","content":"hello"}]}`
+			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+			request.Header.Set("Authorization", "Bearer secret")
+			request.Header.Set("Content-Type", "application/json")
+			classification := srv.classifyRequest(request)
+			if classification.PredictiveBody != nil {
+				t.Fatalf("disabled mode retained %d predictive body bytes", len(classification.PredictiveBody))
+			}
+			recorder := httptest.NewRecorder()
+			srv.ServeHTTP(recorder, request)
+			if recorder.Code != http.StatusOK || constructed != 0 {
+				t.Fatalf("disabled response/construction = %d/%d, want 200/0", recorder.Code, constructed)
+			}
+		})
 	}
 }
 
@@ -200,6 +252,240 @@ func TestPredictiveShadowPreservesUpstreamAndClientBytes(t *testing.T) {
 	if semantic != 0 || len(causes) != 1 || causes[0] != runtimepredictive.TerminalCompleted {
 		t.Fatalf("non-stream lifecycle semantic/causes = %d/%v", semantic, causes)
 	}
+	if forwarded := shadow.shadow.forwardedSnapshot(t); forwarded != 1 {
+		t.Fatalf("non-stream forward lifecycle = %d, want 1", forwarded)
+	}
+}
+
+func TestPredictiveEnforceRejectsRiskBeforeAnyUpstreamAction(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		_, _ = w.Write([]byte(`{"id":"must-not-run"}`))
+	}))
+	defer backend.Close()
+	admission := &rejectingPredictiveAdmission{}
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return admission, nil },
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	defer srv.Close()
+	body := `{"model":"m","messages":[{"role":"user","content":"protect before upstream"}],"max_tokens":64}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests {
+		t.Fatalf("enforcing risk status = %d body=%q, want 429", recorder.Code, recorder.Body.String())
+	}
+	if backendCalls != 0 {
+		t.Fatalf("enforcing risk reached upstream %d times", backendCalls)
+	}
+	if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
+		t.Fatalf("predictive enforced rejects = %d, want 1", got)
+	}
+	if got := srv.total429.Load(); got != 1 {
+		t.Fatalf("total 429 = %d, want 1", got)
+	}
+	calls, input := admission.Snapshot()
+	if calls != 1 || string(input.Body) != body || input.Path != "/v1/chat/completions" || input.OutputTokens != 64 || !input.HasOutputTokens {
+		t.Fatalf("enforcing prediction calls/input = %d/%+v", calls, input)
+	}
+}
+
+func TestPredictiveEnforceRejectsUnscannableBodyBeforeAnyUpstreamAction(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		_, _ = w.Write([]byte(`{"id":"must-not-run"}`))
+	}))
+	defer backend.Close()
+	admission := &rejectingPredictiveAdmission{}
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	cfg.JSONClassifyBodyBytes = 8
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return admission, nil },
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	body := `{"model":"m","messages":[{"role":"user","content":"larger than the predictive classifier limit"}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("unscannable enforce response/backend = %d/%d, want 429/0", recorder.Code, backendCalls)
+	}
+	if calls, _ := admission.Snapshot(); calls != 0 {
+		t.Fatalf("unscannable body invoked predictor %d times, want 0", calls)
+	}
+	if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
+		t.Fatalf("predictive enforced rejects = %d, want 1", got)
+	}
+}
+
+func TestPredictiveEnforceFitForwardsAndTerminatesExactlyOnce(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer backend.Close()
+	admission := &recordingPredictiveShadow{}
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return admission, nil },
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	body := `{"model":"m","messages":[{"role":"user","content":"fit"}],"max_tokens":16}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || backendCalls != 1 {
+		t.Fatalf("fit enforce response/backend = %d/%d, want 200/1", recorder.Code, backendCalls)
+	}
+	_, semantic, causes := admission.snapshot(t)
+	if semantic != 0 || len(causes) != 1 || causes[0] != runtimepredictive.TerminalCompleted {
+		t.Fatalf("fit enforce semantic/causes = %d/%v", semantic, causes)
+	}
+	if forwarded := admission.forwardedSnapshot(t); forwarded != 1 {
+		t.Fatalf("fit enforce forwarded = %d, want 1", forwarded)
+	}
+	if got := srv.predictiveEnforcedRejects.Load(); got != 0 {
+		t.Fatalf("fit enforce rejects = %d, want 0", got)
+	}
+}
+
+func TestPredictiveEnforceFitIsNotLateRejectedByLegacyDynamicFeedback(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer backend.Close()
+	legacyMetrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "legacy feedback unavailable", http.StatusServiceUnavailable)
+	}))
+	defer legacyMetrics.Close()
+	admission := &recordingPredictiveShadow{}
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	cfg.DynamicEnabled = true
+	cfg.DynamicEnforce = true
+	cfg.DynamicMetricsURL = legacyMetrics.URL
+	cfg.DynamicMetricsURLs = []string{legacyMetrics.URL}
+	cfg.Backends[0].MetricsURL = legacyMetrics.URL
+	cfg.GlobalLimit = 16
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return admission, nil },
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	defer srv.Close()
+	body := `{"model":"m","messages":[{"role":"user","content":"predictive fit despite stale legacy feedback"}],"max_tokens":16}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || backendCalls != 1 {
+		t.Fatalf("predictive fit under legacy dynamic feedback = %d/%d, want 200/1", recorder.Code, backendCalls)
+	}
+	if got := srv.qosGate.DynamicRejected(); got != 0 {
+		t.Fatalf("predictive enforce fit hit legacy dynamic rejection %d times", got)
+	}
+	if forwarded := admission.forwardedSnapshot(t); forwarded != 1 {
+		t.Fatalf("predictive enforce fit forwarded = %d, want 1", forwarded)
+	}
+}
+
+func TestPredictiveEnforceStillRespectsStaticAbsoluteConcurrencyLimit(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		_, _ = w.Write([]byte(`{"id":"must-not-run"}`))
+	}))
+	defer backend.Close()
+	admission := &recordingPredictiveShadow{}
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	cfg.GlobalLimit = 0
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return admission, nil },
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+	body := `{"model":"m","messages":[{"role":"user","content":"static absolute cap"}],"max_tokens":16}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("predictive fit above static cap response/backend = %d/%d, want 429/0", recorder.Code, backendCalls)
+	}
+	_, _, causes := admission.snapshot(t)
+	if len(causes) != 1 || causes[0] != runtimepredictive.TerminalLocalQoSReject {
+		t.Fatalf("static cap terminal causes = %v, want local QoS reject", causes)
+	}
+	if got := srv.predictiveEnforcedRejects.Load(); got != 0 {
+		t.Fatalf("static cap counted as predictive enforced reject %d times", got)
+	}
+}
+
+func TestPredictiveShadowRiskPreservesUpstreamBehavior(t *testing.T) {
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"id":"shadow"}`))
+	}))
+	defer backend.Close()
+	admission := &rejectingPredictiveAdmission{}
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "shadow"
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return admission, nil },
+	})
+	if err != nil {
+		t.Fatalf("new shadow server: %v", err)
+	}
+	body := `{"model":"m","messages":[{"role":"user","content":"observe only"}]}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || backendCalls != 1 || recorder.Body.String() != `{"id":"shadow"}` {
+		t.Fatalf("shadow risk response/backend = %d/%d/%q, want 201/1/shadow body", recorder.Code, backendCalls, recorder.Body.String())
+	}
+	if calls, _ := admission.Snapshot(); calls != 1 {
+		t.Fatalf("shadow risk prediction calls = %d, want 1", calls)
+	}
+	if got := srv.predictiveEnforcedRejects.Load(); got != 0 {
+		t.Fatalf("shadow risk enforced rejects = %d, want 0", got)
+	}
 }
 
 func TestPredictiveShadowReleasesLocalQoSRejectBeforeUpstream(t *testing.T) {
@@ -231,6 +517,9 @@ func TestPredictiveShadowReleasesLocalQoSRejectBeforeUpstream(t *testing.T) {
 	if semantic != 0 || len(causes) != 1 || causes[0] != runtimepredictive.TerminalLocalQoSReject {
 		t.Fatalf("local reject lifecycle semantic/causes = %d/%v", semantic, causes)
 	}
+	if forwarded := shadow.forwardedSnapshot(t); forwarded != 0 {
+		t.Fatalf("local reject forward lifecycle = %d, want 0", forwarded)
+	}
 }
 
 func TestPredictiveShadowMarksSemanticStreamingOutput(t *testing.T) {
@@ -260,6 +549,9 @@ func TestPredictiveShadowMarksSemanticStreamingOutput(t *testing.T) {
 	_, semantic, causes := shadow.snapshot(t)
 	if semantic != 1 || len(causes) != 1 || causes[0] != runtimepredictive.TerminalCompleted {
 		t.Fatalf("stream lifecycle semantic/causes = %d/%v", semantic, causes)
+	}
+	if forwarded := shadow.forwardedSnapshot(t); forwarded != 1 {
+		t.Fatalf("stream forward lifecycle = %d, want 1", forwarded)
 	}
 	ttft := shadow.semanticTTFTSnapshot(t)
 	if len(ttft) != 1 || ttft[0] <= 0 {

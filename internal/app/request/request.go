@@ -46,7 +46,7 @@ func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
 		return result
 	}
 	result.Streaming = result.Streaming || (fields.HasStream && fields.Stream)
-	if fields.HasOutputTokens && c.cfg.PredictiveAdmissionMode == "shadow" {
+	if fields.HasOutputTokens && predictiveAdmissionEnabled(c.cfg.PredictiveAdmissionMode) {
 		result.PredictiveOutputTokens = fields.OutputTokens
 		result.PredictiveHasOutputTokens = true
 	}
@@ -58,6 +58,10 @@ func (c *Classifier) ClassifyRequest(r *http.Request) Classification {
 	c.observeOutputTokens(result.OutputTokens)
 	result.Lane = requestclass.MoreRestrictiveLane(result.Lane, c.outputLane(result.OutputTokens))
 	return result
+}
+
+func predictiveAdmissionEnabled(mode string) bool {
+	return mode == "shadow" || mode == "enforce"
 }
 
 func (c *Classifier) classify(r *http.Request) *lane.Lane {

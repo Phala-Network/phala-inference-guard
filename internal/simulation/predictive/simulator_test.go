@@ -103,7 +103,9 @@ func fixedCost(tokens int64) domain.RequestCost {
 			PhysicalKVUpper: tokens,
 			ActiveKVUpper:   tokens,
 		},
-		UncachedPrefillUpper: tokens,
-		Confidence:           0.99,
+		UncachedPrefillUpper:     tokens,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: tokens,
+		Confidence:               0.99,
 	}
 }

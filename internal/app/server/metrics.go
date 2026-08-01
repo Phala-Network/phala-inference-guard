@@ -50,10 +50,46 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	metrics.WriteRuntime(w, s.runtimeMetricsInput())
 	metrics.WriteBackends(w, s.backendMetricsInput())
 	metrics.WriteKVShadow(w, s.kvShadowMetricsInput())
+	metrics.WritePredictiveAdmission(w, s.predictiveAdmissionMetricsInput())
 	s.writeDynamicMetrics(w)
 	metrics.WriteClassifier(w, s.classifierMetricsInput())
 	metrics.WritePriority(w, s.priorityMetricsInput())
 	metrics.WriteLanes(w, s.laneMetricsInput())
+}
+
+func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmissionInput {
+	input := metrics.PredictiveAdmissionInput{
+		Mode:            s.cfg.PredictiveAdmissionMode,
+		EnforcedRejects: s.predictiveEnforcedRejects.Load(),
+		FailureClose:    s.predictiveShadowFailures.close.Load(),
+		FailureDecide:   s.predictiveShadowFailures.decide.Load(),
+		FailureForward:  s.predictiveShadowFailures.forward.Load(),
+		FailureSemantic: s.predictiveShadowFailures.semantic.Load(),
+		FailureTerminal: s.predictiveShadowFailures.terminal.Load(),
+	}
+	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
+	if !ok {
+		return input
+	}
+	snapshot := provider.PredictiveAdmissionTelemetry()
+	input.Attempts = snapshot.Attempts.Attempts
+	input.Fits = snapshot.Attempts.Fits
+	input.Risks = snapshot.Attempts.Risks
+	input.Unknown = snapshot.Attempts.Unknown
+	input.LastReason = string(snapshot.Attempts.LastReason)
+	input.LastSource = string(snapshot.Attempts.LastSource)
+	input.LastSamples = snapshot.Attempts.LastSamples
+	input.Reservations = snapshot.Manager.Reservations
+	input.RetiredReservations = snapshot.Manager.RetiredReservations
+	input.RetiredEvictions = snapshot.Manager.RetiredEvictions
+	input.LearningAccepted = snapshot.Learning.SamplesAccepted
+	input.LearningRejected = snapshot.Learning.SamplesRejected
+	input.LearningInvalidations = snapshot.Learning.Invalidations
+	input.LearningCells = snapshot.Learning.Cells
+	input.PredictionDuration = snapshot.PredictionDuration
+	input.RendererDuration = snapshot.RendererDuration
+	input.TokenizerDuration = snapshot.TokenizerDuration
+	return input
 }
 
 func (s *proxyServer) writeBackendMetricsRaw(w io.Writer) {

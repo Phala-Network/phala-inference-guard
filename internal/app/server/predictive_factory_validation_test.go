@@ -23,13 +23,14 @@ func TestPredictiveProfilePinsObserverTiming(t *testing.T) {
 		"metrics_maximum_age_milliseconds",
 		"metrics_request_timeout_milliseconds",
 		"preemption_cooldown_milliseconds",
+		"calibrator_maximum_cells",
 	} {
 		if _, ok := profile[field]; !ok {
 			t.Fatalf("profile fixture is missing immutable observer field %s", field)
 		}
 	}
 	if _, err := loadPredictiveProfile(cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256); err != nil {
-		t.Fatalf("load schema-2 predictive profile with pinned observer timing: %v", err)
+		t.Fatalf("load schema-3 predictive profile with pinned observer timing and learner bound: %v", err)
 	}
 }
 
@@ -100,6 +101,10 @@ func TestPredictiveProfileRejectsHashStructureAssetAndModelMismatch(t *testing.T
 			mutate: func(_ *config, profile map[string]any) { profile["base_completion_tps"] = -1.0 },
 			want:   "scheduler",
 		},
+		"calibrator-global-cell-bound": {
+			mutate: func(_ *config, profile map[string]any) { profile["calibrator_maximum_cells"] = 0 },
+			want:   "global cell bound",
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			cfg := config{}
@@ -124,7 +129,7 @@ func TestPredictiveProfileRejectsDuplicateJSONKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read predictive profile: %v", err)
 	}
-	duplicate := append([]byte(`{"schema_version":2,`), content[1:]...)
+	duplicate := append([]byte(`{"schema_version":3,`), content[1:]...)
 	if err := os.WriteFile(cfg.PredictiveAdmissionProfilePath, duplicate, 0o600); err != nil {
 		t.Fatalf("write duplicate-key profile: %v", err)
 	}

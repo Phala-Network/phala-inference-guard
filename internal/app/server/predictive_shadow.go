@@ -11,14 +11,16 @@ import (
 )
 
 type predictiveShadowInput struct {
-	Path            string
-	Body            []byte
-	OutputTokens    int
-	HasOutputTokens bool
-	Streaming       bool
+	Path             string
+	Body             []byte
+	RequestStartedAt time.Time
+	OutputTokens     int
+	HasOutputTokens  bool
+	Streaming        bool
 }
 
 type predictiveShadowReservation interface {
+	MarkForwarded() bool
 	MarkPrefillComplete() bool
 	Terminate(runtimepredictive.TerminalCause) bool
 }
@@ -26,6 +28,19 @@ type predictiveShadowReservation interface {
 type predictiveAdmissionShadow interface {
 	DecideAndReserve(context.Context, string, predictiveShadowInput) predictiveShadowReservation
 	Close() error
+}
+
+type predictiveAdmissionTelemetryProvider interface {
+	PredictiveAdmissionTelemetry() predictiveAdmissionTelemetrySnapshot
+}
+
+type predictiveAdmissionTelemetrySnapshot struct {
+	Attempts           predictiveAttemptSnapshot
+	Manager            runtimepredictive.Snapshot
+	Learning           runtimepredictive.LearnedSchedulerSnapshot
+	PredictionDuration *durationHistogram
+	RendererDuration   *durationHistogram
+	TokenizerDuration  *durationHistogram
 }
 
 type predictiveSemanticTTFTObserver interface {
@@ -36,12 +51,18 @@ type serverDependencies struct {
 	NewPredictiveShadow func(config) (predictiveAdmissionShadow, error)
 }
 
+func predictiveAdmissionEnabled(mode string) bool {
+	return mode == "shadow" || mode == "enforce"
+}
+
 type guardedPredictiveReservation struct {
 	mu                    sync.Mutex
 	reservation           predictiveShadowReservation
+	forwarded             bool
 	prefillComplete       bool
 	semanticTTFTObserved  bool
 	terminated            bool
+	onForwardCallFailure  func()
 	onSemanticCallFailure func()
 	onTerminalCallFailure func()
 }
@@ -69,6 +90,9 @@ func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predicti
 	}
 	return &guardedPredictiveReservation{
 		reservation: reservation,
+		onForwardCallFailure: func() {
+			s.predictiveShadowFailures.forward.Add(1)
+		},
 		onSemanticCallFailure: func() {
 			s.predictiveShadowFailures.semantic.Add(1)
 		},
@@ -78,13 +102,26 @@ func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predicti
 	}
 }
 
+func (r *guardedPredictiveReservation) MarkForwarded() bool {
+	if r == nil || r.reservation == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.forwarded || r.terminated {
+		return false
+	}
+	r.forwarded = true
+	return callPredictiveShadow(r.onForwardCallFailure, r.reservation.MarkForwarded)
+}
+
 func (r *guardedPredictiveReservation) MarkPrefillComplete() bool {
 	if r == nil || r.reservation == nil {
 		return false
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.prefillComplete || r.terminated {
+	if !r.forwarded || r.prefillComplete || r.terminated {
 		return false
 	}
 	r.prefillComplete = true

@@ -12,6 +12,7 @@ import (
 )
 
 type gemma4TextRendererConfig struct {
+	ServedModel          string
 	BOSToken             string
 	DefaultDecodeHorizon int64
 	MaximumDecodeHorizon int64
@@ -34,6 +35,9 @@ type gemma4TextPart struct {
 }
 
 func newGemma4TextRenderer(config gemma4TextRendererConfig) (*gemma4TextRenderer, error) {
+	if strings.TrimSpace(config.ServedModel) == "" {
+		return nil, fmt.Errorf("Gemma4 renderer served model is required")
+	}
 	if config.BOSToken == "" {
 		return nil, fmt.Errorf("Gemma4 renderer BOS token is required")
 	}
@@ -56,6 +60,10 @@ func (r *gemma4TextRenderer) Render(ctx context.Context, input predictiveShadowI
 	}
 	if err := rejectGemma4UnsupportedRoot(root, input.Path); err != nil {
 		return predictiveRenderedRequest{}, err
+	}
+	model, err := requiredJSONString(root, "model")
+	if err != nil || model != r.config.ServedModel {
+		return predictiveRenderedRequest{}, fmt.Errorf("Gemma4 renderer model must match the pinned served model")
 	}
 	decodeHorizon, err := r.decodeHorizon(root)
 	if err != nil {
@@ -363,13 +371,33 @@ func rejectGemma4UnsupportedRoot(root map[string]json.RawMessage, path string) e
 		"cache_salt",
 		"mm_processor_kwargs",
 		"max_output_tokens",
+		"best_of",
+		"use_beam_search",
+		"beam_width",
+		"num_beams",
+		"parallel_tool_calls",
+		"chat_template",
+		"chat_template_kwargs",
+		"add_generation_prompt",
+		"continue_final_message",
+		"add_special_tokens",
+		"tokenizer_kwargs",
+		"truncate_prompt_tokens",
+		"prompt_embeds",
+		"prompt_token_ids",
 	}
 	if path == "/v1/completions" {
 		unsupported = append(unsupported, "suffix")
 	}
 	for _, field := range unsupported {
-		if _, present := nonNullJSONField(root, field); present {
+		if _, present := root[field]; present {
 			return fmt.Errorf("Gemma4 text profile field %q is unsupported", field)
+		}
+	}
+	if raw, present := root["n"]; present {
+		var choices int64
+		if err := json.Unmarshal(raw, &choices); err != nil || choices != 1 {
+			return fmt.Errorf("Gemma4 text profile supports exactly one choice")
 		}
 	}
 	return nil

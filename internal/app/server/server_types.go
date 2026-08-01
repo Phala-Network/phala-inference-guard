@@ -19,7 +19,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
 
-const version = "PIG-v0.9.1"
+const version = "PIG-v0.9.2"
 
 const maxQoSQueueWait = 500 * time.Millisecond
 
@@ -54,6 +54,7 @@ type proxyResult struct {
 type predictiveShadowFailureCounters struct {
 	close    atomic.Uint64
 	decide   atomic.Uint64
+	forward  atomic.Uint64
 	semantic atomic.Uint64
 	terminal atomic.Uint64
 }
@@ -74,54 +75,55 @@ func newLane(name string, limit int) *qosLane {
 }
 
 type proxyServer struct {
-	cfg                      config
-	target                   *url.URL
-	proxy                    *httputil.ReverseProxy
-	backends                 []*backendProxy
-	globalLn                 *qosLane
-	defaultLn                *qosLane
-	mediumLn                 *qosLane
-	longLn                   *qosLane
-	veryLongLn               *qosLane
-	mediumOutputLn           *qosLane
-	longOutputLn             *qosLane
-	veryLongOutputLn         *qosLane
-	unknownLn                *qosLane
-	requestClassifier        *request.Classifier
-	priorityInjector         *request.PriorityInjector
-	attestation              *attestation.Service
-	dynamicController        *dynamic.Controller
-	kvShadow                 *kvshadow.Manager
-	predictiveShadow         predictiveAdmissionShadow
-	closeOnce                sync.Once
-	closeErr                 error
-	started                  time.Time
-	total429                 atomic.Uint64
-	backendUnavailable       atomic.Uint64
-	qosGate                  *gate.Gate
-	activeRequests           *prefill.Tracker
-	nextActiveID             atomic.Uint64
-	nextKVShadowID           atomic.Uint64
-	nextPredictiveID         atomic.Uint64
-	predictiveShadowFailures predictiveShadowFailureCounters
-	decisionDuration         durationHistogram
-	kvEstimatorDuration      durationHistogram
-	kvShadowDecisionDuration durationHistogram
-	proxyTTFB                durationHistogram
-	requestSemanticTTFT      durationHistogram
-	proxyTotal               durationHistogram
-	internalOverhead         durationHistogram
-	sseKeepAliveStreams      atomic.Uint64
-	sseKeepAliveComments     atomic.Uint64
-	sseBridgeStreams         atomic.Uint64
-	sseBridgeUpstreamErr     atomic.Uint64
-	sseBridgeInvalid         atomic.Uint64
-	sseBridgeCopyErr         atomic.Uint64
-	semanticTTFTLimited      atomic.Uint64
-	proxyUpstreamErr         atomic.Uint64
-	proxyCopyErr             atomic.Uint64
-	clientDisconnectQueue    atomic.Uint64
-	clientDisconnectUpstream atomic.Uint64
-	clientDisconnectResponse atomic.Uint64
-	clientDisconnectCancel   atomic.Uint64
+	cfg                       config
+	target                    *url.URL
+	proxy                     *httputil.ReverseProxy
+	backends                  []*backendProxy
+	globalLn                  *qosLane
+	defaultLn                 *qosLane
+	mediumLn                  *qosLane
+	longLn                    *qosLane
+	veryLongLn                *qosLane
+	mediumOutputLn            *qosLane
+	longOutputLn              *qosLane
+	veryLongOutputLn          *qosLane
+	unknownLn                 *qosLane
+	requestClassifier         *request.Classifier
+	priorityInjector          *request.PriorityInjector
+	attestation               *attestation.Service
+	dynamicController         *dynamic.Controller
+	kvShadow                  *kvshadow.Manager
+	predictiveShadow          predictiveAdmissionShadow
+	closeOnce                 sync.Once
+	closeErr                  error
+	started                   time.Time
+	total429                  atomic.Uint64
+	backendUnavailable        atomic.Uint64
+	qosGate                   *gate.Gate
+	activeRequests            *prefill.Tracker
+	nextActiveID              atomic.Uint64
+	nextKVShadowID            atomic.Uint64
+	nextPredictiveID          atomic.Uint64
+	predictiveEnforcedRejects atomic.Uint64
+	predictiveShadowFailures  predictiveShadowFailureCounters
+	decisionDuration          durationHistogram
+	kvEstimatorDuration       durationHistogram
+	kvShadowDecisionDuration  durationHistogram
+	proxyTTFB                 durationHistogram
+	requestSemanticTTFT       durationHistogram
+	proxyTotal                durationHistogram
+	internalOverhead          durationHistogram
+	sseKeepAliveStreams       atomic.Uint64
+	sseKeepAliveComments      atomic.Uint64
+	sseBridgeStreams          atomic.Uint64
+	sseBridgeUpstreamErr      atomic.Uint64
+	sseBridgeInvalid          atomic.Uint64
+	sseBridgeCopyErr          atomic.Uint64
+	semanticTTFTLimited       atomic.Uint64
+	proxyUpstreamErr          atomic.Uint64
+	proxyCopyErr              atomic.Uint64
+	clientDisconnectQueue     atomic.Uint64
+	clientDisconnectUpstream  atomic.Uint64
+	clientDisconnectResponse  atomic.Uint64
+	clientDisconnectCancel    atomic.Uint64
 }
