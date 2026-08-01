@@ -694,9 +694,56 @@ artifact and Git diff for secrets before completion.
 - the local evidence copies are retained under the ignored live-evidence
   directory. The r4 vet-red log SHA-256 is
   `1900aed03e7e85c96a700443687cf5acf5adc602db886075948ec523011cd97e`.
-  No executable test was run on Windows. Source commit/push/tag, image build,
-  image smoke/publication, redeployed shadow, disabled-route enforce, Router
-  enablement, and the 30-minute canary remain later gates.
+  No executable test was run on Windows;
+- the reviewed v0.10.1 executable changes were committed and pushed as
+  `01f07d71d85c9165aeb54f81ef917263973495e7`. The exact committed archive has
+  SHA-256
+  `4205f6a7e232b6a079c3f3abed4c43f835d35105bf0bf89f05c01e26a923f993`;
+- three final-image harness attempts are retained as invalid final evidence,
+  not product failures. r7 malformed a shell continuation before the build
+  started; r7b completed the no-cache build but passed the builder-container
+  `/work` path to the host Docker daemon as an evidence mount; r7c passed image
+  identity, off mode, sub-millisecond buckets and most shadow checks, but
+  asserted a currently learned estimate immediately after the sample that only
+  reached maturity. That assertion violated the next-request-only learning
+  contract. r7d adds the required subsequent request and separates the large
+  predicted-risk request from the small fit requests;
+- the corrected r7d gate built exact archive `4205f6a...` without cache and
+  passed with `IMAGE_GATE_OK`. Builder-local image
+  `pig-v0101-candidate:r7-01f07d7` has image ID
+  `sha256:749ffb6fc3b9093b8f2c952dc22baef87b38c984a75c022afae90b32a4b130b8`,
+  size `29151279`, OCI version `0.10.1`, `CGO_ENABLED=0`, and no final
+  filesystem model/tokenizer/native-asset path. It passed off, shadow and
+  enforce startup, health, authenticated models/metrics, unauthorized metrics
+  401, non-stream and stream-with-usage protocol, shadow risk forwarding,
+  enforce pre-forward 429, and zero terminal reservation/shadow-observation
+  gates;
+- r7d shadow learning recorded five accepted samples, one safely rejected
+  low-ratio sample, five stored samples, zero invalidations, four cold
+  estimates and three learned estimates. After the low-ratio sample, the next
+  request remained learned. Prediction duration was at or below 0.25 ms for
+  6/7 observations and at or below 1 ms for 7/7; estimator duration was at or
+  below 0.25 ms for 4/7 and at or below 1 ms for 7/7. These are builder image
+  smoke observations, not live service latency;
+- the r7d image-gate log and evidence archive were copied from the freshly
+  verified builder container into the ignored live-evidence directory and
+  independently rehashed on Windows. Their SHA-256 values are respectively
+  `8b33c8fe8d0ab9d13be226aea76e1c6a3b03716f469d618183151f7b883948dd`
+  and
+  `722fd6e60cc8b3a5a1af427b011777002cd26a97de6926b6b573c20e802b781a`;
+- publish v0.10.1 only through the repository's existing tag-triggered
+  `.github/workflows/publish-image.yml`, which grants the job-scoped
+  `packages: write` permission. Neither current builder retains GHCR publish
+  authentication, and the local GitHub credential does not have package-write
+  scope; do not create, copy or persist a long-lived PAT. After publication,
+  resolve the immutable registry digest, pull by digest on the builder and
+  repeat the registry-image identity/off/shadow/enforce/sub-ms/low-ratio
+  learning smoke before any CVM redeployment;
+- a plan-only commit/push, executable-object identity proof against `01f07d7`,
+  annotated `v0.10.1` tag, successful publication, immutable-digest registry
+  smoke, redeployed Router-disabled shadow, Router-disabled enforce, Router
+  enablement, and the first-real-request-started 30-minute canary remain later
+  gates. `use1-cb` is still disabled and no v0.10.1 live mutation has occurred.
 
 ## 15. Recorded plan reviews
 
@@ -841,6 +888,10 @@ finding but does not substitute for the complete matrix.
 The next complete evidence pass caught the atomic-copy issue at vet before any
 later gate and restarted from a corrected exact archive. Archive r6 then passed
 every declared builder gate and retained the existing deterministic safety and
-goodput results. The executable candidate is therefore eligible for source
-commit and final-image validation, but not yet for CVM redeployment or Router
-traffic.
+goodput results. The reviewed executable candidate was committed and pushed as
+`01f07d7...`; corrected image harness r7d then passed the complete builder-local
+image gate against its exact committed archive. The preceding r7/r7b/r7c
+results remain explicitly non-final harness evidence and are not silently
+promoted to product green. A plan-only commit/object-identity proof, official
+tag workflow publication, immutable-digest pull and registry-image smoke remain
+before CVM redeployment. The candidate is still not approved for Router traffic.
