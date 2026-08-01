@@ -34,6 +34,18 @@ func TestPredictiveProfilePinsObserverTiming(t *testing.T) {
 	}
 }
 
+func TestPredictiveProfileAcceptsUnalignedObservedMaximumKV(t *testing.T) {
+	cfg := config{}
+	writePredictiveFactoryTestProfile(t, &cfg)
+	profile := readPredictiveFactoryTestProfile(t, cfg.PredictiveAdmissionProfilePath)
+	profile["maximum_kv_tokens"] = 1_000_003
+	rewritePredictiveFactoryTestProfile(t, &cfg, profile)
+
+	if _, err := loadPredictiveProfile(cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256); err != nil {
+		t.Fatalf("load profile with exact unaligned upstream KV capacity and aligned protected capacity: %v", err)
+	}
+}
+
 func TestPredictiveProfileRejectsHashStructureAssetAndModelMismatch(t *testing.T) {
 	for name, test := range map[string]struct {
 		mutate func(*config, map[string]any)
@@ -79,11 +91,11 @@ func TestPredictiveProfileRejectsHashStructureAssetAndModelMismatch(t *testing.T
 		},
 		"unaligned-protected-kv": {
 			mutate: func(_ *config, profile map[string]any) { profile["protected_kv_tokens"] = 900001 },
-			want:   "KV capacities",
+			want:   "protected KV capacity",
 		},
 		"protected-kv-above-maximum": {
 			mutate: func(_ *config, profile map[string]any) { profile["protected_kv_tokens"] = 1000004 },
-			want:   "KV capacities",
+			want:   "protected KV capacity",
 		},
 		"metrics-age-before-poll": {
 			mutate: func(_ *config, profile map[string]any) { profile["metrics_maximum_age_milliseconds"] = 100 },

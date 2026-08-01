@@ -21,7 +21,7 @@ RUN ldconfig \
         ./cmd/phala-inference-guard
 
 FROM gcr.io/distroless/base-debian12@sha256:348dac1808083ccc3366399d6db835875b4eaf7c9b694783f5a3f353c4b58a28
-LABEL org.opencontainers.image.version="0.9.3"
+LABEL org.opencontainers.image.version="0.9.4"
 ENV NVIDIA_VISIBLE_DEVICES=all
 ENV LD_LIBRARY_PATH=/usr/lib
 COPY --from=go-build /out/phala-inference-guard /phala-inference-guard

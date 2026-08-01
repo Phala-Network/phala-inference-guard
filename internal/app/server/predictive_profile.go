@@ -211,8 +211,8 @@ func validatePredictiveProfile(profile predictiveProfileManifest) error {
 		return fmt.Errorf("predictive profile block size and model maximum length must be positive")
 	}
 	blockSize := int64(profile.BlockSize)
-	if profile.MaximumKVTokens <= 0 || profile.ProtectedKVTokens <= 0 || profile.ProtectedKVTokens > profile.MaximumKVTokens || profile.MaximumKVTokens%blockSize != 0 || profile.ProtectedKVTokens%blockSize != 0 {
-		return fmt.Errorf("predictive profile KV capacities must be positive, block-aligned, and protected <= maximum")
+	if profile.MaximumKVTokens <= 0 || profile.ProtectedKVTokens <= 0 || profile.ProtectedKVTokens > profile.MaximumKVTokens || profile.ProtectedKVTokens%blockSize != 0 {
+		return fmt.Errorf("predictive profile maximum KV capacity must be positive; protected KV capacity must be positive, block-aligned, and <= maximum")
 	}
 	for name, value := range map[string]int64{
 		"metrics_poll_interval_milliseconds":   profile.MetricsPollIntervalMilliseconds,

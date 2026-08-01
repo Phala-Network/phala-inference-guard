@@ -154,6 +154,20 @@ func TestPredictiveVLLMObserverFailsClosedOnCapacityAndTokenMetricMismatch(t *te
 	}
 }
 
+func TestPredictiveVLLMObserverAcceptsExactUnalignedGroupAwareCapacity(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(4_250, 0)}
+	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 0)
+	fixture := &observerMetricsFixture{body: observerMetrics(1_003, 0, 0, 0, 0, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_003, coordinator, clock.Now)
+
+	observer.poll(context.Background())
+	if !observer.Healthy(clock.Now()) {
+		t.Fatal("exact unaligned group-aware KV capacity did not become healthy")
+	}
+}
+
 func TestPredictiveVLLMObserverFailsClosedOnBlockSizeOrServedModelMismatch(t *testing.T) {
 	for name, body := range map[string]string{
 		"block size": strings.Replace(
