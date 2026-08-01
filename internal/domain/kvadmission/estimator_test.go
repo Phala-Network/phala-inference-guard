@@ -52,31 +52,47 @@ func TestEstimateJSONRejectsMalformedOrTrailingData(t *testing.T) {
 	}
 }
 
+var benchmarkEstimatorCost Cost
+
+func BenchmarkEstimator1KiB(b *testing.B) {
+	benchmarkEstimator(b, 1*1024)
+}
+
+func BenchmarkEstimator16KiB(b *testing.B) {
+	benchmarkEstimator(b, 16*1024)
+}
+
 func BenchmarkEstimator64KiB(b *testing.B) {
-	payload := bytes.Repeat([]byte("abcd"), (64*1024-64)/4)
-	body := append([]byte(`{"messages":[{"role":"user","content":"`), payload...)
-	body = append(body, []byte(`"}],"max_tokens":256}`)...)
-	cfg := DefaultEstimatorConfig()
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cost := EstimateJSON(body, 256, true, cfg)
-		if !cost.Supported {
-			b.Fatal("unsupported")
-		}
-	}
+	benchmarkEstimator(b, 64*1024)
+}
+
+func BenchmarkEstimator1MiB(b *testing.B) {
+	benchmarkEstimator(b, 1*1024*1024)
 }
 
 func BenchmarkEstimator2MiB(b *testing.B) {
-	payload := bytes.Repeat([]byte("abcd"), (2*1024*1024-64)/4)
-	body := append([]byte(`{"input":"`), payload...)
-	body = append(body, []byte(`"}`)...)
+	benchmarkEstimator(b, 2*1024*1024)
+}
+
+func benchmarkEstimator(b *testing.B, targetBytes int) {
+	b.Helper()
+	prefix := []byte(`{"messages":[{"role":"user","content":"`)
+	suffix := []byte(`"}],"max_tokens":256}`)
+	payloadBytes := targetBytes - len(prefix) - len(suffix)
+	if payloadBytes <= 0 {
+		b.Fatalf("target body bytes %d are too small", targetBytes)
+	}
+	body := make([]byte, 0, targetBytes)
+	body = append(body, prefix...)
+	body = append(body, bytes.Repeat([]byte{'a'}, payloadBytes)...)
+	body = append(body, suffix...)
 	cfg := DefaultEstimatorConfig()
 	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		cost := EstimateJSON(body, 0, false, cfg)
-		if !cost.Supported {
+	for b.Loop() {
+		benchmarkEstimatorCost = EstimateJSON(body, 256, true, cfg)
+		if !benchmarkEstimatorCost.Supported {
 			b.Fatal("unsupported")
 		}
 	}

@@ -162,41 +162,43 @@ controls:
 /v1/responses
 ```
 
-### v0.9.0 KV admission shadow
+### v0.10.0 model-agnostic predictive admission
 
-PIG v0.9.0 can simulate a backend-aware token-budget policy without changing
-real admission or routing:
+PIG v0.10.0 can estimate request size locally and predict the post-admit
+KV/TPS/TTFT/TPOT state before forwarding to a vLLM upstream:
 
 ```text
-KV_ADMISSION_MODE=shadow
+PREDICTIVE_ADMISSION_MODE=shadow
 ```
 
-The only supported values in v0.9.0 are `off` (the default) and `shadow`.
-`enforce` is rejected during configuration validation. Shadow mode never
-rejects, delays, reroutes, or mutates a request based on its KV result; the
-existing QoS policy remains authoritative.
+The supported values are `off` (the default), `shadow`, and `enforce`.
+`shadow` records the decision but does not change the client-visible admission
+or response. A shadow request with a complete prediction can retain a bounded,
+payload-free observation record so qualified completion feedback improves only
+later predictions. `enforce` rejects a non-fit or unknown decision before
+upstream forwarding with the normal OpenAI-compatible PIG 429 response.
 
-The shadow adapter reads vLLM's group-aware `kv_cache_size_tokens` capacity and
-SGLang's deduplicated token-pool metrics. SGLang evictable radix-cache tokens
-are not counted as active pressure. A bounded local byte/token interval replaces
-an exact tokenizer or a hot-path `/tokenize` request. The hypothetical decision
-and an atomic unabsorbed-reservation ledger are exposed only in protected
-metrics and the compact status log.
+This path is model-family neutral: it has no model tokenizer, chat template,
+model-family branch, native FFI, tokenizer asset, or hot-path tokenizer RPC.
+The bounded O(body bytes) JSON scanner estimates a conservative interval and a
+bounded online calibrator learns from `usage.prompt_tokens`. Scheduler feedback
+for TPS and latency also affects only future predictions. Existing in-flight
+reservations remain immutable and are reconciled exactly once on completion,
+failure, cancellation, timeout, or shutdown.
 
-Use the deterministic simulator before considering any later enforcement
-version:
+The predictor discovers vLLM's served-model identity, KV block size, and maximum
+KV token capacity from startup metrics, then watches freshness, waiting work,
+preemptions, running sequences, KV use, and generation timing. It does not
+inspect prefix-cache hits, does not route, and does not change vLLM.
 
-```sh
-go run ./cmd/pig-kv-sim -scenario scenarios/kv-admission -all
-go run ./cmd/pig-kv-sim -performance
-```
+Use `shadow` first. Promote the same immutable image to `enforce` only after the
+documented builder, simulation, latency, lifecycle, low-flow recovery, and live
+shadow gates pass. Configuration, observability, release criteria, and the
+authorized single-node canary loop are documented in
+[MODEL_AGNOSTIC_APPROXIMATE_ADMISSION_V0_10_PLAN.md](docs/MODEL_AGNOSTIC_APPROXIMATE_ADMISSION_V0_10_PLAN.md).
 
-Scenario requests can declare an independent `actual_tokens` cost. The report
-then distinguishes shadow hard-budget violations from count-control violations,
-so a projection check cannot make the safety result tautologically pass.
-
-The design, initial budgets, failure semantics, and release gates are documented
-in [KV_ADMISSION_V0_9_PLAN.md](docs/KV_ADMISSION_V0_9_PLAN.md).
+The earlier v0.9.0 KV-only simulation design remains available as historical
+documentation in [KV_ADMISSION_V0_9_PLAN.md](docs/KV_ADMISSION_V0_9_PLAN.md).
 
 ## Production Compose Integration
 
@@ -227,7 +229,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.9.0
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.0
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

@@ -38,6 +38,20 @@ func TestCompletionUsageObserverParsesBoundedNonStreamJSONAtEOF(t *testing.T) {
 	}
 }
 
+func TestCompletionUsageObserverIncludesPromptTokens(t *testing.T) {
+	payload := `{"choices":[{"index":0}],"usage":{"prompt_tokens":17,"completion_tokens":5}}`
+	var observed []CompletionUsage
+	body := ObserveCompletionUsageBody(io.NopCloser(strings.NewReader(payload)), false, func(usage CompletionUsage) {
+		observed = append(observed, usage)
+	})
+	if _, err := io.ReadAll(body); err != nil {
+		t.Fatalf("read observed body: %v", err)
+	}
+	if len(observed) != 1 || observed[0].PromptTokens != 17 || observed[0].CompletionTokens != 5 {
+		t.Fatalf("prompt/completion usage = %+v", observed)
+	}
+}
+
 func TestCompletionUsageObserverParsesFinalSSEUsageAtEOFWithoutBlankLine(t *testing.T) {
 	payload := "data: {\"choices\":[],\"usage\":{\"completion_tokens\":3},\"metrics\":{\"mean_itl_ms\":10}}"
 	var observed []CompletionUsage

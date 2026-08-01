@@ -3,6 +3,7 @@ package pigconfig
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadPredictiveAdmissionDefaultsOff(t *testing.T) {
@@ -10,20 +11,8 @@ func TestLoadPredictiveAdmissionDefaultsOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.PredictiveAdmissionMode != "off" || cfg.PredictiveAdmissionProfilePath != "" || cfg.PredictiveAdmissionProfileSHA256 != "" {
-		t.Fatalf("predictive defaults = mode %q path %q SHA %q, want off with no profile", cfg.PredictiveAdmissionMode, cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256)
-	}
-}
-
-func TestLoadPredictiveAdmissionProfileIdentity(t *testing.T) {
-	t.Setenv("PREDICTIVE_ADMISSION_PROFILE_PATH", " /profiles/gemma4.json ")
-	t.Setenv("PREDICTIVE_ADMISSION_PROFILE_SHA256", " AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA ")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.PredictiveAdmissionProfilePath != "/profiles/gemma4.json" || cfg.PredictiveAdmissionProfileSHA256 != strings.Repeat("a", 64) {
-		t.Fatalf("predictive profile identity = %q/%q", cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256)
+	if cfg.PredictiveAdmissionMode != "off" {
+		t.Fatalf("predictive default mode = %q, want off", cfg.PredictiveAdmissionMode)
 	}
 }
 
@@ -68,6 +57,79 @@ func TestValidatePredictiveAdmissionRequiresBoundedJSONConcurrency(t *testing.T)
 			err = Validate(cfg)
 			if err == nil || !strings.Contains(err.Error(), "JSON_CLASSIFY_LIMIT") {
 				t.Fatalf("Validate error = %v, want bounded JSON classifier concurrency requirement", err)
+			}
+		})
+	}
+}
+
+func TestValidatePredictiveAdmissionRequiresBoundedShadowObservations(t *testing.T) {
+	t.Setenv("PREDICTIVE_ADMISSION_MODE", "shadow")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, invalid := range []int{0, 4_097} {
+		cfg.PredictiveShadowObservationLimit = invalid
+		err = Validate(cfg)
+		if err == nil || !strings.Contains(err.Error(), "shadow observation bound") {
+			t.Fatalf("Validate maximum observations %d error = %v", invalid, err)
+		}
+	}
+}
+
+func TestLoadPredictiveAdmissionRejectsExcessiveResourceBounds(t *testing.T) {
+	tests := []struct {
+		name  string
+		env   string
+		value string
+	}{
+		{name: "startup timeout", env: "PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS", value: "300001"},
+		{name: "metrics timeout", env: "PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS", value: "60001"},
+		{name: "minimum samples", env: "PREDICTIVE_LEARNING_MINIMUM_SAMPLES", value: "257"},
+		{name: "maximum samples", env: "PREDICTIVE_LEARNING_MAXIMUM_SAMPLES", value: "257"},
+		{name: "maximum cells", env: "PREDICTIVE_LEARNING_MAXIMUM_CELLS", value: "257"},
+		{name: "maximum age", env: "PREDICTIVE_LEARNING_MAX_AGE_SECONDS", value: "86401"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("PREDICTIVE_ADMISSION_MODE", "enforce")
+			t.Setenv(test.env, test.value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), test.env) {
+				t.Fatalf("Load error = %v, want %s bound failure", err, test.env)
+			}
+		})
+	}
+}
+
+func TestValidatePredictiveAdmissionRejectsExcessiveResourceBounds(t *testing.T) {
+	t.Setenv("PREDICTIVE_ADMISSION_MODE", "enforce")
+	base, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{name: "startup timeout", mutate: func(cfg *Config) { cfg.PredictiveStartupProbeTimeout = 5*time.Minute + time.Millisecond }},
+		{name: "metrics timeout", mutate: func(cfg *Config) {
+			cfg.PredictiveStartupProbeTimeout = 5 * time.Minute
+			cfg.PredictiveMetricsRequestTimeout = time.Minute + time.Millisecond
+		}},
+		{name: "minimum samples", mutate: func(cfg *Config) {
+			cfg.PredictiveLearningMinimumSamples = 257
+			cfg.PredictiveLearningMaximumSamples = 257
+		}},
+		{name: "maximum samples", mutate: func(cfg *Config) { cfg.PredictiveLearningMaximumSamples = 257 }},
+		{name: "maximum cells", mutate: func(cfg *Config) { cfg.PredictiveLearningMaximumCells = 257 }},
+		{name: "maximum age", mutate: func(cfg *Config) { cfg.PredictiveLearningMaxAge = 24*time.Hour + time.Second }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := base
+			test.mutate(&cfg)
+			if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "predictive") {
+				t.Fatalf("Validate error = %v, want predictive resource bound failure", err)
 			}
 		})
 	}

@@ -7,12 +7,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 type predictiveShadowInput struct {
 	Path             string
 	Body             []byte
+	Cost             kvadmission.Cost
 	RequestStartedAt time.Time
 	OutputTokens     int
 	HasOutputTokens  bool
@@ -38,10 +40,10 @@ type predictiveAdmissionTelemetrySnapshot struct {
 	Attempts           predictiveAttemptSnapshot
 	Manager            runtimepredictive.Snapshot
 	Learning           runtimepredictive.LearnedSchedulerSnapshot
+	InputSize          runtimepredictive.InputSizeCalibratorSnapshot
 	PredictionDuration *durationHistogram
-	RendererDuration   *durationHistogram
-	TokenizerDuration  *durationHistogram
 	TPSOutcomes        predictiveTPSOutcomeSnapshot
+	ShadowObservations predictiveShadowObservationSnapshot
 }
 
 type predictiveTPSOutcomeSnapshot struct {
@@ -51,11 +53,21 @@ type predictiveTPSOutcomeSnapshot struct {
 	Rejected uint64
 }
 
+type predictiveShadowObservationSnapshot struct {
+	Active     int
+	Created    uint64
+	Terminated uint64
+	Qualified  uint64
+	Censored   uint64
+	Dropped    uint64
+}
+
 type predictiveSemanticTTFTObserver interface {
 	ObserveSemanticTTFT(time.Duration) bool
 }
 
 type predictiveCompletionObservation struct {
+	PromptTokens          int64
 	CompletionTokens      int64
 	ElapsedSinceRequest   time.Duration
 	BackendMeanITL        time.Duration
@@ -100,10 +112,12 @@ func observePredictiveCompletion(reservation predictiveShadowReservation, observ
 }
 
 func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predictiveShadowInput) (result predictiveShadowReservation) {
-	if s == nil || s.predictiveShadow == nil || input.Body == nil {
+	if s == nil || s.predictiveShadow == nil || (input.Body == nil && !input.Cost.Supported) {
 		return nil
 	}
-	defer clear(input.Body)
+	if input.Body != nil {
+		defer clear(input.Body)
+	}
 	defer func() {
 		if recover() != nil {
 			s.predictiveShadowFailures.decide.Add(1)

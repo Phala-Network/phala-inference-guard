@@ -18,19 +18,20 @@ func TestCountCoordinatorChargesEveryRepeatedPrefixAsFullColdCost(t *testing.T) 
 		t.Fatalf("first admission = %+v", first)
 	}
 	wantCost := CountRequestCost{
-		ManifestID:               "test-profile",
-		BackendEpoch:             "safe-test-backend-1",
-		InputTokens:              65,
-		PhysicalKVUpper:          128,
-		ActiveKVUpper:            128,
-		FuturePhysicalKVUpper:    0,
-		FutureActiveKVUpper:      0,
-		UncachedPrefillUpper:     65,
-		DecodeHorizonUpper:       1,
-		DecodeSequencesUpper:     1,
-		ActiveContextTokensUpper: 66,
-		FutureContextTokensUpper: 1,
-		Confidence:               0.99,
+		ManifestID:                   "test-profile",
+		BackendEpoch:                 "safe-test-backend-1",
+		InputTokens:                  65,
+		RequestComplexityTokensUpper: 65,
+		PhysicalKVUpper:              128,
+		ActiveKVUpper:                128,
+		FuturePhysicalKVUpper:        0,
+		FutureActiveKVUpper:          0,
+		UncachedPrefillUpper:         65,
+		DecodeHorizonUpper:           1,
+		DecodeSequencesUpper:         1,
+		ActiveContextTokensUpper:     66,
+		FutureContextTokensUpper:     1,
+		Confidence:                   0.99,
 	}
 	if first.Cost != wantCost {
 		t.Fatalf("first full-cold cost = %+v, want %+v", first.Cost, wantCost)
@@ -213,6 +214,38 @@ func TestCountCoordinatorConsumesLearnedResidualBeforeForwardWithStateHeldConsta
 	}
 	if learned.Prediction.Estimate.ExistingUserTPSLower <= cold.Prediction.Estimate.ExistingUserTPSLower {
 		t.Fatalf("learned existing-user TPS %.3f did not exceed cold %.3f", learned.Prediction.Estimate.ExistingUserTPSLower, cold.Prediction.Estimate.ExistingUserTPSLower)
+	}
+}
+
+func TestCountCoordinatorReservesApproximateUpperWithoutExactTokenizerIdentity(t *testing.T) {
+	constraints := testConstraints()
+	constraints.PhysicalKVHard = 1_000
+	constraints.ActiveKVHard = 1_000
+	schedulerIdentity := safeSchedulerIdentity()
+	coordinator, err := NewCountCoordinator(CountCoordinatorConfig{
+		Identity: CoordinatorIdentity{
+			ManifestID: "approximate-test", BackendEpoch: schedulerIdentity.BackendEpoch,
+			Scheduler: schedulerIdentity, BlockSize: 4,
+		},
+		ModelMaximumLength: 1_000,
+		Constraints:        constraints,
+		Scheduler:          safeScheduler{},
+	})
+	if err != nil {
+		t.Fatalf("new approximate coordinator: %v", err)
+	}
+	result := coordinator.DecideUpperBoundAndReserve(time.Unix(0, 0), UpperBoundAdmissionProposal{
+		RequestID: "approximate", InputTokensUpper: 75, RawInputTokensHigh: 100, DecodeHorizonUpper: 10,
+		Confidence: 0.99,
+	})
+	if !result.Reserved || result.Cost.InputTokens != 75 || result.Cost.UncachedPrefillUpper != 75 || result.Cost.RequestComplexityTokensUpper != 100 {
+		t.Fatalf("approximate upper was not reserved as full prefill: %+v", result)
+	}
+	if result.Cost.PhysicalKVUpper != 88 || result.Cost.FuturePhysicalKVUpper != 12 {
+		t.Fatalf("approximate block-rounded cost = %+v, want total/future 88/12", result.Cost)
+	}
+	if !coordinator.Terminate("approximate", TerminalExpired) {
+		t.Fatal("approximate reservation did not release")
 	}
 }
 

@@ -2,132 +2,217 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
-	"github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive/nativeffi"
+)
+
+const (
+	predictiveApproximateManifestID       = "model-agnostic-json-v1"
+	predictiveApproximateProfileID        = "model-agnostic-qos-v1"
+	predictiveApproximatePredictorVersion = "adaptive-qos-v1"
+	predictiveApproximateEstimatorVersion = "json-cost-v1"
 )
 
 func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
-	profile, err := loadPredictiveProfile(cfg.PredictiveAdmissionProfilePath, cfg.PredictiveAdmissionProfileSHA256)
+	metricsURL, err := predictiveVLLMMetricsURL(cfg)
 	if err != nil {
 		return nil, err
 	}
-	renderer, err := newGemma4TextRenderer(gemma4TextRendererConfig{
-		ServedModel:          profile.manifest.ServedModel,
-		BOSToken:             profile.manifest.BOSToken,
-		DefaultDecodeHorizon: profile.manifest.DefaultDecodeHorizon,
-		MaximumDecodeHorizon: profile.manifest.MaximumDecodeHorizon,
+	startup, err := probePredictiveVLLMStartup(predictiveVLLMStartupProbeConfig{
+		MetricsURL:     metricsURL,
+		StartupTimeout: cfg.PredictiveStartupProbeTimeout,
+		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
+		RetryInterval:  cfg.DynamicPollInterval,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("construct predictive renderer: %w", err)
+		return nil, err
 	}
+	protectedTokens, err := predictiveProtectedTokens(startup.CapacityTokens, startup.BlockSize, cfg.KVAdmissionPolicy.VLLM.TargetRatio)
+	if err != nil {
+		return nil, err
+	}
+	targetTPS := cfg.DynamicUserTPSRed
+	ttftSLO, err := predictiveSecondsDuration(cfg.DynamicTTFTPolicy.TargetSeconds)
+	if err != nil {
+		return nil, fmt.Errorf("construct predictive TTFT SLO: %w", err)
+	}
+	tpotSLO, err := predictiveTPOTTarget(targetTPS)
+	if err != nil {
+		return nil, err
+	}
+	backendEpoch := fmt.Sprintf("vllm-%s-%d-%d", startup.ModelIdentitySHA256[:16], startup.CapacityTokens, startup.BlockSize)
 	identity := runtimepredictive.ModelIdentity{
-		ProfileID:        profile.manifest.ProfileID,
-		BackendEpoch:     profile.manifest.BackendEpoch,
-		PredictorVersion: profile.manifest.PredictorVersion,
+		ProfileID:        predictiveApproximateProfileID,
+		BackendEpoch:     backendEpoch,
+		PredictorVersion: predictiveApproximatePredictorVersion,
+	}
+	baseTTFT := ttftSLO / 4
+	if baseTTFT <= 0 {
+		baseTTFT = time.Nanosecond
+	}
+	baseTPOT := tpotSLO / 2
+	if baseTPOT <= 0 {
+		baseTPOT = time.Nanosecond
 	}
 	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
 		Identity:                      identity,
-		BaseCompletionTPS:             profile.manifest.BaseCompletionTPS,
-		PrefillTPSPenaltyPerKToken:    profile.manifest.PrefillTPSPenaltyPerKToken,
-		BaseTTFT:                      time.Duration(profile.manifest.BaseTTFTMilliseconds) * time.Millisecond,
-		TTFTPerUncachedPrefillToken:   time.Duration(profile.manifest.TTFTPerPrefillTokenMicroseconds) * time.Microsecond,
-		BaseTPOT:                      time.Duration(profile.manifest.BaseTPOTMilliseconds) * time.Millisecond,
-		TPOTPerExistingDecodeSequence: time.Duration(profile.manifest.TPOTPerExistingSequenceMilliseconds) * time.Millisecond,
-		WorkspaceRiskUpper:            profile.manifest.WorkspaceRiskUpper,
-		PreemptionRiskUpper:           profile.manifest.PreemptionRiskUpper,
-		Confidence:                    profile.manifest.ProfileConfidence,
+		BaseCompletionTPS:             targetTPS,
+		PrefillTPSPenaltyPerKToken:    0,
+		BaseTTFT:                      baseTTFT,
+		TTFTPerUncachedPrefillToken:   predictiveTTFTPerToken(ttftSLO-baseTTFT, protectedTokens),
+		BaseTPOT:                      baseTPOT,
+		TPOTPerExistingDecodeSequence: baseTPOT,
+		WorkspaceRiskUpper:            0,
+		PreemptionRiskUpper:           0,
+		Confidence:                    cfg.PredictiveColdConfidence,
 	}, runtimepredictive.ResidualCalibratorConfig{
 		Identity:                 identity,
-		MinimumSamples:           profile.manifest.CalibratorMinimumSamples,
-		MaximumSamplesPerCell:    profile.manifest.CalibratorMaximumSamplesPerCell,
-		MaximumCells:             profile.manifest.CalibratorMaximumCells,
-		MaxAge:                   time.Duration(profile.manifest.CalibratorMaxAgeSeconds) * time.Second,
-		LowerQuantile:            profile.manifest.CalibratorLowerQuantile,
-		UpperQuantile:            profile.manifest.CalibratorUpperQuantile,
-		MinimumTPSMultiplier:     profile.manifest.CalibratorMinimumTPSMultiplier,
-		MaximumTPSMultiplier:     profile.manifest.CalibratorMaximumTPSMultiplier,
-		MinimumLatencyMultiplier: profile.manifest.CalibratorMinimumLatencyMultiplier,
-		MaximumLatencyMultiplier: profile.manifest.CalibratorMaximumLatencyMultiplier,
-		CalibratedConfidence:     profile.manifest.CalibratorConfidence,
-		DecodeSequenceBucket:     profile.manifest.CalibratorDecodeSequenceBucket,
-		ContextTokenBucket:       profile.manifest.CalibratorContextTokenBucket,
-		PrefillTokenBucket:       profile.manifest.CalibratorPrefillTokenBucket,
-		KVTokenBucket:            profile.manifest.CalibratorKVTokenBucket,
+		MinimumSamples:           cfg.PredictiveLearningMinimumSamples,
+		MaximumSamplesPerCell:    cfg.PredictiveLearningMaximumSamples,
+		MaximumCells:             cfg.PredictiveLearningMaximumCells,
+		MaxAge:                   cfg.PredictiveLearningMaxAge,
+		LowerQuantile:            0.10,
+		UpperQuantile:            0.90,
+		MinimumTPSMultiplier:     cfg.PredictiveTPSMinimumMultiplier,
+		MaximumTPSMultiplier:     cfg.PredictiveTPSMaximumMultiplier,
+		MinimumLatencyMultiplier: cfg.PredictiveLatencyMinimumMultiplier,
+		MaximumLatencyMultiplier: cfg.PredictiveLatencyMaximumMultiplier,
+		CalibratedConfidence:     cfg.PredictiveLearnedConfidence,
+		DecodeSequenceBucket:     1,
+		ContextTokenBucket:       predictiveFeatureTokenBucket(protectedTokens, startup.BlockSize),
+		PrefillTokenBucket:       predictiveFeatureTokenBucket(protectedTokens, startup.BlockSize),
+		KVTokenBucket:            predictiveFeatureTokenBucket(protectedTokens, startup.BlockSize),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("construct predictive scheduler: %w", err)
+		return nil, fmt.Errorf("construct model-neutral predictive scheduler: %w", err)
 	}
 	coordinator, err := runtimepredictive.NewCountCoordinator(runtimepredictive.CountCoordinatorConfig{
 		Identity: runtimepredictive.CoordinatorIdentity{
-			ManifestID:   profile.manifest.ManifestID,
-			BackendEpoch: profile.manifest.BackendEpoch,
+			ManifestID:   predictiveApproximateManifestID,
+			BackendEpoch: backendEpoch,
 			Scheduler:    identity,
-			BlockSize:    profile.manifest.BlockSize,
+			BlockSize:    startup.BlockSize,
 		},
-		ModelMaximumLength: profile.manifest.ModelMaximumLength,
+		ModelMaximumLength: startup.CapacityTokens,
+		Initial: domainpredictive.VirtualState{
+			PhysicalKVUpper:     startup.UsedTokens,
+			ActiveKVUpper:       startup.UsedTokens,
+			DecodeSequences:     startup.Running + startup.Waiting,
+			ActiveContextTokens: startup.UsedTokens,
+		},
 		Constraints: domainpredictive.Constraints{
-			PhysicalKVHard:       profile.manifest.ProtectedKVTokens,
-			ActiveKVHard:         profile.manifest.ProtectedKVTokens,
-			UserTPSTarget:        profile.manifest.UserTPSTarget,
-			TTFTSLO:              time.Duration(profile.manifest.TTFTSLOMilliseconds) * time.Millisecond,
-			TPOTSLO:              time.Duration(profile.manifest.TPOTSLOMilliseconds) * time.Millisecond,
-			WorkspaceRiskBudget:  profile.manifest.WorkspaceRiskBudget,
-			PreemptionRiskBudget: profile.manifest.PreemptionRiskBudget,
-			MinimumConfidence:    profile.manifest.MinimumConfidence,
+			PhysicalKVHard:       protectedTokens,
+			ActiveKVHard:         protectedTokens,
+			UserTPSTarget:        targetTPS,
+			TTFTSLO:              ttftSLO,
+			TPOTSLO:              tpotSLO,
+			WorkspaceRiskBudget:  0,
+			PreemptionRiskBudget: 0,
+			MinimumConfidence:    cfg.PredictiveMinimumConfidence,
 		},
 		Scheduler: scheduler,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("construct predictive coordinator: %w", err)
+		return nil, fmt.Errorf("construct model-neutral predictive coordinator: %w", err)
 	}
-	counter, err := nativeffi.OpenCounter(nativeffi.CounterConfig{
-		TokenizerPath:              profile.tokenizerPath,
-		ManifestID:                 profile.manifest.ManifestID,
-		BackendEpoch:               profile.manifest.BackendEpoch,
-		CompletionAddSpecialTokens: *profile.manifest.CompletionAddSpecialTokens,
-		ChatAddSpecialTokens:       *profile.manifest.ChatAddSpecialTokens,
+	calibrator, err := runtimepredictive.NewInputSizeCalibrator(runtimepredictive.InputSizeCalibratorConfig{
+		EstimatorVersion:       predictiveApproximateEstimatorVersion,
+		MinimumSamples:         cfg.PredictiveLearningMinimumSamples,
+		MaximumSamplesPerClass: cfg.PredictiveLearningMaximumSamples,
+		MaxAge:                 cfg.PredictiveLearningMaxAge,
+		UpperQuantile:          cfg.PredictiveInputUpperQuantile,
+		SafetyMargin:           cfg.PredictiveInputSafetyMargin,
+		MinimumMultiplier:      cfg.PredictiveInputMinimumMultiplier,
+		MaximumMultiplier:      cfg.PredictiveInputMaximumMultiplier,
+		ColdConfidence:         cfg.PredictiveColdConfidence,
+		LearnedConfidence:      cfg.PredictiveLearnedConfidence,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open predictive count-only tokenizer: %w", err)
-	}
-	if err := verifyPredictiveAsset(profile.tokenizerPath, profile.manifest.Tokenizer.SHA256); err != nil {
-		_ = counter.Close()
-		return nil, fmt.Errorf("reverify predictive tokenizer after open: %w", err)
-	}
-	metricsURL, err := predictiveVLLMMetricsURL(cfg)
-	if err != nil {
-		_ = counter.Close()
-		return nil, err
+		return nil, fmt.Errorf("construct predictive input-size calibrator: %w", err)
 	}
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
-		MetricsURL:         metricsURL,
-		ServedModel:        profile.manifest.ServedModel,
-		MaximumKVTokens:    profile.manifest.MaximumKVTokens,
-		BlockSize:          profile.manifest.BlockSize,
-		PollInterval:       time.Duration(profile.manifest.MetricsPollIntervalMilliseconds) * time.Millisecond,
-		MaximumAge:         time.Duration(profile.manifest.MetricsMaximumAgeMilliseconds) * time.Millisecond,
-		RequestTimeout:     time.Duration(profile.manifest.MetricsRequestTimeoutMilliseconds) * time.Millisecond,
-		PreemptionCooldown: time.Duration(profile.manifest.PreemptionCooldownMilliseconds) * time.Millisecond,
-		Coordinator:        coordinator,
+		MetricsURL:           metricsURL,
+		ModelIdentitySHA256:  startup.ModelIdentitySHA256,
+		MaximumKVTokens:      startup.CapacityTokens,
+		BlockSize:            startup.BlockSize,
+		PollInterval:         cfg.DynamicPollInterval,
+		MaximumAge:           cfg.KVAdmissionPolicy.MaxMetricsAge,
+		RequestTimeout:       cfg.PredictiveMetricsRequestTimeout,
+		PreemptionCooldown:   cfg.KVAdmissionPolicy.PreemptionCooldown,
+		Coordinator:          coordinator,
+		LearningInvalidators: []predictiveLearningInvalidator{calibrator},
+		Initial:              startup,
 	})
 	if err != nil {
-		_ = counter.Close()
 		return nil, fmt.Errorf("construct predictive vLLM observer: %w", err)
 	}
-	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
-		Renderer:    renderer,
-		Counter:     counter,
-		Coordinator: coordinator,
-		Learner:     scheduler,
-		Upstream:    observer,
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:             calibrator,
+		Coordinator:            coordinator,
+		Learner:                scheduler,
+		Upstream:               observer,
+		Mode:                   cfg.PredictiveAdmissionMode,
+		ShadowObservationLimit: cfg.PredictiveShadowObservationLimit,
 	})
 	if err != nil {
 		_ = observer.Close()
-		_ = counter.Close()
 		return nil, err
 	}
 	return adapter, nil
+}
+
+func predictiveProtectedTokens(capacity int64, blockSize int, ratio float64) (int64, error) {
+	if capacity <= 0 || blockSize <= 0 || ratio <= 0 || ratio > 1 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
+		return 0, fmt.Errorf("predictive protected KV budget inputs are invalid")
+	}
+	tokens := int64(math.Floor(float64(capacity) * ratio))
+	tokens -= tokens % int64(blockSize)
+	if tokens <= 0 || tokens > capacity {
+		return 0, fmt.Errorf("predictive protected KV budget is empty or exceeds capacity")
+	}
+	return tokens, nil
+}
+
+func predictiveFeatureTokenBucket(protectedTokens int64, blockSize int) int64 {
+	bucket := protectedTokens / 64
+	if bucket < int64(blockSize) {
+		bucket = int64(blockSize)
+	}
+	remainder := bucket % int64(blockSize)
+	if remainder != 0 {
+		bucket += int64(blockSize) - remainder
+	}
+	return bucket
+}
+
+func predictiveSecondsDuration(seconds float64) (time.Duration, error) {
+	if seconds <= 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds > float64(math.MaxInt64)/float64(time.Second) {
+		return 0, fmt.Errorf("seconds value is invalid")
+	}
+	duration := time.Duration(seconds * float64(time.Second))
+	if duration <= 0 {
+		return 0, fmt.Errorf("seconds value rounds to zero")
+	}
+	return duration, nil
+}
+
+func predictiveTPOTTarget(targetTPS float64) (time.Duration, error) {
+	if targetTPS <= 0 || math.IsNaN(targetTPS) || math.IsInf(targetTPS, 0) {
+		return 0, fmt.Errorf("predictive TPS target is invalid")
+	}
+	duration := time.Duration(float64(time.Second) / targetTPS)
+	if duration <= 0 {
+		return 0, fmt.Errorf("predictive TPOT target rounds to zero")
+	}
+	return duration, nil
+}
+
+func predictiveTTFTPerToken(budget time.Duration, protectedTokens int64) time.Duration {
+	if budget <= 0 || protectedTokens <= 0 {
+		return 0
+	}
+	return time.Duration(int64(budget) / protectedTokens)
 }

@@ -60,7 +60,7 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFi
 	}
 	parsed, ok := tokenclassifier.ParseJSONFields(body, fields)
 	cost := unsupported
-	if c.cfg.KVAdmissionMode == "shadow" {
+	if c.cfg.KVAdmissionMode == "shadow" || predictiveAdmissionEnabled(c.cfg.PredictiveAdmissionMode) {
 		if !ok {
 			cost.UnsupportedReason = "invalid_json"
 		} else if requestContentTypeJSON(r.Header.Get("Content-Type")) {
@@ -69,11 +69,7 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (tokenclassifier.JSONFi
 			cost.UnsupportedReason = "unsupported_content_type"
 		}
 	}
-	var predictiveBody []byte
-	if predictiveAdmissionEnabled(c.cfg.PredictiveAdmissionMode) {
-		predictiveBody = append([]byte(nil), body...)
-	}
-	return parsed, cost, predictiveBody, ok
+	return parsed, cost, nil, ok
 }
 
 func requestContentTypeJSON(value string) bool {

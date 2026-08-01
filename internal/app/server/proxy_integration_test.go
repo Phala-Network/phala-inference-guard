@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/config/pigconfig"
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
 )
 
 func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
@@ -369,8 +371,31 @@ func testProxyConfig(upstream string) config {
 		DynamicKVRed:                       0.80,
 		DynamicWaitingYellow:               1,
 		DynamicWaitingRed:                  2,
+		DynamicUserTPSYellow:               25,
+		DynamicUserTPSRed:                  20,
+		DynamicTTFTPolicy:                  latency.DefaultPolicy(),
 		ProxyTimeout:                       10 * time.Second,
 		QoSQueuePoll:                       10 * time.Millisecond,
+		KVAdmissionPolicy:                  kvadmission.DefaultPolicy(),
+		KVAdmissionEstimator:               kvadmission.DefaultEstimatorConfig(),
+		PredictiveStartupProbeTimeout:      time.Second,
+		PredictiveMetricsRequestTimeout:    100 * time.Millisecond,
+		PredictiveLearningMinimumSamples:   3,
+		PredictiveLearningMaximumSamples:   64,
+		PredictiveLearningMaximumCells:     64,
+		PredictiveShadowObservationLimit:   256,
+		PredictiveLearningMaxAge:           30 * time.Minute,
+		PredictiveMinimumConfidence:        0.90,
+		PredictiveColdConfidence:           0.95,
+		PredictiveLearnedConfidence:        0.99,
+		PredictiveInputUpperQuantile:       0.95,
+		PredictiveInputSafetyMargin:        1.10,
+		PredictiveInputMinimumMultiplier:   0.25,
+		PredictiveInputMaximumMultiplier:   8,
+		PredictiveTPSMinimumMultiplier:     0.10,
+		PredictiveTPSMaximumMultiplier:     8,
+		PredictiveLatencyMinimumMultiplier: 0.50,
+		PredictiveLatencyMaximumMultiplier: 4,
 	}
 }
 

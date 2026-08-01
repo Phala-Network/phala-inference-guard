@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	simulationManifest  = "goodput-gemma4-count-only"
+	simulationManifest  = "goodput-model-agnostic-approximate"
 	simulationEpoch     = "goodput-vllm-epoch-1"
 	simulationBlock     = int64(64)
 	simulationCapacity  = int64(1_000_000)
@@ -40,6 +40,7 @@ type requestSpec struct {
 type scenarioSpec struct {
 	Name                 string
 	LongPromptSuite      bool
+	ColdStart            bool
 	Requests             []requestSpec
 	CurrentLimit         int
 	PollInterval         time.Duration
@@ -182,6 +183,11 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 	if err != nil {
 		return Metrics{}, err
 	}
+	if policy == PolicyPredictiveQoS && !scenario.ColdStart {
+		if err := warmPredictiveController(controller, profile, scenario); err != nil {
+			return Metrics{}, fmt.Errorf("warm predictive controller: %w", err)
+		}
+	}
 	state := &actualState{
 		initialKV:      scenario.InitialKVTokens,
 		initialRunning: scenario.InitialRunning,
@@ -285,6 +291,126 @@ func runScenario(scenario scenarioSpec, policy PolicyName) (Metrics, error) {
 	}
 	metrics.ReservationLeaks = controller.Reservations()
 	return metrics, nil
+}
+
+func warmPredictiveController(controller simulationController, profile serviceProfile, scenario scenarioSpec) error {
+	shapes := predictiveWarmupShapes(scenario)
+	if len(shapes) == 0 {
+		shapes = []requestSpec{request("predictive-warmup-fallback", 0, 49, 64, 64)}
+	}
+	start := simulationBaseTime.Add(-59 * time.Second)
+	step := 0
+	for shapeIndex, shape := range shapes {
+		safeConcurrency := matureSafeConcurrency(profile, shape)
+		singleSamples := 8
+		if safeConcurrency == 0 {
+			singleSamples = 4
+		}
+		for sample := 0; sample < singleSamples; sample++ {
+			now := start.Add(time.Duration(step) * 500 * time.Millisecond)
+			step++
+			candidate := shape
+			candidate.ID = fmt.Sprintf("predictive-warmup-s%d-single-%d", shapeIndex, sample)
+			if err := admitWarmupWave(controller, profile, now, []requestSpec{candidate}); err != nil {
+				return err
+			}
+		}
+		for concurrency := 2; concurrency <= safeConcurrency; concurrency++ {
+			for wave := 0; wave < 4; wave++ {
+				now := start.Add(time.Duration(step) * 500 * time.Millisecond)
+				step++
+				requests := make([]requestSpec, concurrency)
+				for index := range requests {
+					requests[index] = shape
+					requests[index].ID = fmt.Sprintf("predictive-warmup-s%d-c%d-w%d-%d", shapeIndex, concurrency, wave, index)
+				}
+				if err := admitWarmupWave(controller, profile, now, requests); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if reservations := controller.Reservations(); reservations != 0 {
+		return fmt.Errorf("warmup leaked %d reservations", reservations)
+	}
+	return nil
+}
+
+func predictiveWarmupShapes(scenario scenarioSpec) []requestSpec {
+	type shapeKey struct {
+		input, estimated, output int64
+	}
+	seen := make(map[shapeKey]struct{}, len(scenario.Requests))
+	result := make([]requestSpec, 0, len(scenario.Requests))
+	for _, candidate := range scenario.Requests {
+		cause := candidate.TerminalCause
+		if cause == "" {
+			cause = runtimepredictive.TerminalCompleted
+		}
+		if cause != runtimepredictive.TerminalCompleted || candidate.LocalReject || candidate.ActualOutput <= 0 {
+			continue
+		}
+		key := shapeKey{input: candidate.InputTokens, estimated: candidate.EstimatedInputHigh, output: candidate.OutputUpper}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+func admitWarmupWave(controller simulationController, profile serviceProfile, now time.Time, requests []requestSpec) error {
+	if err := controller.Observe(now, observedState{}); err != nil {
+		return fmt.Errorf("observe warmup wave: %w", err)
+	}
+	ids := make([]string, 0, len(requests))
+	var totalInput int64
+	for index, candidate := range requests {
+		admitted, reason := controller.Admit(now, candidate)
+		if !admitted {
+			if predictive, ok := controller.(*predictiveSimulationController); ok {
+				return fmt.Errorf("warmup concurrency %d request %d rejected as %s: prediction=%+v cost=%+v", len(requests), index, reason, predictive.lastAdmission.Prediction, predictive.lastAdmission.Cost)
+			}
+			return fmt.Errorf("warmup concurrency %d request %d rejected as %s", len(requests), index, reason)
+		}
+		controller.MarkForwarded(candidate.ID)
+		ids = append(ids, candidate.ID)
+		totalInput = addInt64(totalInput, candidate.InputTokens)
+	}
+	for _, id := range ids {
+		controller.MarkSemantic(id)
+	}
+	aggregateTPS := profile.baseCompletionTPS - profile.prefillPenaltyPerK*float64(totalInput)/1_000
+	if aggregateTPS < 0 {
+		aggregateTPS = 0
+	}
+	userTPS := aggregateTPS / float64(len(requests))
+	ttft := profile.baseTTFT + multiplyDuration(profile.backendTTFTPerToken, totalInput)
+	tpot := profile.baseTPOT + time.Duration(len(requests)-1)*profile.tpotPerExisting
+	for index, id := range ids {
+		controller.Terminate(now.Add(250*time.Millisecond), id, runtimepredictive.TerminalCompleted, simulatedRequestOutcome{
+			completionTokens: requests[index].ActualOutput, userTPS: userTPS, ttft: ttft, tpot: tpot,
+		})
+	}
+	return nil
+}
+
+func matureSafeConcurrency(profile serviceProfile, shape requestSpec) int {
+	result := 0
+	for concurrency := 1; concurrency <= 8; concurrency++ {
+		prefill := int64(concurrency) * shape.InputTokens
+		aggregateTPS := profile.baseCompletionTPS - profile.prefillPenaltyPerK*float64(prefill)/1_000
+		userTPS := aggregateTPS / float64(concurrency)
+		ttft := profile.baseTTFT + multiplyDuration(profile.backendTTFTPerToken, prefill)
+		tpot := profile.baseTPOT + time.Duration(concurrency-1)*profile.tpotPerExisting
+		projectedKV := int64(concurrency) * roundedTokens(shape.InputTokens+shape.OutputUpper)
+		if userTPS < profile.userTPSTarget || ttft > profile.ttftSLO || tpot > profile.tpotSLO || projectedKV > profile.protected {
+			break
+		}
+		result = concurrency
+	}
+	return result
 }
 
 func initialEvents(scenario scenarioSpec) []simulationEvent {
@@ -659,24 +785,33 @@ func (c *v090KVController) ReservedPhysicalKVUpper() int64 {
 }
 func (c *v090KVController) UsesExactTokenizer() bool { return false }
 
-type exactController struct {
-	coordinator    *runtimepredictive.CountCoordinator
-	identity       runtimepredictive.ModelIdentity
-	learnsTPS      bool
-	lastSample     time.Time
-	maxAge         time.Duration
-	cooldownUntil  time.Time
-	epochHealthy   bool
-	exactTokenizer bool
+type simulatedSizeReservation struct {
+	estimate runtimepredictive.InputSizeEstimate
+	actual   int64
 }
 
-func newExactController(policy PolicyName, profile serviceProfile) (*exactController, error) {
+type predictiveSimulationController struct {
+	coordinator      *runtimepredictive.CountCoordinator
+	identity         runtimepredictive.ModelIdentity
+	sizeCalibrator   *runtimepredictive.InputSizeCalibrator
+	sizeReservations map[string]simulatedSizeReservation
+	learnsQoS        bool
+	usesExactInput   bool
+	lastSample       time.Time
+	maxAge           time.Duration
+	cooldownUntil    time.Time
+	epochHealthy     bool
+	lastAdmission    runtimepredictive.CountAdmissionResult
+}
+
+func newPredictiveSimulationController(policy PolicyName, profile serviceProfile) (*predictiveSimulationController, error) {
 	identity := runtimepredictive.ModelIdentity{
 		ProfileID:        string(policy),
 		BackendEpoch:     simulationEpoch,
-		PredictorVersion: "goodput-static-v1",
+		PredictorVersion: "goodput-approximate-v1",
 	}
 	var scheduler runtimepredictive.Scheduler
+	var sizeCalibrator *runtimepredictive.InputSizeCalibrator
 	constraints := domainpredictive.Constraints{
 		PhysicalKVHard:    profile.protected,
 		ActiveKVHard:      profile.protected,
@@ -685,12 +820,12 @@ func newExactController(policy PolicyName, profile serviceProfile) (*exactContro
 	if policy == PolicyPredictiveQoS {
 		learned, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
 			Identity:                      identity,
-			BaseCompletionTPS:             profile.baseCompletionTPS,
-			PrefillTPSPenaltyPerKToken:    profile.prefillPenaltyPerK,
-			BaseTTFT:                      profile.baseTTFT,
-			TTFTPerUncachedPrefillToken:   profile.predictiveTTFTPerToken,
-			BaseTPOT:                      profile.baseTPOT,
-			TPOTPerExistingDecodeSequence: profile.tpotPerExisting,
+			BaseCompletionTPS:             profile.userTPSTarget,
+			PrefillTPSPenaltyPerKToken:    0,
+			BaseTTFT:                      profile.ttftSLO / 4,
+			TTFTPerUncachedPrefillToken:   (profile.ttftSLO - profile.ttftSLO/4) / time.Duration(profile.protected),
+			BaseTPOT:                      time.Duration(float64(time.Second) / profile.userTPSTarget / 2),
+			TPOTPerExistingDecodeSequence: time.Duration(float64(time.Second) / profile.userTPSTarget / 2),
 			Confidence:                    0.99,
 		}, runtimepredictive.ResidualCalibratorConfig{
 			Identity:                 identity,
@@ -700,10 +835,10 @@ func newExactController(policy PolicyName, profile serviceProfile) (*exactContro
 			MaxAge:                   time.Minute,
 			LowerQuantile:            0.10,
 			UpperQuantile:            0.90,
-			MinimumTPSMultiplier:     0.50,
-			MaximumTPSMultiplier:     1,
-			MinimumLatencyMultiplier: 1,
-			MaximumLatencyMultiplier: 2,
+			MinimumTPSMultiplier:     0.10,
+			MaximumTPSMultiplier:     8,
+			MinimumLatencyMultiplier: 0.50,
+			MaximumLatencyMultiplier: 4,
 			CalibratedConfidence:     0.99,
 			DecodeSequenceBucket:     1,
 			ContextTokenBucket:       1_024,
@@ -716,7 +851,22 @@ func newExactController(policy PolicyName, profile serviceProfile) (*exactContro
 		scheduler = learned
 		constraints.UserTPSTarget = profile.userTPSTarget
 		constraints.TTFTSLO = profile.ttftSLO
-		constraints.TPOTSLO = profile.tpotSLO
+		constraints.TPOTSLO = time.Duration(float64(time.Second) / profile.userTPSTarget)
+		sizeCalibrator, err = runtimepredictive.NewInputSizeCalibrator(runtimepredictive.InputSizeCalibratorConfig{
+			EstimatorVersion:       "goodput-json-cost-v1",
+			MinimumSamples:         4,
+			MaximumSamplesPerClass: 16,
+			MaxAge:                 time.Minute,
+			UpperQuantile:          0.95,
+			SafetyMargin:           1.10,
+			MinimumMultiplier:      0.25,
+			MaximumMultiplier:      8,
+			ColdConfidence:         0.99,
+			LearnedConfidence:      0.99,
+		})
+		if err != nil {
+			return nil, err
+		}
 	} else {
 		scheduler = constantSimulationScheduler{identity: identity}
 	}
@@ -734,66 +884,108 @@ func newExactController(policy PolicyName, profile serviceProfile) (*exactContro
 	if err != nil {
 		return nil, err
 	}
-	return &exactController{coordinator: coordinator, identity: identity, learnsTPS: policy == PolicyPredictiveQoS, maxAge: 750 * time.Millisecond, epochHealthy: true, exactTokenizer: true}, nil
+	return &predictiveSimulationController{
+		coordinator: coordinator, identity: identity, sizeCalibrator: sizeCalibrator,
+		sizeReservations: make(map[string]simulatedSizeReservation),
+		learnsQoS:        policy == PolicyPredictiveQoS, usesExactInput: policy == PolicyExactKVOnly,
+		maxAge: 750 * time.Millisecond, epochHealthy: true,
+	}, nil
 }
 
-func (c *exactController) Admit(now time.Time, request requestSpec) (bool, string) {
-	if request.ProfileMismatch || request.Unsupported || c.lastSample.IsZero() || now.Sub(c.lastSample) < 0 || now.Sub(c.lastSample) > c.maxAge || !c.epochHealthy || now.Before(c.cooldownUntil) {
+func (c *predictiveSimulationController) Admit(now time.Time, request requestSpec) (bool, string) {
+	if c == nil || c.lastSample.IsZero() || now.Sub(c.lastSample) < 0 || now.Sub(c.lastSample) > c.maxAge || !c.epochHealthy || now.Before(c.cooldownUntil) {
 		return false, "predictive_unknown"
 	}
-	result := c.coordinator.DecideAndReserve(now, runtimepredictive.CountAdmissionProposal{
-		RequestID: request.ID,
-		Analysis: runtimepredictive.TokenCountAnalysis{
-			ManifestID:       simulationManifest,
-			BackendEpoch:     simulationEpoch,
-			ExactInputTokens: request.InputTokens,
-		},
+	if c.usesExactInput && (request.ProfileMismatch || request.Unsupported) {
+		return false, "predictive_unknown"
+	}
+	inputUpper := request.InputTokens
+	rawInputHigh := request.InputTokens
+	confidence := 0.99
+	admissionLatency := tokenizerP95(request.InputTokens)
+	var size runtimepredictive.InputSizeEstimate
+	if c.sizeCalibrator != nil {
+		if request.EstimatedInputHigh <= 0 {
+			return false, "request_size_unknown"
+		}
+		rawLow := request.EstimatedInputHigh / 3
+		if rawLow < 1 {
+			rawLow = 1
+		}
+		size = c.sizeCalibrator.Estimate(now, runtimepredictive.RequestClassChat, rawLow, request.EstimatedInputHigh)
+		if !size.Known {
+			return false, "request_size_unknown"
+		}
+		inputUpper = size.InputTokensUpper
+		rawInputHigh = size.RawInputTokensHigh
+		confidence = size.Confidence
+		admissionLatency = approximateEstimatorP95(request.EstimatedInputHigh)
+	}
+	result := c.coordinator.DecideUpperBoundAndReserve(now, runtimepredictive.UpperBoundAdmissionProposal{
+		RequestID:                    request.ID,
+		InputTokensUpper:             inputUpper,
+		RawInputTokensHigh:           rawInputHigh,
 		DecodeHorizonUpper:           request.OutputUpper,
-		AccruedLocalAdmissionLatency: tokenizerP95(request.InputTokens),
-		Confidence:                   0.99,
+		AccruedLocalAdmissionLatency: admissionLatency,
+		Confidence:                   confidence,
 	})
+	c.lastAdmission = result
+	if result.Reserved && c.sizeCalibrator != nil {
+		c.sizeReservations[request.ID] = simulatedSizeReservation{estimate: size, actual: request.InputTokens}
+	}
 	return result.Reserved, string(result.Decision.Reason)
 }
 
-func (c *exactController) MarkSemantic(id string) {
+func (c *predictiveSimulationController) MarkSemantic(id string) {
 	c.coordinator.MarkPrefillComplete(id)
 }
 
-func (c *exactController) MarkForwarded(id string) {
+func (c *predictiveSimulationController) MarkForwarded(id string) {
 	c.coordinator.MarkForwarded(id)
 }
 
-func (c *exactController) Terminate(now time.Time, id string, cause runtimepredictive.TerminalCause, observed simulatedRequestOutcome) {
-	if !c.learnsTPS || cause == runtimepredictive.TerminalLocalQoSReject {
-		c.coordinator.Terminate(id, cause)
-		return
+func (c *predictiveSimulationController) Terminate(now time.Time, id string, cause runtimepredictive.TerminalCause, observed simulatedRequestOutcome) {
+	var outcome *runtimepredictive.SchedulerOutcome
+	if c.learnsQoS && cause != runtimepredictive.TerminalLocalQoSReject {
+		candidate := &runtimepredictive.SchedulerOutcome{
+			Identity: c.identity, ObservedAt: now, Attributed: true,
+		}
+		if cause == runtimepredictive.TerminalCompleted {
+			if observed.ttft > 0 {
+				candidate.TTFT = observed.ttft
+				candidate.TTFTValid = true
+			}
+			if observed.completionTokens > 1 && observed.userTPS > 0 && observed.tpot > 0 {
+				candidate.UserTPS = observed.userTPS
+				candidate.UserTPSValid = true
+				candidate.TPOT = observed.tpot
+				candidate.TPOTValid = true
+			}
+			if !candidate.TTFTValid && !candidate.UserTPSValid && !candidate.TPOTValid {
+				candidate.Censored = true
+			}
+		} else {
+			candidate.Censored = true
+		}
+		outcome = candidate
 	}
-	outcome := &runtimepredictive.SchedulerOutcome{
-		Identity:   c.identity,
-		ObservedAt: now,
-		Attributed: true,
-	}
-	if cause == runtimepredictive.TerminalCompleted {
-		if observed.ttft > 0 {
-			outcome.TTFT = observed.ttft
-			outcome.TTFTValid = true
-		}
-		if observed.completionTokens > 1 && observed.userTPS > 0 && observed.tpot > 0 {
-			outcome.UserTPS = observed.userTPS
-			outcome.UserTPSValid = true
-			outcome.TPOT = observed.tpot
-			outcome.TPOTValid = true
-		}
-		if !outcome.TTFTValid && !outcome.UserTPSValid && !outcome.TPOTValid {
-			outcome.Censored = true
-		}
+	if outcome != nil {
+		c.coordinator.TerminateWithOutcome(id, cause, outcome)
 	} else {
-		outcome.Censored = true
+		c.coordinator.Terminate(id, cause)
 	}
-	c.coordinator.TerminateWithOutcome(id, cause, outcome)
+	size, ok := c.sizeReservations[id]
+	delete(c.sizeReservations, id)
+	if ok && cause == runtimepredictive.TerminalCompleted {
+		_ = c.sizeCalibrator.Observe(runtimepredictive.InputSizeOutcome{
+			EstimatorVersion: size.estimate.EstimatorVersion,
+			Class:            size.estimate.Class, RawInputTokensHigh: size.estimate.RawInputTokensHigh,
+			ActualPromptTokens: size.actual, ObservedAt: now, Attributed: true,
+		})
+	}
 }
 
-func (c *exactController) Observe(now time.Time, observed observedState) error {
+func (c *predictiveSimulationController) Observe(now time.Time, observed observedState) error {
 	started := c.coordinator.StartSampleWindow()
 	finished := c.coordinator.EventSequence()
 	if err := c.coordinator.ReconcileSample(runtimepredictive.SampleWindow{
@@ -822,15 +1014,15 @@ func (c *exactController) Observe(now time.Time, observed observedState) error {
 	return nil
 }
 
-func (c *exactController) Reservations() int {
+func (c *predictiveSimulationController) Reservations() int {
 	return c.coordinator.Snapshot().Manager.Reservations
 }
 
-func (c *exactController) ReservedPhysicalKVUpper() int64 {
+func (c *predictiveSimulationController) ReservedPhysicalKVUpper() int64 {
 	return c.coordinator.Snapshot().Manager.Virtual.Upper.PhysicalKVUpper
 }
 
-func (c *exactController) UsesExactTokenizer() bool { return c.exactTokenizer }
+func (c *predictiveSimulationController) UsesExactTokenizer() bool { return c.usesExactInput }
 
 type constantSimulationScheduler struct {
 	identity runtimepredictive.ModelIdentity
@@ -856,7 +1048,7 @@ func newSimulationController(policy PolicyName, scenario scenarioSpec, profile s
 	case PolicyV090KVOnly:
 		return newV090KVController(), nil
 	case PolicyExactKVOnly, PolicyPredictiveQoS:
-		return newExactController(policy, profile)
+		return newPredictiveSimulationController(policy, profile)
 	default:
 		return nil, fmt.Errorf("unknown simulation policy %q", policy)
 	}
@@ -867,6 +1059,13 @@ func heuristicInputHigh(tokens int64) int64 {
 		return 1
 	}
 	return tokens + tokens/2
+}
+
+func approximateEstimatorP95(estimatedInputHigh int64) time.Duration {
+	if estimatedInputHigh <= 0 {
+		return 0
+	}
+	return 25*time.Microsecond + time.Duration(estimatedInputHigh/4_096)*time.Microsecond
 }
 
 func boolUint64(value bool) uint64 {
@@ -905,6 +1104,17 @@ func maxInt(left, right int) int {
 
 func acceptanceScenarios() []scenarioSpec {
 	return []scenarioSpec{
+		{Name: "cold_sparse_low_flow_progress", ColdStart: true, Requests: []requestSpec{
+			request("cold-sparse-1", 0, 49, 128, 128),
+			request("cold-sparse-2", 2*time.Second, 49, 128, 128),
+			request("cold-sparse-3", 4*time.Second, 49, 128, 128),
+			request("cold-sparse-4", 6*time.Second, 49, 128, 128),
+		}},
+		{Name: "cold_same_poll_tps_guard_and_drain_recovery", ColdStart: true, Requests: []requestSpec{
+			request("cold-guard-first", 0, 49, 128, 128),
+			request("cold-guard-concurrent", 0, 49, 128, 128),
+			request("cold-guard-after-drain", 2*time.Second, 49, 128, 128),
+		}},
 		{Name: "same_poll_short_burst_near_kv", InitialKVTokens: 700_000, Requests: burst("near-kv", 6, 0, 49, 39_936, 256)},
 		{Name: "mixed_short_64k_128k", LongPromptSuite: true, Requests: mixedPromptBurst()},
 		{Name: "long_prompt_short_decode", LongPromptSuite: true, Requests: []requestSpec{

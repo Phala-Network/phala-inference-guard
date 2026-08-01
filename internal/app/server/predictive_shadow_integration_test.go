@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -283,7 +282,7 @@ func TestPredictiveShadowPreservesUpstreamAndClientBytes(t *testing.T) {
 		t.Fatalf("client headers changed: off=%v shadow=%v", off.response.Header(), shadow.response.Header())
 	}
 	input, semantic, causes := shadow.shadow.snapshot(t)
-	if string(input.Body) != originalBody || input.Path != "/v1/chat/completions" || input.OutputTokens != 64 || !input.HasOutputTokens {
+	if input.Body != nil || !input.Cost.Supported || input.Cost.EstimatedInputHigh <= 0 || input.Path != "/v1/chat/completions" || input.OutputTokens != 64 || !input.HasOutputTokens {
 		t.Fatalf("predictive input = %+v", input)
 	}
 	if semantic != 0 || len(causes) != 1 || causes[0] != runtimepredictive.TerminalCompleted {
@@ -331,7 +330,7 @@ func TestPredictiveEnforceRejectsRiskBeforeAnyUpstreamAction(t *testing.T) {
 		t.Fatalf("total 429 = %d, want 1", got)
 	}
 	calls, input := admission.Snapshot()
-	if calls != 1 || string(input.Body) != body || input.Path != "/v1/chat/completions" || input.OutputTokens != 64 || !input.HasOutputTokens {
+	if calls != 1 || input.Body != nil || !input.Cost.Supported || input.Cost.EstimatedInputHigh <= 0 || input.Path != "/v1/chat/completions" || input.OutputTokens != 64 || !input.HasOutputTokens {
 		t.Fatalf("enforcing prediction calls/input = %d/%+v", calls, input)
 	}
 }
@@ -742,77 +741,13 @@ func TestPredictiveStreamingCopyFailureCannotCompleteTPSOutcome(t *testing.T) {
 	}
 }
 
-func TestPredictiveHTTPBackendTPSLearningRejectsLaterRiskBeforeUpstream(t *testing.T) {
-	response := "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n" +
-		"data: {\"choices\":[],\"usage\":{\"completion_tokens\":5},\"metrics\":{\"generation_time_ms\":80,\"mean_itl_ms\":20}}\n\n" +
-		"data: [DONE]\n\n"
-	backendCalls := 0
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		backendCalls++
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte(response))
-	}))
-	defer backend.Close()
-	clock := &adapterTestClock{now: time.Unix(4_000, 0)}
-	coordinator, scheduler := newAdapterTestCoordinatorAndSchedulerWithTargets(t, 75, time.Second)
-	adapter, err := newRealPredictiveShadow(realPredictiveShadowConfig{
-		Renderer:    &adapterTestRenderer{},
-		Counter:     newAdapterTestCounter(),
-		Coordinator: coordinator,
-		Learner:     scheduler,
-		Now:         clock.Now,
-	})
-	if err != nil {
-		t.Fatalf("new predictive adapter: %v", err)
-	}
-	cfg := testProxyConfig(backend.URL)
-	cfg.PredictiveAdmissionMode = "enforce"
-	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
-		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return adapter, nil },
-	})
-	if err != nil {
-		t.Fatalf("new enforcing server: %v", err)
-	}
-	serve := func() *httptest.ResponseRecorder {
-		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[],"stream":true,"stream_options":{"include_usage":true},"max_tokens":8}`))
-		request.Header.Set("Authorization", "Bearer secret")
-		request.Header.Set("Content-Type", "application/json")
-		request.Header.Set("Accept", "text/event-stream")
-		recorder := httptest.NewRecorder()
-		srv.ServeHTTP(recorder, request)
-		return recorder
-	}
-
-	for index := 0; index < 3; index++ {
-		recorder := serve()
-		if recorder.Code != http.StatusOK || recorder.Body.String() != response {
-			t.Fatalf("training response %d changed: status=%d body=%q", index, recorder.Code, recorder.Body.String())
-		}
-		clock.Advance(time.Second)
-	}
-	if backendCalls != 3 {
-		t.Fatalf("training backend calls = %d, want 3", backendCalls)
-	}
-	rejected := serve()
-	if rejected.Code != http.StatusTooManyRequests {
-		t.Fatalf("learned TPS risk status = %d body=%q, want 429", rejected.Code, rejected.Body.String())
-	}
-	if backendCalls != 3 {
-		t.Fatalf("learned TPS risk reached upstream: backend calls = %d", backendCalls)
-	}
-	attempt := adapter.Snapshot()
-	if attempt.LastReason != domainpredictive.ReasonNewTPSAtRisk || attempt.LastSource != runtimepredictive.PredictionSourceCalibrated || attempt.LastSamples != 3 {
-		t.Fatalf("learned HTTP decision = %+v", attempt)
-	}
-}
-
-func TestPredictiveShadowModeFailsClosedWithoutProfile(t *testing.T) {
+func TestPredictiveShadowModeFailsClosedWithoutMetrics(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer backend.Close()
 	cfg := testProxyConfig(backend.URL)
 	cfg.PredictiveAdmissionMode = "shadow"
-	if _, err := newProxyServer(cfg); err == nil || !strings.Contains(err.Error(), "PREDICTIVE_ADMISSION_PROFILE_PATH") {
-		t.Fatalf("newProxyServer error = %v, want missing-profile startup failure", err)
+	if _, err := newProxyServer(cfg); err == nil || !strings.Contains(err.Error(), "one vLLM metrics URL") {
+		t.Fatalf("newProxyServer error = %v, want missing-metrics startup failure", err)
 	}
 }
 

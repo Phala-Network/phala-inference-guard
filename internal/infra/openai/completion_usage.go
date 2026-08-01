@@ -16,6 +16,7 @@ const (
 )
 
 type CompletionUsage struct {
+	PromptTokens     int64
 	CompletionTokens int64
 	MeanITL          time.Duration
 	GenerationTime   time.Duration
@@ -202,6 +203,7 @@ type completionUsageEnvelope struct {
 }
 
 type completionUsageValue struct {
+	PromptTokens     *int64 `json:"prompt_tokens"`
 	CompletionTokens *int64 `json:"completion_tokens"`
 }
 
@@ -227,6 +229,9 @@ func decodeCompletionUsage(payload []byte, streaming bool) (CompletionUsage, boo
 	usage := CompletionUsage{CompletionTokens: *envelope.Usage.CompletionTokens}
 	if usage.CompletionTokens <= 0 {
 		return CompletionUsage{}, false
+	}
+	if envelope.Usage.PromptTokens != nil && *envelope.Usage.PromptTokens > 0 {
+		usage.PromptTokens = *envelope.Usage.PromptTokens
 	}
 	if envelope.Metrics != nil {
 		var ok bool

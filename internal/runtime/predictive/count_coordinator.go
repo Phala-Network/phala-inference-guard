@@ -75,6 +75,23 @@ func (c *CountCoordinator) DecideAndReserve(now time.Time, proposal CountAdmissi
 	}
 }
 
+func (c *CountCoordinator) DecideUpperBoundAndReserve(now time.Time, proposal UpperBoundAdmissionProposal) CountAdmissionResult {
+	if c == nil || c.manager == nil {
+		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+	}
+	cost, reason := buildUpperBoundRequestCost(c.identity, c.modelMaximumLength, proposal)
+	if reason != domain.ReasonFit {
+		return countAdmissionFailure(reason)
+	}
+	managerResult := c.manager.decideAndReserve(now, proposal.RequestID, cost.managerCost())
+	return CountAdmissionResult{
+		Decision:   managerResult.Decision,
+		Prediction: managerResult.Prediction,
+		Cost:       cost,
+		Reserved:   managerResult.Decision.Reason == domain.ReasonFit,
+	}
+}
+
 func (c *CountCoordinator) MarkPrefillComplete(requestID string) bool {
 	return c != nil && c.manager.MarkPrefillComplete(requestID)
 }
@@ -120,10 +137,25 @@ func (c *CountCoordinator) ObserveOutcome(requestID string, outcome SchedulerOut
 	return c != nil && c.manager.ObserveOutcome(requestID, outcome)
 }
 
+func (c *CountCoordinator) ObserveUnreservedOutcome(prediction SchedulerPrediction, cause TerminalCause, forwarded bool, outcome SchedulerOutcome) bool {
+	return c != nil && c.manager.ObserveUnreservedOutcome(prediction, cause, forwarded, outcome)
+}
+
+func (c *CountCoordinator) MarkLiveOutcomesInterfered() int {
+	if c == nil || c.manager == nil {
+		return 0
+	}
+	return c.manager.MarkLiveOutcomesInterfered()
+}
+
 func (c *CountCoordinator) InvalidateLearning() {
 	if c != nil && c.manager != nil {
 		c.manager.InvalidateLearning()
 	}
+}
+
+func (c *CountCoordinator) InvalidateEpoch() bool {
+	return c != nil && c.manager != nil && c.manager.InvalidateEpoch()
 }
 
 func (c *CountCoordinator) Snapshot() CountCoordinatorSnapshot {

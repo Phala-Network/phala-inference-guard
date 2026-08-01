@@ -77,6 +77,7 @@ type reservation struct {
 	Cost                     domain.RequestCost
 	Prediction               SchedulerPrediction
 	OutcomeObserved          bool
+	OutcomeInterfered        bool
 	Forwarded                bool
 	PrefillComplete          bool
 	TerminalCause            TerminalCause
@@ -141,6 +142,7 @@ type SampleWindow struct {
 type Manager struct {
 	mu                 sync.Mutex
 	manifestID         string
+	intakeOpen         bool
 	base               domain.VirtualStateInterval
 	constraints        domain.Constraints
 	scheduler          Scheduler
@@ -153,6 +155,7 @@ type Manager struct {
 }
 
 type Snapshot struct {
+	IntakeOpen          bool
 	Reservations        int
 	ReservedPhysicalKV  int64
 	ReservedActiveKV    int64
@@ -170,6 +173,7 @@ type managerAdmissionResult struct {
 func NewManager(manifestID string, base domain.VirtualState, constraints domain.Constraints, scheduler Scheduler) *Manager {
 	return &Manager{
 		manifestID: manifestID,
+		intakeOpen: true,
 		base: domain.VirtualStateInterval{
 			Lower: base,
 			Upper: base,
@@ -191,6 +195,9 @@ func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if !m.intakeOpen {
+		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
+	}
 	if m.manifestID == "" || cost.ManifestID == "" || cost.ManifestID != m.manifestID {
 		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonTokenizerProfileUnknown}}
 	}
@@ -223,6 +230,7 @@ func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.
 		Confidence:  minimumConfidence(cost.Confidence, prediction.Confidence),
 	})
 	if decision.Reason == domain.ReasonFit {
+		m.markLiveOutcomesInterferedLocked()
 		m.eventSequence++
 		m.reservations[requestID] = reservation{
 			ID:               requestID,
@@ -237,6 +245,31 @@ func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.
 		Decision:   decision,
 		Prediction: prediction,
 	}
+}
+
+// MarkLiveOutcomesInterfered censors QoS outcomes whose original prediction
+// did not include later work. It changes learning eligibility only; accounting
+// reservations and the virtual resource state are unchanged.
+func (m *Manager) MarkLiveOutcomesInterfered() int {
+	if m == nil {
+		return 0
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.markLiveOutcomesInterferedLocked()
+}
+
+func (m *Manager) markLiveOutcomesInterferedLocked() int {
+	marked := 0
+	for id, live := range m.reservations {
+		if live.OutcomeObserved || live.OutcomeInterfered {
+			continue
+		}
+		live.OutcomeInterfered = true
+		m.reservations[id] = live
+		marked++
+	}
+	return marked
 }
 
 func (m *Manager) MarkForwarded(requestID string) bool {
@@ -284,12 +317,35 @@ func (m *Manager) ObserveOutcome(requestID string, outcome SchedulerOutcome) boo
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item, exists := m.reservations[requestID]
-	if !exists || !item.Forwarded || item.OutcomeObserved || !observeSchedulerOutcome(observer, item.Prediction, outcome) {
+	if !exists || !item.Forwarded || item.OutcomeObserved {
+		return false
+	}
+	outcome.Censored = outcome.Censored || item.OutcomeInterfered
+	if !observeSchedulerOutcome(observer, item.Prediction, outcome) {
 		return false
 	}
 	item.OutcomeObserved = true
 	m.reservations[requestID] = item
 	return true
+}
+
+// ObserveUnreservedOutcome trains a later prediction from qualified shadow
+// work without creating, releasing, or otherwise mutating resource accounting.
+func (m *Manager) ObserveUnreservedOutcome(prediction SchedulerPrediction, cause TerminalCause, forwarded bool, outcome SchedulerOutcome) bool {
+	if m == nil || cause.Validate() != nil || !cause.allowsOutcome(forwarded, outcome) {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.intakeOpen || m.scheduler == nil {
+		return false
+	}
+	identity := m.scheduler.Identity()
+	if identity.Validate() != nil || prediction.Identity != identity || !validSchedulerPrediction(prediction) {
+		return false
+	}
+	observer, ok := m.scheduler.(SchedulerObserver)
+	return ok && observeSchedulerOutcome(observer, prediction, outcome)
 }
 
 func (m *Manager) Complete(requestID string) bool {
@@ -313,9 +369,13 @@ func (m *Manager) TerminateWithOutcome(requestID string, cause TerminalCause, ou
 	if !exists {
 		return false
 	}
-	if outcome != nil && cause.allowsOutcome(item.Forwarded, *outcome) && !item.OutcomeObserved {
-		if observer, ok := m.scheduler.(SchedulerObserver); ok && observeSchedulerOutcome(observer, item.Prediction, *outcome) {
-			item.OutcomeObserved = true
+	if outcome != nil && !item.OutcomeObserved {
+		qualified := *outcome
+		qualified.Censored = qualified.Censored || item.OutcomeInterfered
+		if cause.allowsOutcome(item.Forwarded, qualified) {
+			if observer, ok := m.scheduler.(SchedulerObserver); ok && observeSchedulerOutcome(observer, item.Prediction, qualified) {
+				item.OutcomeObserved = true
+			}
 		}
 	}
 	m.eventSequence++
@@ -345,6 +405,18 @@ func (m *Manager) InvalidateLearning() bool {
 	}
 	invalidator.InvalidateLearning()
 	return true
+}
+
+func (m *Manager) InvalidateEpoch() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	changed := m.intakeOpen
+	m.intakeOpen = false
+	m.mu.Unlock()
+	m.InvalidateLearning()
+	return changed
 }
 
 func (m *Manager) EventSequence() uint64 {
@@ -431,6 +503,7 @@ func (m *Manager) Snapshot() Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := Snapshot{
+		IntakeOpen:          m.intakeOpen,
 		Reservations:        len(m.reservations),
 		EventSequence:       m.eventSequence,
 		RetiredReservations: m.retired.Len(),
@@ -525,6 +598,9 @@ func subtractIntFloorZero(value, decrement int) int {
 
 func validRequestCost(cost domain.RequestCost) bool {
 	if cost.InputTokens < 0 || cost.UncachedPrefillUpper != cost.InputTokens {
+		return false
+	}
+	if cost.RequestComplexityTokensUpper < 0 || (cost.RequestComplexityTokensUpper > 0 && cost.RequestComplexityTokensUpper < cost.InputTokens) {
 		return false
 	}
 	if cost.DecodeHorizonUpper < 0 || cost.DecodeSequencesUpper != 1 || cost.InputTokens > math.MaxInt64-cost.DecodeHorizonUpper {

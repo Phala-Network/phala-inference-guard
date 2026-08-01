@@ -31,7 +31,9 @@ func Load() (Config, error) {
 	if err := loadKVAdmissionConfig(&cfg); err != nil {
 		return Config{}, err
 	}
-	loadPredictiveAdmissionConfig(&cfg)
+	if err := loadPredictiveAdmissionConfig(&cfg); err != nil {
+		return Config{}, err
+	}
 	if err := loadSSEConfig(&cfg); err != nil {
 		return Config{}, err
 	}

@@ -53,9 +53,12 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	decisionStart := time.Now()
 	estimatorStart := time.Now()
 	classification := s.classifyRequest(r)
+	if s.kvShadow != nil || predictiveAdmissionEnabled(s.cfg.PredictiveAdmissionMode) {
+		s.kvEstimatorDuration.Observe(time.Since(estimatorStart))
+	}
 	predictiveReservation := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
 		Path:             r.URL.Path,
-		Body:             classification.PredictiveBody,
+		Cost:             classification.KVCost,
 		RequestStartedAt: requestStart,
 		OutputTokens:     classification.PredictiveOutputTokens,
 		HasOutputTokens:  classification.PredictiveHasOutputTokens,
@@ -70,9 +73,6 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	predictiveCause := runtimepredictive.TerminalClientCancelled
 	if predictiveReservation != nil {
 		defer func() { predictiveReservation.Terminate(predictiveCause) }()
-	}
-	if s.kvShadow != nil {
-		s.kvEstimatorDuration.Observe(time.Since(estimatorStart))
 	}
 	releaseKVShadow := s.shadowKVRequest(classification.KVCost)
 	defer releaseKVShadow()

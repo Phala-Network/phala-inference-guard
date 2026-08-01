@@ -1,6 +1,7 @@
 package predictive
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -18,8 +19,27 @@ type panickingOutcomeScheduler struct {
 	safeScheduler
 }
 
+type recordingOutcomeScheduler struct {
+	safeScheduler
+	mu       sync.Mutex
+	outcomes []SchedulerOutcome
+}
+
 func (panickingOutcomeScheduler) Observe(SchedulerPrediction, SchedulerOutcome) error {
 	panic("injected scheduler outcome panic")
+}
+
+func (s *recordingOutcomeScheduler) Observe(_ SchedulerPrediction, outcome SchedulerOutcome) error {
+	s.mu.Lock()
+	s.outcomes = append(s.outcomes, outcome)
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *recordingOutcomeScheduler) snapshot() []SchedulerOutcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]SchedulerOutcome(nil), s.outcomes...)
 }
 
 func (safeScheduler) Identity() ModelIdentity {
@@ -109,6 +129,90 @@ func TestManagerTerminalObserverPanicStillReleasesReservation(t *testing.T) {
 	}
 	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 {
 		t.Fatalf("terminal observer panic leaked reservation: %+v", snapshot)
+	}
+}
+
+func TestManagerCensorsOutcomeWhenLaterAdmissionChangesItsProspectiveState(t *testing.T) {
+	scheduler := &recordingOutcomeScheduler{}
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), scheduler)
+	now := time.Unix(550, 0)
+	for _, id := range []string{"first", "second"} {
+		if decision := manager.DecideAndReserve(now, id, testRequest()); decision.Reason != domain.ReasonFit {
+			t.Fatalf("%s admission reason = %s, want fit", id, decision.Reason)
+		}
+		if !manager.MarkForwarded(id) {
+			t.Fatalf("%s reservation was not forwarded", id)
+		}
+	}
+	outcome := SchedulerOutcome{
+		Identity: safeSchedulerIdentity(), ObservedAt: now.Add(time.Second), Attributed: true,
+		UserTPS: 30, UserTPSValid: true,
+	}
+	if !manager.TerminateWithOutcome("first", TerminalCompleted, &outcome) || !manager.TerminateWithOutcome("second", TerminalCompleted, &outcome) {
+		t.Fatal("concurrent terminal outcome was rejected")
+	}
+	outcomes := scheduler.snapshot()
+	if len(outcomes) != 2 || !outcomes[0].Censored || outcomes[1].Censored {
+		t.Fatalf("causal outcome qualification = %+v, want first censored and final-state request qualified", outcomes)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 {
+		t.Fatalf("causal outcome qualification leaked reservation: %+v", snapshot)
+	}
+}
+
+func TestManagerObservesQualifiedUnreservedOutcomeWithoutChangingAccounting(t *testing.T) {
+	scheduler := &recordingOutcomeScheduler{}
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), scheduler)
+	now := time.Unix(575, 0)
+	prediction := scheduler.Predict(now, domain.VirtualState{}, testRequest())
+	outcome := SchedulerOutcome{
+		Identity: safeSchedulerIdentity(), ObservedAt: now.Add(time.Second), Attributed: true,
+		UserTPS: 30, UserTPSValid: true,
+	}
+	if !manager.ObserveUnreservedOutcome(prediction, TerminalCompleted, true, outcome) {
+		t.Fatal("qualified unreserved outcome was rejected")
+	}
+	if manager.ObserveUnreservedOutcome(prediction, TerminalLocalQoSReject, false, outcome) {
+		t.Fatal("unforwarded local rejection trained an unreserved outcome")
+	}
+	observed := scheduler.snapshot()
+	if len(observed) != 1 || observed[0].Censored {
+		t.Fatalf("unreserved outcomes = %+v, want one qualified sample", observed)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 || snapshot.ReservedPhysicalKV != 0 || snapshot.ReservedActiveKV != 0 {
+		t.Fatalf("unreserved outcome changed accounting: %+v", snapshot)
+	}
+}
+
+func TestManagerCensorsLiveReservationWhenUnreservedShadowWorkForwards(t *testing.T) {
+	scheduler := &recordingOutcomeScheduler{}
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), scheduler)
+	now := time.Unix(590, 0)
+	if decision := manager.DecideAndReserve(now, "existing", testRequest()); decision.Reason != domain.ReasonFit {
+		t.Fatalf("existing admission reason = %s, want fit", decision.Reason)
+	}
+	if !manager.MarkForwarded("existing") {
+		t.Fatal("existing reservation was not forwarded")
+	}
+	if marked := manager.MarkLiveOutcomesInterfered(); marked != 1 {
+		t.Fatalf("interfered reservations = %d, want 1", marked)
+	}
+	if marked := manager.MarkLiveOutcomesInterfered(); marked != 0 {
+		t.Fatalf("duplicate interference marks = %d, want 0", marked)
+	}
+	outcome := SchedulerOutcome{
+		Identity: safeSchedulerIdentity(), ObservedAt: now.Add(time.Second), Attributed: true,
+		UserTPS: 30, UserTPSValid: true,
+	}
+	if !manager.TerminateWithOutcome("existing", TerminalCompleted, &outcome) {
+		t.Fatal("interfered existing reservation did not terminate")
+	}
+	observed := scheduler.snapshot()
+	if len(observed) != 1 || !observed[0].Censored {
+		t.Fatalf("interfered reservation outcomes = %+v, want one censored sample", observed)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 {
+		t.Fatalf("interference censoring leaked accounting: %+v", snapshot)
 	}
 }
 
@@ -240,6 +344,87 @@ func TestConcurrentPredictAndReserveIsAtomic(t *testing.T) {
 	snapshot := manager.Snapshot()
 	if snapshot.Reservations != 1 || snapshot.ReservedPhysicalKV != 10_000 {
 		t.Fatalf("snapshot = %+v, want one 10k reservation", snapshot)
+	}
+}
+
+func TestConcurrentDecideReconcileTerminateInvalidateAndSnapshotAreBounded(t *testing.T) {
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	constraints := testConstraints()
+	constraints.PhysicalKVHard = 1_000_000
+	constraints.ActiveKVHard = 1_000_000
+	constraints.UserTPSTarget = 0
+	manager := NewManager("test-profile", domain.VirtualState{}, constraints, scheduler)
+	now := time.Unix(750, 0)
+	seedIDs := make([]string, 8)
+	for index := range seedIDs {
+		id := fmt.Sprintf("seed-%d", index)
+		seedIDs[index] = id
+		if result := manager.decideAndReserve(now, id, learnedTestCost()); result.Decision.Reason != domain.ReasonFit {
+			t.Fatalf("seed %d admission = %+v", index, result)
+		}
+		manager.MarkForwarded(id)
+	}
+
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for index := 0; index < 64; index++ {
+		workers.Add(1)
+		go func(index int) {
+			defer workers.Done()
+			<-start
+			id := fmt.Sprintf("candidate-%d", index)
+			result := manager.decideAndReserve(now.Add(time.Duration(index)*time.Millisecond), id, learnedTestCost())
+			if result.Decision.Reason == domain.ReasonFit {
+				manager.MarkForwarded(id)
+				manager.MarkPrefillComplete(id)
+				manager.Terminate(id, TerminalClientCancelled)
+			}
+		}(index)
+	}
+	for _, id := range seedIDs {
+		workers.Add(1)
+		go func(id string) {
+			defer workers.Done()
+			<-start
+			manager.Terminate(id, TerminalCompleted)
+		}(id)
+	}
+	workers.Add(3)
+	go func() {
+		defer workers.Done()
+		<-start
+		for index := 0; index < 128; index++ {
+			started := manager.StartSampleWindow()
+			finished := manager.EventSequence()
+			_ = manager.ReconcileSample(SampleWindow{Observed: domain.VirtualState{}, StartedSequence: started, FinishedSequence: finished})
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		for index := 0; index < 128; index++ {
+			manager.InvalidateLearning()
+			_ = manager.Snapshot()
+		}
+	}()
+	go func() {
+		defer workers.Done()
+		<-start
+		manager.InvalidateEpoch()
+	}()
+	close(start)
+	done := make(chan struct{})
+	go func() {
+		workers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("concurrent manager lifecycle did not complete")
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.IntakeOpen {
+		t.Fatalf("concurrent manager final state = %+v, want closed intake with zero reservations", snapshot)
 	}
 }
 
@@ -632,6 +817,33 @@ func TestReconcileRetiredQueuePreservesSequenceSemantics(t *testing.T) {
 	snapshot = manager.Snapshot()
 	if snapshot.Virtual.Lower.PhysicalKVUpper != 800 || snapshot.Virtual.Upper.PhysicalKVUpper != 800 || snapshot.RetiredReservations != 0 {
 		t.Fatalf("clean retirement snapshot = %+v, want exact physical KV 800 and empty queue", snapshot)
+	}
+}
+
+func TestManagerEpochInvalidationClosesIntakeButPreservesTerminalRelease(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	first := manager.DecideAndReserve(time.Unix(20_000, 0), "in-flight", testRequest())
+	if first.Reason != domain.ReasonFit {
+		t.Fatalf("initial reservation = %+v", first)
+	}
+	if !manager.InvalidateEpoch() {
+		t.Fatal("first epoch invalidation did not close intake")
+	}
+	if manager.InvalidateEpoch() {
+		t.Fatal("duplicate epoch invalidation reported a state change")
+	}
+	blocked := manager.DecideAndReserve(time.Unix(20_001, 0), "after-drift", testRequest())
+	if blocked.Reason != domain.ReasonPredictorProfileUnknown {
+		t.Fatalf("post-drift admission = %+v, want closed intake", blocked)
+	}
+	if snapshot := manager.Snapshot(); snapshot.IntakeOpen || snapshot.Reservations != 1 {
+		t.Fatalf("quarantined snapshot = %+v, want closed intake with owned reservation", snapshot)
+	}
+	if !manager.Terminate("in-flight", TerminalExpired) {
+		t.Fatal("quarantined in-flight reservation could not terminate")
+	}
+	if snapshot := manager.Snapshot(); snapshot.IntakeOpen || snapshot.Reservations != 0 || snapshot.ReservedPhysicalKV != 0 {
+		t.Fatalf("post-terminal quarantined snapshot = %+v", snapshot)
 	}
 }
 

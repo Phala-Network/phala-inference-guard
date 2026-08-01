@@ -6,7 +6,7 @@ const (
 	PolicyCurrentThreshold PolicyName = "current_threshold"
 	PolicyV090KVOnly       PolicyName = "v0.9.0_kv_only"
 	PolicyExactKVOnly      PolicyName = "exact_token_kv_only"
-	PolicyPredictiveQoS    PolicyName = "exact_token_kv_qos"
+	PolicyPredictiveQoS    PolicyName = "model_agnostic_approximate_qos"
 )
 
 type Metrics struct {

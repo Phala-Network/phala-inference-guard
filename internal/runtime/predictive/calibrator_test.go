@@ -123,7 +123,7 @@ func TestLearnedSchedulerCalibratesPerUserTPSAndLatencyTargets(t *testing.T) {
 	}
 }
 
-func TestLearnedSchedulerGloballyBoundsCellsAndEvictsOldest(t *testing.T) {
+func TestLearnedSchedulerBoundsCellsAndRetainsBoundedGlobalFallback(t *testing.T) {
 	now := time.Unix(2_700, 0)
 	config := testResidualConfig()
 	config.MinimumSamples = 1
@@ -145,11 +145,20 @@ func TestLearnedSchedulerGloballyBoundsCellsAndEvictsOldest(t *testing.T) {
 			t.Fatalf("observe cell %d: %v", index, err)
 		}
 	}
-	if snapshot := scheduler.Snapshot(); snapshot.Cells != 2 {
-		t.Fatalf("globally bounded snapshot = %+v, want two cells", snapshot)
+	if snapshot := scheduler.Snapshot(); snapshot.Cells != 2 || snapshot.GlobalSamples != len(states) || snapshot.GlobalSamples > config.MaximumSamplesPerCell {
+		t.Fatalf("globally bounded snapshot = %+v, want two cells and bounded fallback", snapshot)
 	}
-	if oldest := scheduler.Predict(now.Add(10*time.Second), states[0], cost); oldest.Source != PredictionSourceStatic {
-		t.Fatalf("oldest cell was not evicted deterministically: %+v", oldest)
+	oldestKey := scheduler.featureCell(schedulerFeatures(states[0], cost))
+	newestKey := scheduler.featureCell(schedulerFeatures(states[2], cost))
+	scheduler.mu.Lock()
+	_, oldestExists := scheduler.cells[oldestKey]
+	_, newestExists := scheduler.cells[newestKey]
+	scheduler.mu.Unlock()
+	if oldestExists || !newestExists {
+		t.Fatalf("deterministic cell eviction = oldest %t newest %t, want false/true", oldestExists, newestExists)
+	}
+	if oldest := scheduler.Predict(now.Add(10*time.Second), states[0], cost); oldest.Source != PredictionSourceCalibrated {
+		t.Fatalf("evicted cell did not use bounded global fallback: %+v", oldest)
 	}
 	if newest := scheduler.Predict(now.Add(10*time.Second), states[2], cost); newest.Source != PredictionSourceCalibrated {
 		t.Fatalf("newest cell was unexpectedly evicted: %+v", newest)
@@ -164,7 +173,7 @@ func TestResidualCalibratorRequiresGlobalCellBound(t *testing.T) {
 	}
 }
 
-func TestFreshCensoredOutcomeDisablesOptimisticHeadroom(t *testing.T) {
+func TestFreshCensoredOutcomeIsRejectedWithoutChangingQualifiedHeadroom(t *testing.T) {
 	now := time.Unix(2_800, 0)
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
 	state := learnedTestState()
@@ -179,20 +188,20 @@ func TestFreshCensoredOutcomeDisablesOptimisticHeadroom(t *testing.T) {
 	prediction := scheduler.Predict(now.Add(4*time.Second), state, cost)
 	censored := healthyLearnedOutcome(prediction, now.Add(4500*time.Millisecond))
 	censored.Censored = true
-	if err := scheduler.Observe(prediction, censored); err != nil {
-		t.Fatalf("observe censored terminal: %v", err)
+	if err := scheduler.Observe(prediction, censored); err == nil {
+		t.Fatal("censored terminal was accepted as training")
 	}
 
 	guarded := scheduler.Predict(now.Add(5*time.Second), state, cost)
-	if guarded.Estimate.ExistingUserTPSLower > guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower > guarded.Prior.NewUserTPSLower {
-		t.Fatalf("censored cell retained optimistic TPS headroom: %+v", guarded)
+	if guarded.Estimate.ExistingUserTPSLower <= guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower <= guarded.Prior.NewUserTPSLower {
+		t.Fatalf("censored outcome poisoned qualified TPS headroom: %+v", guarded)
 	}
-	if guarded.Estimate.TTFTUpper < guarded.Prior.TTFTUpper || guarded.Estimate.TPOTUpper < guarded.Prior.TPOTUpper {
-		t.Fatalf("censored cell retained optimistic latency headroom: %+v", guarded)
+	if guarded.Estimate.TTFTUpper >= guarded.Prior.TTFTUpper || guarded.Estimate.TPOTUpper >= guarded.Prior.TPOTUpper {
+		t.Fatalf("censored outcome poisoned qualified latency headroom: %+v", guarded)
 	}
 }
 
-func TestFreshPartialOutcomeWithoutTPSDisablesOptimisticTPSHeadroom(t *testing.T) {
+func TestFreshPartialOutcomeWithoutTPSDoesNotPoisonQualifiedTPSHeadroom(t *testing.T) {
 	now := time.Unix(2_825, 0)
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
 	state := learnedTestState()
@@ -219,12 +228,12 @@ func TestFreshPartialOutcomeWithoutTPSDisablesOptimisticTPSHeadroom(t *testing.T
 	}
 
 	guarded := scheduler.Predict(now.Add(5*time.Second), state, cost)
-	if guarded.Estimate.ExistingUserTPSLower > guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower > guarded.Prior.NewUserTPSLower {
-		t.Fatalf("fresh outcome without TPS retained optimistic TPS headroom: %+v", guarded)
+	if guarded.Estimate.ExistingUserTPSLower <= guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower <= guarded.Prior.NewUserTPSLower {
+		t.Fatalf("fresh outcome without TPS poisoned qualified TPS headroom: %+v", guarded)
 	}
 }
 
-func TestCensoredOutcomeWithoutMetricTargetsIsAcceptedAsSafetyEvidence(t *testing.T) {
+func TestCensoredOutcomeWithoutMetricTargetsIsRejected(t *testing.T) {
 	now := time.Unix(2_850, 0)
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
 	prediction := scheduler.Predict(now, learnedTestState(), learnedTestCost())
@@ -233,11 +242,11 @@ func TestCensoredOutcomeWithoutMetricTargetsIsAcceptedAsSafetyEvidence(t *testin
 		ObservedAt: now.Add(time.Second),
 		Attributed: true,
 		Censored:   true,
-	}); err != nil {
-		t.Fatalf("observe targetless censored outcome: %v", err)
+	}); err == nil {
+		t.Fatal("targetless censored outcome was accepted")
 	}
-	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 1 || snapshot.SamplesRejected != 0 {
-		t.Fatalf("targetless censored snapshot = %+v, want one accepted safety sample", snapshot)
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 0 || snapshot.SamplesRejected != 1 || snapshot.GlobalSamples != 0 {
+		t.Fatalf("targetless censored snapshot = %+v, want one rejected non-sample", snapshot)
 	}
 }
 

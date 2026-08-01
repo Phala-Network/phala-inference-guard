@@ -28,6 +28,7 @@ type VirtualStateInterval struct {
 type RequestCost struct {
 	ManifestID                   string
 	InputTokens                  int64
+	RequestComplexityTokensUpper int64
 	AccruedLocalAdmissionLatency time.Duration
 	KV                           KVIncrement
 	FutureKV                     KVIncrement
@@ -73,6 +74,7 @@ const (
 	ReasonWorkspaceAtRisk         Reason = "workspace_at_risk"
 	ReasonPreemptionAtRisk        Reason = "preemption_at_risk"
 	ReasonTokenizerProfileUnknown Reason = "tokenizer_profile_unknown"
+	ReasonRequestSizeUnknown      Reason = "request_size_unknown"
 	ReasonPredictorProfileUnknown Reason = "predictor_profile_unknown"
 	ReasonDuplicateRequest        Reason = "duplicate_request"
 )

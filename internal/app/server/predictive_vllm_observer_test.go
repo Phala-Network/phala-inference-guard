@@ -51,6 +51,16 @@ func (c *learningInvalidationCoordinator) InvalidateLearning() {
 	c.mu.Unlock()
 }
 
+func (c *learningInvalidationCoordinator) InvalidateEpoch() bool {
+	c.mu.Lock()
+	c.count++
+	c.mu.Unlock()
+	if invalidator, ok := c.delegate.(predictiveEpochInvalidator); ok {
+		return invalidator.InvalidateEpoch()
+	}
+	return false
+}
+
 func (c *learningInvalidationCoordinator) Invalidations() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -112,32 +122,26 @@ func (f *observerMetricsFixture) Set(body string) {
 	f.mu.Unlock()
 }
 
-func TestPredictiveVLLMObserverFailsClosedOnCapacityAndTokenMetricMismatch(t *testing.T) {
+func TestPredictiveVLLMObserverRecoversTransientMetricsButQuarantinesCapacityDrift(t *testing.T) {
 	clock := &adapterTestClock{now: time.Unix(4_000, 0)}
 	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 0)
-	fixture := &observerMetricsFixture{body: observerMetrics(2_000, 0.25, 1, 0, 0, true)}
+	fixture := &observerMetricsFixture{body: observerMetrics(1_000, 0.25, 1, 0, 0, false)}
 	server := httptest.NewServer(fixture)
 	defer server.Close()
 	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
 
 	observer.poll(context.Background())
 	if observer.Healthy(clock.Now()) {
-		t.Fatal("capacity-mismatched vLLM sample became healthy")
+		t.Fatal("incomplete vLLM sample became healthy")
 	}
-	if snapshot := coordinator.Snapshot(); snapshot.Manager.Virtual.Upper.PhysicalKVUpper != 0 {
-		t.Fatalf("capacity mismatch mutated predictive state: %+v", snapshot)
-	}
-
-	fixture.Set(observerMetrics(1_000, 0.25, 1, 0, 0, false))
-	observer.poll(context.Background())
-	if observer.Healthy(clock.Now()) {
-		t.Fatal("sample without KV token capacity became healthy")
+	if snapshot := coordinator.Snapshot(); !snapshot.Manager.IntakeOpen || snapshot.Manager.Virtual.Upper.PhysicalKVUpper != 0 {
+		t.Fatalf("transient metrics failure mutated or quarantined predictive state: %+v", snapshot)
 	}
 
 	fixture.Set(observerMetrics(1_000, 0.25, 1, 0, 0, true))
 	observer.poll(context.Background())
 	if !observer.Healthy(clock.Now()) {
-		t.Fatal("valid exact-capacity vLLM sample did not become healthy")
+		t.Fatal("valid exact-capacity vLLM sample did not recover from transient metrics")
 	}
 	if snapshot := coordinator.Snapshot(); snapshot.Manager.Virtual.Upper.PhysicalKVUpper != 250 {
 		t.Fatalf("valid sample physical KV = %+v, want 250 tokens", snapshot.Manager.Virtual)
@@ -149,8 +153,13 @@ func TestPredictiveVLLMObserverFailsClosedOnCapacityAndTokenMetricMismatch(t *te
 	if observer.Healthy(clock.Now()) {
 		t.Fatal("observed runtime capacity identity drift retained old healthy authorization")
 	}
-	if snapshot := coordinator.Snapshot(); snapshot.Manager.Virtual.Upper.PhysicalKVUpper != 250 {
-		t.Fatalf("identity-drift sample mutated predictive state: %+v", snapshot.Manager.Virtual)
+	if snapshot := coordinator.Snapshot(); snapshot.Manager.IntakeOpen || snapshot.Manager.Virtual.Upper.PhysicalKVUpper != 250 {
+		t.Fatalf("identity drift did not quarantine old coordinator: %+v", snapshot.Manager)
+	}
+	fixture.Set(observerMetrics(1_000, 0.25, 1, 0, 0, true))
+	observer.poll(context.Background())
+	if observer.Healthy(clock.Now()) || coordinator.Snapshot().Manager.IntakeOpen {
+		t.Fatal("old coordinator recovered after capacity drift without reconstruction")
 	}
 }
 
@@ -242,11 +251,11 @@ func TestPredictiveVLLMObserverCounterResetInvalidatesOldFreshState(t *testing.T
 
 	clock.Advance(time.Second)
 	observer.poll(context.Background())
-	if !observer.Healthy(clock.Now()) {
-		t.Fatal("new stable post-reset baseline did not restore health")
+	if observer.Healthy(clock.Now()) {
+		t.Fatal("old coordinator recovered after counter reset without reconstruction")
 	}
-	if snapshot := coordinator.Snapshot(); snapshot.Manager.Virtual.Upper.PhysicalKVUpper != 200 {
-		t.Fatalf("post-reset stable sample did not reconcile: %+v", snapshot.Manager.Virtual)
+	if snapshot := coordinator.Snapshot(); snapshot.Manager.IntakeOpen || snapshot.Manager.Virtual.Upper.PhysicalKVUpper != 100 {
+		t.Fatalf("counter reset did not preserve and quarantine prior state: %+v", snapshot.Manager)
 	}
 }
 
@@ -328,15 +337,15 @@ func TestPredictiveVLLMObserverGenerationResetDetectsZeroToZeroPreemptionEpochCh
 
 	clock.Advance(time.Second)
 	observer.poll(context.Background())
-	if !observer.Healthy(clock.Now()) {
-		t.Fatal("stable post-generation-reset baseline did not restore health")
+	if observer.Healthy(clock.Now()) {
+		t.Fatal("old coordinator recovered after generation reset without reconstruction")
 	}
 	if got := coordinator.Invalidations(); got != 1 {
 		t.Fatalf("stable post-reset poll added invalidation: %d", got)
 	}
 }
 
-func TestPredictiveVLLMObserverMissingGenerationSignalFailsClosedOnce(t *testing.T) {
+func TestPredictiveVLLMObserverMissingGenerationSignalExpiresByFreshnessAndRecovers(t *testing.T) {
 	clock := &adapterTestClock{now: time.Unix(7_450, 0)}
 	coordinator := &learningInvalidationCoordinator{delegate: newAdapterTestCoordinatorWithTPSTarget(t, 0)}
 	valid := observerMetrics(1_000, 0.10, 1, 0, 0, true)
@@ -353,18 +362,21 @@ func TestPredictiveVLLMObserverMissingGenerationSignalFailsClosedOnce(t *testing
 	clock.Advance(time.Second)
 	fixture.Set(missingGeneration)
 	observer.poll(context.Background())
-	if observer.Healthy(clock.Now()) || coordinator.Invalidations() != 1 {
-		t.Fatalf("missing generation health/invalidations = %t/%d, want false/1", observer.Healthy(clock.Now()), coordinator.Invalidations())
+	if !observer.Healthy(clock.Now()) || coordinator.Invalidations() != 0 {
+		t.Fatalf("single incomplete scrape health/invalidations = %t/%d, want prior fresh/0", observer.Healthy(clock.Now()), coordinator.Invalidations())
 	}
 	observer.poll(context.Background())
-	if coordinator.Invalidations() != 1 {
-		t.Fatalf("repeated missing generation invalidations = %d, want 1", coordinator.Invalidations())
+	if coordinator.Invalidations() != 0 {
+		t.Fatalf("repeated incomplete scrape invalidations = %d, want 0", coordinator.Invalidations())
 	}
-	clock.Advance(time.Second)
+	clock.Advance(observer.maximumAge)
+	if observer.Healthy(clock.Now()) {
+		t.Fatal("incomplete metrics never expired the last coherent sample")
+	}
 	fixture.Set(valid)
 	observer.poll(context.Background())
-	if !observer.Healthy(clock.Now()) || coordinator.Invalidations() != 1 {
-		t.Fatalf("restored generation health/invalidations = %t/%d, want true/1", observer.Healthy(clock.Now()), coordinator.Invalidations())
+	if !observer.Healthy(clock.Now()) || coordinator.Invalidations() != 0 {
+		t.Fatalf("restored generation health/invalidations = %t/%d, want true/0", observer.Healthy(clock.Now()), coordinator.Invalidations())
 	}
 }
 
@@ -555,16 +567,16 @@ func TestPredictiveVLLMMetricsURLRequiresExactlyOneUpstream(t *testing.T) {
 
 func newManualPredictiveVLLMObserver(metricsURL string, maximumKV int64, coordinator predictiveSampleCoordinator, now func() time.Time) *predictiveVLLMObserver {
 	return &predictiveVLLMObserver{
-		metricsURL:         metricsURL,
-		servedModel:        "google/gemma-4-fixture",
-		maximumKVTokens:    maximumKV,
-		blockSize:          4,
-		pollInterval:       time.Second,
-		maximumAge:         10 * time.Second,
-		preemptionCooldown: 5 * time.Second,
-		coordinator:        coordinator,
-		now:                now,
-		client:             &http.Client{Timeout: time.Second},
+		metricsURL:          metricsURL,
+		modelIdentitySHA256: predictiveModelIdentitySHA256("google/gemma-4-fixture"),
+		maximumKVTokens:     maximumKV,
+		blockSize:           4,
+		pollInterval:        time.Second,
+		maximumAge:          10 * time.Second,
+		preemptionCooldown:  5 * time.Second,
+		coordinator:         coordinator,
+		now:                 now,
+		client:              &http.Client{Timeout: time.Second},
 	}
 }
 

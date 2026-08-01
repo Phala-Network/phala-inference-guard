@@ -127,6 +127,11 @@ const (
 type SchedulerFeatures struct {
 	ExistingDecodeSequences      int
 	DecodeSequences              int
+	ExistingActiveContextTokens  int64
+	ExistingUncachedPrefill      int64
+	ExistingPhysicalKVUpper      int64
+	ExistingActiveKVUpper        int64
+	RequestComplexityTokensUpper int64
 	ActiveContextTokens          int64
 	UncachedPrefillTokens        int64
 	AccruedLocalAdmissionLatency time.Duration
@@ -164,20 +169,23 @@ type LearnedSchedulerSnapshot struct {
 	SamplesRejected uint64
 	Invalidations   uint64
 	Cells           int
+	GlobalSamples   int
 }
 
 type featureCell struct {
-	ExistingDecodeSequences int
-	DecodeSequences         int
-	ActiveContextTokens     int64
-	UncachedPrefillTokens   int64
-	PhysicalKVUpper         int64
-	ActiveKVUpper           int64
-	DecodeHorizonUpper      int64
+	ExistingDecodeSequences      int
+	DecodeSequences              int
+	ExistingActiveContextTokens  int64
+	ExistingUncachedPrefill      int64
+	ExistingPhysicalKVUpper      int64
+	ExistingActiveKVUpper        int64
+	RequestComplexityTokensUpper int64
+	DecodeHorizonUpper           int64
 }
 
 type residualSample struct {
 	ObservedAt   time.Time
+	Features     SchedulerFeatures
 	Censored     bool
 	UserTPSRatio float64
 	TTFTRatio    float64
@@ -197,6 +205,7 @@ type LearnedScheduler struct {
 	profile         StaticSchedulerProfile
 	config          ResidualCalibratorConfig
 	cells           map[featureCell]*residualCell
+	globalSamples   []residualSample
 	cellSequence    uint64
 	samplesAccepted uint64
 	samplesRejected uint64
@@ -209,6 +218,7 @@ func (s *LearnedScheduler) InvalidateLearning() {
 	}
 	s.mu.Lock()
 	clear(s.cells)
+	s.globalSamples = nil
 	s.invalidations++
 	s.mu.Unlock()
 }
@@ -256,37 +266,16 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	key := s.featureCell(features)
 	s.mu.Lock()
 	cell := s.cells[key]
-	if cell == nil || len(cell.Samples) == 0 {
-		s.mu.Unlock()
-		return prediction
+	local := freshResidualRatios(nil, now, s.config.MaxAge)
+	if cell != nil {
+		local = freshResidualRatios(cell.Samples, now, s.config.MaxAge)
 	}
-	var userRatios, ttftRatios, tpotRatios []float64
-	freshCensored := false
-	freshTPSCensored := false
-	for _, sample := range cell.Samples {
-		age := now.Sub(sample.ObservedAt)
-		if age < 0 || age > s.config.MaxAge {
-			continue
-		}
-		if sample.Censored {
-			freshCensored = true
-			freshTPSCensored = true
-			continue
-		}
-		if sample.UserTPSValid {
-			userRatios = appendResidualRatio(userRatios, sample.UserTPSRatio, len(cell.Samples))
-		} else {
-			freshTPSCensored = true
-		}
-		if sample.TTFTValid {
-			ttftRatios = appendResidualRatio(ttftRatios, sample.TTFTRatio, len(cell.Samples))
-		}
-		if sample.TPOTValid {
-			tpotRatios = appendResidualRatio(tpotRatios, sample.TPOTRatio, len(cell.Samples))
-		}
-	}
+	global := freshCompatibleResidualRatios(s.globalSamples, now, s.config.MaxAge, features, s.config.MinimumSamples)
 	s.mu.Unlock()
 
+	userRatios := preferMatureRatios(local.UserTPS, global.UserTPS, s.config.MinimumSamples)
+	ttftRatios := preferMatureRatios(local.TTFT, global.TTFT, s.config.MinimumSamples)
+	tpotRatios := preferMatureRatios(local.TPOT, global.TPOT, s.config.MinimumSamples)
 	calibratedSamples := 0
 	if len(userRatios) >= s.config.MinimumSamples {
 		userMultiplier := clampFloat(quantileInPlace(userRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
@@ -307,15 +296,11 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	if calibratedSamples == 0 {
 		return prediction
 	}
-	if freshTPSCensored {
-		prediction.Estimate.ExistingUserTPSLower = math.Min(prediction.Estimate.ExistingUserTPSLower, prior.ExistingUserTPSLower)
-		prediction.Estimate.NewUserTPSLower = math.Min(prediction.Estimate.NewUserTPSLower, prior.NewUserTPSLower)
-	}
-	if freshCensored {
-		if prediction.Estimate.TTFTUpper < prior.TTFTUpper {
-			prediction.Estimate.TTFTUpper = prior.TTFTUpper
+	if features.ExistingDecodeSequences == 0 {
+		if prediction.Estimate.NewUserTPSLower < prior.NewUserTPSLower {
+			prediction.Estimate.NewUserTPSLower = prior.NewUserTPSLower
 		}
-		if prediction.Estimate.TPOTUpper < prior.TPOTUpper {
+		if prediction.Estimate.TPOTUpper > prior.TPOTUpper {
 			prediction.Estimate.TPOTUpper = prior.TPOTUpper
 		}
 	}
@@ -341,15 +326,12 @@ func (s *LearnedScheduler) Observe(prediction SchedulerPrediction, outcome Sched
 	if outcome.ObservedAt.IsZero() || outcome.ObservedAt.Before(prediction.PredictedAt) {
 		return s.rejectOutcome(fmt.Errorf("scheduler outcome timestamp is invalid"))
 	}
-	var sample residualSample
 	if outcome.Censored {
-		sample = residualSample{ObservedAt: outcome.ObservedAt, Censored: true}
-	} else {
-		var err error
-		sample, err = residualFromOutcome(prediction, outcome)
-		if err != nil {
-			return s.rejectOutcome(err)
-		}
+		return s.rejectOutcome(fmt.Errorf("scheduler outcome is censored"))
+	}
+	sample, err := residualFromOutcome(prediction, outcome)
+	if err != nil {
+		return s.rejectOutcome(err)
 	}
 	key := s.featureCell(prediction.Features)
 	s.mu.Lock()
@@ -366,6 +348,11 @@ func (s *LearnedScheduler) Observe(prediction SchedulerPrediction, outcome Sched
 	if excess := len(cell.Samples) - s.config.MaximumSamplesPerCell; excess > 0 {
 		copy(cell.Samples, cell.Samples[excess:])
 		cell.Samples = cell.Samples[:s.config.MaximumSamplesPerCell]
+	}
+	s.globalSamples = append(s.globalSamples, sample)
+	if excess := len(s.globalSamples) - s.config.MaximumSamplesPerCell; excess > 0 {
+		copy(s.globalSamples, s.globalSamples[excess:])
+		s.globalSamples = s.globalSamples[:s.config.MaximumSamplesPerCell]
 	}
 	s.samplesAccepted++
 	s.mu.Unlock()
@@ -403,7 +390,146 @@ func (s *LearnedScheduler) Snapshot() LearnedSchedulerSnapshot {
 		SamplesRejected: s.samplesRejected,
 		Invalidations:   s.invalidations,
 		Cells:           len(s.cells),
+		GlobalSamples:   len(s.globalSamples),
 	}
+}
+
+type residualRatios struct {
+	UserTPS []float64
+	TTFT    []float64
+	TPOT    []float64
+}
+
+func freshResidualRatios(samples []residualSample, now time.Time, maxAge time.Duration) residualRatios {
+	ratios := residualRatios{}
+	for _, sample := range samples {
+		age := now.Sub(sample.ObservedAt)
+		if age < 0 || age > maxAge || sample.Censored {
+			continue
+		}
+		if sample.UserTPSValid {
+			ratios.UserTPS = appendResidualRatio(ratios.UserTPS, sample.UserTPSRatio, len(samples))
+		}
+		if sample.TTFTValid {
+			ratios.TTFT = appendResidualRatio(ratios.TTFT, sample.TTFTRatio, len(samples))
+		}
+		if sample.TPOTValid {
+			ratios.TPOT = appendResidualRatio(ratios.TPOT, sample.TPOTRatio, len(samples))
+		}
+	}
+	return ratios
+}
+
+func freshCompatibleResidualRatios(samples []residualSample, now time.Time, maxAge time.Duration, query SchedulerFeatures, minimum int) residualRatios {
+	return residualRatios{
+		UserTPS: closestMatureCompatibleRatios(samples, now, maxAge, query, minimum, residualUserTPS),
+		TTFT:    closestMatureCompatibleRatios(samples, now, maxAge, query, minimum, residualTTFT),
+		TPOT:    closestMatureCompatibleRatios(samples, now, maxAge, query, minimum, residualTPOT),
+	}
+}
+
+type residualDimension uint8
+
+const (
+	residualUserTPS residualDimension = iota
+	residualTTFT
+	residualTPOT
+)
+
+func closestMatureCompatibleRatios(samples []residualSample, now time.Time, maxAge time.Duration, query SchedulerFeatures, minimum int, dimension residualDimension) []float64 {
+	upperSequence := int(^uint(0) >> 1)
+	for {
+		closestSequence := 0
+		for _, sample := range samples {
+			if sample.Features.DecodeSequences >= upperSequence || !usableCompatibleResidual(sample, now, maxAge, query, dimension) {
+				continue
+			}
+			if sample.Features.DecodeSequences > closestSequence {
+				closestSequence = sample.Features.DecodeSequences
+			}
+		}
+		if closestSequence == 0 {
+			return nil
+		}
+		count := 0
+		for _, sample := range samples {
+			if sample.Features.DecodeSequences == closestSequence && usableCompatibleResidual(sample, now, maxAge, query, dimension) {
+				count++
+			}
+		}
+		if count >= minimum {
+			ratios := make([]float64, 0, count)
+			for _, sample := range samples {
+				if sample.Features.DecodeSequences != closestSequence || !usableCompatibleResidual(sample, now, maxAge, query, dimension) {
+					continue
+				}
+				value, _ := residualValue(sample, dimension)
+				ratios = append(ratios, value)
+			}
+			return ratios
+		}
+		upperSequence = closestSequence
+	}
+}
+
+func usableCompatibleResidual(sample residualSample, now time.Time, maxAge time.Duration, query SchedulerFeatures, dimension residualDimension) bool {
+	age := now.Sub(sample.ObservedAt)
+	if age < 0 || age > maxAge || sample.Censored || !globalFallbackCompatible(sample.Features, query) {
+		return false
+	}
+	_, valid := residualValue(sample, dimension)
+	return valid
+}
+
+func residualValue(sample residualSample, dimension residualDimension) (float64, bool) {
+	switch dimension {
+	case residualUserTPS:
+		return sample.UserTPSRatio, sample.UserTPSValid
+	case residualTTFT:
+		return sample.TTFTRatio, sample.TTFTValid
+	case residualTPOT:
+		return sample.TPOTRatio, sample.TPOTValid
+	default:
+		return 0, false
+	}
+}
+
+func globalFallbackCompatible(sample, query SchedulerFeatures) bool {
+	if sample.DecodeSequences <= 0 || query.DecodeSequences <= 0 {
+		return false
+	}
+	return normalizedPressure(query.UncachedPrefillTokens, query.DecodeSequences) <= normalizedPressure(sample.UncachedPrefillTokens, sample.DecodeSequences) &&
+		normalizedPressure(query.ActiveContextTokens, query.DecodeSequences) <= normalizedPressure(sample.ActiveContextTokens, sample.DecodeSequences) &&
+		normalizedPressure(query.PhysicalKVUpper, query.DecodeSequences) <= normalizedPressure(sample.PhysicalKVUpper, sample.DecodeSequences) &&
+		normalizedPressure(query.ActiveKVUpper, query.DecodeSequences) <= normalizedPressure(sample.ActiveKVUpper, sample.DecodeSequences)
+}
+
+func normalizedPressure(value int64, sequences int) int64 {
+	if value <= 0 {
+		return 0
+	}
+	if sequences <= 1 {
+		return value
+	}
+	divisor := int64(sequences)
+	return value/divisor + boolInt64(value%divisor != 0)
+}
+
+func boolInt64(value bool) int64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func preferMatureRatios(local, global []float64, minimum int) []float64 {
+	if len(local) >= minimum {
+		return local
+	}
+	if len(global) >= minimum {
+		return global
+	}
+	return nil
 }
 
 func (s *LearnedScheduler) rejectOutcome(err error) error {
@@ -442,13 +568,14 @@ func (s *LearnedScheduler) staticEstimate(features SchedulerFeatures) domain.Sch
 
 func (s *LearnedScheduler) featureCell(features SchedulerFeatures) featureCell {
 	return featureCell{
-		ExistingDecodeSequences: bucketInt(features.ExistingDecodeSequences, s.config.DecodeSequenceBucket),
-		DecodeSequences:         bucketInt(features.DecodeSequences, s.config.DecodeSequenceBucket),
-		ActiveContextTokens:     bucketInt64(features.ActiveContextTokens, s.config.ContextTokenBucket),
-		UncachedPrefillTokens:   bucketInt64(features.UncachedPrefillTokens, s.config.PrefillTokenBucket),
-		PhysicalKVUpper:         bucketInt64(features.PhysicalKVUpper, s.config.KVTokenBucket),
-		ActiveKVUpper:           bucketInt64(features.ActiveKVUpper, s.config.KVTokenBucket),
-		DecodeHorizonUpper:      bucketInt64(features.DecodeHorizonUpper, s.config.PrefillTokenBucket),
+		ExistingDecodeSequences:      bucketInt(features.ExistingDecodeSequences, s.config.DecodeSequenceBucket),
+		DecodeSequences:              bucketInt(features.DecodeSequences, s.config.DecodeSequenceBucket),
+		ExistingActiveContextTokens:  bucketInt64(features.ExistingActiveContextTokens, s.config.ContextTokenBucket),
+		ExistingUncachedPrefill:      bucketInt64(features.ExistingUncachedPrefill, s.config.PrefillTokenBucket),
+		ExistingPhysicalKVUpper:      bucketInt64(features.ExistingPhysicalKVUpper, s.config.KVTokenBucket),
+		ExistingActiveKVUpper:        bucketInt64(features.ExistingActiveKVUpper, s.config.KVTokenBucket),
+		RequestComplexityTokensUpper: bucketInt64(features.RequestComplexityTokensUpper, s.config.PrefillTokenBucket),
+		DecodeHorizonUpper:           bucketInt64(features.DecodeHorizonUpper, s.config.PrefillTokenBucket),
 	}
 }
 
@@ -457,9 +584,18 @@ func schedulerFeatures(state domain.VirtualState, request domain.RequestCost) Sc
 	if requestSequences == 0 {
 		requestSequences = 1
 	}
+	requestComplexity := request.RequestComplexityTokensUpper
+	if requestComplexity < request.InputTokens {
+		requestComplexity = request.InputTokens
+	}
 	return SchedulerFeatures{
 		ExistingDecodeSequences:      nonNegativeInt(state.DecodeSequences),
 		DecodeSequences:              addIntSaturating(nonNegativeInt(state.DecodeSequences), requestSequences),
+		ExistingActiveContextTokens:  nonNegativeInt64(state.ActiveContextTokens),
+		ExistingUncachedPrefill:      nonNegativeInt64(state.UncachedPrefillTokens),
+		ExistingPhysicalKVUpper:      nonNegativeInt64(state.PhysicalKVUpper),
+		ExistingActiveKVUpper:        nonNegativeInt64(state.ActiveKVUpper),
+		RequestComplexityTokensUpper: nonNegativeInt64(requestComplexity),
 		ActiveContextTokens:          addInt64Saturating(nonNegativeInt64(state.ActiveContextTokens), nonNegativeInt64(request.ActiveContextTokensUpper)),
 		UncachedPrefillTokens:        addInt64Saturating(nonNegativeInt64(state.UncachedPrefillTokens), nonNegativeInt64(request.UncachedPrefillUpper)),
 		AccruedLocalAdmissionLatency: request.AccruedLocalAdmissionLatency,
@@ -470,7 +606,7 @@ func schedulerFeatures(state domain.VirtualState, request domain.RequestCost) Sc
 }
 
 func residualFromOutcome(prediction SchedulerPrediction, outcome SchedulerOutcome) (residualSample, error) {
-	sample := residualSample{ObservedAt: outcome.ObservedAt}
+	sample := residualSample{ObservedAt: outcome.ObservedAt, Features: prediction.Features}
 	valid := 0
 	if outcome.UserTPSValid {
 		ratio, err := positiveRatio(outcome.UserTPS, prediction.Prior.NewUserTPSLower, "per-user TPS")

@@ -10,17 +10,20 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.9.0 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...} kv_shadow={last=fit backend=backend1 projected=700000/758944 ratio=0.812 reservations=4 tokens=2000}
+pig_status v=PIG-v0.10.0 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
 ```
 
-The log line has three parts:
+The status line has three required parts:
 
 - `v`: PIG version.
 - `backend`: current backend load snapshot from vLLM or SGLang metrics.
 - `pig`: current PIG limits and counters.
-- `kv_shadow`: present only in shadow mode; last hypothetical decision and the
-  current unabsorbed reservation ledger. It never describes an enforced result
-  in v0.9.0.
+- `kv_shadow`: optional and present only when the separate legacy
+  `KV_ADMISSION_MODE=shadow` path is enabled.
+
+The startup configuration line includes `predictive_admission=off|shadow|enforce`.
+Protected metrics, rather than the compact status line, are authoritative for
+predictive decision, learning, reservation, and shadow-only observation state.
 
 The log is intentionally compact. Per-lane counters, queue totals, dynamic
 reasons, backend details, and classifier counters are exposed through metrics
@@ -66,7 +69,8 @@ lane-specific QoS caps.
 | Client Disconnects | `pig_client_disconnects_total`, `pig_client_disconnect_upstream_cancellations_total` | Client-side disconnects while waiting in queue, waiting for upstream headers, or copying the upstream response. |
 | Dynamic QoS | `pig_dynamic_*` | Load state, learned limits, pressure limits, per-user TPS observations, and TTFT learning. |
 | Backend | `pig_backend_*` | Per-backend health, in-flight count, load, KV usage, generation TPS, and TTFT. |
-| KV Shadow | `pig_kv_admission_*`, `pig_kv_shadow_*`, `pig_kv_estimator_*` | Shadow-only token capacity, projected budget decisions, reservations, resets, and estimator cost. |
+| Predictive Admission | `pig_predictive_*` | v0.10 pre-forward mode, decisions, enforced rejects, reservations, bounded learning, shadow-only observations, lifecycle failures, TPS target quality, and estimator/prediction latency. |
+| Legacy KV Shadow | `pig_kv_admission_*`, `pig_kv_shadow_*`, `pig_kv_estimator_*` | Historical v0.9 KV-only shadow decisions and reservations; keep this mode off when using v0.10 predictive admission. |
 | Classifier | `pig_json_*`, `pig_*output*` | Optional request body and output-token classification. |
 | Backend Priority | `pig_backend_priority_*` | Trusted-tier JSON priority injection and rewrite overhead. |
 
@@ -91,13 +95,61 @@ For production operation, watch these first:
 - `pig_internal_overhead_seconds` and `pig_decision_duration_seconds`: should
   stay near zero compared with request latency. If they rise while
   `pig_queue_current` is `0`, PIG itself is adding measurable work.
-- `pig_kv_admission_mode_info` and `pig_kv_admission_shadow_enabled`: prove
-  whether the process is `off` or shadow-only. v0.9.0 has no enforce mode.
+- `pig_predictive_admission_mode_info`, `pig_predictive_admission_enabled`, and
+  `pig_predictive_admission_enforce`: prove whether v0.10 predictive admission
+  is `off`, `shadow`, or `enforce`. Check these after every restart because
+  learning restarts cold.
+- `pig_predictive_admission_attempts_total`,
+  `pig_predictive_admission_decisions_total{decision="fit|risk|unknown"}`,
+  `pig_predictive_admission_enforced_rejects_total`, and
+  `pig_predictive_admission_last_decision_info`: show prospective decisions.
+  In shadow, risk and unknown must not change the client response. In enforce,
+  every non-fit result must be accounted as a pre-forward reject.
+- `pig_predictive_admission_intake_open`,
+  `pig_predictive_admission_reservations`, and
+  `pig_predictive_admission_retired_reservations`: show current eligibility and
+  resource accounting. Active reservations must return to zero after idle;
+  retired entries are a bounded reconciliation queue, not live KV demand.
+- `pig_predictive_shadow_observations` and
+  `pig_predictive_shadow_observations_total{result="created|terminated|qualified|censored|dropped"}`:
+  show bounded, payload-free observation records for shadow predicted-risk
+  requests. They do not contribute virtual KV or concurrency and must converge
+  to zero after terminal completion or shutdown. Growth in `dropped` means the
+  configured observation cap was reached; it must not change shadow forwarding.
+- `pig_predictive_input_size_samples_total`,
+  `pig_predictive_input_size_invalidations_total`,
+  `pig_predictive_input_size_samples_stored`,
+  `pig_predictive_input_size_estimates_total{source="cold|learned"}`, and the
+  `pig_predictive_input_size_last_*` metrics show whether qualified
+  `usage.prompt_tokens` feedback is improving later approximate-size estimates.
+  Zero or sparse samples must continue producing cold estimates rather than
+  closing intake.
+- `pig_predictive_learning_samples_total`,
+  `pig_predictive_learning_invalidations_total`,
+  `pig_predictive_learning_cells`, and
+  `pig_predictive_learning_global_samples`: show bounded TPS/TTFT/TPOT residual
+  learning. Invalidation after backend identity or capacity drift must discard
+  incompatible learning before intake recovers on a new coherent epoch.
+- `pig_predictive_tps_outcomes_total{result="backend|local|missing|rejected"}`:
+  distinguishes backend-timing targets, qualified local timing fallbacks,
+  missing targets, and structurally rejected targets. Do not treat all terminal
+  requests as valid TPS training data.
+- `pig_predictive_admission_prediction_duration_seconds` and
+  `pig_predictive_admission_estimator_duration_seconds`: separate scheduler/
+  reservation latency from the bounded JSON estimator. During the live gate,
+  compare p95/p99 with the plan thresholds by request-size cohort; an aggregate
+  histogram alone cannot prove the 16 KiB and 64 KiB targets.
+- `pig_predictive_admission_failures_total{phase="close|decide|forward|semantic|completion|terminal"}`:
+  should remain unchanged in a healthy canary. Any increase needs matching
+  incremental logs and lifecycle/accounting verification before broader use.
 - `pig_backend_kv_capacity_tokens`, `pig_backend_kv_active_tokens`,
   `pig_backend_kv_available_tokens`, `pig_backend_kv_evictable_tokens`, and
   `pig_backend_kv_token_metrics_valid`: show the backend-specific token model.
   vLLM capacity comes from `kv_cache_size_tokens`; SGLang TP-rank duplicates are
   deduplicated and evictable tokens are excluded from active pressure.
+- `pig_kv_admission_mode_info` and `pig_kv_admission_shadow_enabled` describe
+  only the historical `KV_ADMISSION_MODE` path. They do not prove the v0.10
+  predictive mode and should remain `off`/`0` in the v0.10 deployment.
 - `pig_kv_shadow_decisions_total{decision="..."}` separates `fit`,
   `over_budget`, `emergency_red`, `backend_waiting`,
   `preemption_cooldown`, `stale_metrics`, `capacity_unknown`, and

@@ -237,6 +237,234 @@ func TestZeroTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testi
 	}
 }
 
+func TestLearnedSchedulerUsesQualifiedGlobalHeadroomToProgressBeyondColdConcurrency(t *testing.T) {
+	now := time.Unix(9_000, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{}
+	cost := learnedTestCost()
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
+		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		outcome.UserTPS = 60
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe idle headroom sample %d: %v", index, err)
+		}
+	}
+
+	constraints := domain.Constraints{
+		PhysicalKVHard:       100_000,
+		ActiveKVHard:         100_000,
+		UserTPSTarget:        20,
+		WorkspaceRiskBudget:  profile.WorkspaceRiskUpper,
+		PreemptionRiskBudget: profile.PreemptionRiskUpper,
+		MinimumConfidence:    0.95,
+	}
+	manager := NewManager("test-profile", state, constraints, scheduler)
+	first := manager.decideAndReserve(now.Add(10*time.Second), "first", cost)
+	if first.Decision.Reason != domain.ReasonFit {
+		t.Fatalf("first learned request = %+v, want fit", first)
+	}
+	second := manager.decideAndReserve(now.Add(10*time.Second), "second", cost)
+	if second.Decision.Reason != domain.ReasonFit || second.Prediction.Source != PredictionSourceCalibrated {
+		t.Fatalf("second progressive request = %+v, want globally calibrated fit", second)
+	}
+	if second.Prediction.Estimate.NewUserTPSLower < constraints.UserTPSTarget {
+		t.Fatalf("second predicted TPS = %.3f, want at least %.3f", second.Prediction.Estimate.NewUserTPSLower, constraints.UserTPSTarget)
+	}
+}
+
+func TestLearnedSchedulerDoesNotApplySmallRequestGlobalHeadroomToHigherPressureRequest(t *testing.T) {
+	now := time.Unix(9_500, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{}
+	small := learnedTestCost()
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, small)
+		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		outcome.UserTPS = 80
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe small-request headroom sample %d: %v", index, err)
+		}
+	}
+
+	compatibleState := domain.VirtualState{
+		DecodeSequences:       1,
+		ActiveContextTokens:   small.ActiveContextTokensUpper,
+		UncachedPrefillTokens: small.UncachedPrefillUpper,
+		PhysicalKVUpper:       small.KV.PhysicalKVUpper,
+		ActiveKVUpper:         small.KV.ActiveKVUpper,
+	}
+	compatible := scheduler.Predict(now.Add(10*time.Second), compatibleState, small)
+	if compatible.Source != PredictionSourceCalibrated || compatible.Estimate.NewUserTPSLower <= compatible.Prior.NewUserTPSLower {
+		t.Fatalf("compatible progressive request did not use global headroom: %+v", compatible)
+	}
+
+	large := small
+	large.InputTokens = small.InputTokens * 1_000
+	large.UncachedPrefillUpper = small.UncachedPrefillUpper * 1_000
+	large.ActiveContextTokensUpper = small.ActiveContextTokensUpper * 1_000
+	large.KV.PhysicalKVUpper = small.KV.PhysicalKVUpper * 1_000
+	large.KV.ActiveKVUpper = small.KV.ActiveKVUpper * 1_000
+	largePrediction := scheduler.Predict(now.Add(10*time.Second), state, large)
+	if largePrediction.Source != PredictionSourceStatic || largePrediction.Estimate != largePrediction.Prior {
+		t.Fatalf("small-request global headroom leaked into higher-pressure request: %+v", largePrediction)
+	}
+}
+
+func TestLearnedSchedulerIdleFloorPreventsAdverseTPSStickyZero(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MinimumTPSMultiplier = 0.10
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{}
+	cost := learnedTestCost()
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
+		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		outcome.UserTPS = 5
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe adverse idle sample %d: %v", index, err)
+		}
+	}
+
+	constraints := domain.Constraints{
+		PhysicalKVHard:       100_000,
+		ActiveKVHard:         100_000,
+		UserTPSTarget:        20,
+		WorkspaceRiskBudget:  profile.WorkspaceRiskUpper,
+		PreemptionRiskBudget: profile.PreemptionRiskUpper,
+		MinimumConfidence:    0.95,
+	}
+	manager := NewManager("test-profile", state, constraints, scheduler)
+	first := manager.decideAndReserve(now.Add(10*time.Second), "idle-probe", cost)
+	if first.Decision.Reason != domain.ReasonFit || first.Prediction.Estimate.NewUserTPSLower < constraints.UserTPSTarget {
+		t.Fatalf("post-drain idle probe = %+v, want cold-safe progress", first)
+	}
+	second := manager.decideAndReserve(now.Add(10*time.Second), "concurrent", cost)
+	if second.Decision.Reason != domain.ReasonExistingTPSAtRisk && second.Decision.Reason != domain.ReasonNewTPSAtRisk {
+		t.Fatalf("adverse learned concurrent request = %+v, want TPS protection", second)
+	}
+}
+
+func TestLearnedSchedulerKeepsShapeSpecificAdverseTTFTProtectionWhileIdle(t *testing.T) {
+	now := time.Unix(10_500, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 25
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{}
+	cost := learnedTestCost()
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
+		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		outcome.TTFT = prediction.Prior.TTFTUpper * 3
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe adverse TTFT sample %d: %v", index, err)
+		}
+	}
+
+	prediction := scheduler.Predict(now.Add(10*time.Second), state, cost)
+	if prediction.Source != PredictionSourceCalibrated || prediction.Estimate.TTFTUpper <= prediction.Prior.TTFTUpper {
+		t.Fatalf("idle shape-specific adverse TTFT was discarded: %+v", prediction)
+	}
+	constraints := testLearnedConstraints()
+	constraints.UserTPSTarget = 25
+	constraints.TTFTSLO = prediction.Prior.TTFTUpper * 3 / 2
+	manager := NewManager("test-profile", state, constraints, scheduler)
+	decision := manager.DecideAndReserve(now.Add(10*time.Second), "known-slow-ttft", cost)
+	if decision.Reason != domain.ReasonTTFTAtRisk {
+		t.Fatalf("known adverse idle TTFT decision = %+v, want %s", decision, domain.ReasonTTFTAtRisk)
+	}
+}
+
+func TestLearnedSchedulerRetainsQoSCellWhenKVCalibrationNarrowsInputUpper(t *testing.T) {
+	now := time.Unix(10_750, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 100
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{}
+	cold := learnedTestCost()
+	cold.InputTokens = 100
+	cold.RequestComplexityTokensUpper = 150
+	cold.UncachedPrefillUpper = 100
+	cold.ActiveContextTokensUpper = 100 + cold.DecodeHorizonUpper
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cold)
+		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		outcome.TTFT = prediction.Prior.TTFTUpper * 3
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe pre-calibration TTFT sample %d: %v", index, err)
+		}
+	}
+
+	narrowed := cold
+	narrowed.InputTokens = 75
+	narrowed.UncachedPrefillUpper = 75
+	narrowed.ActiveContextTokensUpper = 75 + narrowed.DecodeHorizonUpper
+	prediction := scheduler.Predict(now.Add(10*time.Second), state, narrowed)
+	if prediction.Source != PredictionSourceCalibrated || prediction.Estimate.TTFTUpper <= prediction.Prior.TTFTUpper {
+		t.Fatalf("KV calibration discarded stable raw-complexity QoS cell: %+v", prediction)
+	}
+}
+
+func TestLearnedSchedulerRejectsCensoredOutcomeWithoutPoisoningHeadroom(t *testing.T) {
+	now := time.Unix(11_000, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{}
+	cost := learnedTestCost()
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
+		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		outcome.UserTPS = 60
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe qualified headroom sample %d: %v", index, err)
+		}
+	}
+	censoredPrediction := scheduler.Predict(now.Add(4*time.Second), state, cost)
+	if err := scheduler.Observe(censoredPrediction, SchedulerOutcome{
+		Identity: censoredPrediction.Identity, ObservedAt: now.Add(5 * time.Second),
+		Attributed: true, Censored: true,
+	}); err == nil {
+		t.Fatal("censored outcome was accepted as scheduler training")
+	}
+
+	after := scheduler.Predict(now.Add(6*time.Second), state, cost)
+	if after.Estimate.NewUserTPSLower <= after.Prior.NewUserTPSLower || after.Source != PredictionSourceCalibrated {
+		t.Fatalf("censored outcome poisoned qualified headroom: %+v", after)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != uint64(config.MinimumSamples) || snapshot.SamplesRejected != 1 {
+		t.Fatalf("censored accounting = %+v", snapshot)
+	}
+}
+
 func testLearnedConstraints() domain.Constraints {
 	return domain.Constraints{
 		PhysicalKVHard:       100_000,

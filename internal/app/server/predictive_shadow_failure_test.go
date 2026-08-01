@@ -315,7 +315,7 @@ func TestPredictiveShadowTerminalPanicDoesNotChangeResponse(t *testing.T) {
 	}
 }
 
-func TestPredictiveShadowScrubsEphemeralBodyAfterDecision(t *testing.T) {
+func TestPredictiveShadowDoesNotExposeOrRetainRequestBody(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"id":"ok"}`))
 	}))
@@ -327,13 +327,8 @@ func TestPredictiveShadowScrubsEphemeralBodyAfterDecision(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("response status = %d", recorder.Code)
 	}
-	if len(shadow.retainedBody) == 0 {
-		t.Fatal("fake did not retain the supplied body view")
-	}
-	for i, value := range shadow.retainedBody {
-		if value != 0 {
-			t.Fatalf("retained raw body byte %d = %d, want scrubbed zero", i, value)
-		}
+	if shadow.retainedBody != nil {
+		t.Fatalf("predictive adapter received a raw request body copy of %d bytes", len(shadow.retainedBody))
 	}
 }
 

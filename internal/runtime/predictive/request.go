@@ -9,4 +9,5 @@ type RequestClass string
 const (
 	RequestClassCompletion RequestClass = "completion"
 	RequestClassChat       RequestClass = "chat_completion"
+	RequestClassResponses  RequestClass = "responses"
 )

@@ -120,6 +120,22 @@ type Config struct {
 	KVAdmissionPolicy                  kvadmission.Policy
 	KVAdmissionEstimator               kvadmission.EstimatorConfig
 	PredictiveAdmissionMode            string
-	PredictiveAdmissionProfilePath     string
-	PredictiveAdmissionProfileSHA256   string
+	PredictiveStartupProbeTimeout      time.Duration
+	PredictiveMetricsRequestTimeout    time.Duration
+	PredictiveLearningMinimumSamples   int
+	PredictiveLearningMaximumSamples   int
+	PredictiveLearningMaximumCells     int
+	PredictiveShadowObservationLimit   int
+	PredictiveLearningMaxAge           time.Duration
+	PredictiveMinimumConfidence        float64
+	PredictiveColdConfidence           float64
+	PredictiveLearnedConfidence        float64
+	PredictiveInputUpperQuantile       float64
+	PredictiveInputSafetyMargin        float64
+	PredictiveInputMinimumMultiplier   float64
+	PredictiveInputMaximumMultiplier   float64
+	PredictiveTPSMinimumMultiplier     float64
+	PredictiveTPSMaximumMultiplier     float64
+	PredictiveLatencyMinimumMultiplier float64
+	PredictiveLatencyMaximumMultiplier float64
 }

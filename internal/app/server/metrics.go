@@ -80,6 +80,7 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.LastReason = string(snapshot.Attempts.LastReason)
 	input.LastSource = string(snapshot.Attempts.LastSource)
 	input.LastSamples = snapshot.Attempts.LastSamples
+	input.IntakeOpen = snapshot.Manager.IntakeOpen
 	input.Reservations = snapshot.Manager.Reservations
 	input.RetiredReservations = snapshot.Manager.RetiredReservations
 	input.RetiredEvictions = snapshot.Manager.RetiredEvictions
@@ -87,13 +88,32 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.LearningRejected = snapshot.Learning.SamplesRejected
 	input.LearningInvalidations = snapshot.Learning.Invalidations
 	input.LearningCells = snapshot.Learning.Cells
+	input.LearningGlobalSamples = snapshot.Learning.GlobalSamples
+	input.InputSizeAccepted = snapshot.InputSize.SamplesAccepted
+	input.InputSizeRejected = snapshot.InputSize.SamplesRejected
+	input.InputSizeInvalidations = snapshot.InputSize.Invalidations
+	input.InputSizeStored = snapshot.InputSize.SamplesStored
+	input.InputSizeClasses = snapshot.InputSize.Classes
+	input.InputSizeCold = snapshot.InputSize.EstimatesCold
+	input.InputSizeLearned = snapshot.InputSize.EstimatesLearned
+	input.InputSizeLastSource = string(snapshot.InputSize.LastSource)
+	input.InputSizeLastSamples = snapshot.InputSize.LastSamples
+	input.InputSizeLastRawHigh = snapshot.InputSize.LastRawHigh
+	input.InputSizeLastUpper = snapshot.InputSize.LastUpper
 	input.TPSBackend = snapshot.TPSOutcomes.Backend
 	input.TPSLocal = snapshot.TPSOutcomes.Local
 	input.TPSMissing = snapshot.TPSOutcomes.Missing
 	input.TPSRejected = snapshot.TPSOutcomes.Rejected
+	input.ShadowObservations = metrics.PredictiveShadowObservationInput{
+		Active:     snapshot.ShadowObservations.Active,
+		Created:    snapshot.ShadowObservations.Created,
+		Terminated: snapshot.ShadowObservations.Terminated,
+		Qualified:  snapshot.ShadowObservations.Qualified,
+		Censored:   snapshot.ShadowObservations.Censored,
+		Dropped:    snapshot.ShadowObservations.Dropped,
+	}
 	input.PredictionDuration = snapshot.PredictionDuration
-	input.RendererDuration = snapshot.RendererDuration
-	input.TokenizerDuration = snapshot.TokenizerDuration
+	input.EstimatorDuration = &s.kvEstimatorDuration
 	return input
 }
 

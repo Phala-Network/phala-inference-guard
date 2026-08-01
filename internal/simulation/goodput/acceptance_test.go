@@ -2,6 +2,7 @@ package goodput
 
 import (
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -9,12 +10,14 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.T) {
+func TestModelAgnosticApproximatePredictiveAdmissionMeetsCompletionGoodputGate(t *testing.T) {
 	suite, err := RunAcceptanceSuite()
 	if err != nil {
 		t.Fatalf("run acceptance suite: %v", err)
 	}
 	requiredScenarios := []string{
+		"cold_sparse_low_flow_progress",
+		"cold_same_poll_tps_guard_and_drain_recovery",
 		"same_poll_short_burst_near_kv",
 		"mixed_short_64k_128k",
 		"long_prompt_short_decode",
@@ -111,13 +114,15 @@ func TestTokenizerFirstPredictiveAdmissionMeetsCompletionGoodputGate(t *testing.
 	if !ok {
 		t.Fatal("repeated-prefix scenario disappeared after required-scenario validation")
 	}
-	wantRepeatedPeak := int64(4) * roundUpForTest(3_074+256, simulationBlock)
+	rawRepeatedHigh := heuristicInputHigh(3_074)
+	learnedRepeatedUpper := int64(math.Ceil(float64(rawRepeatedHigh) * (float64(3_074) / float64(rawRepeatedHigh)) * 1.10))
+	wantRepeatedPeak := int64(4) * (roundUpForTest(learnedRepeatedUpper, simulationBlock) + roundUpForTest(256, simulationBlock))
 	if got := repeated.Policies[PolicyPredictiveQoS].PeakReservedKVTokens; got != wantRepeatedPeak {
-		t.Fatalf("repeated-prefix predictive peak reserved KV = %d, want four full cache-cold costs = %d", got, wantRepeatedPeak)
+		t.Fatalf("repeated-prefix predictive peak reserved KV = %d, want four full learned cache-cold costs = %d", got, wantRepeatedPeak)
 	}
 }
 
-func TestTokenizerLatencyEvidenceIsChargedToTTFT(t *testing.T) {
+func TestExactTokenizerBaselineLatencyEvidenceIsChargedToTTFT(t *testing.T) {
 	for _, test := range []struct {
 		tokens int64
 		want   time.Duration
@@ -165,7 +170,7 @@ func TestObservedKVGrowsWithActualDecodeProgress(t *testing.T) {
 
 func TestPredictiveTPSLearningPreventsKnownViolationAndRecoversGoodput(t *testing.T) {
 	profile := (scenarioSpec{BaseCompletionTPS: 40}).serviceProfile()
-	controller, err := newExactController(PolicyPredictiveQoS, profile)
+	controller, err := newPredictiveSimulationController(PolicyPredictiveQoS, profile)
 	if err != nil {
 		t.Fatalf("new predictive controller: %v", err)
 	}
@@ -199,11 +204,17 @@ func TestPredictiveTPSLearningPreventsKnownViolationAndRecoversGoodput(t *testin
 		t.Fatalf("observe learned risk state: %v", err)
 	}
 	risky := request("known-slow-risk", 0, 49, 64, 64)
-	if admitted, reason := controller.Admit(riskAt, risky); admitted || reason != string(domainpredictive.ReasonNewTPSAtRisk) {
-		t.Fatalf("known slow TPS admission = %t/%s, want false/%s", admitted, reason, domainpredictive.ReasonNewTPSAtRisk)
+	if admitted, reason := controller.Admit(riskAt, risky); !admitted || reason != string(domainpredictive.ReasonFit) {
+		t.Fatalf("idle recovery probe after adverse TPS history = %t/%s, want true/%s", admitted, reason, domainpredictive.ReasonFit)
 	}
+	controller.MarkForwarded(risky.ID)
+	concurrent := request("known-slow-concurrent", 0, 49, 64, 64)
+	if admitted, reason := controller.Admit(riskAt, concurrent); admitted || (reason != string(domainpredictive.ReasonExistingTPSAtRisk) && reason != string(domainpredictive.ReasonNewTPSAtRisk)) {
+		t.Fatalf("known slow concurrent TPS admission = %t/%s, want predictive TPS rejection", admitted, reason)
+	}
+	controller.Terminate(riskAt.Add(500*time.Millisecond), risky.ID, runtimepredictive.TerminalClientCancelled, simulatedRequestOutcome{})
 	if controller.Reservations() != 0 {
-		t.Fatalf("TPS risk rejection leaked %d reservations", controller.Reservations())
+		t.Fatalf("TPS risk rejection or idle probe leaked %d reservations", controller.Reservations())
 	}
 
 	recoveryStart := start.Add(2 * time.Minute)
@@ -227,6 +238,39 @@ func TestPredictiveTPSLearningPreventsKnownViolationAndRecoversGoodput(t *testin
 	})
 	if controller.Reservations() != 0 {
 		t.Fatalf("recovered completion leaked %d reservations", controller.Reservations())
+	}
+}
+
+func TestPredictiveWarmupEnablesOnlyLearnedSafeConcurrency(t *testing.T) {
+	profile := (scenarioSpec{}).serviceProfile()
+	controller, err := newPredictiveSimulationController(PolicyPredictiveQoS, profile)
+	if err != nil {
+		t.Fatalf("new predictive controller: %v", err)
+	}
+	if err := warmPredictiveController(controller, profile, scenarioSpec{Requests: []requestSpec{request("warm-shape", 0, 49, 64, 64)}}); err != nil {
+		t.Fatalf("warm predictive controller: %v", err)
+	}
+	now := simulationBaseTime
+	if err := controller.Observe(now, observedState{}); err != nil {
+		t.Fatalf("observe workload state: %v", err)
+	}
+	for index := 0; index < 4; index++ {
+		candidate := request(fmt.Sprintf("learned-concurrent-%d", index), 0, 49, 64, 64)
+		admitted, reason := controller.Admit(now, candidate)
+		if !admitted {
+			t.Fatalf("learned safe concurrency %d rejected as %s", index+1, reason)
+		}
+		controller.MarkForwarded(candidate.ID)
+	}
+	unsafe := request("learned-concurrent-unsafe", 0, 49, 64, 64)
+	if admitted, reason := controller.Admit(now, unsafe); admitted || (reason != string(domainpredictive.ReasonExistingTPSAtRisk) && reason != string(domainpredictive.ReasonNewTPSAtRisk)) {
+		t.Fatalf("fifth learned request = %t/%s, want TPS-risk rejection", admitted, reason)
+	}
+	for index := 0; index < 4; index++ {
+		controller.Terminate(now.Add(time.Second), fmt.Sprintf("learned-concurrent-%d", index), runtimepredictive.TerminalClientCancelled, simulatedRequestOutcome{})
+	}
+	if controller.Reservations() != 0 {
+		t.Fatalf("learned concurrency test leaked %d reservations", controller.Reservations())
 	}
 }
 

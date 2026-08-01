@@ -474,65 +474,112 @@ labels through `pig_dynamic_capacity_projected_limit` and
 : Default: `16`. Minimum running load before severe pressure is treated as
   representative for learning.
 
-## KV ADMISSION SHADOW (v0.9.0)
+## PREDICTIVE ADMISSION (v0.10.0)
 
-The KV admission model is simulation-only in v0.9.0. It never participates in
-the existing QoS `min()` composition and never changes the selected backend or
-the client-visible response. See
-[`KV_ADMISSION_V0_9_PLAN.md`](KV_ADMISSION_V0_9_PLAN.md) for the architecture,
-initial six-CVM evidence, scenarios, and enforcement gate.
+Predictive admission is a pre-forward guard for one configured vLLM upstream.
+It uses a bounded model-family-neutral JSON size interval, vLLM KV capacity and
+block size, current backend observations, and every unabsorbed reservation to
+forecast post-admit KV, per-user TPS, TTFT, TPOT, and preemption risk. It does
+not tokenize with model assets, inspect prefix-cache hits, route between
+backends, or change vLLM.
 
-`KV_ADMISSION_MODE`
-: Default: `off`. Supported values are `off` and `shadow`. Any other value,
-  including `enforce`, is a startup validation error in v0.9.0. `shadow`
-  requires dynamic metrics polling and a positive bounded JSON classifier size.
+Feedback is qualified and causal: it can update only a later prediction. A
+reservation keeps the exact estimate and forecast used for its decision. A
+completion, failure, cancellation, timeout, disconnect, or shutdown reconciles
+that lifecycle at most once. Restart starts cold rather than loading learned
+state from disk.
+
+`PREDICTIVE_ADMISSION_MODE`
+: Default: `off`. Supported values are `off`, `shadow`, and `enforce`. `shadow`
+  never changes client-visible admission or response. A predicted-risk request
+  with a complete numeric prediction may use a bounded, payload-free,
+  non-accounting observation record so qualified real feedback can improve a
+  later prediction. Early unknown cases without an attributable prediction do
+  not create a record. `enforce` rejects every non-fit or unknown result before
+  upstream forwarding with an OpenAI-compatible 429. Keep the legacy
+  `KV_ADMISSION_MODE=off` when using this path.
+
+`PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS`
+: Default: `10000`. Bounded startup window for discovering one coherent vLLM
+  served-model identity, `kv_cache_size_tokens` capacity, and KV block size.
+  Valid range: `1..300000`.
+
+`PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS`
+: Default: `500`. Timeout for each vLLM metrics request. It must be positive and
+  no larger than the startup probe timeout. Valid range: `1..60000`.
+
+`PREDICTIVE_LEARNING_MINIMUM_SAMPLES`
+: Default: `3`. Qualified samples needed before a learned interval is used.
+  Zero or sparse samples continue with the conservative cold estimate and never
+  close intake merely because learning is immature. Valid range: `1..256`.
+
+`PREDICTIVE_LEARNING_MAXIMUM_SAMPLES`
+: Default: `64`. Maximum retained residual samples per scheduler cell and per
+  approximate request-size class. Valid range: `1..256`, and no smaller than
+  `PREDICTIVE_LEARNING_MINIMUM_SAMPLES`.
+
+`PREDICTIVE_LEARNING_MAXIMUM_CELLS`
+: Default: `64`. Maximum bounded scheduler calibration cells. Untrusted model
+  strings, prompts, and bodies are never used as metric labels or learned keys.
+  Valid range: `1..256`.
+
+`PREDICTIVE_SHADOW_MAXIMUM_OBSERVATIONS`
+: Default: `256`; valid range: `1..4096`. Maximum simultaneous shadow-only
+  observation records for predicted-risk requests. Exhaustion drops only the
+  observation opportunity; shadow forwarding remains unchanged.
+
+`PREDICTIVE_LEARNING_MAX_AGE_SECONDS`
+: Default: `1800`. Maximum age of a learned sample. Expiry returns to a usable
+  cold estimate, not sticky unknown or a zero limit. Valid range: `1..86400`.
+
+`PREDICTIVE_MINIMUM_CONFIDENCE` / `PREDICTIVE_COLD_CONFIDENCE` /
+`PREDICTIVE_LEARNED_CONFIDENCE`
+: Defaults: `0.90` / `0.95` / `0.99`. Decision floor, cold prediction
+  confidence, and mature learned confidence. They must be ordered from minimum
+  through learned and remain in `(0, 1]`.
+
+`PREDICTIVE_INPUT_UPPER_QUANTILE` / `PREDICTIVE_INPUT_SAFETY_MARGIN`
+: Defaults: `0.95` / `1.10`. Quantile and multiplicative headroom applied to
+  qualified `usage.prompt_tokens` versus the stable raw size estimate.
+
+`PREDICTIVE_INPUT_MINIMUM_MULTIPLIER` /
+`PREDICTIVE_INPUT_MAXIMUM_MULTIPLIER`
+: Defaults: `0.25` / `8.0`. Bounds for input-size calibration. A positive
+  observed ratio outside the configured range invalidates optimistic learning
+  and immediately returns to the cold upper; it is not silently clamped into a
+  smaller prediction.
+
+`PREDICTIVE_TPS_MINIMUM_MULTIPLIER` / `PREDICTIVE_TPS_MAXIMUM_MULTIPLIER`
+: Defaults: `0.10` / `8.0`. Bounds for qualified decode-TPS residual learning.
+  The protected per-user target is `DYNAMIC_SINGLE_USER_TPS_RED` and must be
+  positive when predictive admission is enabled.
+
+`PREDICTIVE_LATENCY_MINIMUM_MULTIPLIER` /
+`PREDICTIVE_LATENCY_MAXIMUM_MULTIPLIER`
+: Defaults: `0.50` / `4.0`. Bounds for qualified TTFT and TPOT residual
+  learning. The TTFT SLO is `DYNAMIC_TTFT_TARGET_SECONDS`; TPOT is derived from
+  the protected per-user TPS target.
 
 `KV_ADMISSION_VLLM_TARGET_RATIO`
-: Default: `0.84`. Preferred projected vLLM occupancy. A backend below this
-  target is preferred over protected spill headroom.
-
-`KV_ADMISSION_VLLM_HARD_RATIO`
-: Default: `0.88`. Maximum vLLM `projected_high` ratio that may be labelled
-  hypothetical `fit`.
-
-`KV_ADMISSION_VLLM_EMERGENCY_RATIO`
-: Default: `0.90`. Observed vLLM occupancy at or above this ratio is labelled
-  `emergency_red` before request cost is considered.
-
-`KV_ADMISSION_SGLANG_TARGET_RATIO`
-: Default: `0.80`. Preferred projected SGLang occupancy. EAGLE nodes may need a
-  lower per-backend value in later simulations because reported KV tokens do
-  not cover every temporary GPU workspace allocation.
-
-`KV_ADMISSION_SGLANG_HARD_RATIO`
-: Default: `0.84`. Maximum SGLang `projected_high` ratio that may be labelled
-  hypothetical `fit`.
-
-`KV_ADMISSION_SGLANG_EMERGENCY_RATIO`
-: Default: `0.85`. Observed SGLang active occupancy at or above this ratio is
-  labelled `emergency_red`.
+: Default: `0.84`. Predictive admission aligns this fraction of vLLM's observed
+  maximum KV tokens down to the observed block size and treats the result as
+  the protected hard token budget. Capacity or block-size drift quarantines the
+  old epoch instead of reusing its reservations or learned state.
 
 `KV_ADMISSION_MAX_METRICS_AGE_MS`
-: Default: three times `DYNAMIC_POLL_INTERVAL_MS`. Older token snapshots produce
-  `stale_metrics`, never `fit`.
+: Default: three times `DYNAMIC_POLL_INTERVAL_MS`. Older snapshots close
+  predictive intake until a coherent fresh sample arrives; freshness recovery
+  does not require learning maturity.
 
 `KV_ADMISSION_PREEMPTION_COOLDOWN_SECONDS`
-: Default: `10`. Holds hypothetical intake closed after a vLLM preemption or an
-  SGLang retraction/paused signal.
-
-`KV_ADMISSION_DECODE_DRIFT_TOKENS`
-: Default: `8192`. Global per-backend blind-window allowance for decode growth
-  between metrics samples.
+: Default: `10`. A new vLLM preemption closes predictive intake immediately for
+  the bounded cooldown. A later fresh, healthy observation reopens it.
 
 `KV_ADMISSION_NEW_REQUEST_DECODE_TOKENS`
-: Default: `256`. Bounded new-request output allowance. If a smaller valid
-  output maximum is present, the smaller value is used. PIG does not reserve
-  the full requested output maximum.
-
-`KV_ADMISSION_RESERVATION_TTL_SECONDS`
-: Default: `1800`. Maximum lifetime for an abandoned simulated reservation.
-  Normal response completion releases it earlier; restart/counter/capacity
-  reconciliation can clear it as well.
+: Default: `256`. Conservative decode allowance when the request omits an output
+  maximum. An explicit valid `max_tokens`, `max_completion_tokens`, or
+  `max_output_tokens` is used as that request's decode upper, whether smaller or
+  larger than the default.
 
 `KV_ESTIMATOR_MIN_BYTES_PER_TOKEN` / `KV_ESTIMATOR_MAX_BYTES_PER_TOKEN`
 : Defaults: `2` / `6`. Conservative whole-body and text interval bounds. The
@@ -543,17 +590,22 @@ initial six-CVM evidence, scenarios, and enforcement gate.
 
 `KV_ESTIMATOR_TEMPLATE_TOKENS_PER_MESSAGE_LOW` /
 `KV_ESTIMATOR_TEMPLATE_TOKENS_PER_MESSAGE_HIGH`
-: Defaults: `3` / `8`. Bounded chat-template allowance for each detected
-  message.
+: Defaults: `3` / `8`. Bounded per-message structural allowance. It is not a
+  model-specific chat-template token count.
 
 `KV_ESTIMATOR_MODALITY_TOKENS_LOW` / `KV_ESTIMATOR_MODALITY_TOKENS_HIGH`
 : Defaults: `256` / `4096`. Conservative allowance per detected image, audio,
-  or video marker. This is an interval, not an exact model vision-token count.
+  or video marker. It is not an exact model vision-token count.
 
-Eligible bodies use a zero-allocation linear byte scanner after the existing
-bounded JSON classifier validates the top-level request. Unknown-length,
-oversized, malformed, and non-JSON bodies produce `unsupported_request` in
-shadow metrics while real traffic continues through existing PIG behavior.
+The scanner is O(body bytes), allocation-free in its benchmarked hot loop, and
+runs only after the bounded classifier has obtained an eligible JSON body.
+Unknown-length, oversized, malformed, unsupported-content-type, saturated, or
+non-generation requests are `unknown`. Shadow forwards them without a learning
+record; enforce rejects them before the upstream. See
+[`MODEL_AGNOSTIC_APPROXIMATE_ADMISSION_V0_10_PLAN.md`](MODEL_AGNOSTIC_APPROXIMATE_ADMISSION_V0_10_PLAN.md)
+for acceptance gates and the single-node live canary loop. The historical
+v0.9.0 KV-only shadow design remains in
+[`KV_ADMISSION_V0_9_PLAN.md`](KV_ADMISSION_V0_9_PLAN.md).
 
 ## QUEUEING
 
