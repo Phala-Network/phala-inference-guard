@@ -363,6 +363,8 @@ Rollback to the byte-exact predeploy Compose on any of these gates:
 - PIG/backend crash, restart loop, fatal/OOM/Xid, or readiness failure;
 - observer/capacity identity remains unknown after the bounded startup window;
 - authenticated models/metrics or protocol request failure;
+- authenticated `/v1/attestation/report` is not HTTP 200 with non-empty
+  NVIDIA evidence when Router attestation is required;
 - shadow changes a client admission/response result;
 - prediction latency exceeds the recorded acceptance threshold materially;
 - learning cannot mature from qualified low-concurrency samples;
@@ -395,8 +397,15 @@ Only after both deployed shadow and deployed enforce gates pass:
 3. Enable only the `use1-cb` upstream. Do not alter weights, policies, bearer
    values, timeouts, another upstream, or Router source.
 4. Observe a continuous 30-minute real-traffic canary. The interval starts only
-   after Router state confirms enabled and the target receives a real routed
-   request; an enabled target that receives no real requests is inconclusive.
+   after Router state confirms enabled, Router `processed` advances,
+   `pig_ok=true`/`stale=false`, authenticated `/v1/attestation/report` is HTTP
+   200, and either PIG predictive-attempts or a vLLM inference
+   request/completion counter advances from its pre-enable baseline. Router
+   `processed` alone is not proof that inference reached PIG because attestation
+   verification can advance Router-side accounting before forwarding. An
+   enabled target without PIG/vLLM counter movement is inconclusive and, when
+   `processed` continues advancing, is an immediate chain blocker rather than a
+   reason to start the timer.
 5. Capture timestamped Router health/distribution, PIG and backend metrics at a
    bounded regular cadence, incremental PIG/backend/container logs, serial or
    platform health, and start/end configuration hashes. Retain numeric request
@@ -1158,3 +1167,103 @@ again and enable only `use1-cb`. The 30-minute timer must still wait for the
 first processed real Router request, and any repeated idle TPS rejection,
 self-lock, SLO regression, preemption, leak, fatal error, or lower comparable
 goodput restarts the full disable/drain/repair/test loop.
+
+### v0.10.1 Router canary correction — 2026-08-02
+
+Fresh preflight kept the target platform running and idle, Compose SHA-256
+`041aa8aeff89ae5a255ec6c982e5994fcf89315c53fa803109364c9b7658f4c5`,
+PIG `v0.10.1` in enforce, and the Router baseline digest
+`1b62b992f37b1f3c3ddc3894373cf2a10368d64350b689052c642c2712967c3f`
+with only `use1-4c,use1-9b` enabled. The authorized mutation enabled only
+`use1-cb` at `2026-08-01T22:25:18.3374184Z`; the resulting Router digest was
+`7869dbc9822ec36b0d661bfa9eedcfa6799d9b00d54a97d40c9ebe1db53b5202`
+and the audit found no other upstream field change.
+
+The initial observer incorrectly treated Router `processed` moving from
+`234715` to `234915` with `pig_ok=true` and `stale=false` as proof of real
+inference. It was not: PIG predictive attempts stayed `136`, predictive risks
+stayed `2`, enforced rejects stayed `2`, vLLM successful completions stayed
+`134`, and vLLM running/waiting/KV/preemptions stayed `0/0/0/0`. HAProxy
+recorded repeated attestation-backend HTTP 500 responses. An authenticated
+direct request to `/v1/attestation/report` returned HTTP 500 with
+`native NVIDIA collector requires linux with cgo and NVML`. The production
+Dockerfile had built with `CGO_ENABLED=0`, selecting the non-cgo collector stub,
+so Router attestation stopped real requests before PIG predictive admission.
+Consequently this approximately three-minute observation is invalid and must
+not be described as a 30-minute canary.
+
+The observer was stopped and only `use1-cb.enabled` was returned to `false` at
+`2026-08-01T22:28:55.3011186Z`. Route running drained to zero and the exact
+baseline Router digest and enabled set were restored. The target stayed running
+with no platform operation in progress; authenticated models/PIG/vLLM metrics
+were HTTP 200 and unauthenticated metrics remained HTTP 401. No other upstream,
+Router policy, bearer, timeout, CVM, or vLLM was changed.
+
+This finding changes both pre-enable readiness and canary causality. Every new
+candidate must prove authenticated attestation HTTP 200 with non-empty NVIDIA
+evidence before Router enablement. The timer must use the conjunction in step 4
+above; persistent Router accounting without PIG/vLLM inference counter movement
+is a blocker that triggers disable/drain, not a successful traffic start.
+
+### v0.10.2 attestation repair candidate — 2026-08-02
+
+Commit `28a9b339b05a88d0d872adbcb7d0b1e32c32553d` contains the v0.10.2
+candidate: production `CGO_ENABLED=1`, a dynamic distroless Debian runtime,
+`NVIDIA_VISIBLE_DEVICES=all`, a production-image contract that rejects the
+non-cgo stub and requires the native NVML collector path, matching OCI label
+`0.10.2`, and runtime identity `PIG-v0.10.2`. The fix uses the existing
+attestation adapter and does not change predictive admission, add a tokenizer
+asset, introduce model-specific behavior, or modify Router/vLLM source.
+
+The exact committed archive SHA-256 was
+`741fca891f497201aaae106d684d8e012d6abccb2c0b94eb0b0987a9f3f32f4b`.
+On the verified remote builder, the full Go/race/12-scenario/simulation/build
+matrix and production-image contract both exited zero. Recorded performance was
+`estimator_64kib_p95=3.072us`, `estimator_2mib_p99=180.92us`, and
+`shadow_decision_p99=9.808us`. The first combined r3 runner reported smoke
+status 2 only because it referenced absent
+`/work/v0102-run-local-image-smoke-r3.sh`; its log contains no PIG execution and
+is invalid harness evidence. After correcting the ignored runner to the
+asserted work-directory path, the same source, archive, and already-built image
+passed the full off/shadow/enforce smoke. Its evidence archive SHA-256 is
+`8a485b9d4e66190e8173832d081fb79b50c63b00b07006232ad707c81e592daf`.
+
+The smoke verified runtime/label version agreement, `CGO_ENABLED=1`, absence of
+model/tokenizer/native assets, off pass-through, shadow response invariance,
+bounded learning including a low-ratio rejected sample, prediction/estimator
+metrics, enforce pre-forward HTTP 429, authenticated/unauthenticated metrics,
+synthetic-backend isolation, and terminal reservations/shadow observations at
+zero. This is builder-local evidence only. The branch/tag is not yet published,
+the registry image/digest has not yet been validated, v0.10.2 is not deployed,
+attestation has not yet been proved on the GPU CVM, and Router remains disabled.
+
+### Pass 1 v0.10.2 repair review — completed 2026-08-02
+
+The model/causality review ties the candidate to the observed forwarding
+blocker: Linux+cgo selects the already-tested native NVML collector, while the
+image contract rejects the exact non-cgo stub that caused HTTP 500. Runtime
+identity and OCI label now agree. Predictive decisions, estimator/learner
+features, QoS objectives, and feedback causality are unchanged, so the repair
+does not claim a new throughput result.
+
+### Pass 2 v0.10.2 repair review — completed 2026-08-02
+
+The safety/efficiency/SOLID review found the repair confined to the production
+build, attestation adapter selection, release identity, and image gate. The
+dynamic runtime supports the cgo executable, NVML remains runtime-loaded, and
+the existing NVIDIA device request is retained. Full race/tests/simulations and
+the image behavior smoke passed; reservations, shadow observations, and the
+synthetic backend converged exactly as required. No model-specific tokenization,
+cache-aware admission, Router function, or new hot-path work was introduced.
+
+### Pass 3 v0.10.2 repair review — completed 2026-08-02
+
+The evidence/release review separated the valid full matrix and image contract,
+the invalid path-only smoke attempt, and the valid focused smoke rerun. Logs,
+status files, source/archive identities, and the smoke evidence hash are
+retained. Publication must still build from the reviewed tag, pull the registry
+artifact by immutable digest, repeat contract and off/shadow/enforce smoke on
+that pulled image, and then execute fresh Router-disabled shadow/enforce live
+gates. Only authenticated GPU attestation plus real PIG/vLLM counter movement
+can authorize a newly started 30-minute `use1-cb` canary. Any finding repeats
+the disable/drain/red-test/full-builder/registry/shadow/enforce/canary loop.
