@@ -23,6 +23,10 @@ jobs:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Validate production image contract
+        env:
+          EXPECTED_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: tools/validate-production-image-contract.sh
       - uses: docker/build-push-action@v6
         with:
           context: .

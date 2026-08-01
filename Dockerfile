@@ -3,14 +3,14 @@ WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
+RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
         -trimpath \
         -ldflags="-s -w" \
         -o /out/phala-inference-guard \
         ./cmd/phala-inference-guard
 
 FROM gcr.io/distroless/base-debian12@sha256:348dac1808083ccc3366399d6db835875b4eaf7c9b694783f5a3f353c4b58a28
-LABEL org.opencontainers.image.version="0.10.1"
+LABEL org.opencontainers.image.version="0.10.2"
 ENV NVIDIA_VISIBLE_DEVICES=all
 COPY --from=go-build /out/phala-inference-guard /phala-inference-guard
 EXPOSE 8000
