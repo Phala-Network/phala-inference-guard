@@ -532,14 +532,46 @@ artifact and Git diff for secrets before completion.
   zero allocation. The full admission lifecycle was at most approximately
   3.865 microseconds. These remain builder CPU microbenchmarks, not service-chain
   latency or GPU-throughput evidence;
-- this post-r29 plan-only update changes no executable, test, Dockerfile, or
-  build-input file. Before image construction, prove the new HEAD's executable
-  and Docker build-input trees are byte-identical to `5e2283d...`; the r29
-  source/test evidence may then be inherited only for those identical inputs;
-- plan-only commit/push, binary/image build and smoke, registry publication,
-  Compose shadow and disabled-route enforce deployment, Router enablement, and
-  the first-real-request-started 30-minute canary all remain pending;
-- no v0.10 image, publication, Compose, deployment, or live evidence exists.
+- plan-only commit `0bddb236a24d22dafb8f82b93e5c904ce5a5b735` changed only this
+  document. Git object IDs for `Dockerfile`, `go.mod`, `go.sum`, `cmd/`, and
+  `internal/` are identical to `5e2283d...`, so the r29 executable evidence is
+  inherited only for those byte-identical build inputs;
+- exact HEAD archive `pig-v010-head-0bddb23-20260802-r30.tar.gz` has SHA-256
+  `8f39814eb7f962ba4b398a68fefbef0341339c10b6dd7115bcaa7bc8560ab259`.
+  A no-cache remote build produced image ID
+  `sha256:c970981da59b28249ee18575a25420132d98eda267cac36177e3003dce21387d`
+  with size `29147183`, OCI version `0.10.0`, `CGO_ENABLED=0`, and no final
+  filesystem path matching model/tokenizer/native-asset signatures;
+- the final image gate passed off/shadow/enforce startup, `/healthz`, protected
+  and unauthorized `/pig/metrics` and `/v1/metrics`, authenticated `/v1/models`,
+  non-streaming and streaming OpenAI protocol smoke, shadow-risk forwarding,
+  enforce pre-forward 429, and zero terminal reservation/shadow-observation
+  gauges. Its status is `0`; image-gate log SHA-256 is
+  `21f100fd7f1b45c38a6c8638a1afc41cd495513cc68418edcab67d7851c4b4e4`;
+- image evidence archive SHA-256 is
+  `84c48a137bdcc6b02d0003b5f2c9832c4a277bff0e4f5c40b12445da132c94f7`.
+  The first smoke attempt is invalid product evidence because the harness gave
+  its curl container a non-writable evidence mount; rerunning the corrected
+  harness against the already successful no-cache build closed that harness
+  defect without changing the image;
+- `ghcr.io/phala-network/phala-inference-guard:v0.10.0` is published at
+  immutable digest
+  `sha256:f1aa7d198fcaaae2c0e8ca15c8288d99b450eb2d9cddc85ae43a1ada685c7ede`.
+  Push log SHA-256 is
+  `9cf04ea9ea1b8ba9634bff390acfa4785e3fa093caa9814bf11b900902635ff4`;
+  a digest pull returned the same image ID, and an independent anonymous
+  registry API check returned HTTP 200 with the same digest;
+- source branch `codex/pig-v0.10.0-model-agnostic` and annotated Git tag
+  `v0.10.0` are pushed to `pig-origin`; the tag points to exact image-source
+  plan commit `0bddb23...`;
+- builder registry credentials were relayed only through process stdin from an
+  already approved authenticated builder, then removed from the build builder.
+  The aborted device authorization, temporary credential state, CLI download,
+  and incomplete transfer file were deleted; no credential value is retained
+  in evidence or this plan;
+- Compose shadow and disabled-route enforce deployment, Router enablement, and
+  the first-real-request-started 30-minute canary all remain pending. No v0.10
+  Compose, CVM deployment, Router mutation, or live serving evidence exists.
 
 ## 15. Recorded plan reviews
 
@@ -627,7 +659,8 @@ on exact commit `5e2283d...` and archive r29. The plan-only evidence update afte
 r29 does not alter an executable or Docker build input and must be verified as
 such before inheriting those results.
 
-The remaining release findings are image identity/smoke/publication, deployed
-shadow, disabled-route enforce cold/recovery gates, and the real-traffic canary.
-The plan remains authoritative, but the candidate is not approved for Router
-traffic until every preceding live gate passes.
+The image identity, smoke, publication, and source/tag provenance findings are
+now closed by r30. The remaining release findings are deployed shadow,
+disabled-route enforce cold/recovery gates, and the real-traffic canary. The plan
+remains authoritative, but the candidate is not approved for Router traffic
+until every preceding live gate passes.
