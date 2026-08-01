@@ -122,6 +122,6 @@ func writePredictiveDurationHistogram(w io.Writer, name string, value *histogram
 		histogram.WriteDurationHistogram(w, name, value)
 		return
 	}
-	empty := histogram.NewDurationHistogram()
+	empty := histogram.NewPredictiveDurationHistogram()
 	histogram.WriteDurationHistogram(w, name, &empty)
 }

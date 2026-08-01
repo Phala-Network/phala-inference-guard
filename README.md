@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.10.0 model-agnostic predictive admission
+### v0.10.1 model-agnostic predictive admission
 
-PIG v0.10.0 can estimate request size locally and predict the post-admit
+PIG v0.10.1 can estimate request size locally and predict the post-admit
 KV/TPS/TTFT/TPOT state before forwarding to a vLLM upstream:
 
 ```text
@@ -229,7 +229,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.0
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.1
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

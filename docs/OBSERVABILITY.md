@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.10.0 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
+pig_status v=PIG-v0.10.1 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
 ```
 
 The status line has three required parts:
@@ -138,7 +138,10 @@ For production operation, watch these first:
   `pig_predictive_admission_estimator_duration_seconds`: separate scheduler/
   reservation latency from the bounded JSON estimator. During the live gate,
   compare p95/p99 with the plan thresholds by request-size cohort; an aggregate
-  histogram alone cannot prove the 16 KiB and 64 KiB targets.
+  histogram alone cannot prove the 16 KiB and 64 KiB targets. These two
+  histograms use 10 us through 100 ms buckets, including exact 0.25 ms and 1 ms
+  boundaries; general TTFT and total-duration histograms retain their wider
+  service-latency buckets.
 - `pig_predictive_admission_failures_total{phase="close|decide|forward|semantic|completion|terminal"}`:
   should remain unchanged in a healthy canary. Any increase needs matching
   incremental logs and lifecycle/accounting verification before broader use.

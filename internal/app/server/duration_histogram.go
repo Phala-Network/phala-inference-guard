@@ -11,6 +11,10 @@ func newDurationHistogram() durationHistogram {
 	return histogram.NewDurationHistogram()
 }
 
+func newPredictiveDurationHistogram() durationHistogram {
+	return histogram.NewPredictiveDurationHistogram()
+}
+
 func (s *proxyServer) observeProxyResult(result proxyResult) {
 	s.proxyTotal.Observe(result.total)
 	if result.firstByteOK {

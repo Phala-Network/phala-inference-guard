@@ -103,10 +103,13 @@ Rules:
 14. Retained reservation/learning state contains numeric features and versioned
     identities only. Raw request bytes and extracted strings are scrubbed after
     the decision and never appear in logs, metrics, samples, or status output.
-15. A positive actual/raw ratio outside configured bounds is not silently
-    clamped downward. It clears optimistic calibration, records an anomaly, and
-    immediately falls back to the usable cold upper. It must not turn the class
-    into permanently `unknown`, because rejection would then prevent the new
+15. A positive actual/raw ratio outside configured bounds is never silently
+    clamped into training. A ratio above the maximum proves dangerous
+    underestimation: clear the affected class, record a safety invalidation, and
+    immediately fall back to the usable cold upper. A ratio below the minimum
+    proves only safe overestimation: reject that sample, retain earlier mature
+    samples, and do not record a safety invalidation. Neither side may turn the
+    class permanently `unknown`, because rejection would then prevent the new
     feedback required for recovery.
 16. Learning maturity is never a prerequisite for a request that is otherwise
     safe under the cold estimate. Zero, sparse, missing, rejected, or expired
@@ -243,9 +246,10 @@ Estimator/calibrator:
 - first request is cold; qualified prompt usage changes only the next estimate;
 - underestimation raises the next upper bound; mature samples may narrow it;
 - invalid/duplicate/censored usage cannot train;
-- an out-of-range positive ratio disables optimistic calibration instead of
-  being truncated into an unsafe bound, then returns immediately to usable cold
-  estimation rather than permanent `unknown`;
+- a high out-of-range positive ratio disables optimistic calibration instead
+  of being truncated into an unsafe bound, then returns immediately to usable
+  cold estimation rather than permanent `unknown`; a safe low out-of-range
+  ratio rejects only that sample and preserves already mature learning;
 - zero samples and indefinitely sparse low-flow samples remain cold-admissible;
   maturity, expiry, missing stream usage, or an anomalous sample cannot produce
   self-lock, false-lock, sticky zero, or poison the next request;
@@ -431,8 +435,19 @@ artifact and Git diff for secrets before completion.
 ## 14. Current state
 
 - v0.9.4 deployment stopped before Compose mutation;
-- target remains on original PIG v0.8.12;
-- v0.10 plan active;
+- the original byte-exact PIG v0.8.12 rollback Compose is retained with
+  SHA-256
+  `30ebb4df57185dd988f0be7830bb1dce58283be937298052116b9464f1de031d`;
+- the only authorized target is currently running the published immutable
+  v0.10.0 image in `shadow` mode. Its freshly queried live Docker Compose
+  SHA-256 is
+  `1a5052afea8fe83b8b182eabe0b6f5f558fd6e03dfc0981ea67639cca434c620`,
+  platform state is `running` with no operation in progress, and `use1-cb`
+  remains Router-disabled;
+- v0.10 plan remains active, but v0.10.0 is no longer eligible to advance to
+  disabled-route enforce or Router traffic because live shadow exposed the two
+  release blockers recorded below. The corrective release is provisionally
+  v0.10.1;
 - model-neutral JSON cost classification, bounded input-size calibration,
   `prompt_tokens` feedback parsing, generic upper-bound reservation, and the
   approximate HTTP adapter are committed on
@@ -569,9 +584,119 @@ artifact and Git diff for secrets before completion.
   The aborted device authorization, temporary credential state, CLI download,
   and incomplete transfer file were deleted; no credential value is retained
   in evidence or this plan;
-- Compose shadow and disabled-route enforce deployment, Router enablement, and
-  the first-real-request-started 30-minute canary all remain pending. No v0.10
-  Compose, CVM deployment, Router mutation, or live serving evidence exists.
+- v0.10.0 shadow Compose deployment and direct live protocol validation are
+  complete on the sole authorized CVM. Authenticated `/v1/models`,
+  `/pig/metrics`, and `/v1/metrics` returned 200; unauthenticated metrics
+  returned 401. Normal chat, streaming with terminal usage, tool call,
+  structured output, and CJK requests all returned valid protocol results.
+  The backend reported model identity `google/gemma-4-31B-it`, KV capacity
+  `862437` tokens, and block size `64`; target ratio `0.84` therefore protects
+  a block-aligned budget of `724416` KV tokens. After idle, reservations,
+  shadow observations, backend running/waiting, KV use, and preemptions were
+  all zero;
+- the initial five-request Windows harness attempt is invalid protocol evidence
+  because in-memory JSON passed through PowerShell to curl lost quoting and
+  returned 400. The corrected UTF-8 file plus `--data-binary` harness passed
+  all five protocol cases. This was a harness defect, not a PIG regression;
+- live shadow blocked release because the prediction and estimator histograms
+  reuse generic duration buckets whose smallest upper bound is 100 ms. Five
+  valid predictions had aggregate duration `0.000198` seconds (about 39.6
+  microseconds mean), but the histogram cannot prove the required 0.25 ms p95
+  or 1 ms p99 gates. v0.10.1 must give every histogram instance immutable
+  validated bounds and use predictive-specific 10 us through 100 ms buckets
+  that include exact 0.25 ms and 1 ms bounds, while preserving the generic
+  buckets for TTFT and total-duration telemetry;
+- live shadow also exposed a learner-liveness defect: two input-size samples
+  were accepted, three safe low-ratio samples were rejected, three
+  invalidations occurred, only one sample remained, and every one of five
+  estimates stayed cold. A ratio below `MinimumMultiplier` means the cold
+  whole-body estimate was safely conservative; it must reject only that sample
+  and preserve mature samples without incrementing safety invalidations. A
+  ratio above `MaximumMultiplier` remains a dangerous underestimation and must
+  clear the class, increment invalidations, and recover immediately through
+  cold estimation;
+- v0.10.1 red evidence must first prove both current defects on a freshly
+  discovered remote builder: sub-ms predictive buckets are missing, and a safe
+  low-ratio sample destroys mature learning. After the smallest coherent fixes,
+  rerun gofmt, focused/full tests, vet, build, targeted/full race,
+  deterministic simulation, the complete benchmark matrix, no-cache image
+  build, off/shadow/enforce image smoke, registry publication and digest-pull
+  verification. No executable test is run on local Windows;
+- regenerate both rollback and shadow candidates from freshly queried live
+  state. For the v0.10.1 candidate, set the bounded startup dependency probe to
+  `300000` ms so a normal approximately five-minute vLLM load does not restart
+  PIG every ten seconds. This changes dependency-wait churn only and must not
+  hide a restart after the backend is ready;
+- only after v0.10.1 repeats direct shadow protocol, sparse/cold progress,
+  mixed-request maturity, cold-to-learned transition, sub-ms p95/p99,
+  no-false-lock/sticky-zero recovery, zero terminal state and zero preemption
+  gates may the same digest enter Router-disabled enforce. Only after that full
+  enforce gate passes may `use1-cb` be enabled and the first-real-request-started
+  30-minute canary begin. Any finding restarts the complete repair loop; no
+  Router mutation or canary has occurred yet.
+- the builder was freshly rediscovered as running CVM
+  `4f167f6e-4c50-415f-99f2-94b65652beba`, app
+  `ff40ee31b95e89ebb242c223514adc715ac8a301`, with the
+  `pig-ubuntu-builder` container and `/usr/local/go/bin/go`. Red archive r1
+  SHA-256
+  `7c38b603890313ed51b6d70442751dd81799a73e6616ea1b7d9203e06706035e`
+  failed both focused tests for the intended behaviors; its reproducible red
+  log SHA-256 is
+  `17989abc0ccad2c960ce74fed126d82b3efbcfc80b998368ad21795d3f8e17cf`;
+- green archive r2 SHA-256
+  `dcfc438593331177e3957d1e8c3d05e4527f88b085e9e2cd85dd5a9b60f400e9`
+  passed the four focused packages once, but a recorded repeat exposed a real
+  pre-existing startup-probe diagnostic flake: an observed model-identity
+  validation error could be overwritten by a later fetch timeout. This repeat
+  is not counted as green. The fix retains the last semantic validation error
+  and last fetch error separately and reports both at the bounded deadline;
+- reviewed green archive r3 SHA-256
+  `7ffd4a03b44bde38edf1f59f27b2af5dcb98943e5d5a7a8993b535c5c7ef4be3`
+  is gofmt-clean and passed the four focused packages, 30 serial repetitions of
+  the former flaky semantic-error test, and 10 race repetitions of that test
+  plus the deterministic semantic-then-fetch-timeout test. The complete builder
+  matrix remains pending and must run from a new exact archive containing this
+  evidence update.
+- full-matrix archive r4 SHA-256
+  `3151db83c94817269d64fba571177dd88d75b8fe44daedac81d203681a1b284b`
+  was gofmt-clean but correctly stopped at `go vet`: the fallible custom
+  histogram constructor returned a local struct containing `atomic.Uint64`,
+  which copied a `noCopy` value. r4 is failed evidence, not an inherited green
+  run. The public fallible constructor now returns a pointer; the legacy static
+  constructors build an unused literal directly, so no initialized atomic
+  state is copied;
+- corrective archive r5 SHA-256
+  `7dbe687818cacf24b308344cfee3f4fddc041713fc4a21b44b1aba51ffd450a9`
+  is gofmt-clean and passed the four focused packages plus `go vet ./...`.
+  This focused result closes the atomic-copy defect but does not replace the
+  complete matrix, which starts again from the next exact archive.
+- exact full-matrix archive r6 SHA-256
+  `56f04fde4cf8d74c127bb2281499c98b953ae84789fdc90cc94951f3f97e92f4`
+  passed remote Go 1.24.5 gofmt, `go vet ./...`, `go test ./... -count=1`,
+  the targeted race packages, `go build ./...`, full
+  `go test -race ./... -count=1`, the verbose deterministic goodput gate, and
+  the complete five-run benchmark matrix. Every gate recorded status zero;
+  complete log SHA-256 is
+  `604c76c8a36024a60b9d448ba3254d382d287dfd4793424d3b5d544d9b35e6d7`;
+- r6 deterministic aggregate results remain `39520` current-threshold,
+  `36704` v0.9.0 KV-only, and `43232` v0.10.1 predictive SLO-compliant
+  completion-token goodput. Predictive recorded zero TPS, TTFT, TPOT, KV-hard,
+  and preemption-proxy violations, zero false accepts, and zero reservation
+  leaks. These are deterministic simulation results, not live GPU throughput;
+- r6 estimator maxima across five runs were approximately 0.249 microseconds
+  at 1 KiB, 0.692 microseconds at 16 KiB, 2.582 microseconds at 64 KiB, 35.775
+  microseconds at 1 MiB, and 78.327 microseconds at 2 MiB, all at 0 B/op and
+  zero allocations. Learned scheduler prediction was at most approximately
+  3.578 microseconds at 256 B/op and 2 allocations; the full predictive adapter
+  lifecycle was at most approximately 6.091 microseconds at 832 B/op and 3
+  allocations. Histogram instance-bound construction is startup-only and does
+  not enter these per-request allocations;
+- the local evidence copies are retained under the ignored live-evidence
+  directory. The r4 vet-red log SHA-256 is
+  `1900aed03e7e85c96a700443687cf5acf5adc602db886075948ec523011cd97e`.
+  No executable test was run on Windows. Source commit/push/tag, image build,
+  image smoke/publication, redeployed shadow, disabled-route enforce, Router
+  enablement, and the 30-minute canary remain later gates.
 
 ## 15. Recorded plan reviews
 
@@ -598,8 +723,9 @@ Corrections made:
 - prohibited raw prompt/model strings in retained state, metrics, and logs;
 - fixed learner cardinality to bounded request classes rather than untrusted
   model-name keys;
-- required out-of-range ratios to invalidate optimistic learning instead of
-  unsafe downward clamping;
+- required high-side out-of-range ratios to invalidate optimistic learning
+  instead of unsafe downward clamping, while safe low-side ratios reject only
+  the current sample and preserve mature state;
 - required invalidation to recover immediately through usable cold prediction,
   and made zero/sparse/expired evidence explicitly incapable of self-locking;
 - required release-before-learning, explicit lock ordering, idempotent close,
@@ -664,3 +790,57 @@ now closed by r30. The remaining release findings are deployed shadow,
 disabled-route enforce cold/recovery gates, and the real-traffic canary. The plan
 remains authoritative, but the candidate is not approved for Router traffic
 until every preceding live gate passes.
+
+### Pass 1 live correction — repeated 2026-08-02 after v0.10.0 shadow
+
+The model and causality review found that a low actual/raw ratio is evidence of
+a safe conservative estimate, not evidence that existing learned state became
+unsafe. The plan now separates low-side sample rejection from high-side safety
+invalidation. This preserves next-request-only learning and lets qualified
+mixed low-flow traffic mature without making the current request less safe.
+
+### Pass 2 live correction — repeated 2026-08-02 after v0.10.0 shadow
+
+The safety, efficiency, and SOLID review found that histogram bounds were global
+rather than instance-owned and could not express the stated live latency SLO.
+The corrective design gives each instance copied, validated, strictly
+increasing bounds; predictive timing receives a narrow sub-ms distribution,
+while unrelated service-latency histograms retain their existing bounds. The
+startup probe Compose correction reduces known dependency-startup churn without
+weakening post-readiness failure detection.
+
+Source review also found no per-request allocation added by the histogram
+change: bounds and counter slices are allocated once at construction, while
+`Observe` remains one atomic count/sum update plus a fixed cumulative bucket
+loop. The calibrator change retains the existing mutex and bounded class map,
+adds no state, and has no new lock ordering.
+
+The subsequent vet pass corrected one interface detail before release: a
+fallible constructor for a type containing atomic counters must return a
+pointer, preventing accidental copying after initialization. Static internal
+factories retain value fields for compatibility but construct them directly
+before first use. This preserves the existing storage layout without weakening
+`go vet`'s `noCopy` contract.
+
+### Pass 3 live correction — repeated 2026-08-02 after v0.10.0 shadow
+
+The evidence and release review revoked the inherited v0.10.0 live approval:
+means derived from histogram sums are characterization only and cannot prove
+p95/p99. Both findings require focused remote-builder red evidence, a new exact
+source archive and version, the complete builder/image matrix, fresh shadow and
+disabled-route enforce gates, and then a newly started 30-minute Router canary.
+The target remains safely Router-disabled during repair.
+
+The evidence pass then reproduced an existing startup error-ordering flake: a
+late transport timeout overwrote an earlier coherent semantic validation error.
+The corrected probe retains the two error classes separately, and a
+deterministic fixture now forces semantic error followed by timeout. Archive r3
+passed 30 non-race and 10 race repetitions; this closes the focused fixture
+finding but does not substitute for the complete matrix.
+
+The next complete evidence pass caught the atomic-copy issue at vet before any
+later gate and restarted from a corrected exact archive. Archive r6 then passed
+every declared builder gate and retained the existing deterministic safety and
+goodput results. The executable candidate is therefore eligible for source
+commit and final-image validation, but not yet for CVM redeployment or Router
+traffic.

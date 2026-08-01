@@ -112,7 +112,7 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 		now:                 config.Now,
 		reservations:        make(map[string]struct{}),
 		observations:        make(map[string]*approximatePredictiveReservation),
-		predictionDuration:  newDurationHistogram(),
+		predictionDuration:  newPredictiveDurationHistogram(),
 	}, nil
 }
 

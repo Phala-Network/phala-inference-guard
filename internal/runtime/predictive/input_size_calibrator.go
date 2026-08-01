@@ -192,7 +192,10 @@ func (c *InputSizeCalibrator) Observe(outcome InputSizeOutcome) error {
 	if !positiveFinite(ratio) {
 		return c.reject(fmt.Errorf("input-size outcome ratio is invalid"))
 	}
-	if ratio < c.config.MinimumMultiplier || ratio > c.config.MaximumMultiplier {
+	if ratio < c.config.MinimumMultiplier {
+		return c.reject(fmt.Errorf("input-size outcome ratio %.6g is below configured bounds", ratio))
+	}
+	if ratio > c.config.MaximumMultiplier {
 		c.mu.Lock()
 		delete(c.samples, outcome.Class)
 		c.samplesRejected++

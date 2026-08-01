@@ -72,7 +72,7 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 		started:                  time.Now(),
 		activeRequests:           prefill.New(),
 		decisionDuration:         newDurationHistogram(),
-		kvEstimatorDuration:      newDurationHistogram(),
+		kvEstimatorDuration:      newPredictiveDurationHistogram(),
 		kvShadowDecisionDuration: newDurationHistogram(),
 		proxyTTFB:                newDurationHistogram(),
 		requestSemanticTTFT:      newDurationHistogram(),

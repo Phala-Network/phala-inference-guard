@@ -43,17 +43,19 @@ func probePredictiveVLLMStartup(config predictiveVLLMStartupProbeConfig) (predic
 	if retry > 250*time.Millisecond {
 		retry = 250 * time.Millisecond
 	}
-	var lastErr error
+	var lastValidationErr error
+	var lastFetchErr error
 	for {
-		sample, err := prometheus.FetchSampleContext(ctx, client, config.MetricsURL)
-		if err == nil {
+		sample, fetchErr := prometheus.FetchSampleContext(ctx, client, config.MetricsURL)
+		if fetchErr == nil {
 			startup, validateErr := predictiveVLLMStartupFromSample(sample, time.Now())
 			if validateErr == nil {
 				return startup, nil
 			}
-			err = validateErr
+			lastValidationErr = validateErr
+		} else {
+			lastFetchErr = fetchErr
 		}
-		lastErr = err
 		timer := time.NewTimer(retry)
 		select {
 		case <-ctx.Done():
@@ -63,13 +65,23 @@ func probePredictiveVLLMStartup(config predictiveVLLMStartupProbeConfig) (predic
 				default:
 				}
 			}
-			if lastErr == nil {
-				lastErr = ctx.Err()
-			}
-			return predictiveVLLMStartup{}, fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: %w", lastErr)
+			return predictiveVLLMStartup{}, predictiveVLLMStartupProbeError(ctx.Err(), lastValidationErr, lastFetchErr)
 		case <-timer.C:
 		}
 	}
+}
+
+func predictiveVLLMStartupProbeError(contextErr, validationErr, fetchErr error) error {
+	if validationErr != nil && fetchErr != nil {
+		return fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: last validation error: %v; last fetch error: %w", validationErr, fetchErr)
+	}
+	if validationErr != nil {
+		return fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: %w", validationErr)
+	}
+	if fetchErr != nil {
+		return fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: %w", fetchErr)
+	}
+	return fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: %w", contextErr)
 }
 
 func predictiveVLLMStartupFromSample(sample telemetry.Sample, observedAt time.Time) (predictiveVLLMStartup, error) {

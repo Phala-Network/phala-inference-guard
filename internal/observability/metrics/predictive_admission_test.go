@@ -10,8 +10,8 @@ import (
 )
 
 func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
-	prediction := histogram.NewDurationHistogram()
-	estimator := histogram.NewDurationHistogram()
+	prediction := histogram.NewPredictiveDurationHistogram()
+	estimator := histogram.NewPredictiveDurationHistogram()
 	prediction.Observe(3 * time.Millisecond)
 	estimator.Observe(4 * time.Microsecond)
 	var out bytes.Buffer
@@ -98,6 +98,10 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		`pig_predictive_admission_failures_total{phase="terminal"} 6`,
 		"pig_predictive_admission_prediction_duration_seconds_count 1",
 		"pig_predictive_admission_estimator_duration_seconds_count 1",
+		`pig_predictive_admission_prediction_duration_seconds_bucket{le="0.00025"} 0`,
+		`pig_predictive_admission_prediction_duration_seconds_bucket{le="0.001"} 0`,
+		`pig_predictive_admission_estimator_duration_seconds_bucket{le="0.00025"} 1`,
+		`pig_predictive_admission_estimator_duration_seconds_bucket{le="0.001"} 1`,
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q\noutput:\n%s", want, got)

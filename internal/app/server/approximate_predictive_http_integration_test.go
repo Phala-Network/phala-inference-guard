@@ -202,6 +202,28 @@ func TestApproximatePredictiveHTTPEstimatorTelemetryWithoutLegacyKVShadow(t *tes
 	if sample := srv.kvEstimatorDuration.Sample(); sample.Count != 1 {
 		t.Fatalf("predictive estimator histogram count = %d, want 1 without legacy KV shadow", sample.Count)
 	}
+	metricsInput := srv.predictiveAdmissionMetricsInput()
+	for name, value := range map[string]*durationHistogram{
+		"prediction": metricsInput.PredictionDuration,
+		"estimator":  metricsInput.EstimatorDuration,
+	} {
+		if value == nil {
+			t.Fatalf("%s histogram is nil", name)
+		}
+		sample := value.Sample()
+		for _, required := range []float64{0.00025, 0.001} {
+			found := false
+			for _, bucket := range sample.Buckets {
+				if bucket.UpperBound == required {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("%s histogram lacks required sub-ms bucket %g: %+v", name, required, sample.Buckets)
+			}
+		}
+	}
 }
 
 func newApproximateHTTPTestAdapter(t *testing.T, targetTPS float64) (*approximatePredictiveShadow, *runtimepredictive.LearnedScheduler) {

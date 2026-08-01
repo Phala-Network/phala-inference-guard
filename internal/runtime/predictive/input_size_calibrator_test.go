@@ -96,6 +96,44 @@ func TestInputSizeCalibratorFallsBackColdWithoutPermanentLockout(t *testing.T) {
 	}
 }
 
+func TestInputSizeCalibratorSafeLowRatioRejectPreservesMatureLearning(t *testing.T) {
+	now := time.Unix(32_000, 0)
+	config := inputSizeCalibratorTestConfig()
+	calibrator, err := NewInputSizeCalibrator(config)
+	if err != nil {
+		t.Fatalf("new input-size calibrator: %v", err)
+	}
+	for index, actual := range []int64{50, 55, 60, 65} {
+		if err := calibrator.Observe(InputSizeOutcome{
+			EstimatorVersion: "approx-json-v1", Class: RequestClassChat,
+			RawInputTokensHigh: 100, ActualPromptTokens: actual,
+			ObservedAt: now.Add(time.Duration(index) * time.Millisecond), Attributed: true,
+		}); err != nil {
+			t.Fatalf("prime mature calibration %d: %v", index, err)
+		}
+	}
+	before := calibrator.Estimate(now.Add(time.Second), RequestClassChat, 50, 100)
+	if !before.Known || before.Source != InputSizeSourceLearned || before.Samples != config.MinimumSamples {
+		t.Fatalf("calibration did not mature before low-ratio sample: %+v", before)
+	}
+
+	if err := calibrator.Observe(InputSizeOutcome{
+		EstimatorVersion: "approx-json-v1", Class: RequestClassChat,
+		RawInputTokensHigh: 100, ActualPromptTokens: 10,
+		ObservedAt: now.Add(2 * time.Second), Attributed: true,
+	}); err == nil {
+		t.Fatal("safe low-ratio sample was accepted")
+	}
+	after := calibrator.Estimate(now.Add(3*time.Second), RequestClassChat, 50, 100)
+	if !after.Known || after.Source != InputSizeSourceLearned || after.Samples != config.MinimumSamples {
+		t.Fatalf("safe low-ratio rejection destroyed mature learning: before=%+v after=%+v", before, after)
+	}
+	snapshot := calibrator.Snapshot(now.Add(3 * time.Second))
+	if snapshot.SamplesStored != config.MinimumSamples || snapshot.SamplesAccepted != uint64(config.MinimumSamples) || snapshot.SamplesRejected != 1 || snapshot.Invalidations != 0 {
+		t.Fatalf("safe low-ratio rejection changed established safety state: %+v", snapshot)
+	}
+}
+
 func TestInputSizeCalibratorSparseLowFlowNeverSelfLocks(t *testing.T) {
 	now := time.Unix(35_000, 0)
 	config := inputSizeCalibratorTestConfig()
