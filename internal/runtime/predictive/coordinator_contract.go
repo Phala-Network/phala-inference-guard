@@ -40,7 +40,7 @@ func validateInitialState(state domain.VirtualState) error {
 }
 
 func validateConstraints(constraints domain.Constraints) error {
-	if constraints.PhysicalKVHard < 0 || constraints.ActiveKVHard < 0 || !nonNegativeFinite(constraints.UserTPSTarget) || constraints.TTFTSLO < 0 || constraints.TPOTSLO < 0 || !nonNegativeFinite(constraints.WorkspaceRiskBudget) || !nonNegativeFinite(constraints.PreemptionRiskBudget) || !nonNegativeFinite(constraints.MinimumConfidence) || constraints.MinimumConfidence > 1 {
+	if constraints.PhysicalKVHard < 0 || constraints.ActiveKVHard < 0 || !nonNegativeFinite(constraints.UserTPSTarget) || constraints.TPOTSLO < 0 || !nonNegativeFinite(constraints.WorkspaceRiskBudget) || !nonNegativeFinite(constraints.PreemptionRiskBudget) || !nonNegativeFinite(constraints.MinimumConfidence) || constraints.MinimumConfidence > 1 {
 		return fmt.Errorf("predictive coordinator constraints are invalid")
 	}
 	return nil

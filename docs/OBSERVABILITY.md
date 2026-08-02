@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.10.3 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
+pig_status v=PIG-v0.10.4 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 reservations=1 virtual_decode=1 deferred=0 router_bp=1/1/existing_tps_at_risk effective=1/1 raw=1/50}
 ```
 
 The status line has three required parts:
@@ -18,12 +18,28 @@ The status line has three required parts:
 - `v`: PIG version.
 - `backend`: current backend load snapshot from vLLM or SGLang metrics.
 - `pig`: current PIG limits and counters.
+- `predictive`: predictive decisions, live reservations/deferred outcomes, and
+  Router backpressure as `active/applied/reason`, followed by effective and raw
+  `running/global-limit` pairs.
 - `kv_shadow`: optional and present only when the separate legacy
   `KV_ADMISSION_MODE=shadow` path is enabled.
 
-The startup configuration line includes `predictive_admission=off|shadow|enforce`.
-Protected metrics, rather than the compact status line, are authoritative for
+The startup configuration line includes
+`predictive_admission=off|shadow|enforce`, `dynamic_ttft_protect=false`,
+`predictive_ttft_observe=false|true`, `predictive_ttft_protect=false`, and the
+bounded Router backpressure hold. Predictive TTFT observation is true only in
+`shadow` or `enforce`; it never authorizes a TTFT admission reject. Metrics remain authoritative for the full
 predictive decision, learning, reservation, and shadow-only observation state.
+An immediate `predictive_router_backpressure event=activated ...` line records
+each new bounded activation. Further protection signals inside that episode
+update the extension counter and latest reason/source without moving the fixed
+expiry or producing a per-request log storm. The first metrics response that
+actually applies the Router capacity projection also emits one
+`predictive_router_backpressure event=router_capacity_applied ...` line with
+the activation number and raw/effective running and global-limit values.
+Concurrent or repeated scrapes emit that record at most once per activation;
+the record means PIG exported the projection, while live Router status remains
+the authority for proving that Router scraped and acted on it.
 
 The log is intentionally compact. Per-lane counters, queue totals, dynamic
 reasons, backend details, and classifier counters are exposed through metrics
@@ -69,7 +85,7 @@ lane-specific QoS caps.
 | Client Disconnects | `pig_client_disconnects_total`, `pig_client_disconnect_upstream_cancellations_total` | Client-side disconnects while waiting in queue, waiting for upstream headers, or copying the upstream response. |
 | Dynamic QoS | `pig_dynamic_*` | Load state, learned limits, pressure limits, per-user TPS observations, and TTFT learning. |
 | Backend | `pig_backend_*` | Per-backend health, in-flight count, load, KV usage, generation TPS, and TTFT. |
-| Predictive Admission | `pig_predictive_*` | v0.10 pre-forward mode, decisions, enforced rejects, reservations, bounded learning, shadow-only observations, lifecycle failures, TPS target quality, and estimator/prediction latency. |
+| Predictive Admission | `pig_predictive_*` | v0.10 pre-forward mode, decisions, enforced rejects, reservations, bounded learning, shadow-only observations, lifecycle failures, TPS target quality, Router backpressure, and estimator/prediction latency. |
 | Legacy KV Shadow | `pig_kv_admission_*`, `pig_kv_shadow_*`, `pig_kv_estimator_*` | Historical v0.9 KV-only shadow decisions and reservations; keep this mode off when using v0.10 predictive admission. |
 | Classifier | `pig_json_*`, `pig_*output*` | Optional request body and output-token classification. |
 | Backend Priority | `pig_backend_priority_*` | Trusted-tier JSON priority injection and rewrite overhead. |
@@ -110,6 +126,31 @@ For production operation, watch these first:
   `pig_predictive_admission_retired_reservations`: show current eligibility and
   resource accounting. Active reservations must return to zero after idle;
   retired entries are a bounded reconciliation queue, not live KV demand.
+- `pig_predictive_router_backpressure_active`,
+  `pig_predictive_router_backpressure_applied`,
+  `pig_predictive_router_backpressure_state_info`, expiry/hold timestamps, and
+  activation/extension counters show whether a load-dependent predictive
+  protection is currently being projected to Router. `active=1,applied=0` is
+  the intentional idle escape hatch: the bounded state remains observable, but
+  no Router capacity clamp is exported without live load.
+- `pig_predictive_admission_virtual_decode_sequences` is the predictive
+  coordinator's current virtual upper decode count. It includes the latest
+  predictive backend observation plus still-unabsorbed reservations.
+  `pig_predictive_router_backpressure_predictive_running` records the value
+  used by the active projection. This prevents a separate dynamic poll lag from
+  hiding a protection that has already rejected a request. When the episode is
+  inactive, the backpressure reason/source are normalized to `none/unknown`;
+  cumulative activation/extension counters and the last episode timestamps
+  remain available for history.
+- `pig_dynamic_observed_running_raw` / `pig_dynamic_observed_running` and
+  `pig_dynamic_global_limit_raw` / `pig_dynamic_global_limit` compare backend
+  truth with the effective Router-consumed capacity. During an applied window,
+  effective running divided by effective global limit must be at least 100%.
+  `pig_dynamic_admission_limit` continues to report the actual local QoS gate;
+  it is not repurposed as a Router signal. If the raw global limit is zero
+  during an applied window, the effective limit equals positive effective
+  running as a Router-only 100% fullness sentinel; raw and local limits remain
+  zero.
 - `pig_predictive_shadow_observations` and
   `pig_predictive_shadow_observations_total{result="created|terminated|qualified|censored|dropped"}`:
   show bounded, payload-free observation records for shadow predicted-risk
@@ -136,8 +177,9 @@ For production operation, watch these first:
   `pig_predictive_learning_invalidations_total`,
   `pig_predictive_learning_cells`, and
   `pig_predictive_learning_global_samples`: show bounded TPS/TTFT/TPOT residual
-  learning. Invalidation after backend identity or capacity drift must discard
-  incompatible learning before intake recovers on a new coherent epoch.
+  learning. TTFT is diagnosis-only and cannot reject; TPS and TPOT remain
+  admission inputs. Invalidation after backend identity or capacity drift must
+  discard incompatible learning before intake recovers on a new coherent epoch.
 - `pig_predictive_tps_outcomes_total{result="backend|local|missing|rejected"}`:
   distinguishes backend-timing targets, qualified local timing fallbacks,
   missing targets, and structurally rejected targets. Do not treat all terminal

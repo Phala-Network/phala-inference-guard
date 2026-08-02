@@ -60,14 +60,20 @@ func TestModelAgnosticApproximatePredictiveAdmissionMeetsCompletionGoodputGate(t
 	t.Logf("aggregate v0.9.0-kv-only=%+v", kvOnly)
 	t.Logf("aggregate predictive-qos=%+v", full)
 	for _, scenario := range suite.Scenarios {
-		t.Logf("scenario=%s current_goodput=%d kv_only_goodput=%d exact_kv_goodput=%d predictive_goodput=%d predictive_safety=%d",
+		t.Logf("scenario=%s current_goodput=%d kv_only_goodput=%d exact_kv_goodput=%d predictive_goodput=%d predictive_protected_violations=%d predictive_ttft_observed=%d",
 			scenario.Name,
 			scenario.Policies[PolicyCurrentThreshold].CompletionTokenGoodput,
 			scenario.Policies[PolicyV090KVOnly].CompletionTokenGoodput,
 			scenario.Policies[PolicyExactKVOnly].CompletionTokenGoodput,
 			scenario.Policies[PolicyPredictiveQoS].CompletionTokenGoodput,
 			scenario.Policies[PolicyPredictiveQoS].SafetyViolations(),
+			scenario.Policies[PolicyPredictiveQoS].TTFTViolations,
 		)
+		if scenario.Name == "low_kv_excessive_ttft" {
+			for _, trace := range scenario.Policies[PolicyPredictiveQoS].AdmissionTrace {
+				t.Logf("low-kv TTFT-observational admission trace=%+v", trace)
+			}
+		}
 	}
 	if full.ReservationLeaks != 0 {
 		t.Fatalf("predictive QoS reservation leaks = %d, want 0", full.ReservationLeaks)
@@ -119,6 +125,42 @@ func TestModelAgnosticApproximatePredictiveAdmissionMeetsCompletionGoodputGate(t
 	wantRepeatedPeak := int64(4) * (roundUpForTest(learnedRepeatedUpper, simulationBlock) + roundUpForTest(256, simulationBlock))
 	if got := repeated.Policies[PolicyPredictiveQoS].PeakReservedKVTokens; got != wantRepeatedPeak {
 		t.Fatalf("repeated-prefix predictive peak reserved KV = %d, want four full learned cache-cold costs = %d", got, wantRepeatedPeak)
+	}
+
+	lowKVTTFT, ok := scenarioByName(suite, "low_kv_excessive_ttft")
+	if !ok {
+		t.Fatal("low-KV TTFT-observational scenario disappeared after required-scenario validation")
+	}
+	lowKVTTFTMetrics := lowKVTTFT.Policies[PolicyPredictiveQoS]
+	if len(lowKVTTFTMetrics.AdmissionTrace) != 4 {
+		t.Fatalf("low-KV TTFT-observational admission trace length = %d, want 4", len(lowKVTTFTMetrics.AdmissionTrace))
+	}
+	for _, trace := range lowKVTTFTMetrics.AdmissionTrace {
+		if !trace.GroundProtectedSafe || !trace.Admitted || trace.Reason != string(domainpredictive.ReasonFit) {
+			t.Fatalf("mature TTFT-observational safe request was not admitted: %+v", trace)
+		}
+	}
+	if lowKVTTFTMetrics.TTFTViolations == 0 || lowKVTTFTMetrics.SafetyViolations() != 0 {
+		t.Fatalf("low-KV TTFT diagnostics/protected safety = %d/%d, want positive/zero", lowKVTTFTMetrics.TTFTViolations, lowKVTTFTMetrics.SafetyViolations())
+	}
+
+	mixed, ok := scenarioByName(suite, "mixed_short_64k_128k")
+	if !ok {
+		t.Fatal("mixed long-prompt scenario disappeared after required-scenario validation")
+	}
+	mixedPredictive := mixed.Policies[PolicyPredictiveQoS]
+	if mixedPredictive.SafetyViolations() != 0 || mixedPredictive.CompletionTokenGoodput <= mixed.Policies[PolicyCurrentThreshold].CompletionTokenGoodput {
+		t.Fatalf("mature mixed long-prompt predictive result = %+v, current = %+v", mixedPredictive, mixed.Policies[PolicyCurrentThreshold])
+	}
+}
+
+func TestTTFTViolationsRemainDiagnosticRatherThanProtectedQoSFailures(t *testing.T) {
+	metrics := Metrics{TTFTViolations: 3}
+	if got := metrics.SafetyViolations(); got != 0 {
+		t.Fatalf("TTFT-only diagnostic produced %d protected-QoS violations, want 0", got)
+	}
+	if got := metrics.ObservedViolations(); got != 3 {
+		t.Fatalf("observed violations = %d, want 3 TTFT diagnostics", got)
 	}
 }
 

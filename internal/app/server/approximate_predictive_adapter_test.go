@@ -22,6 +22,8 @@ type recordingUpperBoundCoordinator struct {
 	onTerminate         func()
 	onObserve           func()
 	reject              bool
+	rejectReason        domainpredictive.Reason
+	virtual             domainpredictive.VirtualState
 	outcomes            []runtimepredictive.SchedulerOutcome
 	interference        int
 	correctAfterOutcome bool
@@ -45,10 +47,18 @@ func (c *recordingUpperBoundCoordinator) DecideUpperBoundAndReserve(now time.Tim
 	}
 	prediction := runtimepredictive.SchedulerPrediction{
 		Identity: c.identity, PredictedAt: now, Source: runtimepredictive.PredictionSourceStatic, Confidence: 1,
+		Features: runtimepredictive.SchedulerFeatures{
+			ExistingDecodeSequences: c.virtual.DecodeSequences,
+			ExistingActiveKVUpper:   c.virtual.ActiveKVUpper,
+		},
 	}
 	if c.reject {
+		reason := c.rejectReason
+		if reason == "" {
+			reason = domainpredictive.ReasonNewTPSAtRisk
+		}
 		return runtimepredictive.CountAdmissionResult{
-			Decision:   domainpredictive.Decision{Reason: domainpredictive.ReasonNewTPSAtRisk},
+			Decision:   domainpredictive.Decision{Reason: reason},
 			Prediction: prediction,
 			Cost: runtimepredictive.CountRequestCost{
 				ManifestID: "model-agnostic-test", BackendEpoch: c.identity.BackendEpoch,
@@ -60,6 +70,55 @@ func (c *recordingUpperBoundCoordinator) DecideUpperBoundAndReserve(now time.Tim
 		Decision:   domainpredictive.Decision{Reason: domainpredictive.ReasonFit},
 		Prediction: prediction,
 		Reserved:   true,
+	}
+}
+
+func (c *recordingUpperBoundCoordinator) Snapshot() runtimepredictive.CountCoordinatorSnapshot {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return runtimepredictive.CountCoordinatorSnapshot{Manager: runtimepredictive.Snapshot{
+		IntakeOpen: true,
+		Virtual: domainpredictive.VirtualStateInterval{
+			Lower: c.virtual,
+			Upper: c.virtual,
+		},
+	}}
+}
+
+func TestApproximatePredictiveEnforcePublishesBoundedRouterBackpressure(t *testing.T) {
+	now := time.Unix(44_000, 0)
+	coordinator := newRecordingUpperBoundCoordinator()
+	coordinator.reject = true
+	coordinator.rejectReason = domainpredictive.ReasonExistingTPSAtRisk
+	coordinator.virtual = domainpredictive.VirtualState{DecodeSequences: 1, ActiveKVUpper: 256}
+	activations := 0
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:             newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1),
+		Coordinator:            coordinator,
+		Mode:                   "enforce",
+		Now:                    func() time.Time { return now },
+		RouterBackpressureHold: 2 * time.Second,
+		OnRouterBackpressure:   func(predictiveRouterBackpressureEvent) { activations++ },
+	})
+	if err != nil {
+		t.Fatalf("new adapter: %v", err)
+	}
+	if got := adapter.DecideAndReserve(context.Background(), "risk-1", approximateAdapterTestInput()); got != nil {
+		t.Fatal("enforce risk unexpectedly returned a reservation")
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if !telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.Reason != domainpredictive.ReasonExistingTPSAtRisk || activations != 1 {
+		t.Fatalf("first backpressure telemetry=%+v activations=%d", telemetry.RouterBackpressure, activations)
+	}
+	now = now.Add(time.Second)
+	_ = adapter.DecideAndReserve(context.Background(), "risk-2", approximateAdapterTestInput())
+	telemetry = adapter.PredictiveAdmissionTelemetry()
+	if telemetry.RouterBackpressure.Extensions != 1 || activations != 1 {
+		t.Fatalf("extension telemetry=%+v activations=%d", telemetry.RouterBackpressure, activations)
+	}
+	now = now.Add(3 * time.Second)
+	if telemetry := adapter.PredictiveAdmissionTelemetry(); telemetry.RouterBackpressure.Active {
+		t.Fatalf("backpressure remained active after expiry: %+v", telemetry.RouterBackpressure)
 	}
 }
 

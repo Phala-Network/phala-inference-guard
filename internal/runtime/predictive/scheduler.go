@@ -10,6 +10,8 @@ import (
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
+const maximumGlobalResidualSamples = 1_024
+
 type ModelIdentity struct {
 	ProfileID        string
 	BackendEpoch     string
@@ -206,6 +208,8 @@ type LearnedScheduler struct {
 	config          ResidualCalibratorConfig
 	cells           map[featureCell]*residualCell
 	globalSamples   []residualSample
+	globalCounts    map[featureCell]int
+	globalLimit     int
 	cellSequence    uint64
 	samplesAccepted uint64
 	samplesRejected uint64
@@ -219,6 +223,7 @@ func (s *LearnedScheduler) InvalidateLearning() {
 	s.mu.Lock()
 	clear(s.cells)
 	s.globalSamples = nil
+	clear(s.globalCounts)
 	s.invalidations++
 	s.mu.Unlock()
 }
@@ -234,9 +239,11 @@ func NewLearnedScheduler(profile StaticSchedulerProfile, config ResidualCalibrat
 		return nil, fmt.Errorf("scheduler profile and residual calibrator identities differ")
 	}
 	return &LearnedScheduler{
-		profile: profile,
-		config:  config,
-		cells:   make(map[featureCell]*residualCell),
+		profile:      profile,
+		config:       config,
+		cells:        make(map[featureCell]*residualCell),
+		globalCounts: make(map[featureCell]int),
+		globalLimit:  globalResidualSampleLimit(config),
 	}, nil
 }
 
@@ -266,11 +273,14 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	key := s.featureCell(features)
 	s.mu.Lock()
 	cell := s.cells[key]
-	local := freshResidualRatios(nil, now, s.config.MaxAge)
+	local := residualRatios{}
 	if cell != nil {
 		local = freshResidualRatios(cell.Samples, now, s.config.MaxAge)
 	}
-	global := freshCompatibleResidualRatios(s.globalSamples, now, s.config.MaxAge, features, s.config.MinimumSamples)
+	global := residualRatios{}
+	if requiresGlobalResidualFallback(local, s.config.MinimumSamples) {
+		global = freshCompatibleResidualRatios(s.globalSamples, now, s.config.MaxAge, features, s.config.MinimumSamples)
+	}
 	s.mu.Unlock()
 
 	userRatios := preferMatureRatios(local.UserTPS, global.UserTPS, s.config.MinimumSamples)
@@ -349,14 +359,79 @@ func (s *LearnedScheduler) Observe(prediction SchedulerPrediction, outcome Sched
 		copy(cell.Samples, cell.Samples[excess:])
 		cell.Samples = cell.Samples[:s.config.MaximumSamplesPerCell]
 	}
-	s.globalSamples = append(s.globalSamples, sample)
-	if excess := len(s.globalSamples) - s.config.MaximumSamplesPerCell; excess > 0 {
-		copy(s.globalSamples, s.globalSamples[excess:])
-		s.globalSamples = s.globalSamples[:s.config.MaximumSamplesPerCell]
-	}
+	s.appendGlobalSampleLocked(sample)
 	s.samplesAccepted++
 	s.mu.Unlock()
 	return nil
+}
+
+func requiresGlobalResidualFallback(local residualRatios, minimum int) bool {
+	// TTFT is observation-only. Preserve local TTFT calibration and collect a
+	// compatible global TTFT fallback opportunistically when a protected TPS or
+	// TPOT dimension needs the scan, but never scan the global store only for
+	// TTFT diagnostics.
+	return len(local.UserTPS) < minimum || len(local.TPOT) < minimum
+}
+
+func globalResidualSampleLimit(config ResidualCalibratorConfig) int {
+	limit := config.MaximumSamplesPerCell
+	if config.MaximumCells <= maximumGlobalResidualSamples/config.MinimumSamples {
+		matureCoverage := config.MaximumCells * config.MinimumSamples
+		if matureCoverage > limit {
+			limit = matureCoverage
+		}
+	} else {
+		limit = maximumGlobalResidualSamples
+	}
+	if limit > maximumGlobalResidualSamples {
+		return maximumGlobalResidualSamples
+	}
+	return limit
+}
+
+// appendGlobalSampleLocked keeps global fallback evidence independently
+// bounded from the per-cell history. A dominant request shape is trimmed before
+// a minority shape that has only the minimum samples needed for a mature
+// prediction. This prevents ordinary traffic skew from erasing all transferable
+// evidence for less frequent request sizes while keeping prediction scans under
+// a hard operational bound.
+func (s *LearnedScheduler) appendGlobalSampleLocked(sample residualSample) {
+	s.globalSamples = append(s.globalSamples, sample)
+	key := s.featureCell(sample.Features)
+	s.globalCounts[key]++
+	if len(s.globalSamples) <= s.globalLimit {
+		return
+	}
+
+	evictionCount := 0
+	for _, count := range s.globalCounts {
+		if count > s.config.MinimumSamples && count > evictionCount {
+			evictionCount = count
+		}
+	}
+	if evictionCount == 0 {
+		for _, count := range s.globalCounts {
+			if count > evictionCount {
+				evictionCount = count
+			}
+		}
+	}
+
+	evictionIndex := 0
+	for index, candidate := range s.globalSamples {
+		if s.globalCounts[s.featureCell(candidate.Features)] == evictionCount {
+			evictionIndex = index
+			break
+		}
+	}
+	evictionKey := s.featureCell(s.globalSamples[evictionIndex].Features)
+	s.globalCounts[evictionKey]--
+	if s.globalCounts[evictionKey] == 0 {
+		delete(s.globalCounts, evictionKey)
+	}
+	copy(s.globalSamples[evictionIndex:], s.globalSamples[evictionIndex+1:])
+	s.globalSamples[len(s.globalSamples)-1] = residualSample{}
+	s.globalSamples = s.globalSamples[:len(s.globalSamples)-1]
 }
 
 func (s *LearnedScheduler) evictOldestCellLocked() {
@@ -421,77 +496,51 @@ func freshResidualRatios(samples []residualSample, now time.Time, maxAge time.Du
 }
 
 func freshCompatibleResidualRatios(samples []residualSample, now time.Time, maxAge time.Duration, query SchedulerFeatures, minimum int) residualRatios {
-	return residualRatios{
-		UserTPS: closestMatureCompatibleRatios(samples, now, maxAge, query, minimum, residualUserTPS),
-		TTFT:    closestMatureCompatibleRatios(samples, now, maxAge, query, minimum, residualTTFT),
-		TPOT:    closestMatureCompatibleRatios(samples, now, maxAge, query, minimum, residualTPOT),
+	if minimum <= 0 {
+		return residualRatios{}
 	}
-}
-
-type residualDimension uint8
-
-const (
-	residualUserTPS residualDimension = iota
-	residualTTFT
-	residualTPOT
-)
-
-func closestMatureCompatibleRatios(samples []residualSample, now time.Time, maxAge time.Duration, query SchedulerFeatures, minimum int, dimension residualDimension) []float64 {
-	upperSequence := int(^uint(0) >> 1)
-	for {
-		closestSequence := 0
-		for _, sample := range samples {
-			if sample.Features.DecodeSequences >= upperSequence || !usableCompatibleResidual(sample, now, maxAge, query, dimension) {
-				continue
-			}
-			if sample.Features.DecodeSequences > closestSequence {
-				closestSequence = sample.Features.DecodeSequences
-			}
+	groups := make(map[int]*residualRatios)
+	for _, sample := range samples {
+		age := now.Sub(sample.ObservedAt)
+		if age < 0 || age > maxAge || sample.Censored || !globalFallbackCompatible(sample.Features, query) {
+			continue
 		}
-		if closestSequence == 0 {
-			return nil
+		sequence := sample.Features.DecodeSequences
+		group := groups[sequence]
+		if group == nil {
+			group = &residualRatios{}
+			groups[sequence] = group
 		}
-		count := 0
-		for _, sample := range samples {
-			if sample.Features.DecodeSequences == closestSequence && usableCompatibleResidual(sample, now, maxAge, query, dimension) {
-				count++
-			}
+		if sample.UserTPSValid {
+			group.UserTPS = append(group.UserTPS, sample.UserTPSRatio)
 		}
-		if count >= minimum {
-			ratios := make([]float64, 0, count)
-			for _, sample := range samples {
-				if sample.Features.DecodeSequences != closestSequence || !usableCompatibleResidual(sample, now, maxAge, query, dimension) {
-					continue
-				}
-				value, _ := residualValue(sample, dimension)
-				ratios = append(ratios, value)
-			}
-			return ratios
+		if sample.TTFTValid {
+			group.TTFT = append(group.TTFT, sample.TTFTRatio)
 		}
-		upperSequence = closestSequence
+		if sample.TPOTValid {
+			group.TPOT = append(group.TPOT, sample.TPOTRatio)
+		}
 	}
-}
 
-func usableCompatibleResidual(sample residualSample, now time.Time, maxAge time.Duration, query SchedulerFeatures, dimension residualDimension) bool {
-	age := now.Sub(sample.ObservedAt)
-	if age < 0 || age > maxAge || sample.Censored || !globalFallbackCompatible(sample.Features, query) {
-		return false
+	result := residualRatios{}
+	userSequence := 0
+	ttftSequence := 0
+	tpotSequence := 0
+	for sequence, group := range groups {
+		if len(group.UserTPS) >= minimum && sequence > userSequence {
+			userSequence = sequence
+			result.UserTPS = group.UserTPS
+		}
+		if len(group.TTFT) >= minimum && sequence > ttftSequence {
+			ttftSequence = sequence
+			result.TTFT = group.TTFT
+		}
+		if len(group.TPOT) >= minimum && sequence > tpotSequence {
+			tpotSequence = sequence
+			result.TPOT = group.TPOT
+		}
 	}
-	_, valid := residualValue(sample, dimension)
-	return valid
-}
-
-func residualValue(sample residualSample, dimension residualDimension) (float64, bool) {
-	switch dimension {
-	case residualUserTPS:
-		return sample.UserTPSRatio, sample.UserTPSValid
-	case residualTTFT:
-		return sample.TTFTRatio, sample.TTFTValid
-	case residualTPOT:
-		return sample.TPOTRatio, sample.TPOTValid
-	default:
-		return 0, false
-	}
+	return result
 }
 
 func globalFallbackCompatible(sample, query SchedulerFeatures) bool {

@@ -73,7 +73,6 @@ func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64)
 			PhysicalKVHard:       1_000,
 			ActiveKVHard:         1_000,
 			UserTPSTarget:        userTPSTarget,
-			TTFTSLO:              time.Second,
 			TPOTSLO:              time.Second,
 			WorkspaceRiskBudget:  1,
 			PreemptionRiskBudget: 1,

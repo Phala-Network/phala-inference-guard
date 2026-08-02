@@ -50,8 +50,7 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	metrics.WriteRuntime(w, s.runtimeMetricsInput())
 	metrics.WriteBackends(w, s.backendMetricsInput())
 	metrics.WriteKVShadow(w, s.kvShadowMetricsInput())
-	metrics.WritePredictiveAdmission(w, s.predictiveAdmissionMetricsInput())
-	s.writeDynamicMetrics(w)
+	s.writePredictiveAndDynamicMetrics(w)
 	metrics.WriteClassifier(w, s.classifierMetricsInput())
 	metrics.WritePriority(w, s.priorityMetricsInput())
 	metrics.WriteLanes(w, s.laneMetricsInput())
@@ -83,6 +82,7 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.LastSamples = snapshot.Attempts.LastSamples
 	input.IntakeOpen = snapshot.Manager.IntakeOpen
 	input.Reservations = snapshot.Manager.Reservations
+	input.VirtualDecodeSequences = snapshot.Manager.Virtual.Upper.DecodeSequences
 	input.RetiredReservations = snapshot.Manager.RetiredReservations
 	input.RetiredEvictions = snapshot.Manager.RetiredEvictions
 	input.LearningAccepted = snapshot.Learning.SamplesAccepted
@@ -120,6 +120,17 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 		Qualified:  snapshot.DeferredOutcomes.Qualified,
 		Censored:   snapshot.DeferredOutcomes.Censored,
 		Dropped:    snapshot.DeferredOutcomes.Dropped,
+	}
+	input.RouterBackpressure = metrics.PredictiveRouterBackpressureInput{
+		Active:      snapshot.RouterBackpressure.Active,
+		Reason:      string(snapshot.RouterBackpressure.Reason),
+		Source:      string(snapshot.RouterBackpressure.Source),
+		Samples:     snapshot.RouterBackpressure.Samples,
+		ActivatedAt: snapshot.RouterBackpressure.ActivatedAt,
+		Until:       snapshot.RouterBackpressure.Until,
+		Hold:        snapshot.RouterBackpressure.Hold,
+		Activations: snapshot.RouterBackpressure.Activations,
+		Extensions:  snapshot.RouterBackpressure.Extensions,
 	}
 	input.PredictionDuration = snapshot.PredictionDuration
 	input.EstimatorDuration = &s.kvEstimatorDuration
@@ -259,11 +270,21 @@ func (s *proxyServer) backendMetricsInput() []metrics.BackendSnapshot {
 	return backends
 }
 
-func (s *proxyServer) writeDynamicMetrics(w io.Writer) {
+func (s *proxyServer) writePredictiveAndDynamicMetrics(w io.Writer) {
+	predictive := s.predictiveAdmissionMetricsInput()
 	if s.dynamicController == nil {
+		metrics.WritePredictiveAdmission(w, predictive)
 		return
 	}
 	snapshot := s.dynamicController.Snapshot()
+	routerCapacity := predictiveRouterCapacity(
+		predictive.Mode,
+		predictive.RouterBackpressure.Active,
+		predictive.VirtualDecodeSequences,
+		snapshot,
+	)
+	applyPredictiveRouterCapacity(&predictive, routerCapacity)
+	metrics.WritePredictiveAdmission(w, predictive)
 	metrics.WriteDynamic(w, snapshot, metrics.DynamicConfig{
 		TTFTEnabled:               s.cfg.DynamicTTFTEnabled,
 		TTFTPolicy:                s.cfg.DynamicTTFTPolicy,
@@ -288,7 +309,10 @@ func (s *proxyServer) writeDynamicMetrics(w io.Writer) {
 		UserTPSCapacityHealthyN:   s.cfg.DynamicUserTPSCapacityHealthyN,
 		UserTPSCapacityHealthyMul: s.cfg.DynamicUserTPSCapacityHealthyMul,
 		UserTPSCapacitySmoothing:  s.cfg.DynamicUserTPSCapacitySmoothing,
-	}, s.dynamicController.PressureCap())
+	}, s.dynamicController.PressureCap(), predictiveRouterCapacityMetrics(routerCapacity))
+	if event := s.predictiveRouterLogs.Claim(predictive, routerCapacity); event != nil {
+		logPredictiveRouterCapacity(*event)
+	}
 }
 
 func (s *proxyServer) classifierMetricsInput() metrics.ClassifierInput {

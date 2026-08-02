@@ -278,9 +278,12 @@ must restrict PIG to a specific GPU.
   dynamic state but does not enforce dynamic limits.
 
 `DYNAMIC_TTFT_ENABLED`
-: Default: same as `DYNAMIC_SINGLE_USER_TPS_ENABLED`. When `false`, PIG still
+: Default: `false`. When `false`, PIG still
   exports observed TTFT metrics but does not use TTFT latency to mark load
-  state or reduce the QoS cap.
+  state or reduce the QoS cap. Predictive admission requires this setting to
+  remain `false`; TTFT is observation-only in the v0.10 contract. Legacy
+  dynamic TTFT protection remains an explicit opt-in only when
+  `PREDICTIVE_ADMISSION_MODE=off`.
 
   When enabled, PIG uses its own semantic streaming TTFT once it has observed
   accepted stream samples; otherwise it falls back to backend TTFT metrics. TTFT
@@ -474,14 +477,15 @@ labels through `pig_dynamic_capacity_projected_limit` and
 : Default: `16`. Minimum running load before severe pressure is treated as
   representative for learning.
 
-## PREDICTIVE ADMISSION (v0.10.3)
+## PREDICTIVE ADMISSION (v0.10.4)
 
 Predictive admission is a pre-forward guard for one configured vLLM upstream.
 It uses a bounded model-family-neutral JSON size interval, vLLM KV capacity and
 block size, current backend observations, and every unabsorbed reservation to
-forecast post-admit KV, per-user TPS, TTFT, TPOT, and preemption risk. It does
-not tokenize with model assets, inspect prefix-cache hits, route between
-backends, or change vLLM.
+forecast post-admit KV, per-user TPS, TPOT, and preemption risk. TTFT prediction
+and feedback remain available as observation-only telemetry; TTFT never causes
+an admission reject. PIG does not tokenize with model assets, inspect
+prefix-cache hits, route between backends, or change vLLM.
 
 Feedback is qualified and causal: it can update only a later prediction. A
 reservation keeps the exact estimate and forecast used for its decision. A
@@ -501,6 +505,31 @@ than loading learned state from disk.
   not create a record. `enforce` rejects every non-fit or unknown result before
   upstream forwarding with an OpenAI-compatible 429. Keep the legacy
   `KV_ADMISSION_MODE=off` when using this path.
+
+In `enforce`, a load-dependent TPS/TPOT/KV-workspace/preemption reject can set
+a bounded Router backpressure window. A KV reject is considered load-dependent
+only when existing virtual work is present and that request's own validated KV
+cost fits the empty-node hard budget; a standalone oversized request remains a
+local reject. The window is twice
+`DYNAMIC_POLL_INTERVAL_MS`, clamped to `2s..5s`. While it is active and the
+predictive coordinator's current virtual upper state contains decode work, PIG
+exports effective `pig_dynamic_observed_running` and clamps the Router-consumed
+`pig_dynamic_global_limit` to that count, so the current Router observes at
+least 100% fullness. The virtual state combines the latest predictive backend
+observation with unabsorbed reservations and therefore remains usable when the
+separate dynamic snapshot is one poll behind. It is reconciled rather than
+latched from the rejected request, so idle still removes the effective clamp
+immediately. Explicit `*_raw` metrics retain the unmodified backend/dynamic
+values, and expiry permits a bounded probe even if load remains. A single
+oversized, malformed, unknown, or duplicate request does not create global
+backpressure. `off` and `shadow` never change Router-consumed capacity.
+The expiry is fixed at activation; repeated protection signals increment an
+extension counter but cannot slide the window indefinitely. A rejected request
+after expiry is the next bounded probe and may begin a new fixed episode.
+When the raw dynamic global limit is zero, the positive effective running count
+is used as the Router-only effective limit because Router defines a non-positive
+limit as zero fullness. The raw limit and `pig_dynamic_admission_limit` remain
+zero, so local admission is not reopened.
 
 `PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS`
 : Default: `10000`. Bounded startup window for discovering one coherent vLLM
@@ -559,9 +588,12 @@ than loading learned state from disk.
 
 `PREDICTIVE_LATENCY_MINIMUM_MULTIPLIER` /
 `PREDICTIVE_LATENCY_MAXIMUM_MULTIPLIER`
-: Defaults: `0.50` / `4.0`. Bounds for qualified TTFT and TPOT residual
-  learning. The TTFT SLO is `DYNAMIC_TTFT_TARGET_SECONDS`; TPOT is derived from
-  the protected per-user TPS target.
+: Defaults: `0.10` / `4.0`. Bounds for qualified TTFT and TPOT residual
+  learning. The lower bound permits mature TPOT evidence to represent more
+  than four safe decode sequences instead of imposing an unrelated fixed
+  concurrency ceiling. TTFT learning is observational only; TPOT remains a
+  pre-forward protection derived from the protected per-user TPS target and
+  uses the configured upper residual quantile.
 
 `KV_ADMISSION_VLLM_TARGET_RATIO`
 : Default: `0.84`. Predictive admission aligns this fraction of vLLM's observed

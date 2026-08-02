@@ -39,7 +39,7 @@ func TestWriteDynamicExposesCleanLearningReasons(t *testing.T) {
 	}, DynamicConfig{
 		UserTPSCapacityRatio:    0.42,
 		UserTPSCapacityRatioMax: 0.85,
-	}, nil)
+	}, nil, DynamicRouterCapacity{})
 
 	got := out.String()
 	assertContains(t, got, `pig_dynamic_final_limit_info{reason="backend_waiting"} 1`)
@@ -67,14 +67,36 @@ func TestWriteDynamicUsesUnknownForMissingCleanLearningReasons(t *testing.T) {
 		State:   "green",
 		Source:  "metrics",
 		Updated: time.Unix(200, 0),
-	}, DynamicConfig{}, nil)
+	}, DynamicConfig{}, nil, DynamicRouterCapacity{})
 
 	got := out.String()
+	assertContains(t, got, `pig_dynamic_observed_running_raw 0`)
+	assertContains(t, got, `pig_dynamic_global_limit_raw 0`)
+	assertContains(t, got, `pig_dynamic_router_backpressure_applied 0`)
 	assertContains(t, got, `pig_dynamic_final_limit_info{reason="unknown"} 1`)
 	assertContains(t, got, `pig_dynamic_capacity_learning_reason_info{state="",reason="unknown",target_reason="unknown"} 1`)
 	assertContains(t, got, `pig_dynamic_ttft_learning_reason_info{state="",reason="unknown",target_reason="unknown"} 1`)
 	assertContains(t, got, `pig_dynamic_pressure_limit_info{reason="unknown",target_reason="unknown"} 1`)
 	assertContains(t, got, `pig_dynamic_prefill_limit_info{reason="unknown",target_reason="unknown"} 1`)
+}
+
+func TestWriteDynamicPublishesRouterEffectiveCapacityWithoutLosingRawValues(t *testing.T) {
+	var out bytes.Buffer
+	WriteDynamic(&out, runtimedynamic.Snapshot{
+		State: "green", Source: "metrics", Updated: time.Unix(300, 0), Running: 1, GlobalLimit: 50, QOSLimit: 50,
+	}, DynamicConfig{}, nil, DynamicRouterCapacity{
+		Present: true, BackpressureActive: true, BackpressureApplied: true,
+		RawRunning: 1, EffectiveRunning: 2, RawGlobalLimit: 50, EffectiveGlobalLimit: 2,
+	})
+
+	got := out.String()
+	assertContains(t, got, `pig_dynamic_observed_running_raw 1`)
+	assertContains(t, got, `pig_dynamic_observed_running 2`)
+	assertContains(t, got, `pig_dynamic_global_limit_raw 50`)
+	assertContains(t, got, `pig_dynamic_global_limit 2`)
+	assertContains(t, got, `pig_dynamic_admission_limit 50`)
+	assertContains(t, got, `pig_dynamic_router_backpressure_active 1`)
+	assertContains(t, got, `pig_dynamic_router_backpressure_applied 1`)
 }
 
 func assertContains(t *testing.T, got, want string) {

@@ -1626,3 +1626,588 @@ push. It does not yet prove a published registry image, registry attestation,
 Compose integration, Router-disabled deployment, live readiness, Router enable,
 or a complete 30-minute real-traffic interval. Those gates remain mandatory in
 that order, and `use1-cb` remains disabled until they pass.
+
+
+### v0.10.3 registry and Router-disabled shadow evidence — completed 2026-08-02
+
+The release workflow run
+`https://github.com/Phala-Network/phala-inference-guard/actions/runs/30730840750`
+completed successfully for commit
+`584d36bfd1052b2a99fd5629175cb5b2ac70eb3c` and annotated tag
+`v0.10.3`. The resulting immutable registry image is
+`ghcr.io/phala-network/phala-inference-guard@sha256:0b36cffff01a600cb843806fb273474c22a584c2809b539155b8f040b8893594`;
+its image ID is
+`sha256:fd99d00d7c44aca01e65b69a762072e134734ce6dca2192200dbe2ad66b3e50e`
+and its OCI version label is `0.10.3`.
+
+The remote builder pulled that exact digest and repeated the production image
+contract plus off/shadow/enforce, authentication, protocol, pre-forward reject,
+low-flow recovery, streaming terminal, input-size learning, and terminal-state
+gates. It reported `REGISTRY_IMAGE_GATE_OK`. The complete remote evidence
+archive SHA-256 is
+`05ca5f598bbee2e96809a8a62d81c7bbcd9c22422f24cebf5e388ccfb694c071`.
+The local secret-scanned slim archive is
+`tmp/pig-v010-use1-cb-live-20260802/v0103-registry-r1-slim.tar.gz`,
+SHA-256
+`77131a3cd5208d9f9927299f9f3f4954b151e0b3d4542139dd130c4cf2562d10`.
+This closed the registry-image gate but did not authorize Router traffic by
+itself.
+
+A fresh live preflight at `2026-08-02T03:53:51Z` and a second immediate
+pre-mutation drift check at `03:56:56Z` both found CVM
+`a0f0bfb3-e46f-4b22-814e-24872f251193` running with
+`in_progress=false`, byte-exact Compose SHA-256
+`add08f14c6dc726eba8dbcd72c265e4119b7a5b1229f98e44252f3e929352069`,
+Router digest
+`sha256:1b62b992f37b1f3c3ddc3894373cf2a10368d64350b689052c642c2712967c3f`,
+enabled set exactly `use1-4c,use1-9b`, and `use1-cb` disabled with route
+running `0`. Protected models, metrics, and attestation were HTTP 200; the
+backend and predictive resource state were idle; preemptions were zero.
+
+The shadow candidate was generated from that byte-exact Compose and changed
+only:
+
+1. the PIG image from the v0.10.2 digest to the immutable v0.10.3 digest; and
+2. `PREDICTIVE_ADMISSION_MODE=enforce` to `shadow`.
+
+Its SHA-256 is
+`150d536e469612a2b12b80949ec99540ff4aef0dd73c465e833f5b52a6b86798`.
+The compose-only update supplied no `.env`. The local outer command reached
+its 240-second wrapper limit, but the single original deploy process continued
+and completed at 254 seconds with CLI exit `0`; no second deploy was issued.
+A fresh platform query proved `running`, `in_progress=false`, and the live
+Docker Compose hash exactly equal to the candidate. PIG ran the expected
+registry image ID and vLLM retained its exact configured digest.
+
+The CVM reboot made vLLM reload the model. Direct `/v1/models` remained 503
+while loading and became 200 at `2026-08-02T04:08:30Z`. vLLM reported
+`Application startup complete`, 89.1 GiB available KV cache, and a physical
+KV capacity of 862,437 tokens. The first PIG startup probe reached its existing
+300-second timeout shortly before vLLM became ready and the restart policy made
+one new startup attempt; the second attempt started `PIG-v0.10.3` in shadow
+mode and then remained stable. This was a single cold-start sequencing event
+while the route was disabled, not a runtime restart loop. It is retained as an
+operational observation and must be rechecked after the enforce restart; the
+authorized two-field candidate was not broadened to alter timeouts.
+
+The ready shadow baseline was exact: runtime identity `PIG-v0.10.3`, mode
+`shadow`, intake open, and all attempts, learner samples, reservations,
+shadow observations, deferred outcomes, lifecycle failures, backend
+running/waiting/KV, and preemptions initially zero. Authenticated models,
+`/pig/metrics`, `/v1/metrics`, and NVIDIA attestation were HTTP 200;
+unauthenticated metrics were HTTP 401. Router remained unchanged and
+`use1-cb` remained disabled throughout.
+
+The first low-flow runner completed 23 successful requests and proved the real
+cold progression: three cold input-size estimates followed by 20 learned
+estimates, 22 accepted size samples, the intended one bounded low-ratio reject,
+23 resource releases, 23 deferred terminations, zero active state, zero drop,
+zero censor, zero resource-release failure, and zero preemption. Its only
+failure was a harness-only expectation that every successful HTTP response must
+increment deferred `qualified`. Source inspection proved that metric counts
+only qualified scheduler TPS/TTFT outcomes; input-size-only learning is tracked
+separately. The corrected gate therefore keeps exact release/termination
+accounting and independently requires input-size maturity.
+
+The corrected 20-request repeat passed. All requests were HTTP 200; intake
+remained open; no risk, unknown, enforce reject, invalidation, preemption,
+reservation, shadow observation, or deferred leak occurred. Prediction latency
+was 20/20 at or below 0.25 ms; estimator latency was 19/20 at or below 0.25 ms
+and 20/20 at or below 1 ms. It reported `false_lock=false` and
+`sticky_zero=false`.
+
+The first streaming TPS runner supplied exactly three cold qualified outcomes:
+scheduler accepted, local TPS, and deferred qualified each advanced from zero
+to three, while every terminal state returned to zero. Its old order-dependent
+harness expected the third request itself to have used three previous samples.
+The corrected order-independent gate permits up to four cold requests. The next
+request was HTTP 200 with explicit terminal usage and `[DONE]`, entered with
+`source=calibrated`, `samples=3`, and a fit decision, then advanced all
+three qualified counters to four. No preemption, lifecycle failure, or active
+state remained.
+
+Normal chat, streaming with usage, tool call, strict structured output, and CJK
+protocol gates all passed HTTP 200 without retaining response bodies. A
+truncated JSON request returned HTTP 400 without creating predictive state. A
+bounded one-second streaming client cancellation terminated without premature
+resource release or learning, converged all state to zero, and was followed
+immediately by a safe HTTP 200 request. The final shadow totals were 54 fit
+predictions, zero risk/unknown/enforced reject, 53 vLLM successes, 53
+released/terminated deferred lifecycles, five scheduler-qualified deferred
+outcomes, and zero active reservation/deferred/shadow state, failures, drops,
+censors, backend running/waiting/KV, or preemptions.
+
+Pass 1 rechecked image/runtime/Compose/Router identity and the resource versus
+learning lifecycle: no identity drift, early-release leak, double release,
+false lock, or unauthorized Router write was found. Pass 2 rechecked learner
+causality and efficiency: cold input-size and TPS learning matured, the next
+prediction used learned/calibrated state, low-ratio and cancelled outcomes did
+not grant unsafe headroom, and live prediction/estimator histograms remained
+within the plan limits. Pass 3 rechecked operations, protocol, and safety:
+current-boot PIG, vLLM, and serial fatal/OOM/Xid/engine-death scans were zero;
+readiness, attestation, authentication, protocol, idle convergence, and secret
+scans passed. The two harness corrections changed only live evidence logic and
+did not modify the released product.
+
+The Router-disabled shadow gate is complete. It authorizes only a fresh
+predeploy drift/idle audit followed by switching the same immutable image from
+`shadow` to `enforce`. That candidate must differ from the live Compose by
+exactly that one mode field. Because the restart makes learner state cold,
+enforce must repeat cold progress, low-flow recovery, calibrated TPS, protocol,
+client-cancel recovery, prediction latency, zero-terminal-state, no-preemption,
+attestation, and log gates before `use1-cb` can be enabled.
+
+
+### v0.10.3 Router-disabled enforce evidence — completed 2026-08-02
+
+A fresh promote audit at `2026-08-02T04:26:34Z` found the exact shadow Compose
+and immutable image, platform `running/in_progress=false`, Router digest and
+enabled set unchanged, `use1-cb` disabled and idle, and all active predictive
+and backend resource state at zero. The enforce candidate was generated from
+that fresh live Compose and changed exactly one field:
+`PREDICTIVE_ADMISSION_MODE=shadow` to `enforce`. The candidate SHA-256 is
+`2f81a07a71df7ac3a0291c0b9948b41bae0f9960489aeef4b4d3266ce6f2bf35`.
+Reverse replacement reproduced the byte-exact live shadow Compose.
+
+The compose-only update again supplied no `.env`, completed in 254.2 seconds,
+and exited `0`. The live Docker Compose hash then exactly matched the enforce
+candidate; PIG image digest and ID were unchanged. The route remained disabled.
+The reboot again made vLLM reload the model. Models became HTTP 200 at
+`2026-08-02T04:38:01Z`. As in shadow, the first PIG process reached the
+existing 300-second startup probe timeout just before vLLM readiness; the
+restart-policy attempt started at `04:37:51Z`, observed a green backend, and
+remained stable. No later restart, runtime crash, or readiness loss occurred.
+
+The enforce ready baseline was genuinely cold and uncontaminated: mode enforce,
+intake open, and attempts, decisions, enforced rejects, input-size and scheduler
+samples, reservations, shadow observations, deferred outcomes, failures, vLLM
+request/token counters, backend running/waiting/KV, and preemptions all zero.
+Protected readiness, PIG metrics, combined metrics, and NVIDIA attestation were
+HTTP 200; unauthenticated metrics were HTTP 401. Router remained unchanged.
+
+The cold-first causality gate passed:
+
+- a 124-byte safe request was cold-fit, returned HTTP 200, and increased vLLM
+  success and prompt tokens exactly once;
+- a bounded 1,600,124-byte request returned HTTP 429 with
+  `reason=kv_over_budget`, increased risk and enforced reject exactly once,
+  and did not change vLLM success or prompt tokens, proving pre-forward reject;
+- the immediately following safe request returned HTTP 200; and
+- the two completed requests produced exactly two releases and two deferred
+  terminations, with zero active state, failure, drop, censor, or preemption.
+
+The enforce low-flow gate then passed 23/23 HTTP 200 requests. Input-size
+prediction matured from cold to learned; final learned estimates were 20 and 22
+samples were stored. The intentional risk and enforced-reject counters remained
+unchanged at one. The 23 real completions produced exactly 23 additional
+releases and terminations. Prediction latency was 23/23 at or below 0.25 ms;
+estimator latency was 22/23 at or below 0.25 ms and 23/23 at or below 1 ms.
+There was no false lock, sticky zero, failure, invalidation, or preemption.
+
+The enforce TPS learner started with zero scheduler samples. Four bounded
+streaming-with-usage requests were sufficient: the first three supplied samples
+one through three; the fourth request was predicted before forwarding with
+`source=calibrated`, `samples=3`, and fit. Local TPS, scheduler accepted, and
+deferred qualified each increased exactly four, while all active state returned
+to zero. Normal chat, streaming usage, tool call, strict structured output, and
+CJK all passed HTTP 200 without retaining response bodies.
+
+The first reused adverse harness expected a truncated JSON request to return the
+shadow-mode backend HTTP 400. Enforce correctly returned HTTP 429 instead,
+because an untrusted request size is not guessed. The harness was parameterized
+by mode and rerun: enforce malformed input returned 429 without predictive
+resource state, a one-second streaming client cancellation converged to zero
+without premature release or learning, and the next safe request returned HTTP
+200. This was a harness-only mode expectation, not a released-product change.
+
+The final enforce snapshot at `2026-08-02T04:46:11Z` had 37 numeric attempts:
+36 fit and the one intentional KV risk. The three enforced rejects were the KV
+risk and two malformed-input harness invocations. vLLM had 35 successes; the
+one other fit was the intentionally cancelled stream. Deferred release and
+termination were both 35, scheduler-qualified deferred outcomes were five, and
+reservations, shadow observations, active deferred outcomes, drops, censors,
+all lifecycle failure phases, backend running/waiting/KV, vLLM error
+completions, and preemptions were zero. Compose, image, runtime, attestation,
+authentication, and Router-disabled identity remained exact.
+
+Pass 1 rechecked enforce causality and safety: the intentional risk was rejected
+before vLLM, cold and post-risk safe requests entered, cancelled work did not
+learn, and no false/self/sticky lock or resource leak occurred. Pass 2 rechecked
+learning and efficiency: input-size and TPS predictors matured from cold, the
+next TPS prediction used calibrated state, and live latency histograms stayed
+within limits without new reject pressure. Pass 3 rechecked protocol and
+operations: all supported protocol gates passed; current-boot PIG, vLLM, and
+serial fatal/OOM/Xid/engine-death scans were zero; no preemption or unexpected
+configuration drift occurred. The startup-timeout observation is unchanged and
+bounded to disabled-route cold boot.
+
+The Router-disabled enforce gate is complete. It authorizes only a fresh
+Router/CVM/Compose/metrics/attestation preflight followed by changing exactly
+`use1-cb.enabled=false` to `true`. Weight, policy, bearer configuration,
+timeouts, every other upstream, Router source, PIG Compose, and vLLM remain
+immutable. The 30-minute timer must not start until Router confirms enabled and
+healthy and a real PIG attempt or vLLM inference counter advances from the
+pre-enable baseline. Any obvious finding requires immediate single-field
+disable, drain, evidence preservation, and the full repair/revalidation loop.
+
+
+### v0.10.3 real-traffic canary — stopped on revised requirements 2026-08-02
+
+A fresh preflight at `2026-08-02T04:55:00Z` re-proved the exact enforce
+Compose SHA-256
+`2f81a07a71df7ac3a0291c0b9948b41bae0f9960489aeef4b4d3266ce6f2bf35`,
+the immutable v0.10.3 image and ID, platform `running/in_progress=false`,
+Router digest
+`sha256:1b62b992f37b1f3c3ddc3894373cf2a10368d64350b689052c642c2712967c3f`,
+enabled set exactly `use1-4c,use1-9b`, disabled and drained `use1-cb`, all
+authenticated readiness/metrics/attestation gates, and zero active predictive,
+backend, failure, or preemption state.
+
+At `04:55:49Z`, the Router PATCH changed only `use1-cb.enabled=false` to
+`true`. Full normalized before/after comparison passed. The Router config
+digest became
+`sha256:7869dbc9822ec36b0d661bfa9eedcfa6799d9b00d54a97d40c9ebe1db53b5202`.
+The real-traffic timer began only at `04:56:10Z`, after `pig_ok=true`,
+`stale=false`, protected readiness and NVIDIA attestation were healthy, Router
+processed advanced, and PIG/vLLM inference counters advanced from the baseline.
+
+The canary was intentionally stopped before 30 minutes after the product
+requirements changed: TTFT must no longer reject requests, and protection must
+be visible to the existing Router capacity contract. The last complete observer
+sample was 882.5 seconds after the timer start; the single-field disable was
+issued at `05:11:08Z`. The post-disable audit at `05:12:52Z` proved the original
+Router digest and enabled set restored, `use1-cb` disabled with route running
+zero, unchanged Compose/image/runtime identity, all protected endpoints ready,
+and reservation, deferred, backend running/waiting/KV, failures, drops, vLLM
+errors, and preemptions all zero.
+
+This partial interval is diagnostic evidence, not a passed 30-minute gate. From
+the pre-enable baseline to the drained post-disable snapshot, Router processed
+advanced by 892, PIG made 888 new predictions, 226 were fit and 662 were risk,
+and enforced rejects increased by 665. vLLM success and predictive
+release/termination each increased by 218; scheduler-qualified outcomes
+increased by 115, censored outcomes by 25, and drop/failure/preemption remained
+zero. The one-off excess enforced rejects over risk were non-risk harness
+history already present in the process counters; no unknown prediction occurred
+during this canary.
+
+Safety and lifecycle behavior were sound under the observed traffic: the route
+remained healthy, no counter reset or identity drift occurred, no false/sticky
+lock or v0.10.2-style reservation leak recurred, accepted traffic completed, and
+preemption remained zero. The canary nevertheless found an obvious throughput
+and observability defect. Repeated samples had one backend decode, waiting zero,
+KV commonly below 10%, and observed single-user TPS around 194-209, while tens
+of subsequent requests were rejected with `ttft_at_risk`. At approximately 7.4
+minutes, the incremental vLLM histogram had 98 TTFT observations, average TTFT
+about 1.35 seconds, p95 in the `<=2.5s` bucket, and a severe p99 long tail; TPOT
+averaged about 7.46 ms/token (about 134 TPS), with p95 in the `<=25ms/token`
+bucket. This shows both real TTFT long-tail pressure and substantial TPS
+headroom, but the revised contract explicitly makes TTFT observational rather
+than an admission constraint.
+
+The second defect is a contract disconnect. PIG exposed increasing
+`pig_predictive_admission_decisions_total{decision="risk"}` and
+`pig_predictive_admission_enforced_rejects_total`, but the Router reads only
+`pig_dynamic_observed_running`, `pig_dynamic_observed_waiting`,
+`pig_dynamic_global_limit`, `pig_tier_basic_limit`, and tier inflight. During
+predictive protection those Router-consumed values continued to advertise
+`global_limit=50`, large basic capacity, and no waiting, so Router correctly
+continued selecting the node and caused avoidable PIG 429 responses. Periodic
+status logs also omitted predictive decision/protection state. Predictive-only
+counters were therefore insufficient even though their numeric values were
+correct.
+
+
+### v0.10.4 revised contract and repair plan — active
+
+v0.10.4 supersedes the v0.10.3 canary candidate. The implementation remains
+model-agnostic and tokenizer-approximate; it does not add cache awareness,
+model-family assets, Router source changes, or routing logic to PIG.
+
+The admission contract is now:
+
+1. TTFT measurement and learned TTFT estimates remain available for diagnosis
+   and offline comparison, but TTFT is not a pre-forward reject condition.
+   The predictive admission `Constraints` type has no TTFT SLO and the decision
+   reason set has no `ttft_at_risk`, so the decision path cannot return it.
+   Deterministic/live gates must prove requests differing only by TTFT forecast
+   receive the same admission result.
+   `DYNAMIC_TTFT_ENABLED` defaults to `false`, and predictive `shadow/enforce`
+   configuration must reject an attempt to enable the legacy dynamic TTFT
+   limiter. The canary must expose `pig_dynamic_ttft_enabled 0`.
+   Goodput simulation continues to count and report TTFT violations, but those
+   observations are excluded from protected-QoS safety, false-accept, and
+   completion-token-goodput gates. TPS, TPOT, KV, workspace, preemption, and
+   lifecycle safety remain gating dimensions.
+2. TPS remains first priority. Existing-user TPS, new-user TPS, and TPOT
+   protection remain predictive and pre-forward. KV capacity, workspace, and
+   preemption risks also remain pre-forward protections.
+3. A request-specific failure must not globally suppress the node. Unknown or
+   malformed input, duplicate IDs, and a standalone request whose own KV size
+   exceeds the hard budget remain local rejects and do not create Router
+   backpressure.
+4. A load-dependent protection reason may create bounded Router backpressure:
+   `existing_tps_at_risk`, `tpot_at_risk`, workspace/preemption risk, and
+   `new_tps_at_risk` only when existing virtual load is present. The KV reasons
+   `kv_over_budget` and `active_kv_over_budget` are load-dependent only when the
+   rejected request's own validated KV cost fits the corresponding empty-node
+   hard budget; this preserves predictive KV capacity protection without
+   globally suppressing the node for a standalone oversized request. The hold
+   is derived from the metrics poll interval and is a fixed, bounded episode.
+   Protection signals inside the episode update latest diagnostic state and an
+   extension counter but never move expiry. The first rejected request after
+   expiry is a bounded probe and may start a new fixed episode; continuous
+   traffic therefore cannot create a sliding-TTL lock.
+5. Router backpressure is applied only while real load exists. Effective load
+   is the maximum of the dynamic controller's observed running and the
+   predictive manager's virtual upper decode sequences. The latter is the same
+   reconciled backend-plus-unabsorbed-reservation state family used by the
+   rejected decision; it is not the count of reservations alone and does not
+   retain the rejected request as synthetic load.
+   While a bounded protection is active and effective load is positive, the
+   exported Router-consumed `pig_dynamic_global_limit` is clamped to that load,
+   making fullness at least 100%. When load reaches zero or the hold expires,
+   the unclamped limit is exported immediately. This is the low-flow/self-lock
+   escape hatch. Router defines a non-positive limit as zero fullness, so the
+   effective Router limit uses the positive effective-running count as a 100%
+   fullness sentinel when the raw dynamic limit is zero. The separately named
+   raw limit and PIG-local `pig_dynamic_admission_limit` remain zero; the
+   sentinel therefore blocks Router selection without reopening local admission.
+   For the authorized canary, Router `metrics_poll_ms` must be re-verified as
+   `1000` before enable, so the minimum two-second hold spans at least one full
+   Router scrape opportunity even when activation begins immediately after a
+   scrape. A different Router polling interval requires an explicit compatibility
+   gate; PIG does not silently assume or modify Router configuration.
+6. Metrics must expose both raw and effective values. At minimum they include
+   predictive backpressure active/applied, reason/source, expiry, activation
+   and extension counts, raw dynamic running/limit, effective Router running
+   and limit, plus existing decision/reason counters. Existing Router fields
+   carry the effective values; explicitly named raw metrics preserve diagnostic
+   truth.
+7. Logs must make protection visible without prompt, body, bearer, API token,
+   or user content. A bounded structured activation record is emitted on the
+   decision path and includes mode, reason, source, samples, virtual active
+   load, activation/expiry, and hold duration. It intentionally does not claim
+   the final Router limit because the dynamic backend snapshot is owned by the
+   metrics/status boundary, not the admission adapter. The periodic status
+   line records the actual raw/effective running and limit projection together
+   with predictive attempts/fit/risk/unknown/reject, last reason/source,
+   reservations/deferred state, and Router backpressure active/applied state.
+   Because a fixed protection episode can be shorter than the periodic status
+   interval, the first metrics projection that actually applies an episode also
+   emits one `router_capacity_applied` record with its activation number and
+   raw/effective capacity. Concurrent or repeated scrapes cannot emit that
+   record more than once per activation. Repeated identical rejects do not
+   produce unbounded per-request log spam.
+
+The v0.10.4 red tests must fail on v0.10.3 and cover:
+
+- an adverse TTFT forecast no longer rejects while the same TPS/KV forecast
+  still does;
+- a load-dependent TPS/TPOT protection activation immediately changes both
+  explicit predictive metrics and the existing Router-consumed effective
+  capacity fields;
+- protection activation is represented in a structured log and periodic status
+  line, and the first applied metrics projection emits one capacity-applied
+  record, all without request content;
+- repeated rejects inside an episode update diagnostics without extending the
+  fixed expiry or causing an activation/log storm;
+- a single oversized or malformed request at idle does not create global
+  backpressure;
+- a request that fits the empty-node KV budget but crosses it only because of
+  existing load does create bounded Router backpressure;
+- idle residual/prefix-cache KV with zero active sequences does not create
+  global backpressure;
+- load returning to zero removes the effective clamp even before hold expiry;
+- hold expiry removes the clamp while load remains, permitting a bounded probe
+  and relearning rather than a sticky lock;
+- a raw zero global limit plus active predictive protection still produces
+  Router-visible 100% fullness while raw and local admission limits remain zero;
+- concurrent decisions, metrics reads, status logging, resource release,
+  cancellation, and close are race-safe; and
+- off/shadow modes never alter Router-consumed capacity.
+
+After focused tests, the complete builder-only gate remains mandatory: format,
+unit/integration, `go vet`, race, deterministic simulation, benchmark and
+comparison, image contract, immutable registry verification, disabled shadow,
+disabled enforce, protocol/attestation/lifecycle/low-flow gates, and then a new
+full 30-minute real-traffic canary whose timer starts only on proved inference.
+The partial v0.10.3 interval cannot be combined with the future v0.10.4 interval.
+Any obvious issue repeats the same disable/drain/fix/full-revalidation loop.
+
+#### v0.10.4 review and repair evidence — WIP, not a release
+
+The first full r3 builder matrix reached the deterministic goodput gate and
+failed there rather than being accepted as partial green evidence. The initial
+aggregate was current threshold `39840`, v0.9 KV-only `37536`, and predictive
+`42528`, with zero protected safety failures. Payload-free admission tracing
+identified a false deny in `low_kv_excessive_ttft`: a ground-safe request was
+rejected as `existing_tps_at_risk` because mature minority-shape residual
+evidence had been erased by a dominant high-frequency shape. The simulator had
+also trained only fitted requests even though the production shadow contract
+forwards predicted-risk requests and lets a bounded, non-interfered terminal
+outcome train only a later prediction. Finally, the default `0.50` learned
+latency floor imposed an unrelated approximate four-decode TPOT ceiling.
+
+The WIP repairs therefore:
+
+- separate bounded global fallback retention from the per-cell sample cap,
+  preserve a minority cell's minimum mature evidence before trimming a
+  dominant cell, and hard-bound the global store at `1024` samples;
+- skip the global fallback scan when the local cell is already mature for the
+  protected TPS and TPOT dimensions, so observation-only TTFT cannot trigger a
+  scan by itself; keep indexed global cell counts for bounded eviction, and use
+  one compatible-sample grouping pass instead of repeated per-dimension and
+  per-decode-level scans;
+- model a bounded shadow prefix in deterministic simulation without adding
+  shadow-only risk requests to reservation or KV accounting, censor outcomes
+  whose prediction did not include later work, and train only qualified future
+  predictions;
+- lower the learned latency minimum multiplier to `0.10` while retaining the
+  minimum-sample, upper-quantile, maximum-multiplier, identity, freshness, and
+  censoring gates; and
+- keep TTFT violations in diagnostic output while excluding them from
+  protected safety, false accept/deny, and completion-token-goodput decisions.
+
+Focused builder diagnostics through `diag4` passed the default config test,
+dominant/minority fallback regression, the complete predictive runtime/config/
+goodput packages, and the goodput acceptance gate. The exact `diag4` result was
+current threshold `39840`, v0.9 KV-only `37536`, predictive `44064`, with zero
+protected safety violations, zero false accepts, zero reservation leaks,
+thirteen false denies, and four TTFT-only diagnostics. In
+`low_kv_excessive_ttft`, all four requests were admitted as `fit`, were ground
+safe for TPS/TPOT/KV, and remained ground-unsafe only for observational TTFT.
+That evidence predates the final `1024` hard bound, indexed eviction, one-pass
+fallback selection, and the Router visibility correction below, so it cannot
+serve as release evidence for the current source.
+
+The first Router-backpressure WIP used
+`max(dynamic observed running, live reservation count)` as the effective load.
+A correctness review found that this could still reproduce the reported
+failure: the predictive coordinator can atomically reject with
+`ExistingDecodeSequences > 0` while the separately polled dynamic snapshot is
+still zero and the existing reservation has already been absorbed. The
+activation log and `active=1` metric would then exist, but `applied=0` would
+leave Router-consumed capacity unchanged. The repaired projection uses
+`max(dynamic observed running, predictive manager virtual upper decode
+sequences)` only during an active enforce episode. That virtual value is the
+same model-agnostic state family used by the reject, combines the predictive
+observer's reconciled backend state with unabsorbed reservations, and returns
+to zero on reconciliation rather than latching the rejected request. A new
+integration regression requires a reject with dynamic running `0`, reservation
+count `0`, and predictive virtual decode `1` to publish in one scrape:
+
+```text
+pig_predictive_router_backpressure_active 1
+pig_predictive_router_backpressure_applied 1
+pig_predictive_router_backpressure_predictive_running 1
+pig_dynamic_observed_running_raw 0
+pig_dynamic_observed_running 1
+pig_dynamic_global_limit_raw 50
+pig_dynamic_global_limit 1
+pig_dynamic_admission_limit 50
+```
+
+Expired/inactive episodes normalize current reason/source/sample state to
+`none/unknown/0`, while keeping bounded cumulative counters and last-episode
+timestamps. This prevents stale protection labels from being read as a current
+block. The next valid load-dependent rejected probe may start a new fixed
+episode; expiry is never extended in place.
+
+A second observability review found that the immediate activation log did not
+contain the actual Router capacity projection, while the periodic status
+interval can be longer than a two-to-five-second protection episode. The
+metrics boundary now claims at most one payload-free
+`router_capacity_applied` log event per activation using an atomic activation
+watermark. It records the same raw/effective running and limit values written
+to that metrics response without extending the episode or logging every
+scrape. This is evidence that PIG exported the blocking contract; the canary
+must separately prove that Router scraped it and reported at least 100%
+fullness before treating the control loop as closed.
+
+The efficiency review also removed TTFT-only global fallback scans. Local TTFT
+learning remains intact, and a compatible TTFT fallback is still collected
+opportunistically whenever immature TPS or TPOT requires the bounded global
+scan. Once both protected dimensions are locally mature, observational TTFT
+cannot keep the prediction path scanning up to `1024` global samples. A focused
+regression distinguishes the two cases.
+
+The first two attempts to run the final matrix were invalid harness evidence,
+not product failures or green results. r4 called `find` as though `gofmt` were a
+path, and r5 used a login shell that removed the Go image's
+`/usr/local/go/bin` from `PATH`; neither reached candidate Go tests. The first
+r6 harness fixed the shell and exit-code handling, but review before execution
+found that its static TTFT gate would reject the diagnostic simulator's legal
+`TTFTSLO` field. The source then changed for capacity-applied logging and
+TTFT-only scan removal, so r6 was not executed as candidate evidence. r7 limits
+the `TTFTSLO` absence check to real admission/config/server/runtime packages and
+keeps diagnostic simulation outside that symbol gate.
+
+The exact r7 candidate archive SHA-256 is
+`b53fe6305f5083ad27b12b2630e8f7dc209cb93281205b89266f2bdd46a0678e`.
+The v0.10.3 baseline archive remains
+`1dfdb640b424535adc768d6d83e3c0eb2e644ac0a6f44f0c2b9c1b359fb78985`.
+The r7 runner SHA-256 is
+`355c60867187da819c529db8302dfb48158911addd42f61b1bcbe596d20c90aa`,
+and the uploaded bundle SHA-256 is
+`08dc2d830032394a2ce5af422b0433ed2e21f434e33e9117cf51d63c0876dc86`.
+The downloaded evidence archive is
+`tmp/pig-v0104-use1-cb-20260802/builder-r7/pig-v0104-r7-evidence.tar.gz`,
+SHA-256
+`da688ea9f4c46240221b28c79e26c32470baca93487c9fd97e3a4cc60ba82de0`.
+All 43 files covered by the inner `SHA256SUMS` were reverified after download;
+all 21 status files are zero, and `overall.status=0`.
+
+The three v0.10.3 red proofs each exited exactly `1` for the intended reason:
+
+- adverse TTFT returned `ttft_at_risk` instead of `fit`;
+- predictive mode accepted the legacy dynamic TTFT limiter; and
+- Router capacity projection source and effective metrics did not exist.
+
+The r7 candidate then passed focused TTFT-observation, Router activation,
+dynamic-poll-lag, capacity-applied log, fixed-expiry, idle/self-lock escape,
+oversized-request isolation, inactive-state, raw/effective metrics, bounded
+learning, minority-retention, one-pass fallback, TTFT-only scan avoidance, and
+goodput gates. It also passed targeted race, `go vet ./...`, `go test ./...`,
+`go build ./...`, full `go test -race ./...`, deterministic KV simulation,
+predictive goodput simulation, candidate and v0.10.3 baseline benchmarks, the
+dedicated default/hard-bound fallback benchmark, production image build,
+production image contract, image inspect, and gate-container cleanup using
+Go `1.24.13` on Linux amd64.
+
+The independently recomputed goodput aggregate is:
+
+| policy | completion-token goodput | TPS violations | TPOT violations | KV hard | preemption proxy | false accepts | false denies | leaks | TTFT diagnostics |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| current threshold | 39840 | 0 | 0 | 0 | 0 | 0 | 37 | 0 | 2 |
+| v0.9 KV-only | 37536 | 32 | 32 | 1 | 1 | 16 | 3 | 0 | 4 |
+| exact-token KV-only | 37024 | 37 | 32 | 0 | 0 | 15 | 3 | 0 | 5 |
+| model-agnostic predictive | 44064 | 0 | 0 | 0 | 0 | 0 | 13 | 0 | 4 |
+
+TTFT remains diagnostic in that table and is excluded from protected safety,
+false-accept/deny, and completion-token-goodput decisions. The result proves
+the deterministic acceptance contract, not production throughput.
+
+The deterministic performance probe reported approximate estimator 64 KiB p95
+`4.737us`, approximate estimator 2 MiB p99 `232.968us`, and overall shadow
+decision p99 `11.142us`. The mature local learned-scheduler benchmark was
+`3.246us..4.062us/op`, `256 B/op`, and `2 allocs/op`. The dedicated bounded
+global fallback was `42.716us..62.820us/op` at the default bound and
+`207.955us..332.101us/op` at the absolute 1024-sample bound. The latter is an
+immature/fallback worst-case diagnostic; once local TPS and TPOT are mature,
+the global scan is skipped. These CPU measurements do not claim GPU or live
+request latency improvement.
+
+The builder-local production image passed the contract as version `0.10.4`,
+entrypoint `/phala-inference-guard`, with image ID
+`sha256:cd6d6b3fc9c48b8c78097329a33ed93261b436472d804d834d6e483a9530b593`.
+This completes the exact executable clean-builder and builder-local image
+layers. The evidence section itself is a later non-executable documentation
+update; before commit, Dockerfile, module files, `cmd/`, `internal/`, and the
+image-contract script must be byte-compared with the tested archive.
+
+v0.10.4 is now eligible for that byte comparison, final diff review, commit,
+push, annotated tag, release workflow, and immutable registry verification. It
+is still not a published image, deployed runtime, live-ready canary, or
+production result. `use1-cb` remains disabled until the registry and
+Router-disabled shadow/enforce gates pass.

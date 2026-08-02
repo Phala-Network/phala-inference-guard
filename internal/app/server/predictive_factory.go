@@ -11,8 +11,8 @@ import (
 
 const (
 	predictiveApproximateManifestID       = "model-agnostic-json-v1"
-	predictiveApproximateProfileID        = "model-agnostic-qos-v1"
-	predictiveApproximatePredictorVersion = "adaptive-qos-v1"
+	predictiveApproximateProfileID        = "model-agnostic-qos-v2"
+	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v2"
 	predictiveApproximateEstimatorVersion = "json-cost-v1"
 )
 
@@ -35,9 +35,9 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		return nil, err
 	}
 	targetTPS := cfg.DynamicUserTPSRed
-	ttftSLO, err := predictiveSecondsDuration(cfg.DynamicTTFTPolicy.TargetSeconds)
+	ttftReference, err := predictiveSecondsDuration(cfg.DynamicTTFTPolicy.TargetSeconds)
 	if err != nil {
-		return nil, fmt.Errorf("construct predictive TTFT SLO: %w", err)
+		return nil, fmt.Errorf("construct predictive TTFT observation reference: %w", err)
 	}
 	tpotSLO, err := predictiveTPOTTarget(targetTPS)
 	if err != nil {
@@ -49,7 +49,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		BackendEpoch:     backendEpoch,
 		PredictorVersion: predictiveApproximatePredictorVersion,
 	}
-	baseTTFT := ttftSLO / 4
+	baseTTFT := ttftReference / 4
 	if baseTTFT <= 0 {
 		baseTTFT = time.Nanosecond
 	}
@@ -62,7 +62,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		BaseCompletionTPS:             targetTPS,
 		PrefillTPSPenaltyPerKToken:    0,
 		BaseTTFT:                      baseTTFT,
-		TTFTPerUncachedPrefillToken:   predictiveTTFTPerToken(ttftSLO-baseTTFT, protectedTokens),
+		TTFTPerUncachedPrefillToken:   predictiveTTFTPerToken(ttftReference-baseTTFT, protectedTokens),
 		BaseTPOT:                      baseTPOT,
 		TPOTPerExistingDecodeSequence: baseTPOT,
 		WorkspaceRiskUpper:            0,
@@ -107,7 +107,6 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 			PhysicalKVHard:       protectedTokens,
 			ActiveKVHard:         protectedTokens,
 			UserTPSTarget:        targetTPS,
-			TTFTSLO:              ttftSLO,
 			TPOTSLO:              tpotSLO,
 			WorkspaceRiskBudget:  0,
 			PreemptionRiskBudget: 0,
@@ -156,6 +155,12 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		Upstream:               observer,
 		Mode:                   cfg.PredictiveAdmissionMode,
 		ShadowObservationLimit: cfg.PredictiveShadowObservationLimit,
+		RouterBackpressureHold: predictiveRouterBackpressureHold(cfg.DynamicPollInterval),
+		RouterBackpressure: predictiveRouterBackpressurePolicy{
+			PhysicalKVHard: protectedTokens,
+			ActiveKVHard:   protectedTokens,
+		},
+		OnRouterBackpressure: logPredictiveRouterBackpressure,
 	})
 	if err != nil {
 		_ = observer.Close()

@@ -54,7 +54,6 @@ type Constraints struct {
 	PhysicalKVHard       int64
 	ActiveKVHard         int64
 	UserTPSTarget        float64
-	TTFTSLO              time.Duration
 	TPOTSLO              time.Duration
 	WorkspaceRiskBudget  float64
 	PreemptionRiskBudget float64
@@ -69,7 +68,6 @@ const (
 	ReasonActiveKVOverBudget      Reason = "active_kv_over_budget"
 	ReasonExistingTPSAtRisk       Reason = "existing_tps_at_risk"
 	ReasonNewTPSAtRisk            Reason = "new_tps_at_risk"
-	ReasonTTFTAtRisk              Reason = "ttft_at_risk"
 	ReasonTPOTAtRisk              Reason = "tpot_at_risk"
 	ReasonWorkspaceAtRisk         Reason = "workspace_at_risk"
 	ReasonPreemptionAtRisk        Reason = "preemption_at_risk"

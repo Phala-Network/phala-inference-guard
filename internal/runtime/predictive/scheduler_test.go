@@ -279,6 +279,127 @@ func TestLearnedSchedulerUsesQualifiedGlobalHeadroomToProgressBeyondColdConcurre
 	}
 }
 
+func TestLearnedSchedulerDominantShapeDoesNotEraseMatureMinorityFallback(t *testing.T) {
+	now := time.Unix(9_250, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MinimumSamples = 4
+	config.MaximumSamplesPerCell = 16
+	config.MaximumCells = 256
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+
+	large := learnedTestCost()
+	large.InputTokens = 100_000
+	large.RequestComplexityTokensUpper = 100_000
+	large.UncachedPrefillUpper = 100_000
+	large.ActiveContextTokensUpper = 100_256
+	large.KV.PhysicalKVUpper = 100_288
+	large.KV.ActiveKVUpper = 100_288
+	for index := 0; index < config.MinimumSamples; index++ {
+		predictedAt := now.Add(time.Duration(index) * 10 * time.Millisecond)
+		prediction := scheduler.Predict(predictedAt, domain.VirtualState{}, large)
+		outcome := healthyLearnedOutcome(prediction, predictedAt.Add(time.Millisecond))
+		outcome.UserTPS = 80
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe mature large-shape sample %d: %v", index, err)
+		}
+	}
+
+	small := learnedTestCost()
+	small.InputTokens = 100
+	small.RequestComplexityTokensUpper = 100
+	small.UncachedPrefillUpper = 100
+	small.ActiveContextTokensUpper = 356
+	small.KV.PhysicalKVUpper = 384
+	small.KV.ActiveKVUpper = 384
+	for index := 0; index < 4*config.MaximumSamplesPerCell; index++ {
+		predictedAt := now.Add(time.Duration(config.MinimumSamples+index) * 10 * time.Millisecond)
+		prediction := scheduler.Predict(predictedAt, domain.VirtualState{}, small)
+		outcome := healthyLearnedOutcome(prediction, predictedAt.Add(time.Millisecond))
+		outcome.UserTPS = 80
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe dominant small-shape sample %d: %v", index, err)
+		}
+	}
+
+	queryState := domain.VirtualState{
+		PhysicalKVUpper:       large.KV.PhysicalKVUpper,
+		ActiveKVUpper:         large.KV.ActiveKVUpper,
+		DecodeSequences:       1,
+		ActiveContextTokens:   large.ActiveContextTokensUpper,
+		UncachedPrefillTokens: large.UncachedPrefillUpper,
+	}
+	prediction := scheduler.Predict(now.Add(2*time.Second), queryState, small)
+	if prediction.Source != PredictionSourceCalibrated || prediction.Samples < config.MinimumSamples {
+		t.Fatalf("mature minority fallback was erased by dominant shape: %+v", prediction)
+	}
+	if prediction.Estimate.NewUserTPSLower < 20 {
+		t.Fatalf("retained minority fallback TPS = %.3f, want at least 20", prediction.Estimate.NewUserTPSLower)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.GlobalSamples <= config.MaximumSamplesPerCell || snapshot.GlobalSamples > maximumGlobalResidualSamples {
+		t.Fatalf("stratified global sample bound = %+v", snapshot)
+	}
+	counted := 0
+	for _, count := range scheduler.globalCounts {
+		counted += count
+	}
+	if counted != len(scheduler.globalSamples) {
+		t.Fatalf("global sample count index = %d, want retained sample length %d", counted, len(scheduler.globalSamples))
+	}
+}
+
+func TestFreshCompatibleResidualRatiosSelectsMatureLevelPerDimensionInOnePass(t *testing.T) {
+	now := time.Unix(9_400, 0)
+	samples := make([]residualSample, 0, 6)
+	for index := 0; index < 3; index++ {
+		samples = append(samples, residualSample{
+			ObservedAt: now,
+			Features: SchedulerFeatures{
+				DecodeSequences: 4,
+			},
+			UserTPSRatio: 2 + float64(index),
+			UserTPSValid: true,
+		})
+		samples = append(samples, residualSample{
+			ObservedAt: now,
+			Features: SchedulerFeatures{
+				DecodeSequences: 3,
+			},
+			TTFTRatio: 3 + float64(index),
+			TPOTRatio: 4 + float64(index),
+			TTFTValid: true,
+			TPOTValid: true,
+		})
+	}
+
+	got := freshCompatibleResidualRatios(samples, now, time.Minute, SchedulerFeatures{DecodeSequences: 2}, 3)
+	if len(got.UserTPS) != 3 || got.UserTPS[0] != 2 {
+		t.Fatalf("TPS ratios = %v, want mature decode-sequence level 4", got.UserTPS)
+	}
+	if len(got.TTFT) != 3 || got.TTFT[0] != 3 {
+		t.Fatalf("TTFT ratios = %v, want mature decode-sequence level 3", got.TTFT)
+	}
+	if len(got.TPOT) != 3 || got.TPOT[0] != 4 {
+		t.Fatalf("TPOT ratios = %v, want mature decode-sequence level 3", got.TPOT)
+	}
+}
+
+func TestGlobalFallbackScanIsNotTriggeredOnlyForObservationalTTFT(t *testing.T) {
+	mature := make([]float64, 3)
+	if requiresGlobalResidualFallback(residualRatios{UserTPS: mature, TPOT: mature}, 3) {
+		t.Fatal("mature protected dimensions scanned global history only for TTFT")
+	}
+	if !requiresGlobalResidualFallback(residualRatios{UserTPS: mature[:2], TPOT: mature}, 3) {
+		t.Fatal("immature TPS did not request global fallback")
+	}
+	if !requiresGlobalResidualFallback(residualRatios{UserTPS: mature, TPOT: mature[:2]}, 3) {
+		t.Fatal("immature TPOT did not request global fallback")
+	}
+}
+
 func TestLearnedSchedulerDoesNotApplySmallRequestGlobalHeadroomToHigherPressureRequest(t *testing.T) {
 	now := time.Unix(9_500, 0)
 	profile := testLearnedProfile()
@@ -363,7 +484,7 @@ func TestLearnedSchedulerIdleFloorPreventsAdverseTPSStickyZero(t *testing.T) {
 	}
 }
 
-func TestLearnedSchedulerKeepsShapeSpecificAdverseTTFTProtectionWhileIdle(t *testing.T) {
+func TestLearnedSchedulerKeepsShapeSpecificTTFTTelemetryWithoutAdmissionProtection(t *testing.T) {
 	now := time.Unix(10_500, 0)
 	profile := testLearnedProfile()
 	profile.BaseCompletionTPS = 25
@@ -388,11 +509,10 @@ func TestLearnedSchedulerKeepsShapeSpecificAdverseTTFTProtectionWhileIdle(t *tes
 	}
 	constraints := testLearnedConstraints()
 	constraints.UserTPSTarget = 25
-	constraints.TTFTSLO = prediction.Prior.TTFTUpper * 3 / 2
 	manager := NewManager("test-profile", state, constraints, scheduler)
 	decision := manager.DecideAndReserve(now.Add(10*time.Second), "known-slow-ttft", cost)
-	if decision.Reason != domain.ReasonTTFTAtRisk {
-		t.Fatalf("known adverse idle TTFT decision = %+v, want %s", decision, domain.ReasonTTFTAtRisk)
+	if decision.Reason != domain.ReasonFit {
+		t.Fatalf("known adverse idle TTFT decision = %+v, want TTFT-observational fit", decision)
 	}
 }
 
@@ -470,7 +590,6 @@ func testLearnedConstraints() domain.Constraints {
 		PhysicalKVHard:       100_000,
 		ActiveKVHard:         100_000,
 		UserTPSTarget:        25,
-		TTFTSLO:              500 * time.Millisecond,
 		TPOTSLO:              50 * time.Millisecond,
 		WorkspaceRiskBudget:  0.02,
 		PreemptionRiskBudget: 0.002,

@@ -43,6 +43,9 @@ type approximatePredictiveShadowConfig struct {
 	Mode                   string
 	ShadowObservationLimit int
 	DeferredOutcomeLimit   int
+	RouterBackpressureHold time.Duration
+	RouterBackpressure     predictiveRouterBackpressurePolicy
+	OnRouterBackpressure   func(predictiveRouterBackpressureEvent)
 	Now                    func() time.Time
 }
 
@@ -68,6 +71,10 @@ type approximatePredictiveShadow struct {
 	deferredStats       predictiveDeferredOutcomeSnapshot
 	predictionDuration  durationHistogram
 	tpsOutcomes         predictiveTPSOutcomeSnapshot
+	routerBackpressure  predictiveRouterBackpressureState
+	backpressurePolicy  predictiveRouterBackpressurePolicy
+	backpressureHold    time.Duration
+	onBackpressure      func(predictiveRouterBackpressureEvent)
 }
 
 type approximatePredictiveReservation struct {
@@ -129,6 +136,7 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	config.RouterBackpressureHold = normalizePredictiveRouterBackpressureHold(config.RouterBackpressureHold)
 	return &approximatePredictiveShadow{
 		calibrator:          config.Calibrator,
 		coordinator:         config.Coordinator,
@@ -143,6 +151,9 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 		observations:        make(map[string]*approximatePredictiveReservation),
 		deferredOutcomes:    make(map[string]*approximatePredictiveReservation),
 		predictionDuration:  newPredictiveDurationHistogram(),
+		backpressurePolicy:  config.RouterBackpressure,
+		backpressureHold:    config.RouterBackpressureHold,
+		onBackpressure:      config.OnRouterBackpressure,
 	}, nil
 }
 
@@ -218,15 +229,17 @@ func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requ
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
 		return nil
 	}
-	s.recordResultLocked(result)
+	backpressureEvent := s.recordResultLocked(result, decisionTime)
 	if !result.Reserved {
 		if s.mode != "shadow" || !validShadowObservationResult(result) {
 			s.mu.Unlock()
+			s.emitRouterBackpressure(backpressureEvent)
 			return nil
 		}
 		if len(s.observations) >= s.maximumObservations {
 			s.observationStats.Dropped++
 			s.mu.Unlock()
+			s.emitRouterBackpressure(backpressureEvent)
 			return nil
 		}
 		observation := &approximatePredictiveReservation{
@@ -241,6 +254,7 @@ func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requ
 		s.observations[requestID] = observation
 		s.observationStats.Created++
 		s.mu.Unlock()
+		s.emitRouterBackpressure(backpressureEvent)
 		return observation
 	}
 	s.markShadowObservationsInterferedLocked("")
@@ -254,6 +268,7 @@ func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requ
 	}
 	s.reservations[requestID] = reservation
 	s.mu.Unlock()
+	s.emitRouterBackpressure(backpressureEvent)
 	return reservation
 }
 
@@ -261,6 +276,7 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 	if s == nil {
 		return predictiveAdmissionTelemetrySnapshot{}
 	}
+	now := s.now()
 	s.mu.Lock()
 	attempts := s.attempts
 	tpsOutcomes := s.tpsOutcomes
@@ -268,6 +284,7 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 	observationStats.Active = len(s.observations)
 	deferredStats := s.deferredStats
 	deferredStats.Active = len(s.deferredOutcomes)
+	routerBackpressure := s.routerBackpressure.Snapshot(now)
 	s.mu.Unlock()
 	telemetry := predictiveAdmissionTelemetrySnapshot{
 		Attempts:           attempts,
@@ -275,8 +292,9 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 		TPSOutcomes:        tpsOutcomes,
 		ShadowObservations: observationStats,
 		DeferredOutcomes:   deferredStats,
+		RouterBackpressure: routerBackpressure,
 	}
-	telemetry.InputSize = s.calibrator.Snapshot(s.now())
+	telemetry.InputSize = s.calibrator.Snapshot(now)
 	if coordinator, ok := s.coordinator.(predictiveCoordinatorSnapshotter); ok {
 		telemetry.Manager = coordinator.Snapshot().Manager
 	}
@@ -660,14 +678,14 @@ func (s *approximatePredictiveShadow) recordUnknown(reason domainpredictive.Reas
 	s.mu.Unlock()
 }
 
-func (s *approximatePredictiveShadow) recordResultLocked(result runtimepredictive.CountAdmissionResult) {
+func (s *approximatePredictiveShadow) recordResultLocked(result runtimepredictive.CountAdmissionResult, now time.Time) *predictiveRouterBackpressureEvent {
 	s.attempts.Attempts++
 	s.attempts.LastReason = result.Decision.Reason
 	s.attempts.LastSource = result.Prediction.Source
 	s.attempts.LastSamples = result.Prediction.Samples
 	if result.Reserved {
 		s.attempts.Fits++
-		return
+		return nil
 	}
 	switch result.Decision.Reason {
 	case domainpredictive.ReasonTokenizerProfileUnknown,
@@ -677,6 +695,17 @@ func (s *approximatePredictiveShadow) recordResultLocked(result runtimepredictiv
 	default:
 		s.attempts.Risks++
 	}
+	if s.mode != "enforce" {
+		return nil
+	}
+	return s.routerBackpressure.Observe(now, s.backpressureHold, result, s.backpressurePolicy)
+}
+
+func (s *approximatePredictiveShadow) emitRouterBackpressure(event *predictiveRouterBackpressureEvent) {
+	if event == nil || s == nil || s.onBackpressure == nil {
+		return
+	}
+	s.onBackpressure(*event)
 }
 
 func approximateRequestClass(path string) (runtimepredictive.RequestClass, bool) {

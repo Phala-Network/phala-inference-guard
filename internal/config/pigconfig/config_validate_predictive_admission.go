@@ -16,6 +16,9 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 		return fmt.Errorf("JSON_CLASSIFY_LIMIT must be > 0 when predictive admission is enabled")
 	}
 	if cfg.PredictiveAdmissionMode != "off" {
+		if cfg.DynamicTTFTEnabled {
+			return fmt.Errorf("DYNAMIC_TTFT_ENABLED must be false when predictive admission is enabled; TTFT is observation-only")
+		}
 		if err := validateKVEstimator(cfg.KVAdmissionEstimator); err != nil {
 			return fmt.Errorf("predictive request-size estimator: %w", err)
 		}

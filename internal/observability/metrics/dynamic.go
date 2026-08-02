@@ -40,14 +40,34 @@ type DynamicConfig struct {
 	UserTPSCapacitySmoothing  float64
 }
 
-func WriteDynamic(w io.Writer, snapshot dynamic.Snapshot, cfg DynamicConfig, pressureCap Int64Loader) {
+type DynamicRouterCapacity struct {
+	Present              bool
+	BackpressureActive   bool
+	BackpressureApplied  bool
+	RawRunning           int
+	EffectiveRunning     int
+	RawGlobalLimit       int
+	EffectiveGlobalLimit int
+}
+
+func WriteDynamic(w io.Writer, snapshot dynamic.Snapshot, cfg DynamicConfig, pressureCap Int64Loader, router DynamicRouterCapacity) {
+	if !router.Present {
+		router = DynamicRouterCapacity{
+			Present:              true,
+			RawRunning:           snapshot.Running,
+			EffectiveRunning:     snapshot.Running,
+			RawGlobalLimit:       snapshot.GlobalLimit,
+			EffectiveGlobalLimit: snapshot.GlobalLimit,
+		}
+	}
 	ttftPolicy := cfg.TTFTPolicy.Normalize()
 	fmt.Fprintf(w, "pig_dynamic_state_info{state=%q,source=%q} 1\n", snapshot.DecisionState(), snapshot.Source)
 	fmt.Fprintf(w, "pig_dynamic_last_update_seconds %d\n", snapshot.Updated.Unix())
 	if snapshot.Error != "" {
 		fmt.Fprintf(w, "pig_dynamic_error_info{message=%q} 1\n", snapshot.Error)
 	}
-	fmt.Fprintf(w, "pig_dynamic_observed_running %d\n", snapshot.Running)
+	fmt.Fprintf(w, "pig_dynamic_observed_running_raw %d\n", router.RawRunning)
+	fmt.Fprintf(w, "pig_dynamic_observed_running %d\n", router.EffectiveRunning)
 	fmt.Fprintf(w, "pig_dynamic_observed_waiting %d\n", snapshot.Waiting)
 	fmt.Fprintf(w, "pig_dynamic_observed_kv_cache_usage %.6f\n", snapshot.KVCacheUsage)
 	fmt.Fprintf(w, "pig_dynamic_observed_preemptions %d\n", snapshot.Preemptions)
@@ -140,8 +160,11 @@ func WriteDynamic(w io.Writer, snapshot dynamic.Snapshot, cfg DynamicConfig, pre
 		finalLimitReason = "unknown"
 	}
 	fmt.Fprintf(w, "pig_dynamic_final_limit_info{reason=%q} 1\n", finalLimitReason)
-	fmt.Fprintf(w, "pig_dynamic_global_limit %d\n", snapshot.GlobalLimit)
+	fmt.Fprintf(w, "pig_dynamic_global_limit_raw %d\n", router.RawGlobalLimit)
+	fmt.Fprintf(w, "pig_dynamic_global_limit %d\n", router.EffectiveGlobalLimit)
 	fmt.Fprintf(w, "pig_dynamic_admission_limit %d\n", snapshot.QOSLimit)
+	fmt.Fprintf(w, "pig_dynamic_router_backpressure_active %d\n", num.BoolAsInt(router.BackpressureActive))
+	fmt.Fprintf(w, "pig_dynamic_router_backpressure_applied %d\n", num.BoolAsInt(router.BackpressureApplied))
 	fmt.Fprintf(w, "pig_dynamic_capacity_limit %d\n", snapshot.CapacityLimit)
 	fmt.Fprintf(w, "pig_dynamic_pressure_limit %d\n", snapshot.PressureLimit)
 	pressureReason := snapshot.PressureReason

@@ -79,7 +79,6 @@ func testConstraints() domain.Constraints {
 		PhysicalKVHard:       85_000,
 		ActiveKVHard:         85_000,
 		UserTPSTarget:        25,
-		TTFTSLO:              time.Second,
 		TPOTSLO:              50 * time.Millisecond,
 		WorkspaceRiskBudget:  0.02,
 		PreemptionRiskBudget: 0.002,

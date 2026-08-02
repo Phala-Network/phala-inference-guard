@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/observability/metrics"
 	statusview "github.com/Phala-Network/phala-inference-guard/internal/observability/status"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/dynamic"
 )
@@ -17,6 +18,14 @@ func (s *proxyServer) statusLogLine() string {
 		snapshot = s.dynamicController.Snapshot()
 	}
 	tierSnapshot := s.qosGate.TierSnapshot(snapshot.GlobalLimit)
+	predictive := s.predictiveAdmissionMetricsInput()
+	routerCapacity := predictiveRouterCapacity(
+		predictive.Mode,
+		predictive.RouterBackpressure.Active,
+		predictive.VirtualDecodeSequences,
+		snapshot,
+	)
+	applyPredictiveRouterCapacity(&predictive, routerCapacity)
 	line := statusview.Format(statusview.Input{
 		Version:            version,
 		Snapshot:           snapshot,
@@ -33,12 +42,58 @@ func (s *proxyServer) statusLogLine() string {
 		},
 		Backends: s.statusBackendSnapshots(),
 	})
+	line += formatPredictiveStatus(predictive)
 	if s.kvShadow != nil {
 		shadow := s.kvShadow.Snapshot()
 		last := shadow.LastDecision
 		line += fmt.Sprintf(" kv_shadow={last=%s backend=%s projected=%d/%d ratio=%.3f reservations=%d tokens=%d}", last.Reason, last.Backend, last.ProjectedHighTokens, last.HardBudgetTokens, last.ProjectedRatio, shadow.Reservations, shadow.UnabsorbedTokens)
 	}
 	return line
+}
+
+func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
+	backpressure := input.RouterBackpressure
+	reason := input.LastReason
+	if reason == "" {
+		reason = "unknown"
+	}
+	source := input.LastSource
+	if source == "" {
+		source = "unknown"
+	}
+	backpressureReason := backpressure.Reason
+	if backpressureReason == "" {
+		backpressureReason = "none"
+	}
+	return fmt.Sprintf(
+		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s/%d reservations=%d virtual_decode=%d deferred=%d router_bp=%d/%d/%s effective=%d/%d raw=%d/%d}",
+		input.Mode,
+		input.Attempts,
+		input.Fits,
+		input.Risks,
+		input.Unknown,
+		input.EnforcedRejects,
+		reason,
+		source,
+		input.LastSamples,
+		input.Reservations,
+		input.VirtualDecodeSequences,
+		input.DeferredOutcomes.Active,
+		boolInt(backpressure.Active),
+		boolInt(backpressure.Applied),
+		backpressureReason,
+		backpressure.EffectiveRunning,
+		backpressure.EffectiveGlobalLimit,
+		backpressure.RawRunning,
+		backpressure.RawGlobalLimit,
+	)
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (s *proxyServer) statusBackendSnapshots() []statusview.BackendSnapshot {

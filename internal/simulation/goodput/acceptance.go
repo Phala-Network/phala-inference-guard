@@ -10,26 +10,64 @@ const (
 )
 
 type Metrics struct {
-	Arrivals                   int   `json:"arrivals"`
-	Admitted                   int   `json:"admitted"`
-	Completed                  int   `json:"completed"`
-	SLOCompliantCompletions    int   `json:"slo_compliant_completions"`
-	CompletionTokenGoodput     int64 `json:"completion_token_goodput"`
-	ExistingOrNewTPSViolations int   `json:"existing_or_new_tps_violations"`
-	TTFTViolations             int   `json:"ttft_violations"`
-	TPOTViolations             int   `json:"tpot_violations"`
-	KVHardViolations           int   `json:"kv_hard_violations"`
-	PreemptionProxyEvents      int   `json:"preemption_proxy_events"`
-	FalseAccepts               int   `json:"false_accepts"`
-	FalseDenies                int   `json:"false_denies"`
-	ReservationLeaks           int   `json:"reservation_leaks"`
-	PeakProjectedKVTokens      int64 `json:"peak_projected_kv_tokens"`
-	PeakReservedKVTokens       int64 `json:"peak_reserved_kv_tokens"`
-	MinimumProjectedKVHeadroom int64 `json:"minimum_projected_kv_headroom"`
+	Arrivals                   int              `json:"arrivals"`
+	Admitted                   int              `json:"admitted"`
+	Completed                  int              `json:"completed"`
+	SLOCompliantCompletions    int              `json:"slo_compliant_completions"`
+	CompletionTokenGoodput     int64            `json:"completion_token_goodput"`
+	ExistingOrNewTPSViolations int              `json:"existing_or_new_tps_violations"`
+	TTFTViolations             int              `json:"ttft_violations"`
+	TPOTViolations             int              `json:"tpot_violations"`
+	KVHardViolations           int              `json:"kv_hard_violations"`
+	PreemptionProxyEvents      int              `json:"preemption_proxy_events"`
+	FalseAccepts               int              `json:"false_accepts"`
+	FalseDenies                int              `json:"false_denies"`
+	ReservationLeaks           int              `json:"reservation_leaks"`
+	PeakProjectedKVTokens      int64            `json:"peak_projected_kv_tokens"`
+	PeakReservedKVTokens       int64            `json:"peak_reserved_kv_tokens"`
+	MinimumProjectedKVHeadroom int64            `json:"minimum_projected_kv_headroom"`
+	AdmissionTrace             []AdmissionTrace `json:"admission_trace,omitempty"`
+}
+
+// AdmissionTrace is a payload-free deterministic explanation of one simulated
+// pre-forward decision. Request IDs are synthetic scenario identifiers; no
+// prompt, request body, token IDs, or credentials enter the simulation report.
+type AdmissionTrace struct {
+	RequestID                 string     `json:"request_id"`
+	AtMilliseconds            int64      `json:"at_milliseconds"`
+	Policy                    PolicyName `json:"policy"`
+	Admitted                  bool       `json:"admitted"`
+	Reason                    string     `json:"reason"`
+	GroundProtectedSafe       bool       `json:"ground_protected_safe"`
+	GroundKVSafe              bool       `json:"ground_kv_safe"`
+	GroundTPSSafe             bool       `json:"ground_tps_safe"`
+	GroundTPOTSafe            bool       `json:"ground_tpot_safe"`
+	GroundTTFTSafe            bool       `json:"ground_ttft_safe"`
+	GroundProjectedKVTokens   int64      `json:"ground_projected_kv_tokens"`
+	GroundUserTPS             float64    `json:"ground_user_tps"`
+	GroundTPOTMicroseconds    int64      `json:"ground_tpot_microseconds"`
+	GroundTTFTMicroseconds    int64      `json:"ground_ttft_microseconds"`
+	PredictionSource          string     `json:"prediction_source,omitempty"`
+	PredictionSamples         int        `json:"prediction_samples,omitempty"`
+	ExistingDecodeSequences   int        `json:"existing_decode_sequences,omitempty"`
+	ProjectedDecodeSequences  int        `json:"projected_decode_sequences,omitempty"`
+	PredictedExistingUserTPS  float64    `json:"predicted_existing_user_tps,omitempty"`
+	PredictedNewUserTPS       float64    `json:"predicted_new_user_tps,omitempty"`
+	PredictedTPOTMicroseconds int64      `json:"predicted_tpot_microseconds,omitempty"`
+	PredictedTTFTMicroseconds int64      `json:"predicted_ttft_microseconds,omitempty"`
+	PredictedPhysicalKVTokens int64      `json:"predicted_physical_kv_tokens,omitempty"`
+	ReservedPhysicalKVTokens  int64      `json:"reserved_physical_kv_tokens,omitempty"`
 }
 
 func (m Metrics) SafetyViolations() int {
-	return m.ExistingOrNewTPSViolations + m.TTFTViolations + m.TPOTViolations + m.KVHardViolations + m.PreemptionProxyEvents + m.ReservationLeaks
+	// TTFT remains measured, but v0.10.4 explicitly removes it from admission
+	// protection. Keep TTFTViolations as diagnostic evidence without treating it
+	// as a protected-QoS failure.
+	return m.ExistingOrNewTPSViolations + m.TPOTViolations + m.KVHardViolations + m.PreemptionProxyEvents + m.ReservationLeaks
+}
+
+func (m Metrics) ObservedViolations() int {
+	return m.SafetyViolations() + m.TTFTViolations
 }
 
 type ScenarioResult struct {

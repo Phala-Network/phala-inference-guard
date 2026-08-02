@@ -45,6 +45,7 @@ type predictiveAdmissionTelemetrySnapshot struct {
 	TPSOutcomes        predictiveTPSOutcomeSnapshot
 	ShadowObservations predictiveShadowObservationSnapshot
 	DeferredOutcomes   predictiveDeferredOutcomeSnapshot
+	RouterBackpressure predictiveRouterBackpressureSnapshot
 }
 
 type predictiveTPSOutcomeSnapshot struct {

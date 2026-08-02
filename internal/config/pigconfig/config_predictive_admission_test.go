@@ -14,6 +14,9 @@ func TestLoadPredictiveAdmissionDefaultsOff(t *testing.T) {
 	if cfg.PredictiveAdmissionMode != "off" {
 		t.Fatalf("predictive default mode = %q, want off", cfg.PredictiveAdmissionMode)
 	}
+	if cfg.PredictiveLatencyMinimumMultiplier != 0.10 {
+		t.Fatalf("predictive minimum learned latency multiplier = %.3f, want 0.10", cfg.PredictiveLatencyMinimumMultiplier)
+	}
 }
 
 func TestValidateAcceptsPredictiveAdmissionEnforce(t *testing.T) {
@@ -24,6 +27,23 @@ func TestValidateAcceptsPredictiveAdmissionEnforce(t *testing.T) {
 	}
 	if err := Validate(cfg); err != nil {
 		t.Fatalf("Validate enforce mode: %v", err)
+	}
+}
+
+func TestValidatePredictiveAdmissionRejectsDynamicTTFTProtection(t *testing.T) {
+	for _, mode := range []string{"shadow", "enforce"} {
+		t.Run(mode, func(t *testing.T) {
+			t.Setenv("PREDICTIVE_ADMISSION_MODE", mode)
+			t.Setenv("DYNAMIC_TTFT_ENABLED", "true")
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			err = Validate(cfg)
+			if err == nil || !strings.Contains(err.Error(), "TTFT is observation-only") {
+				t.Fatalf("Validate error = %v, want predictive TTFT protection rejection", err)
+			}
+		})
 	}
 }
 

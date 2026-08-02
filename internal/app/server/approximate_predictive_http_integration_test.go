@@ -615,7 +615,7 @@ func newApproximateHTTPTestAdapterWithMode(t *testing.T, targetTPS float64, mode
 		ModelMaximumLength: 1_000_000,
 		Constraints: domainpredictive.Constraints{
 			PhysicalKVHard: 900_000, ActiveKVHard: 900_000, UserTPSTarget: targetTPS,
-			TTFTSLO: time.Second, TPOTSLO: time.Duration(float64(time.Second) / targetTPS),
+			TPOTSLO:           time.Duration(float64(time.Second) / targetTPS),
 			MinimumConfidence: 0.90,
 		},
 		Scheduler: scheduler,

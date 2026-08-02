@@ -78,7 +78,7 @@ func loadDynamicConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	dynamicTTFTEnabled, err := env.Bool("DYNAMIC_TTFT_ENABLED", dynamicUserTPSEnabled)
+	dynamicTTFTEnabled, err := env.Bool("DYNAMIC_TTFT_ENABLED", false)
 	if err != nil {
 		return err
 	}

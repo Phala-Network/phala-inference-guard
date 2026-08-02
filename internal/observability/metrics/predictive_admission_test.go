@@ -27,6 +27,7 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		LastSamples:            7,
 		IntakeOpen:             true,
 		Reservations:           2,
+		VirtualDecodeSequences: 3,
 		RetiredReservations:    3,
 		RetiredEvictions:       1,
 		LearningAccepted:       11,
@@ -64,6 +65,12 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		FailureTerminal:        6,
 		PredictionDuration:     &prediction,
 		EstimatorDuration:      &estimator,
+		RouterBackpressure: PredictiveRouterBackpressureInput{
+			Active: true, Applied: true, Reason: "existing_tps_at_risk", Source: "calibrated", Samples: 7,
+			ActivatedAt: time.Unix(100, 0), Until: time.Unix(103, 0), Hold: 3 * time.Second,
+			Activations: 2, Extensions: 5, PredictiveRunning: 3, RawRunning: 1, EffectiveRunning: 3,
+			RawGlobalLimit: 50, EffectiveGlobalLimit: 2,
+		},
 	})
 
 	got := out.String()
@@ -77,8 +84,21 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		"pig_predictive_admission_enforced_rejects_total 4",
 		`pig_predictive_admission_last_decision_info{reason="existing_tps_at_risk",source="calibrated"} 1`,
 		"pig_predictive_admission_reservations 2",
+		"pig_predictive_admission_virtual_decode_sequences 3",
 		"pig_predictive_admission_intake_open 1",
 		"pig_predictive_admission_retired_evictions_total 1",
+		"pig_predictive_router_backpressure_active 1",
+		"pig_predictive_router_backpressure_applied 1",
+		`pig_predictive_router_backpressure_state_info{reason="existing_tps_at_risk",source="calibrated"} 1`,
+		"pig_predictive_router_backpressure_samples 7",
+		"pig_predictive_router_backpressure_hold_seconds 3.000000",
+		"pig_predictive_router_backpressure_activations_total 2",
+		"pig_predictive_router_backpressure_extensions_total 5",
+		"pig_predictive_router_backpressure_predictive_running 3",
+		"pig_predictive_router_backpressure_raw_running 1",
+		"pig_predictive_router_backpressure_effective_running 3",
+		"pig_predictive_router_backpressure_raw_global_limit 50",
+		"pig_predictive_router_backpressure_effective_global_limit 2",
 		`pig_predictive_learning_samples_total{result="accepted"} 11`,
 		"pig_predictive_learning_invalidations_total 3",
 		"pig_predictive_learning_global_samples 5",
@@ -127,6 +147,7 @@ func TestWritePredictiveAdmissionNormalizesDisabledModeAndNilHistograms(t *testi
 	for _, want := range []string{
 		`pig_predictive_admission_mode_info{mode="off"} 1`,
 		"pig_predictive_admission_enabled 0",
+		`pig_predictive_router_backpressure_state_info{reason="none",source="unknown"} 1`,
 		"pig_predictive_admission_prediction_duration_seconds_count 0",
 		"pig_predictive_admission_estimator_duration_seconds_count 0",
 	} {

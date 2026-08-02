@@ -3,6 +3,7 @@ package metrics
 import (
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/observability/histogram"
 	"github.com/Phala-Network/phala-inference-guard/internal/support/num"
@@ -20,6 +21,7 @@ type PredictiveAdmissionInput struct {
 	LastSamples            int
 	IntakeOpen             bool
 	Reservations           int
+	VirtualDecodeSequences int
 	RetiredReservations    int
 	RetiredEvictions       uint64
 	LearningAccepted       uint64
@@ -53,6 +55,25 @@ type PredictiveAdmissionInput struct {
 	FailureTerminal        uint64
 	PredictionDuration     *histogram.DurationHistogram
 	EstimatorDuration      *histogram.DurationHistogram
+	RouterBackpressure     PredictiveRouterBackpressureInput
+}
+
+type PredictiveRouterBackpressureInput struct {
+	Active               bool
+	Applied              bool
+	Reason               string
+	Source               string
+	Samples              int
+	ActivatedAt          time.Time
+	Until                time.Time
+	Hold                 time.Duration
+	Activations          uint64
+	Extensions           uint64
+	PredictiveRunning    int
+	RawRunning           int
+	EffectiveRunning     int
+	RawGlobalLimit       int
+	EffectiveGlobalLimit int
 }
 
 type PredictiveShadowObservationInput struct {
@@ -78,6 +99,14 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	if mode != "shadow" && mode != "enforce" {
 		mode = "off"
 	}
+	backpressureReason := input.RouterBackpressure.Reason
+	if backpressureReason == "" {
+		backpressureReason = "none"
+	}
+	backpressureSource := input.RouterBackpressure.Source
+	if backpressureSource == "" {
+		backpressureSource = "unknown"
+	}
 	fmt.Fprintf(w, "pig_predictive_admission_mode_info{mode=%q} 1\n", mode)
 	fmt.Fprintf(w, "pig_predictive_admission_enabled %d\n", num.BoolAsInt(mode != "off"))
 	fmt.Fprintf(w, "pig_predictive_admission_enforce %d\n", num.BoolAsInt(mode == "enforce"))
@@ -90,8 +119,23 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_last_samples %d\n", input.LastSamples)
 	fmt.Fprintf(w, "pig_predictive_admission_intake_open %d\n", num.BoolAsInt(input.IntakeOpen))
 	fmt.Fprintf(w, "pig_predictive_admission_reservations %d\n", input.Reservations)
+	fmt.Fprintf(w, "pig_predictive_admission_virtual_decode_sequences %d\n", input.VirtualDecodeSequences)
 	fmt.Fprintf(w, "pig_predictive_admission_retired_reservations %d\n", input.RetiredReservations)
 	fmt.Fprintf(w, "pig_predictive_admission_retired_evictions_total %d\n", input.RetiredEvictions)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_active %d\n", num.BoolAsInt(input.RouterBackpressure.Active))
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_applied %d\n", num.BoolAsInt(input.RouterBackpressure.Applied))
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_state_info{reason=%q,source=%q} 1\n", backpressureReason, backpressureSource)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_samples %d\n", input.RouterBackpressure.Samples)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_activated_at_seconds %.6f\n", predictiveMetricUnixSeconds(input.RouterBackpressure.ActivatedAt))
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_until_seconds %.6f\n", predictiveMetricUnixSeconds(input.RouterBackpressure.Until))
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_hold_seconds %.6f\n", input.RouterBackpressure.Hold.Seconds())
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_activations_total %d\n", input.RouterBackpressure.Activations)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_extensions_total %d\n", input.RouterBackpressure.Extensions)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_predictive_running %d\n", input.RouterBackpressure.PredictiveRunning)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_raw_running %d\n", input.RouterBackpressure.RawRunning)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_effective_running %d\n", input.RouterBackpressure.EffectiveRunning)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_raw_global_limit %d\n", input.RouterBackpressure.RawGlobalLimit)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_effective_global_limit %d\n", input.RouterBackpressure.EffectiveGlobalLimit)
 	fmt.Fprintf(w, "pig_predictive_learning_samples_total{result=%q} %d\n", "accepted", input.LearningAccepted)
 	fmt.Fprintf(w, "pig_predictive_learning_samples_total{result=%q} %d\n", "rejected", input.LearningRejected)
 	fmt.Fprintf(w, "pig_predictive_learning_invalidations_total %d\n", input.LearningInvalidations)
@@ -133,6 +177,13 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "terminal", input.FailureTerminal)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_prediction_duration_seconds", input.PredictionDuration)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_estimator_duration_seconds", input.EstimatorDuration)
+}
+
+func predictiveMetricUnixSeconds(value time.Time) float64 {
+	if value.IsZero() {
+		return 0
+	}
+	return float64(value.UnixNano()) / float64(time.Second)
 }
 
 func writePredictiveDurationHistogram(w io.Writer, name string, value *histogram.DurationHistogram) {

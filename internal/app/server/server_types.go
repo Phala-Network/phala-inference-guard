@@ -19,7 +19,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
 
-const version = "PIG-v0.10.3"
+const version = "PIG-v0.10.4"
 
 const maxQoSQueueWait = 500 * time.Millisecond
 
@@ -108,6 +108,7 @@ type proxyServer struct {
 	nextKVShadowID            atomic.Uint64
 	nextPredictiveID          atomic.Uint64
 	predictiveEnforcedRejects atomic.Uint64
+	predictiveRouterLogs      predictiveRouterCapacityLogState
 	predictiveShadowFailures  predictiveShadowFailureCounters
 	decisionDuration          durationHistogram
 	kvEstimatorDuration       durationHistogram

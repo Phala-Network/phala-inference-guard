@@ -263,7 +263,7 @@ func TestLearningInvalidationDropsOldHeadroom(t *testing.T) {
 		}
 	}
 	scheduler.InvalidateLearning()
-	if snapshot := scheduler.Snapshot(); snapshot.Cells != 0 || snapshot.Invalidations != 1 {
+	if snapshot := scheduler.Snapshot(); snapshot.Cells != 0 || snapshot.GlobalSamples != 0 || snapshot.Invalidations != 1 || len(scheduler.globalCounts) != 0 {
 		t.Fatalf("post-invalidation snapshot = %+v, want zero cells and one invalidation", snapshot)
 	}
 	if prediction := scheduler.Predict(now.Add(5*time.Second), state, cost); prediction.Source != PredictionSourceStatic || prediction.Estimate != prediction.Prior {

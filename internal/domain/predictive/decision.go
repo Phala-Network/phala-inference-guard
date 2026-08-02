@@ -17,8 +17,6 @@ func Evaluate(input EvaluationInput) Decision {
 		decision.Reason = ReasonExistingTPSAtRisk
 	case cfg.UserTPSTarget > 0 && input.Scheduler.NewUserTPSLower < cfg.UserTPSTarget:
 		decision.Reason = ReasonNewTPSAtRisk
-	case cfg.TTFTSLO > 0 && input.Scheduler.TTFTUpper > cfg.TTFTSLO:
-		decision.Reason = ReasonTTFTAtRisk
 	case cfg.TPOTSLO > 0 && input.Scheduler.TPOTUpper > cfg.TPOTSLO:
 		decision.Reason = ReasonTPOTAtRisk
 	case input.Scheduler.WorkspaceRiskUpper > cfg.WorkspaceRiskBudget:

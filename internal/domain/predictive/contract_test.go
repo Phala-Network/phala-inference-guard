@@ -21,7 +21,6 @@ func TestEvaluateProtectsExistingUsersBeforeOtherSoftConstraints(t *testing.T) {
 			PhysicalKVHard:    88_000,
 			ActiveKVHard:      88_000,
 			UserTPSTarget:     25,
-			TTFTSLO:           time.Second,
 			TPOTSLO:           50 * time.Millisecond,
 			MinimumConfidence: 0.90,
 		},
@@ -50,7 +49,6 @@ func TestEvaluateFitsOnlyWhenEveryBoundPasses(t *testing.T) {
 			PhysicalKVHard:       88_000,
 			ActiveKVHard:         84_000,
 			UserTPSTarget:        25,
-			TTFTSLO:              time.Second,
 			TPOTSLO:              40 * time.Millisecond,
 			WorkspaceRiskBudget:  0.02,
 			PreemptionRiskBudget: 0.002,
@@ -60,6 +58,27 @@ func TestEvaluateFitsOnlyWhenEveryBoundPasses(t *testing.T) {
 	})
 	if decision.Reason != ReasonFit {
 		t.Fatalf("reason = %s, want %s", decision.Reason, ReasonFit)
+	}
+}
+
+func TestEvaluateKeepsTTFTObservationalInsteadOfRejecting(t *testing.T) {
+	decision := Evaluate(EvaluationInput{
+		Scheduler: SchedulerEstimate{
+			ExistingUserTPSLower:         30,
+			ExistingUserTPSNotApplicable: true,
+			NewUserTPSLower:              30,
+			TTFTUpper:                    time.Hour,
+			TPOTUpper:                    20 * time.Millisecond,
+		},
+		Constraints: Constraints{
+			UserTPSTarget:     25,
+			TPOTSLO:           40 * time.Millisecond,
+			MinimumConfidence: 0.9,
+		},
+		Confidence: 1,
+	})
+	if decision.Reason != ReasonFit {
+		t.Fatalf("adverse TTFT rejected request: reason=%s want=%s", decision.Reason, ReasonFit)
 	}
 }
 

@@ -99,7 +99,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if cfg.PredictiveTPSMaximumMultiplier, err = env.Float("PREDICTIVE_TPS_MAXIMUM_MULTIPLIER", 8.0); err != nil {
 		return err
 	}
-	if cfg.PredictiveLatencyMinimumMultiplier, err = env.Float("PREDICTIVE_LATENCY_MINIMUM_MULTIPLIER", 0.50); err != nil {
+	if cfg.PredictiveLatencyMinimumMultiplier, err = env.Float("PREDICTIVE_LATENCY_MINIMUM_MULTIPLIER", 0.10); err != nil {
 		return err
 	}
 	if cfg.PredictiveLatencyMaximumMultiplier, err = env.Float("PREDICTIVE_LATENCY_MAXIMUM_MULTIPLIER", 4.0); err != nil {
