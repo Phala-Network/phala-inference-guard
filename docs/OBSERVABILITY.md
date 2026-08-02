@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.10.2 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
+pig_status v=PIG-v0.10.3 backend={state=green backend=1/1 running=0 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=0/49 tier_premium=0/1 ...}
 ```
 
 The status line has three required parts:
@@ -116,6 +116,14 @@ For production operation, watch these first:
   requests. They do not contribute virtual KV or concurrency and must converge
   to zero after terminal completion or shutdown. Growth in `dropped` means the
   configured observation cap was reached; it must not change shadow forwarding.
+- `pig_predictive_deferred_outcomes` and
+  `pig_predictive_deferred_outcomes_total{result="released|terminated|qualified|censored|dropped"}`:
+  show bounded numeric outcomes whose upstream GPU/KV/TPS accounting has
+  already been released while the downstream handler is still finishing. They
+  never contribute live resource demand and must return to zero after idle.
+  `dropped` loses only a learning opportunity; `qualified` must increase only
+  after a successful final handler result, while disconnects and write errors
+  increase `censored` without learned headroom.
 - `pig_predictive_input_size_samples_total`,
   `pig_predictive_input_size_invalidations_total`,
   `pig_predictive_input_size_samples_stored`,
@@ -142,7 +150,7 @@ For production operation, watch these first:
   histograms use 10 us through 100 ms buckets, including exact 0.25 ms and 1 ms
   boundaries; general TTFT and total-duration histograms retain their wider
   service-latency buckets.
-- `pig_predictive_admission_failures_total{phase="close|decide|forward|semantic|completion|terminal"}`:
+- `pig_predictive_admission_failures_total{phase="close|decide|forward|semantic|completion|resource_release|terminal"}`:
   should remain unchanged in a healthy canary. Any increase needs matching
   incremental logs and lifecycle/accounting verification before broader use.
 - `pig_backend_kv_capacity_tokens`, `pig_backend_kv_active_tokens`,

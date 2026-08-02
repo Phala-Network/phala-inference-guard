@@ -1267,3 +1267,362 @@ that pulled image, and then execute fresh Router-disabled shadow/enforce live
 gates. Only authenticated GPU attestation plus real PIG/vLLM counter movement
 can authorize a newly started 30-minute `use1-cb` canary. Any finding repeats
 the disable/drain/red-test/full-builder/registry/shadow/enforce/canary loop.
+
+### v0.10.2 real-traffic canary correction — 2026-08-02
+
+This section supersedes the earlier v0.10.2 release-eligibility statement.
+Publication, immutable registry verification, Router-disabled shadow, and
+Router-disabled enforce gates subsequently passed. The deployed enforce
+Compose SHA-256 was
+`add08f14c6dc726eba8dbcd72c265e4119b7a5b1229f98e44252f3e929352069`;
+the registry image was
+`ghcr.io/phala-network/phala-inference-guard:v0.10.2@sha256:32c1d9c7fa1a3a4217f5873725b03030f7118ff959bcae3c8ff817ad6e85f5da`
+with image ID
+`sha256:010e488c6ae601d6d428f51110e8a46fc8f1930ad791364410f0bfdddda863d1`.
+
+Fresh preflight at `2026-08-02T00:29:19.8078326Z` proved the target CVM,
+PIG, and vLLM running; predictive mode `enforce`; authenticated models,
+PIG metrics, vLLM metrics, and attestation HTTP 200; non-empty NVIDIA
+attestation evidence; unauthenticated metrics HTTP 401; intake open; and zero
+reservations, shadow observations, backend running/waiting/KV, and
+preemptions. The Router baseline digest was
+`sha256:1b62b992f37b1f3c3ddc3894373cf2a10368d64350b689052c642c2712967c3f`,
+the enabled set was exactly `use1-4c,use1-9b`, and `use1-cb` was disabled and
+drained. The retained preflight artifact is
+`tmp/pig-v010-use1-cb-live-20260802/v0102-canary-preflight-r3-20260802T002919Z`.
+
+The authorized mutation enabled only `use1-cb.enabled` at
+`2026-08-02T00:31:52.7993403Z`. The Router digest became
+`sha256:7869dbc9822ec36b0d661bfa9eedcfa6799d9b00d54a97d40c9ebe1db53b5202`
+and the field-level audit found no other upstream change. The canary timer
+started at `2026-08-02T00:32:03.5849807Z` only after both PIG attempts moved
+`132 -> 136` and vLLM successful completions moved `131 -> 132`, proving real
+inference passed Router attestation and reached PIG and vLLM.
+
+The supervisor stopped the canary after `1188.59` seconds, approximately
+19 minutes 49 seconds, at `2026-08-02T00:51:52.1751458Z`. It therefore did not
+complete the required 30-minute interval and must not be reported as a passing
+canary. Across 33 samples, Router processed moved `234915 -> 236614`, PIG
+attempts `132 -> 1824`, PIG risk decisions `1 -> 1512`, unknown decisions
+`0 -> 3`, enforced rejects `1 -> 1520`, and vLLM successful completions
+`131 -> 298`. vLLM preemptions and error completions both stayed zero and
+predictive lifecycle failures stayed zero. The direct blocker was
+`idle_reservation_leak_two_samples`.
+
+Learning itself was active rather than inert. Decisions progressed from
+`static/existing_tps_at_risk` to `calibrated/ttft_at_risk`; global scheduler
+samples reached 64, multiple learning cells matured, calibrated decisions used
+up to approximately 28 samples, and observed vLLM running rose from one to two.
+Maximum observed KV utilization was approximately `0.0936198202`, waiting
+stayed zero, generation tokens continued increasing, and observed single-user
+TPS reached approximately 329. These are bounded positive causality signals;
+they do not override the canary blocker or establish a throughput improvement.
+
+The final two samples instead proved a temporary false/self lock:
+
+```text
+Router use1-cb running = 0
+vLLM running = 0
+vLLM waiting = 0
+vLLM KV usage = 0
+PIG predictive reservations = 1
+vLLM successful completions no longer advance
+PIG attempts and existing_tps_at_risk rejections continue advancing
+```
+
+HAProxy then recorded a request begun at `2026-08-02T00:50:47.247Z` and
+completed at `2026-08-02T00:52:06.390546390Z` with timings
+`743/0/0/59/78399`, HTTP 200, 2701 response bytes, and termination state
+`CD--`. vLLM had already returned to running/waiting/KV `0/0/0` near
+`00:50:50Z`, but PIG retained one resource reservation until the slow or
+disconnected downstream data phase ended roughly 78.4 seconds later. The
+reservation then returned to zero. This is not a permanent map leak; it is a
+resource-lifecycle error that binds GPU/KV/TPS accounting to downstream
+response completion after upstream inference has already terminated.
+
+The supervisor disabled only `use1-cb.enabled` at
+`2026-08-02T00:51:52.2618800Z`. The exact Router baseline digest and enabled
+set `use1-4c,use1-9b` were restored, the target drained, and the post-disable
+audit proved PIG/vLLM healthy with reservations, running, waiting, KV, and
+preemptions all zero. The retained canary and causal audit artifacts are:
+
+- `tmp/pig-v010-use1-cb-live-20260802/v0102-real-canary-20260802T003152Z`;
+- `tmp/pig-v010-use1-cb-live-20260802/v0102-post-canary-blocker-20260802T005217Z`.
+
+Consequently v0.10.2 is no longer eligible for Router traffic. Keep its
+deployed Compose only as the disabled-route rollback baseline; do not enable
+`use1-cb` again for this version.
+
+### v0.10.3 slow-downstream lifecycle repair plan — active 2026-08-02
+
+The next candidate version is v0.10.3. The repair must preserve the admission
+prediction and QoS constraints while separating two lifecycles:
+
+```text
+resource lifecycle
+  valid upstream inference terminal signal
+  -> idempotently release GPU/KV/TPS accounting reservation
+
+learning and downstream lifecycle
+  -> retain only bounded numeric prediction/outcome state
+  -> wait for the final handler result
+  -> learn once only from a qualified successful outcome
+  -> censor or drop cancel/disconnect/timeout/error outcomes
+```
+
+An upstream terminal signal must be grounded in the actual response protocol,
+such as a fully consumed non-stream response or an explicit terminal SSE
+marker. It must not be inferred from a slow client, current low KV alone, a
+stale scrape, or handler elapsed time. Releasing resource accounting must not
+fabricate terminal usage, train the learner, reopen a stale/failed backend, or
+create unsafe headroom.
+
+Required focused red/green evidence:
+
+1. A first request reaches an upstream that emits a valid terminal response,
+   while its downstream writer blocks before the HTTP handler can return.
+2. On the current v0.10.2 behavior, its resource reservation remains active
+   and an otherwise safe second request is rejected pre-forward with
+   `existing_tps_at_risk`.
+3. After the repair, the upstream terminal signal releases the first resource
+   reservation before the downstream writer unblocks, and the safe second
+   request reaches the upstream.
+4. Unblocking, disconnecting, cancelling, timing out, erroring, closing, or
+   panicking after early resource release cannot double-release, resurrect, or
+   leak the reservation. Late completion cannot reserve resources again.
+5. Scheduler and input-size learning run at most once and only for a real,
+   structurally valid, uncensored successful outcome. Missing/duplicate usage,
+   failed downstream completion, epoch invalidation, and observation eviction
+   do not gain learned headroom.
+6. Deferred outcome state is numeric-only, has a strict count bound and cleanup
+   behavior, exposes enough telemetry to detect accumulation/drops, and never
+   contributes KV, decode sequence, or TPS resource accounting.
+7. Focused concurrency and race tests cover terminal-signal/handler-return,
+   cancel, close, and observer-reconciliation interleavings. The final manager
+   state and deferred observation state both converge to zero.
+
+After the focused test is red for the intended v0.10.2 reason and green for the
+repair, repeat the complete remote-builder focused/full/race/simulation/
+benchmark/image-contract matrix. Do not run executable Go, race, simulation,
+benchmark, or image gates on Windows. Build and publish v0.10.3 only from the
+reviewed commit/tag, then repeat registry smoke, Router-disabled shadow, and
+Router-disabled enforce on CVM
+`a0f0bfb3-e46f-4b22-814e-24872f251193`.
+
+Only after fresh disabled-route gates prove attestation, protocol compatibility,
+prediction overhead, learning, cold/recovery progress, no low-flow false lock,
+zero terminal resource reservations, zero deferred observations after idle,
+and no preemption/error/lifecycle regression may the supervisor enable exactly
+`use1-cb.enabled`. A new continuous 30-minute interval starts only at the first
+proved real PIG/vLLM inference. Any obvious problem again triggers automatic
+single-field disable, drain, evidence capture, repair, and the entire sequence
+above. A full clean interval permits only the bounded conclusion "temporarily
+no obvious problem" and leaves `use1-cb` enabled for continued observation.
+
+### v0.10.3 focused implementation and review evidence — active 2026-08-02
+
+The original behavior-specific red was reproduced on the v0.10.2 lifecycle,
+not on a broken harness. Its source archive was
+`tmp/pig-v0103-slow-downstream-red-r1.tar.gz`, SHA-256
+`e18f1b618567c2c44c1faf5cc257c5ec676b3c393ff8692cb36022a15ccfa185`.
+The remote builder exited `1`; its log SHA-256 was
+`b6ddb2ae10166677e2183d65ce714da993497b4cf1928ee85f58a881e5e1be95`.
+The focused failure was the intended invariant:
+
+```text
+upstream terminal retained resource reservation behind slow downstream
+Reservations:1 ReservedPhysicalKV:88 DecodeSequences:1
+```
+
+The first implementation green, r4, used archive SHA-256
+`91b744e1d48f71822d328ad81095ba335e53445aae4517a77e77047e03ae792b`.
+It passed the initial streaming and non-stream slow-downstream tests on
+`go1.24.13 linux/amd64`; log SHA-256 was
+`86ca1cab28d0a40a02bc863949b7bb52e543cc643da6a1d2b9bebcb6087a3763`.
+That evidence is retained but superseded by the additional review and source
+changes below.
+
+Pass 2, safety, lifecycle, efficiency, and SOLID, was repeated against the
+actual HTTP path. It found and corrected these issues:
+
+1. Resource release and the interference bit are now read and applied in one
+   Manager lock transaction. A concurrent new admission therefore either
+   precedes release and censors the old outcome, or follows a completed release;
+   the adapter cannot invent a race-dependent clean sample.
+2. A valid explicit SSE `[DONE]` or complete non-stream EOF releases Manager
+   GPU/KV/TPS accounting before a slow downstream write. Completion usage is
+   retained only as bounded scalar state; scheduler and input-size feedback are
+   still committed only by a qualified final handler outcome.
+3. Semantic TTFT is timestamped when semantic bytes are read from the upstream,
+   then committed only after the corresponding downstream write succeeds. This
+   prevents slow client writes from being learned as model/GPU TTFT while still
+   censoring write failures.
+4. Streaming observation does not allocate a lookahead buffer. Non-stream EOF
+   detection uses a fixed 32 KiB lookahead, matching the proxy copy size. Its
+   incremental live-buffer bound is `32 KiB * admitted non-stream handlers`, or
+   at most about 16 MiB at the default `GLOBAL_LIMIT=512`; raising that hard cap
+   raises this bound proportionally. The existing response-copy buffer is a
+   separate pre-existing bound.
+5. Deferred learning state has an internal fixed default cap of 256 and is not
+   exposed as a new production tuning knob. It retains no request body or token
+   IDs and does not contribute resource accounting. Capacity overflow drops the
+   learning opportunity, not resource release. The dropped handler-local scalar
+   state is additionally bounded by the existing global in-flight cap.
+6. `Close` now prevents new learning and waits for any already registered
+   unreserved outcome to finish before returning. It clears retained deferred
+   outcomes, censors them, and cannot race with a late learning side effect
+   after shutdown completion.
+7. Explicit tests cover `[DONE]`, EOF-only SSE, duplicate/malformed usage,
+   `UnexpectedEOF`, truncated Content-Length, downstream write error, close
+   before learning, close during registered learning, deferred-capacity drop,
+   release/terminal races, concurrent new admission, and prefill absorbed versus
+   unabsorbed reconciliation. All terminal paths converge Manager reservations
+   and active deferred outcomes to zero.
+8. The guarded reservation's unused mirrored `resourcesReleased` state was
+   removed. Resource ownership, one release attempt, one terminal attempt, and
+   panic isolation remain narrow consumer-owned interfaces; no model assets,
+   tokenizer specialization, vLLM source, or Router source were added.
+
+An intermediate r5 correctly failed after the review added stronger non-stream
+EOF tests: its wrapper read from the source and then the lookahead reader,
+consuming the body twice. That was an implementation red rather than a builder
+failure. Its archive SHA-256 was
+`7a412b85def1ce2b5707b7f0e9698720397321e5a46de39f9f45c6fff0ecd9ad`
+and log SHA-256 was
+`cdc7c80d4dbf96f4ffdfff216d12d20b6b3d289ab6856c28a074665197063514`.
+The read paths were made mutually exclusive. r6 then passed but was superseded
+when the close/learning barrier was added.
+
+Focused r8 superseded r7 after the close multi-caller result, two-stage semantic
+TTFT commit, and prefill-before-release ordering were added. Its exact archive
+SHA-256 was
+`5f5751372c10af22bd3a0ca4be4e0f2523a778a654b95330337e7f6a796b87b5`;
+focused log SHA-256 was
+`c754a0b6385aac7aaaf50499c2545655c71ba23f044800113f62a9bc2700d912`.
+The first complete r8 clean-builder matrix passed vet, all tests, full race,
+build, 12 deterministic scenarios, performance simulation, all repository
+benchmarks, a v0.10.2 same-builder comparison, and the pre-version production
+image contract. Its full log SHA-256 was
+`a981aaab56746fd6a0ee0ef2a5ad56c8e23392bfe82987d163d62c7d950bfbfd`;
+all four status files contained `0`.
+
+Pass 3 nevertheless found an avoidable response-path efficiency regression in
+r8. Every non-stream completion observer allocated the 32 KiB EOF lookahead,
+even when no terminal callback needed it. In the same-builder comparison, the
+2 KiB median changed from about `20.7 us/op`, `9360 B/op`, 32 allocations in
+v0.10.2 to about `124.6 us/op`, `42248 B/op`, 34 allocations in r8. The 64 KiB
+median changed from about `1.28 ms/op`, `375959 B/op`, 38 allocations to about
+`2.76 ms/op`, `408846 B/op`, 40 allocations. Absolute time was small relative
+to inference, but the extra allocation was unnecessary and r8 was superseded.
+
+The corrected common non-stream path now uses the upstream HTTP
+`Content-Length` when present. Exact length releases before the last body bytes
+are returned to the downstream without allocating lookahead. Unknown length
+retains the bounded 32 KiB lookahead. Short EOF, overrun, `UnexpectedEOF`, and
+HTTP truncated non-stream responses do not release early or train. Legacy
+completion observers without a terminal callback no longer allocate lookahead.
+This is a model-neutral HTTP protocol optimization and adds no tokenizer,
+model, cache, vLLM, or Router dependency.
+
+The current pre-version focused green is r10. Its exact uncommitted tracked
+source archive is
+`tmp/pig-v0103-slow-downstream-focused-r10.tar.gz`, SHA-256
+`568fe44df34b5f106dd7f6b6e254013abab533676383d312569124bb5840f031`.
+The isolated builder used `golang:1.24-bookworm`, reported
+`go1.24.13 linux/amd64`, found zero unformatted Go files, and exited `0` for
+focused unit/integration tests, targeted races, and benchmarks. The saved log
+is
+`tmp/pig-v010-use1-cb-live-20260802/v0103-slow-downstream-focused-r10/focused.log`,
+SHA-256
+`3dc04ead1c6237c01d570da8c439b16d8a0044874611bd1ce41af04e949e5537`;
+the status SHA-256 is
+`9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa`.
+
+The exact r10 complete matrix also passed. Evidence is under
+`tmp/pig-v010-use1-cb-live-20260802/v0103-full-r10/`; the downloaded log archive
+SHA-256 is
+`ed2644ac033afd07029ead05e032a35482e920f0e0e5aa14165a79024080d458`.
+The input manifest binds candidate r10, v0.10.2 baseline, and the comparison
+harness and has SHA-256
+`ffe15bd8214690b9ad27e465a822e110aa99cb599eef5188dd9d342683f8522e`.
+Full-matrix, comparison, image-contract, and overall statuses are all `0`;
+their material log SHA-256 values are respectively
+`bbff228e070eded8bdcd050715b60b5ce091886bc33fccd4fb6c7d4c13385e8d`,
+`2f6a87ef9904678659f08ee31c9781d3618c6eb8d3740439779782ceed4b1a88`,
+and
+`6cfe7eb64109b029355a6c2fa62ed7b6995859d9c83d1a3e4343b2393729efe9`.
+All 12 deterministic scenarios retained zero candidate hard violations; short
+burst and mixed short/long fit remained 60.00% and 33.33% above the comparison
+control. Performance characterization was estimator 64 KiB p95 `6.846 us`,
+2 MiB p99 `348.778 us`, and shadow decision p99 `5.355 us`, all far below the
+plan thresholds but not production latency evidence.
+
+The known-length focused path removed about 32 KiB/request versus unknown-length
+lookahead: 2 KiB was `9424 B/op` versus about `42288 B/op`, and 64 KiB was
+`376023 B/op` versus about `408886 B/op`. A reverse-order comparison was added
+because builder CPU timing was noisy. Candidate-first versus baseline-second
+medians were about `37.8 vs 30.9 us` for the 3.36 KiB streaming observer,
+`72.2 vs 31.7 us` for 2 KiB non-stream, and `1.65 vs 1.23 ms` for 64 KiB
+non-stream; allocation counts were equal and candidate legacy-observer bytes
+increased only 40 B. Those are post-upstream response-parsing costs, not the
+pre-forward predictor and not evidence of serving-throughput improvement. The
+residual absolute cost is accepted for live measurement rather than adding a
+more complex parser before a real signal exists. Reverse comparison log hashes
+are
+`92e06f1c8d49eaef43c0fb908c3b9af6169eccb0eb83214ddd1f1cc3caabedb2`
+and
+`832c4d79fc3a4b1d87fe6b4bff6bb9ed04deba8932cff62af2a44c69463b1ece`.
+
+Pass 3 is complete for the pre-version r10 executable source: no remaining
+source, safety, lifecycle, simulation, allocation-bound, or image-structure
+blocker is known. Version identity and documentation are now being changed to
+v0.10.3; the exact versioned archive must repeat focused and complete matrices
+with `EXPECTED_VERSION=v0.10.3` before commit, push, tag, image publication, or
+deployment. `use1-cb` remains disabled, v0.10.2 remains the disabled-route
+rollback baseline only, and no new Compose deployment or 30-minute canary has
+occurred.
+
+### v0.10.3 versioned release evidence — completed source gate 2026-08-02
+
+The exact versioned r11 tracked-source archive is
+`tmp/pig-v0103-versioned-r11.tar.gz`, SHA-256
+`e691ca51e2d845b9766a04f45268d9df2f2ed4d1216cbaa00e3ca925f0b8a445`.
+It contains runtime identity `PIG-v0.10.3`, Docker OCI label `0.10.3`, and the
+v0.10.3 README/Advanced/Observability contract. The remote focused matrix used
+the same archive, exited `0`, and found zero unformatted Go files. Focused log
+SHA-256 is
+`a925b32e328896cce0c77a5a7aa7648d5800139092e6cb12b624bb5505dfbcef`.
+
+The final versioned complete clean-builder matrix also used that exact archive.
+The input manifest SHA-256 is
+`0056bc4840dcf31fa015e5dca05bc0ba6a673361c9a34498fb775147c3136472`;
+full-matrix, comparison, image-contract, and overall status files all contain
+`0`. Full log, candidate benchmark, v0.10.3 comparison, and image-contract log
+SHA-256 values are respectively
+`a52895d224bb4118ff96f7a1fbbdce998ae835869ce651775df5bfa4d65326b1`,
+`f96b12754cd58af96683710cdb37a7bb7c5fe94d00951308641806a877339609`,
+`de73df5cec57b20f7e9cd5613a5c0ec57d88b5cd27bbb7aeeff00aecca96af98`,
+and
+`9209462c0c59870f9ed9835bfe237d717daf109b1044cf0da60ff68cd0396443`.
+The downloaded combined evidence archive is
+`tmp/pig-v010-use1-cb-live-20260802/v0103-r11-evidence.tar.gz`, SHA-256
+`a8080f7a724c7cec8e2dd5a27040e2fff84b9ed000706767f4e678231baaaf10`;
+its internal `SHA256SUMS` was rechecked locally.
+
+All 12 deterministic scenarios again have zero candidate hard violations and
+the same 60.00% short-burst and 33.33% mixed-workload fit improvement over the
+comparison control. Final performance characterization was estimator 64 KiB
+p95 `3.241 us`, estimator 2 MiB p99 `185.226 us`, and shadow decision p99
+`13.345 us`. The versioned builder-local production image contract explicitly
+used `EXPECTED_VERSION=v0.10.3`, observed Docker label `0.10.3`, and reported
+`PIG_PRODUCTION_IMAGE_CONTRACT_OK`. The builder-local tag was deleted after the
+gate and is not a registry image.
+
+This evidence section itself is the only post-r11 archive edit. It changes no
+Go source, Dockerfile, workflow, tool, configuration, or runtime documentation
+contract and is excluded from the executable/image-input identity comparison.
+The source gate is complete and permits commit, branch push, and v0.10.3 tag
+push. It does not yet prove a published registry image, registry attestation,
+Compose integration, Router-disabled deployment, live readiness, Router enable,
+or a complete 30-minute real-traffic interval. Those gates remain mandatory in
+that order, and `use1-cb` remains disabled until they pass.

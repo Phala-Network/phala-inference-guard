@@ -16,16 +16,24 @@ type predictiveUpperBoundCoordinator interface {
 	DecideUpperBoundAndReserve(time.Time, runtimepredictive.UpperBoundAdmissionProposal) runtimepredictive.CountAdmissionResult
 	MarkForwarded(string) bool
 	MarkPrefillComplete(string) bool
+	ReleaseResources(string) runtimepredictive.ResourceReleaseResult
 	Terminate(string, runtimepredictive.TerminalCause) bool
 	TerminateWithOutcome(string, runtimepredictive.TerminalCause, *runtimepredictive.SchedulerOutcome) bool
 }
 
-type predictiveShadowObservationCoordinator interface {
+type predictiveUnreservedOutcomeCoordinator interface {
 	ObserveUnreservedOutcome(runtimepredictive.SchedulerPrediction, runtimepredictive.TerminalCause, bool, runtimepredictive.SchedulerOutcome) bool
+}
+
+type predictiveShadowObservationCoordinator interface {
+	predictiveUnreservedOutcomeCoordinator
 	MarkLiveOutcomesInterfered() int
 }
 
-const defaultMaximumShadowObservations = 256
+const (
+	defaultMaximumShadowObservations = 256
+	defaultMaximumDeferredOutcomes   = 256
+)
 
 type approximatePredictiveShadowConfig struct {
 	Calibrator             *runtimepredictive.InputSizeCalibrator
@@ -34,23 +42,30 @@ type approximatePredictiveShadowConfig struct {
 	Upstream               predictiveUpstreamState
 	Mode                   string
 	ShadowObservationLimit int
+	DeferredOutcomeLimit   int
 	Now                    func() time.Time
 }
 
 type approximatePredictiveShadow struct {
 	mu                  sync.Mutex
+	learningOutcomes    sync.WaitGroup
 	calibrator          *runtimepredictive.InputSizeCalibrator
 	coordinator         predictiveUpperBoundCoordinator
 	learner             predictiveLearningSnapshotter
 	upstream            predictiveUpstreamState
 	mode                string
 	maximumObservations int
+	maximumDeferred     int
 	now                 func() time.Time
 	closed              bool
+	closeDone           chan struct{}
+	closeErr            error
 	attempts            predictiveAttemptSnapshot
-	reservations        map[string]struct{}
+	reservations        map[string]*approximatePredictiveReservation
 	observations        map[string]*approximatePredictiveReservation
+	deferredOutcomes    map[string]*approximatePredictiveReservation
 	observationStats    predictiveShadowObservationSnapshot
+	deferredStats       predictiveDeferredOutcomeSnapshot
 	predictionDuration  durationHistogram
 	tpsOutcomes         predictiveTPSOutcomeSnapshot
 }
@@ -71,6 +86,8 @@ type approximatePredictiveReservation struct {
 	completionObserved          bool
 	completionStructurallyValid bool
 	forwarded                   bool
+	resourcesReleased           bool
+	deferredOutcomeDropped      bool
 }
 
 func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*approximatePredictiveShadow, error) {
@@ -99,6 +116,16 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 			return nil, fmt.Errorf("predictive shadow observation bound must be positive")
 		}
 	}
+	if _, ok := config.Coordinator.(predictiveUnreservedOutcomeCoordinator); !ok {
+		return nil, fmt.Errorf("predictive unreserved outcome coordinator is required")
+	}
+	maximumDeferred := config.DeferredOutcomeLimit
+	if maximumDeferred == 0 {
+		maximumDeferred = defaultMaximumDeferredOutcomes
+	}
+	if maximumDeferred < 0 {
+		return nil, fmt.Errorf("predictive deferred outcome bound must be non-negative")
+	}
 	if config.Now == nil {
 		config.Now = time.Now
 	}
@@ -109,9 +136,12 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 		upstream:            config.Upstream,
 		mode:                mode,
 		maximumObservations: maximumObservations,
+		maximumDeferred:     maximumDeferred,
 		now:                 config.Now,
-		reservations:        make(map[string]struct{}),
+		closeDone:           make(chan struct{}),
+		reservations:        make(map[string]*approximatePredictiveReservation),
 		observations:        make(map[string]*approximatePredictiveReservation),
+		deferredOutcomes:    make(map[string]*approximatePredictiveReservation),
 		predictionDuration:  newPredictiveDurationHistogram(),
 	}, nil
 }
@@ -214,9 +244,7 @@ func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requ
 		return observation
 	}
 	s.markShadowObservationsInterferedLocked("")
-	s.reservations[requestID] = struct{}{}
-	s.mu.Unlock()
-	return &approximatePredictiveReservation{
+	reservation := &approximatePredictiveReservation{
 		owner:              s,
 		requestID:          requestID,
 		identity:           result.Prediction.Identity,
@@ -224,6 +252,9 @@ func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requ
 		sizeEstimate:       size,
 		decodeHorizonUpper: decodeUpper,
 	}
+	s.reservations[requestID] = reservation
+	s.mu.Unlock()
+	return reservation
 }
 
 func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveAdmissionTelemetrySnapshot {
@@ -235,12 +266,15 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 	tpsOutcomes := s.tpsOutcomes
 	observationStats := s.observationStats
 	observationStats.Active = len(s.observations)
+	deferredStats := s.deferredStats
+	deferredStats.Active = len(s.deferredOutcomes)
 	s.mu.Unlock()
 	telemetry := predictiveAdmissionTelemetrySnapshot{
 		Attempts:           attempts,
 		PredictionDuration: &s.predictionDuration,
 		TPSOutcomes:        tpsOutcomes,
 		ShadowObservations: observationStats,
+		DeferredOutcomes:   deferredStats,
 	}
 	telemetry.InputSize = s.calibrator.Snapshot(s.now())
 	if coordinator, ok := s.coordinator.(predictiveCoordinatorSnapshotter); ok {
@@ -258,8 +292,13 @@ func (s *approximatePredictiveShadow) Close() error {
 	}
 	s.mu.Lock()
 	if s.closed {
+		closeDone := s.closeDone
 		s.mu.Unlock()
-		return nil
+		<-closeDone
+		s.mu.Lock()
+		closeErr := s.closeErr
+		s.mu.Unlock()
+		return closeErr
 	}
 	s.closed = true
 	failed := 0
@@ -271,19 +310,28 @@ func (s *approximatePredictiveShadow) Close() error {
 	}
 	s.observationStats.Terminated += uint64(len(s.observations))
 	clear(s.observations)
+	s.deferredStats.Terminated += uint64(len(s.deferredOutcomes))
+	s.deferredStats.Censored += uint64(len(s.deferredOutcomes))
+	clear(s.deferredOutcomes)
 	upstream := s.upstream
 	s.mu.Unlock()
-	var closeErr error
+	s.learningOutcomes.Wait()
+	var result error
 	if upstream != nil {
-		closeErr = upstream.Close()
+		result = upstream.Close()
 	}
 	if failed > 0 {
-		if closeErr != nil {
-			return fmt.Errorf("expire %d predictive reservations during close; close upstream: %v", failed, closeErr)
+		if result != nil {
+			result = fmt.Errorf("expire %d predictive reservations during close; close upstream: %v", failed, result)
+		} else {
+			result = fmt.Errorf("expire %d predictive reservations during close", failed)
 		}
-		return fmt.Errorf("expire %d predictive reservations during close", failed)
 	}
-	return closeErr
+	s.mu.Lock()
+	s.closeErr = result
+	close(s.closeDone)
+	s.mu.Unlock()
+	return result
 }
 
 func (r *approximatePredictiveReservation) MarkForwarded() bool {
@@ -351,12 +399,38 @@ func (r *approximatePredictiveReservation) ObserveCompletion(observation predict
 	return observation.PromptTokens > 0 || r.completionStructurallyValid
 }
 
+func (r *approximatePredictiveReservation) ReleaseResources() bool {
+	if r == nil || r.owner == nil {
+		return false
+	}
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	if r.owner.closed || r.observationOnly || !r.forwarded || r.resourcesReleased || !r.activeLocked() {
+		return false
+	}
+	release := r.owner.coordinator.ReleaseResources(r.requestID)
+	if !release.Released {
+		return false
+	}
+	delete(r.owner.reservations, r.requestID)
+	r.resourcesReleased = true
+	r.outcomeInterfered = r.outcomeInterfered || release.OutcomeInterfered
+	r.owner.deferredStats.Released++
+	if len(r.owner.deferredOutcomes) >= r.owner.maximumDeferred {
+		r.deferredOutcomeDropped = true
+		r.owner.deferredStats.Dropped++
+		return true
+	}
+	r.owner.deferredOutcomes[r.requestID] = r
+	return true
+}
+
 func (r *approximatePredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {
 	if r == nil || r.owner == nil {
 		return false
 	}
 	r.owner.mu.Lock()
-	if !r.activeLocked() {
+	if r.owner.closed || !r.activeLocked() {
 		r.owner.mu.Unlock()
 		return false
 	}
@@ -408,13 +482,59 @@ func (r *approximatePredictiveReservation) Terminate(cause runtimepredictive.Ter
 			schedulerOutcome.Censored = true
 			r.owner.observationStats.Censored++
 		}
+		learn := schedulerOutcome != nil || sizeOutcome != nil
+		if learn {
+			r.owner.learningOutcomes.Add(1)
+		}
 		r.owner.mu.Unlock()
+		if learn {
+			defer r.owner.learningOutcomes.Done()
+		}
 
 		if schedulerOutcome != nil {
 			observer := r.owner.coordinator.(predictiveShadowObservationCoordinator)
 			if observer.ObserveUnreservedOutcome(r.prediction, cause, r.forwarded, *schedulerOutcome) {
 				r.owner.mu.Lock()
 				r.owner.observationStats.Qualified++
+				r.owner.mu.Unlock()
+			}
+		}
+		if sizeOutcome != nil {
+			_ = r.owner.calibrator.Observe(*sizeOutcome)
+		}
+		return true
+	}
+	if r.resourcesReleased {
+		_, retained := r.owner.deferredOutcomes[r.requestID]
+		dropped := r.deferredOutcomeDropped
+		if retained {
+			delete(r.owner.deferredOutcomes, r.requestID)
+			r.owner.deferredStats.Terminated++
+			if cause != runtimepredictive.TerminalCompleted || r.outcomeInterfered {
+				r.owner.deferredStats.Censored++
+			}
+		}
+		r.deferredOutcomeDropped = false
+		if schedulerOutcome != nil && r.outcomeInterfered {
+			schedulerOutcome.Censored = true
+		}
+		learn := !dropped && (schedulerOutcome != nil || sizeOutcome != nil)
+		if learn {
+			r.owner.learningOutcomes.Add(1)
+		}
+		r.owner.mu.Unlock()
+
+		if dropped {
+			return true
+		}
+		if learn {
+			defer r.owner.learningOutcomes.Done()
+		}
+		if schedulerOutcome != nil {
+			observer := r.owner.coordinator.(predictiveUnreservedOutcomeCoordinator)
+			if observer.ObserveUnreservedOutcome(r.prediction, cause, r.forwarded, *schedulerOutcome) {
+				r.owner.mu.Lock()
+				r.owner.deferredStats.Qualified++
 				r.owner.mu.Unlock()
 			}
 		}
@@ -450,8 +570,13 @@ func (r *approximatePredictiveReservation) activeLocked() bool {
 	if r.observationOnly {
 		return r.owner.observations[r.requestID] == r
 	}
-	_, ok := r.owner.reservations[r.requestID]
-	return ok
+	if r.resourcesReleased {
+		if r.deferredOutcomeDropped {
+			return true
+		}
+		return r.owner.deferredOutcomes[r.requestID] == r
+	}
+	return r.owner.reservations[r.requestID] == r
 }
 
 func (s *approximatePredictiveShadow) markShadowObservationsInterferedLocked(exceptRequestID string) {

@@ -1,6 +1,8 @@
 package openai
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -20,6 +22,134 @@ func TestCompletionUsageObserverParsesFragmentedFinalSSEUsageOnce(t *testing.T) 
 	}
 	if len(observed) != 1 || observed[0].CompletionTokens != 5 || observed[0].MeanITL != 20*time.Millisecond || observed[0].GenerationTime != 80*time.Millisecond {
 		t.Fatalf("observed usage = %+v", observed)
+	}
+}
+
+func TestCompletionUsageObserverNotifiesTerminalAtDoneAfterUsageOnce(t *testing.T) {
+	payload := "data: {\"choices\":[],\"usage\":{\"completion_tokens\":5},\"metrics\":{\"mean_itl_ms\":20}}\n\n" +
+		"data: [DONE]\n\n"
+	var order []string
+	observer := NewCompletionUsageObserverWithTerminal(true, func(CompletionUsage) {
+		order = append(order, "usage")
+	}, func() {
+		order = append(order, "terminal")
+	})
+	observer.Observe([]byte(payload))
+	observer.Finish()
+	observer.Observe([]byte(payload))
+
+	if got := strings.Join(order, ","); got != "terminal,usage" {
+		t.Fatalf("stream completion callback order = %q, want terminal,usage exactly once", got)
+	}
+}
+
+func TestCompletionUsageObserverWithoutDoneDoesNotNotifyTerminalUntilEOF(t *testing.T) {
+	payload := "data: {\"choices\":[],\"usage\":{\"completion_tokens\":5},\"metrics\":{\"mean_itl_ms\":20}}\n\n"
+	usageCalls := 0
+	terminalCalls := 0
+	observer := NewCompletionUsageObserverWithTerminal(true, func(CompletionUsage) {
+		usageCalls++
+	}, func() {
+		terminalCalls++
+	})
+	observer.Observe([]byte(payload))
+	if terminalCalls != 0 || observer.TerminalSeen() {
+		t.Fatalf("unterminated SSE released early: terminal=%d seen=%t", terminalCalls, observer.TerminalSeen())
+	}
+	observer.Finish()
+	if terminalCalls != 1 || usageCalls != 1 || observer.TerminalSeen() {
+		t.Fatalf("EOF-only SSE completion = terminal %d usage %d explicit-seen %t", terminalCalls, usageCalls, observer.TerminalSeen())
+	}
+}
+
+func TestCompletionUsageBodyNonStreamNotifiesTerminalBeforeLastReadReturns(t *testing.T) {
+	payload := `{"choices":[{}],"usage":{"completion_tokens":9},"metrics":{"mean_itl_ms":12.5}}`
+	terminal := false
+	body := ObserveCompletionUsageBodyWithTerminal(io.NopCloser(strings.NewReader(payload)), false, func(usage CompletionUsage) {
+		if usage.CompletionTokens != 9 {
+			t.Fatalf("completion tokens = %d, want 9", usage.CompletionTokens)
+		}
+	}, func() {
+		terminal = true
+	})
+	buffer := make([]byte, len(payload))
+	n, err := body.Read(buffer)
+	if err != nil || n != len(payload) || string(buffer[:n]) != payload {
+		t.Fatalf("first observed read = %d/%v/%q", n, err, buffer[:n])
+	}
+	if !terminal {
+		t.Fatal("non-stream upstream terminal was not observed before the last body bytes returned")
+	}
+}
+
+func TestCompletionUsageBodyKnownLengthNotifiesTerminalWithoutLookahead(t *testing.T) {
+	payload := `{"choices":[{}],"usage":{"completion_tokens":9},"metrics":{"mean_itl_ms":12.5}}`
+	terminal := false
+	body := ObserveCompletionUsageBodyWithTerminalLength(io.NopCloser(strings.NewReader(payload)), false, int64(len(payload)), nil, func() {
+		terminal = true
+	})
+	observed, ok := body.(*completionUsageBody)
+	if !ok {
+		t.Fatalf("known-length observer body type = %T", body)
+	}
+	if observed.lookahead != nil || !observed.hasExpectedLength {
+		t.Fatalf("known-length body unexpectedly allocated lookahead: %+v", observed)
+	}
+	buffer := make([]byte, len(payload))
+	n, err := body.Read(buffer)
+	if err != nil || n != len(payload) || string(buffer[:n]) != payload {
+		t.Fatalf("known-length read = %d/%v/%q", n, err, buffer[:n])
+	}
+	if !terminal {
+		t.Fatal("known-length terminal was not notified before the last body bytes returned")
+	}
+}
+
+func TestCompletionUsageBodyKnownLengthTruncatedEOFDoesNotNotifyTerminal(t *testing.T) {
+	payload := `{"choices":[{}],"usage":{"completion_tokens":9}}`
+	terminalCalls := 0
+	body := ObserveCompletionUsageBodyWithTerminalLength(io.NopCloser(strings.NewReader(payload)), false, int64(len(payload)+7), nil, func() {
+		terminalCalls++
+	})
+	got, err := io.ReadAll(body)
+	if err != nil || string(got) != payload {
+		t.Fatalf("known-length truncated read = %q/%v", got, err)
+	}
+	if terminalCalls != 0 {
+		t.Fatalf("known-length truncated EOF notified terminal %d times", terminalCalls)
+	}
+}
+
+func TestCompletionUsageBodyKnownLengthOverrunDoesNotNotifyTerminal(t *testing.T) {
+	payload := `{"choices":[{}],"usage":{"completion_tokens":9}}`
+	terminalCalls := 0
+	body := ObserveCompletionUsageBodyWithTerminalLength(io.NopCloser(strings.NewReader(payload)), false, int64(len(payload)-1), nil, func() {
+		terminalCalls++
+	})
+	got, err := io.ReadAll(body)
+	if err != nil || string(got) != payload {
+		t.Fatalf("known-length overrun read = %q/%v", got, err)
+	}
+	if terminalCalls != 0 {
+		t.Fatalf("known-length overrun notified terminal %d times", terminalCalls)
+	}
+}
+
+func TestCompletionUsageBodyUnexpectedEOFDoesNotNotifyTerminal(t *testing.T) {
+	payload := `{"choices":[{}],"usage":{"completion_tokens":9}}`
+	terminalCalls := 0
+	body := ObserveCompletionUsageBodyWithTerminal(&errorReadCloser{
+		payload: []byte(payload),
+		err:     io.ErrUnexpectedEOF,
+	}, false, nil, func() {
+		terminalCalls++
+	})
+	got, err := io.ReadAll(body)
+	if !errors.Is(err, io.ErrUnexpectedEOF) || string(got) != payload {
+		t.Fatalf("unexpected-EOF read = %q/%v", got, err)
+	}
+	if terminalCalls != 0 {
+		t.Fatalf("unexpected EOF notified terminal %d times", terminalCalls)
 	}
 }
 
@@ -147,6 +277,98 @@ func BenchmarkCompletionUsageObserverStreaming(b *testing.B) {
 	}
 }
 
+func BenchmarkCompletionUsageObserverStreamingTerminalHotPath(b *testing.B) {
+	var response strings.Builder
+	for index := 0; index < 64; index++ {
+		response.WriteString("data: {\"choices\":[{\"delta\":{\"content\":\"token\"}}]}\n\n")
+	}
+	response.WriteString("data: {\"choices\":[],\"usage\":{\"completion_tokens\":65},\"metrics\":{\"mean_itl_ms\":20}}\n\ndata: [DONE]\n\n")
+	payload := []byte(response.String())
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	b.ResetTimer()
+	for b.Loop() {
+		usageCalls := 0
+		terminalCalls := 0
+		observer := NewCompletionUsageObserverWithTerminal(true, func(CompletionUsage) { usageCalls++ }, func() { terminalCalls++ })
+		observer.Observe(payload)
+		observer.Finish()
+		if usageCalls != 1 || terminalCalls != 1 {
+			b.Fatalf("completion/terminal callbacks = %d/%d", usageCalls, terminalCalls)
+		}
+	}
+}
+
+func BenchmarkCompletionUsageBodyNonStreamLookahead(b *testing.B) {
+	for _, size := range []int{2 * 1024, 64 * 1024} {
+		b.Run(fmt.Sprintf("bytes_%d", size), func(b *testing.B) {
+			prefix := `{"choices":[{}],"usage":{"completion_tokens":9},"padding":"`
+			suffix := `"}`
+			padding := size - len(prefix) - len(suffix)
+			if padding < 0 {
+				b.Fatal("benchmark payload size is too small")
+			}
+			payload := prefix + strings.Repeat("x", padding) + suffix
+			buffer := make([]byte, 32*1024)
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			b.ResetTimer()
+			for b.Loop() {
+				usageCalls := 0
+				terminalCalls := 0
+				body := ObserveCompletionUsageBodyWithTerminal(io.NopCloser(strings.NewReader(payload)), false, func(CompletionUsage) { usageCalls++ }, func() { terminalCalls++ })
+				for {
+					_, err := body.Read(buffer)
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+				if usageCalls != 1 || terminalCalls != 1 {
+					b.Fatalf("completion/terminal callbacks = %d/%d", usageCalls, terminalCalls)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkCompletionUsageBodyNonStreamKnownLength(b *testing.B) {
+	for _, size := range []int{2 * 1024, 64 * 1024} {
+		b.Run(fmt.Sprintf("bytes_%d", size), func(b *testing.B) {
+			prefix := `{"choices":[{}],"usage":{"completion_tokens":9},"padding":"`
+			suffix := `"}`
+			padding := size - len(prefix) - len(suffix)
+			if padding < 0 {
+				b.Fatal("benchmark payload size is too small")
+			}
+			payload := prefix + strings.Repeat("x", padding) + suffix
+			buffer := make([]byte, 32*1024)
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			b.ResetTimer()
+			for b.Loop() {
+				usageCalls := 0
+				terminalCalls := 0
+				body := ObserveCompletionUsageBodyWithTerminalLength(io.NopCloser(strings.NewReader(payload)), false, int64(len(payload)), func(CompletionUsage) { usageCalls++ }, func() { terminalCalls++ })
+				for {
+					_, err := body.Read(buffer)
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+				if usageCalls != 1 || terminalCalls != 1 {
+					b.Fatalf("completion/terminal callbacks = %d/%d", usageCalls, terminalCalls)
+				}
+			}
+		})
+	}
+}
+
 type chunkedReadCloser struct {
 	chunks []string
 }
@@ -161,3 +383,19 @@ func (r *chunkedReadCloser) Read(buffer []byte) (int, error) {
 }
 
 func (*chunkedReadCloser) Close() error { return nil }
+
+type errorReadCloser struct {
+	payload []byte
+	err     error
+	done    bool
+}
+
+func (r *errorReadCloser) Read(buffer []byte) (int, error) {
+	if r.done {
+		return 0, r.err
+	}
+	r.done = true
+	return copy(buffer, r.payload), r.err
+}
+
+func (*errorReadCloser) Close() error { return nil }

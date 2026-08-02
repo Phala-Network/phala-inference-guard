@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/observability/histogram"
-	"github.com/Phala-Network/phala-inference-guard/internal/runtime/semantic"
 )
 
 func newDurationHistogram() durationHistogram {
@@ -22,9 +21,9 @@ func (s *proxyServer) observeProxyResult(result proxyResult) {
 	}
 }
 
-func (s *proxyServer) observeSemanticTTFT(observer *semantic.Observer) {
-	if observer != nil {
-		s.requestSemanticTTFT.Observe(time.Since(observer.Started()))
+func (s *proxyServer) observeSemanticTTFT(ttft time.Duration) {
+	if ttft > 0 {
+		s.requestSemanticTTFT.Observe(ttft)
 	}
 }
 

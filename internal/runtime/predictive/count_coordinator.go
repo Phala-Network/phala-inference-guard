@@ -26,6 +26,11 @@ type CountCoordinatorSnapshot struct {
 	Manager Snapshot
 }
 
+type ResourceReleaseResult struct {
+	Released          bool
+	OutcomeInterfered bool
+}
+
 type CountCoordinator struct {
 	identity           CoordinatorIdentity
 	modelMaximumLength int64
@@ -110,6 +115,14 @@ func (c *CountCoordinator) Terminate(requestID string, cause TerminalCause) bool
 
 func (c *CountCoordinator) TerminateWithOutcome(requestID string, cause TerminalCause, outcome *SchedulerOutcome) bool {
 	return c != nil && c.manager.TerminateWithOutcome(requestID, cause, outcome)
+}
+
+func (c *CountCoordinator) ReleaseResources(requestID string) ResourceReleaseResult {
+	if c == nil || c.manager == nil {
+		return ResourceReleaseResult{}
+	}
+	interfered, released := c.manager.ReleaseResources(requestID)
+	return ResourceReleaseResult{Released: released, OutcomeInterfered: interfered}
 }
 
 func (c *CountCoordinator) EventSequence() uint64 {

@@ -44,6 +44,7 @@ type predictiveAdmissionTelemetrySnapshot struct {
 	PredictionDuration *durationHistogram
 	TPSOutcomes        predictiveTPSOutcomeSnapshot
 	ShadowObservations predictiveShadowObservationSnapshot
+	DeferredOutcomes   predictiveDeferredOutcomeSnapshot
 }
 
 type predictiveTPSOutcomeSnapshot struct {
@@ -56,6 +57,15 @@ type predictiveTPSOutcomeSnapshot struct {
 type predictiveShadowObservationSnapshot struct {
 	Active     int
 	Created    uint64
+	Terminated uint64
+	Qualified  uint64
+	Censored   uint64
+	Dropped    uint64
+}
+
+type predictiveDeferredOutcomeSnapshot struct {
+	Active     int
+	Released   uint64
 	Terminated uint64
 	Qualified  uint64
 	Censored   uint64
@@ -78,6 +88,10 @@ type predictiveCompletionObserver interface {
 	ObserveCompletion(predictiveCompletionObservation) bool
 }
 
+type predictiveResourceReleaser interface {
+	ReleaseResources() bool
+}
+
 type serverDependencies struct {
 	NewPredictiveShadow func(config) (predictiveAdmissionShadow, error)
 }
@@ -94,10 +108,12 @@ type guardedPredictiveReservation struct {
 	prefillComplete       bool
 	semanticTTFTObserved  bool
 	completionObserved    bool
+	resourceReleaseTried  bool
 	terminated            bool
 	onForwardCallFailure  func()
 	onSemanticCallFailure func()
 	onCompletionFailure   func()
+	onResourceCallFailure func()
 	onTerminalCallFailure func()
 }
 
@@ -139,6 +155,9 @@ func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predicti
 		},
 		onCompletionFailure: func() {
 			s.predictiveShadowFailures.completion.Add(1)
+		},
+		onResourceCallFailure: func() {
+			s.predictiveShadowFailures.resourceRelease.Add(1)
 		},
 		onTerminalCallFailure: func() {
 			s.predictiveShadowFailures.terminal.Add(1)
@@ -209,6 +228,23 @@ func (r *guardedPredictiveReservation) ObserveCompletion(observation predictiveC
 	return callPredictiveShadow(r.onCompletionFailure, func() bool {
 		return observer.ObserveCompletion(observation)
 	})
+}
+
+func (r *guardedPredictiveReservation) ReleaseResources() bool {
+	if r == nil || r.reservation == nil {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.forwarded || r.resourceReleaseTried || r.terminated {
+		return false
+	}
+	releaser, ok := r.reservation.(predictiveResourceReleaser)
+	if !ok {
+		return false
+	}
+	r.resourceReleaseTried = true
+	return callPredictiveShadow(r.onResourceCallFailure, releaser.ReleaseResources)
 }
 
 func (r *guardedPredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {

@@ -450,6 +450,138 @@ func TestDuplicateAndDoubleCompleteAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestManagerResourceReleaseAtomicallyReturnsLearningInterference(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	now := time.Unix(0, 0)
+	if got := manager.DecideAndReserve(now, "first", testRequest()); got.Reason != domain.ReasonFit || !manager.MarkForwarded("first") {
+		t.Fatalf("first reservation setup = %s, want forwarded fit", got.Reason)
+	}
+	if got := manager.DecideAndReserve(now.Add(time.Second), "second", testRequest()); got.Reason != domain.ReasonFit || !manager.MarkForwarded("second") {
+		t.Fatalf("second reservation setup = %s, want forwarded fit", got.Reason)
+	}
+	interfered, released := manager.ReleaseResources("first")
+	if !released || !interfered {
+		t.Fatalf("first resource release = released %t interfered %t, want true/true", released, interfered)
+	}
+	if _, released := manager.ReleaseResources("first"); released {
+		t.Fatal("duplicate resource release was not idempotent")
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 1 || snapshot.ReservedPhysicalKV != testRequest().KV.PhysicalKVUpper {
+		t.Fatalf("resource release changed unrelated reservation accounting: %+v", snapshot)
+	}
+	if !manager.Terminate("second", TerminalCompleted) {
+		t.Fatal("second reservation did not terminate")
+	}
+}
+
+func TestManagerConcurrentResourceReleaseTerminalAndAdmissionAreAtomic(t *testing.T) {
+	const rounds = 128
+	for round := 0; round < rounds; round++ {
+		manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+		now := time.Unix(int64(round), 0)
+		if got := manager.DecideAndReserve(now, "first", testRequest()); got.Reason != domain.ReasonFit || !manager.MarkForwarded("first") {
+			t.Fatalf("round %d first reservation setup = %s", round, got.Reason)
+		}
+		start := make(chan struct{})
+		var workers sync.WaitGroup
+		workers.Add(3)
+		var released bool
+		var terminated bool
+		var admitted domain.Reason
+		go func() {
+			defer workers.Done()
+			<-start
+			_, released = manager.ReleaseResources("first")
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			terminated = manager.Terminate("first", TerminalCompleted)
+		}()
+		go func() {
+			defer workers.Done()
+			<-start
+			admitted = manager.DecideAndReserve(now.Add(time.Second), "second", testRequest()).Reason
+		}()
+		close(start)
+		workers.Wait()
+		if released == terminated {
+			t.Fatalf("round %d release/terminal winners = %t/%t, want exactly one", round, released, terminated)
+		}
+		if admitted != domain.ReasonFit {
+			t.Fatalf("round %d concurrent admission = %s, want fit", round, admitted)
+		}
+		if !manager.Terminate("second", TerminalCompleted) {
+			t.Fatalf("round %d second reservation did not terminate", round)
+		}
+		if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.ReservedPhysicalKV != 0 || snapshot.ReservedActiveKV != 0 {
+			t.Fatalf("round %d final manager state = %+v", round, snapshot)
+		}
+	}
+}
+
+func TestManagerResourceReleaseReconcilesPrefillMaterialization(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{
+		PhysicalKVUpper: 50_000,
+		ActiveKVUpper:   50_000,
+	}, testConstraints(), safeScheduler{})
+	if got := manager.DecideAndReserve(time.Unix(0, 0), "absorbed", testRequest()); got.Reason != domain.ReasonFit {
+		t.Fatalf("absorbed admission reason = %s, want fit", got.Reason)
+	}
+	if !manager.MarkForwarded("absorbed") || !manager.MarkPrefillComplete("absorbed") {
+		t.Fatal("absorbed reservation did not complete prefill")
+	}
+	watermark := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed:         domain.VirtualState{PhysicalKVUpper: 60_000, ActiveKVUpper: 60_000},
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("initial absorbed reconcile: %v", err)
+	}
+	if _, released := manager.ReleaseResources("absorbed"); !released {
+		t.Fatal("absorbed reservation resources were not released")
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.RetiredReservations != 1 || snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 50_000 {
+		t.Fatalf("absorbed release state = %+v", snapshot)
+	}
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed:         domain.VirtualState{PhysicalKVUpper: 60_000, ActiveKVUpper: 60_000},
+		StartedSequence:  watermark,
+		FinishedSequence: watermark,
+	}); err != nil {
+		t.Fatalf("late absorbed reconcile: %v", err)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 50_000 {
+		t.Fatalf("late absorbed sample reintroduced released work: %+v", snapshot)
+	}
+	clean := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		Observed:         domain.VirtualState{PhysicalKVUpper: 50_000, ActiveKVUpper: 50_000},
+		StartedSequence:  clean,
+		FinishedSequence: clean,
+	}); err != nil {
+		t.Fatalf("clean absorbed reconcile: %v", err)
+	}
+	if snapshot := manager.Snapshot(); snapshot.RetiredReservations != 0 || snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 50_000 {
+		t.Fatalf("clean absorbed release state = %+v", snapshot)
+	}
+
+	unabsorbed := NewManager("test-profile", domain.VirtualState{
+		PhysicalKVUpper: 50_000,
+		ActiveKVUpper:   50_000,
+	}, testConstraints(), safeScheduler{})
+	if got := unabsorbed.DecideAndReserve(time.Unix(0, 0), "unabsorbed", testRequest()); got.Reason != domain.ReasonFit || !unabsorbed.MarkForwarded("unabsorbed") {
+		t.Fatalf("unabsorbed reservation setup = %s", got.Reason)
+	}
+	if _, released := unabsorbed.ReleaseResources("unabsorbed"); !released {
+		t.Fatal("unabsorbed reservation resources were not released")
+	}
+	if snapshot := unabsorbed.Snapshot(); snapshot.Reservations != 0 || snapshot.RetiredReservations != 0 || snapshot.Virtual.Lower.PhysicalKVUpper != 50_000 || snapshot.Virtual.Upper.PhysicalKVUpper != 50_000 {
+		t.Fatalf("unabsorbed release state = %+v", snapshot)
+	}
+}
+
 func TestManagerRejectsMismatchedTokenizerManifestWithoutReservation(t *testing.T) {
 	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
 	cost := testRequest()
@@ -856,5 +988,20 @@ func BenchmarkRetiredReservationQueuePushAtCapacity(b *testing.B) {
 	b.ResetTimer()
 	for sequence := 0; sequence < b.N; sequence++ {
 		queue.Push(retiredReservation{CompletedSequence: uint64(sequence)})
+	}
+}
+
+func BenchmarkManagerReleaseResources(b *testing.B) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	now := time.Unix(100_000, 0)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if decision := manager.DecideAndReserve(now, "release-benchmark", testRequest()); decision.Reason != domain.ReasonFit || !manager.MarkForwarded("release-benchmark") {
+			b.Fatalf("release benchmark reservation setup = %s", decision.Reason)
+		}
+		if _, released := manager.ReleaseResources("release-benchmark"); !released {
+			b.Fatal("release benchmark did not release resources")
+		}
 	}
 }

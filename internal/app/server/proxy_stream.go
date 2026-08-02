@@ -16,7 +16,7 @@ type upstreamRoundTripResult struct {
 	err      error
 }
 
-func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.ResponseWriter, r *http.Request, allowEarlyBridge bool, requestStarted time.Time, onSemantic func()) (result proxyResult) {
+func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.ResponseWriter, r *http.Request, allowEarlyBridge bool, requestStarted time.Time, semanticCallbacks semanticResponseCallbacks) (result proxyResult) {
 	done := backend.Begin()
 	defer done()
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.ProxyTimeout)
@@ -49,7 +49,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 		}
 		recorder := httpx.NewStatusRecorder(w)
 		var copyErr error
-		status, copyErr = s.writeUpstreamResponse(ctx, recorder, upstream.response, true, requestStarted, onSemantic)
+		status, copyErr = s.writeUpstreamResponse(ctx, recorder, upstream.response, true, requestStarted, semanticCallbacks)
 		if copyErr != nil {
 			if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 				status = clientClosedRequestStatus
@@ -105,7 +105,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 	if !wroteEarly {
 		recorder := httpx.NewStatusRecorder(w)
 		var copyErr error
-		status, copyErr = s.writeUpstreamResponse(ctx, recorder, upstream.response, true, requestStarted, onSemantic)
+		status, copyErr = s.writeUpstreamResponse(ctx, recorder, upstream.response, true, requestStarted, semanticCallbacks)
 		if copyErr != nil {
 			if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 				status = clientClosedRequestStatus
@@ -130,7 +130,7 @@ func (s *proxyServer) proxyStreamingRequest(backend *backendProxy, w http.Respon
 		return proxyResult{status: http.StatusOK, total: time.Since(started), firstByte: firstByte, firstByteOK: true, proxyFailed: true}
 	}
 	semanticTTFT := semantic.New(requestStarted)
-	if copyErr := s.copyResponseBody(ctx, w, upstream.response.Body, true, semanticTTFT, onSemantic, completion); copyErr != nil {
+	if copyErr := s.copyResponseBody(ctx, w, upstream.response.Body, true, semanticTTFT, semanticCallbacks, completion); copyErr != nil {
 		if s.recordClientDisconnect(ctx, clientDisconnectPhaseResponse, true) {
 			status = clientClosedRequestStatus
 		} else {

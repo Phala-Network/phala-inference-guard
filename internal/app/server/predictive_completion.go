@@ -35,7 +35,7 @@ func observePredictiveResponse(response *http.Response) {
 	if observer == nil {
 		return
 	}
-	response.Body = openai.ObserveCompletionUsageBody(response.Body, false, observer.observeUsage)
+	response.Body = openai.ObserveCompletionUsageBodyWithTerminalLength(response.Body, false, response.ContentLength, observer.observeUsage, observer.observeTerminal)
 }
 
 func newPredictiveStreamingCompletionObserver(response *http.Response) *openai.CompletionUsageObserver {
@@ -43,7 +43,7 @@ func newPredictiveStreamingCompletionObserver(response *http.Response) *openai.C
 	if observer == nil {
 		return nil
 	}
-	return openai.NewCompletionUsageObserver(true, observer.observeUsage)
+	return openai.NewCompletionUsageObserverWithTerminal(true, observer.observeUsage, observer.observeTerminal)
 }
 
 func claimPredictiveResponseObserver(response *http.Response, streaming bool) *predictiveResponseObserver {
@@ -75,4 +75,14 @@ func (o *predictiveResponseObserver) observeUsage(usage openai.CompletionUsage) 
 		BackendMeanITL:        usage.MeanITL,
 		BackendGenerationTime: usage.GenerationTime,
 	})
+}
+
+func (o *predictiveResponseObserver) observeTerminal() {
+	if o == nil {
+		return
+	}
+	releaser, ok := o.reservation.(predictiveResourceReleaser)
+	if ok {
+		releaser.ReleaseResources()
+	}
 }

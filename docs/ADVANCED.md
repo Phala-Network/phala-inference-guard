@@ -474,7 +474,7 @@ labels through `pig_dynamic_capacity_projected_limit` and
 : Default: `16`. Minimum running load before severe pressure is treated as
   representative for learning.
 
-## PREDICTIVE ADMISSION (v0.10.2)
+## PREDICTIVE ADMISSION (v0.10.3)
 
 Predictive admission is a pre-forward guard for one configured vLLM upstream.
 It uses a bounded model-family-neutral JSON size interval, vLLM KV capacity and
@@ -485,9 +485,12 @@ backends, or change vLLM.
 
 Feedback is qualified and causal: it can update only a later prediction. A
 reservation keeps the exact estimate and forecast used for its decision. A
-completion, failure, cancellation, timeout, disconnect, or shutdown reconciles
-that lifecycle at most once. Restart starts cold rather than loading learned
-state from disk.
+valid explicit streaming terminal or fully consumed non-stream response can
+release GPU/KV/TPS accounting before a slow downstream handler returns. Only a
+bounded, payload-free numeric outcome can remain deferred; the final handler
+result learns once from a qualified success or censors/drops failure,
+cancellation, timeout, disconnect, and shutdown. Restart starts cold rather
+than loading learned state from disk.
 
 `PREDICTIVE_ADMISSION_MODE`
 : Default: `off`. Supported values are `off`, `shadow`, and `enforce`. `shadow`

@@ -12,7 +12,12 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/semantic"
 )
 
-func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWriter, body io.Reader, streaming bool, semanticTTFT *semantic.Observer, onSemantic func(), completion *openai.CompletionUsageObserver) error {
+type semanticResponseCallbacks struct {
+	observed  func()
+	delivered func(time.Duration)
+}
+
+func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWriter, body io.Reader, streaming bool, semanticTTFT *semantic.Observer, semanticCallbacks semanticResponseCallbacks, completion *openai.CompletionUsageObserver) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -26,6 +31,21 @@ func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWrite
 			return err
 		}
 		if n > 0 {
+			semanticFound := false
+			semanticLimited := false
+			semanticElapsed := time.Duration(0)
+			if semanticTTFT != nil {
+				semanticFound, semanticLimited = semanticTTFT.Observe(buffer[:n])
+				if semanticFound {
+					semanticElapsed = time.Since(semanticTTFT.Started())
+					if semanticCallbacks.observed != nil {
+						semanticCallbacks.observed()
+					}
+				}
+			}
+			if completion != nil {
+				completion.Observe(buffer[:n])
+			}
 			if _, writeErr := w.Write(buffer[:n]); writeErr != nil {
 				if err := ctx.Err(); err != nil {
 					return err
@@ -37,20 +57,18 @@ func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWrite
 					flusher.Flush()
 				}
 			}
-			if semanticTTFT != nil {
-				if found, limited := semanticTTFT.Observe(buffer[:n]); found {
-					if onSemantic != nil {
-						onSemantic()
-					}
-					s.observeSemanticTTFT(semanticTTFT)
-					semanticTTFT = nil
-				} else if limited {
-					s.semanticTTFTLimited.Add(1)
-					semanticTTFT = nil
+			if semanticFound {
+				if semanticCallbacks.delivered != nil {
+					semanticCallbacks.delivered(semanticElapsed)
 				}
+				s.observeSemanticTTFT(semanticElapsed)
+				semanticTTFT = nil
+			} else if semanticLimited {
+				s.semanticTTFTLimited.Add(1)
+				semanticTTFT = nil
 			}
-			if completion != nil {
-				completion.Observe(buffer[:n])
+			if completion != nil && completion.TerminalSeen() {
+				completion.Finish()
 			}
 		}
 		if readErr != nil {
@@ -65,7 +83,7 @@ func (s *proxyServer) copyResponseBody(ctx context.Context, w http.ResponseWrite
 	}
 }
 
-func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, started time.Time, onSemantic func()) error {
+func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, started time.Time, semanticCallbacks semanticResponseCallbacks) error {
 	body := response.Body
 	completion := newPredictiveStreamingCompletionObserver(response)
 	var semanticTTFT *semantic.Observer
@@ -79,7 +97,7 @@ func (s *proxyServer) copyResponseWithOptionalKeepAlive(ctx context.Context, w h
 	stopClosingOnCancel := closeBodyOnContextDone(ctx, body)
 	defer stopClosingOnCancel()
 	defer body.Close()
-	return s.copyResponseBody(ctx, w, body, streaming, semanticTTFT, onSemantic, completion)
+	return s.copyResponseBody(ctx, w, body, streaming, semanticTTFT, semanticCallbacks, completion)
 }
 
 func closeBodyOnContextDone(ctx context.Context, body io.Closer) func() {
@@ -90,7 +108,7 @@ func closeBodyOnContextDone(ctx context.Context, body io.Closer) func() {
 	return func() { stop() }
 }
 
-func (s *proxyServer) writeUpstreamResponse(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, semanticStarted time.Time, onSemantic func()) (int, error) {
+func (s *proxyServer) writeUpstreamResponse(ctx context.Context, w http.ResponseWriter, response *http.Response, streaming bool, semanticStarted time.Time, semanticCallbacks semanticResponseCallbacks) (int, error) {
 	s.classifyUpstreamErrorResponse(response)
 	observePredictiveResponse(response)
 	httpx.CopyHeader(w.Header(), response.Header)
@@ -101,7 +119,7 @@ func (s *proxyServer) writeUpstreamResponse(ctx context.Context, w http.Response
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	return response.StatusCode, s.copyResponseWithOptionalKeepAlive(ctx, w, response, streaming, semanticStarted, onSemantic)
+	return response.StatusCode, s.copyResponseWithOptionalKeepAlive(ctx, w, response, streaming, semanticStarted, semanticCallbacks)
 }
 
 func (s *proxyServer) recordProxyUpstreamError(backend *backendProxy) {

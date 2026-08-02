@@ -20,6 +20,7 @@ type recordingUpperBoundCoordinator struct {
 	reservations        map[string]struct{}
 	identity            runtimepredictive.ModelIdentity
 	onTerminate         func()
+	onObserve           func()
 	reject              bool
 	outcomes            []runtimepredictive.SchedulerOutcome
 	interference        int
@@ -64,10 +65,14 @@ func (c *recordingUpperBoundCoordinator) DecideUpperBoundAndReserve(now time.Tim
 
 func (c *recordingUpperBoundCoordinator) ObserveUnreservedOutcome(_ runtimepredictive.SchedulerPrediction, _ runtimepredictive.TerminalCause, _ bool, outcome runtimepredictive.SchedulerOutcome) bool {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.outcomes = append(c.outcomes, outcome)
 	if c.correctAfterOutcome {
 		c.reject = false
+	}
+	onObserve := c.onObserve
+	c.mu.Unlock()
+	if onObserve != nil {
+		onObserve()
 	}
 	return true
 }
@@ -95,6 +100,19 @@ func (c *recordingUpperBoundCoordinator) MarkPrefillComplete(requestID string) b
 
 func (c *recordingUpperBoundCoordinator) Terminate(requestID string, _ runtimepredictive.TerminalCause) bool {
 	return c.TerminateWithOutcome(requestID, runtimepredictive.TerminalCompleted, nil)
+}
+
+func (c *recordingUpperBoundCoordinator) ReleaseResources(requestID string) runtimepredictive.ResourceReleaseResult {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.reservations[requestID]; !ok {
+		return runtimepredictive.ResourceReleaseResult{}
+	}
+	delete(c.reservations, requestID)
+	if c.onTerminate != nil {
+		c.onTerminate()
+	}
+	return runtimepredictive.ResourceReleaseResult{Released: true}
 }
 
 func (c *recordingUpperBoundCoordinator) TerminateWithOutcome(requestID string, _ runtimepredictive.TerminalCause, _ *runtimepredictive.SchedulerOutcome) bool {
@@ -265,6 +283,311 @@ func TestApproximatePredictiveLaterShadowForwardCensorsEarlierObservation(t *tes
 	}
 }
 
+func TestApproximatePredictiveUpstreamTerminalReleasesBeforeQualifiedOutcome(t *testing.T) {
+	now := time.Unix(49_000, 0)
+	calibrator := newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1)
+	coordinator := newRecordingUpperBoundCoordinator()
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new early-release adapter: %v", err)
+	}
+	reservation := adapter.DecideAndReserve(context.Background(), "early-release", approximateAdapterTestInput())
+	if reservation == nil || !reservation.MarkForwarded() {
+		t.Fatal("early-release reservation was not forwarded")
+	}
+	if !observePredictiveCompletion(reservation, predictiveCompletionObservation{
+		PromptTokens: 70, CompletionTokens: 5, ElapsedSinceRequest: 60 * time.Millisecond,
+		BackendMeanITL: 10 * time.Millisecond,
+	}) {
+		t.Fatal("early-release reservation did not retain completion usage")
+	}
+	releaser, ok := reservation.(predictiveResourceReleaser)
+	if !ok || !releaser.ReleaseResources() {
+		t.Fatal("valid upstream terminal did not release resource accounting")
+	}
+	if releaser.ReleaseResources() {
+		t.Fatal("resource release was not idempotent")
+	}
+	coordinator.mu.Lock()
+	accounting := len(coordinator.reservations)
+	outcomesBeforeTerminal := len(coordinator.outcomes)
+	coordinator.mu.Unlock()
+	if accounting != 0 || outcomesBeforeTerminal != 0 {
+		t.Fatalf("early resource release accounting/outcomes = %d/%d, want 0/0", accounting, outcomesBeforeTerminal)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 1 || snapshot.Released != 1 || snapshot.Qualified != 0 {
+		t.Fatalf("early resource release telemetry = %+v", snapshot)
+	}
+	if snapshot := calibrator.Snapshot(now); snapshot.SamplesAccepted != 0 {
+		t.Fatalf("resource release trained input-size feedback before handler completion: %+v", snapshot)
+	}
+
+	if !reservation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("qualified deferred outcome did not terminate")
+	}
+	if reservation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("deferred terminal outcome was applied twice")
+	}
+	coordinator.mu.Lock()
+	outcomesAfterTerminal := len(coordinator.outcomes)
+	coordinator.mu.Unlock()
+	if outcomesAfterTerminal != 1 {
+		t.Fatalf("qualified deferred scheduler outcomes = %d, want exactly 1", outcomesAfterTerminal)
+	}
+	if snapshot := calibrator.Snapshot(now); snapshot.SamplesAccepted != 1 {
+		t.Fatalf("qualified deferred input-size outcomes = %+v, want exactly one accepted sample", snapshot)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Terminated != 1 || snapshot.Qualified != 1 || snapshot.Censored != 0 {
+		t.Fatalf("qualified deferred terminal telemetry = %+v", snapshot)
+	}
+}
+
+func TestApproximatePredictiveDeferredOutcomeBoundDropsLearningNotResourceRelease(t *testing.T) {
+	now := time.Unix(49_500, 0)
+	calibrator := newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1)
+	coordinator := newRecordingUpperBoundCoordinator()
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "enforce", DeferredOutcomeLimit: 1,
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new bounded deferred adapter: %v", err)
+	}
+	reservations := make([]predictiveShadowReservation, 0, 2)
+	for index := 0; index < 2; index++ {
+		requestID := "bounded-deferred-" + string(rune('a'+index))
+		reservation := adapter.DecideAndReserve(context.Background(), requestID, approximateAdapterTestInput())
+		if reservation == nil || !reservation.MarkForwarded() {
+			t.Fatalf("bounded deferred reservation %d was not forwarded", index)
+		}
+		if !observePredictiveCompletion(reservation, predictiveCompletionObservation{
+			PromptTokens: int64(70 + index), CompletionTokens: 5, ElapsedSinceRequest: 60 * time.Millisecond,
+			BackendMeanITL: 10 * time.Millisecond,
+		}) {
+			t.Fatalf("bounded deferred reservation %d did not retain completion usage", index)
+		}
+		if !reservation.(predictiveResourceReleaser).ReleaseResources() {
+			t.Fatalf("bounded deferred reservation %d did not release resources", index)
+		}
+		reservations = append(reservations, reservation)
+	}
+	coordinator.mu.Lock()
+	accounting := len(coordinator.reservations)
+	coordinator.mu.Unlock()
+	if accounting != 0 {
+		t.Fatalf("bounded deferred outcomes retained %d accounting reservations", accounting)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 1 || snapshot.Released != 2 || snapshot.Dropped != 1 {
+		t.Fatalf("bounded deferred release telemetry = %+v", snapshot)
+	}
+	if !reservations[0].Terminate(runtimepredictive.TerminalCompleted) || !reservations[1].Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("bounded deferred outcomes did not finish idempotently")
+	}
+	coordinator.mu.Lock()
+	outcomes := len(coordinator.outcomes)
+	coordinator.mu.Unlock()
+	if outcomes != 1 {
+		t.Fatalf("bounded deferred outcomes trained %d scheduler samples, want one retained sample", outcomes)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Terminated != 1 || snapshot.Qualified != 1 || snapshot.Dropped != 1 {
+		t.Fatalf("bounded deferred terminal telemetry = %+v", snapshot)
+	}
+}
+
+func TestApproximatePredictiveDeferredDisconnectIsCensoredWithoutLearning(t *testing.T) {
+	now := time.Unix(49_750, 0)
+	calibrator := newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1)
+	coordinator := newRecordingUpperBoundCoordinator()
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new disconnected deferred adapter: %v", err)
+	}
+	reservation := adapter.DecideAndReserve(context.Background(), "deferred-disconnect", approximateAdapterTestInput())
+	if reservation == nil || !reservation.MarkForwarded() || !reservation.(predictiveResourceReleaser).ReleaseResources() {
+		t.Fatal("disconnected deferred reservation did not release resource accounting")
+	}
+	if !reservation.Terminate(runtimepredictive.TerminalClientDisconnected) {
+		t.Fatal("disconnected deferred outcome did not terminate")
+	}
+	coordinator.mu.Lock()
+	outcomes := len(coordinator.outcomes)
+	coordinator.mu.Unlock()
+	if outcomes != 0 || calibrator.Snapshot(now).SamplesAccepted != 0 {
+		t.Fatalf("disconnected deferred outcome trained scheduler/input size: %d/%+v", outcomes, calibrator.Snapshot(now))
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Terminated != 1 || snapshot.Censored != 1 || snapshot.Qualified != 0 {
+		t.Fatalf("disconnected deferred telemetry = %+v", snapshot)
+	}
+}
+
+func TestApproximatePredictiveCloseCensorsDeferredOutcomeWithoutLearning(t *testing.T) {
+	now := time.Unix(49_875, 0)
+	calibrator := newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1)
+	coordinator := newRecordingUpperBoundCoordinator()
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new close-deferred adapter: %v", err)
+	}
+	reservation := adapter.DecideAndReserve(context.Background(), "deferred-close", approximateAdapterTestInput())
+	if reservation == nil || !reservation.MarkForwarded() {
+		t.Fatal("close-deferred reservation was not forwarded")
+	}
+	if !observePredictiveCompletion(reservation, predictiveCompletionObservation{
+		PromptTokens: 70, CompletionTokens: 5, ElapsedSinceRequest: 60 * time.Millisecond,
+		BackendMeanITL: 10 * time.Millisecond,
+	}) || !reservation.(predictiveResourceReleaser).ReleaseResources() {
+		t.Fatal("close-deferred reservation did not reach bounded deferred state")
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("close adapter with deferred outcome: %v", err)
+	}
+	if reservation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("handler completion trained a deferred outcome after adapter close")
+	}
+	coordinator.mu.Lock()
+	outcomes := len(coordinator.outcomes)
+	accounting := len(coordinator.reservations)
+	coordinator.mu.Unlock()
+	if outcomes != 0 || accounting != 0 || calibrator.Snapshot(now).SamplesAccepted != 0 {
+		t.Fatalf("close-deferred learned/leaked scheduler, accounting, or size state: %d/%d/%+v", outcomes, accounting, calibrator.Snapshot(now))
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Released != 1 || snapshot.Terminated != 1 || snapshot.Censored != 1 || snapshot.Qualified != 0 {
+		t.Fatalf("close-deferred telemetry = %+v", snapshot)
+	}
+}
+
+func TestApproximatePredictiveCloseWaitsForRegisteredDeferredLearning(t *testing.T) {
+	now := time.Unix(49_880, 0)
+	calibrator := newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1)
+	coordinator := newRecordingUpperBoundCoordinator()
+	observeStarted := make(chan struct{})
+	releaseObserve := make(chan struct{})
+	coordinator.onObserve = func() {
+		close(observeStarted)
+		<-releaseObserve
+	}
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new close-learning adapter: %v", err)
+	}
+	reservation := adapter.DecideAndReserve(context.Background(), "deferred-close-learning", approximateAdapterTestInput())
+	if reservation == nil || !reservation.MarkForwarded() || !observePredictiveCompletion(reservation, predictiveCompletionObservation{
+		PromptTokens: 70, CompletionTokens: 5, ElapsedSinceRequest: 60 * time.Millisecond,
+		BackendMeanITL: 10 * time.Millisecond,
+	}) || !reservation.(predictiveResourceReleaser).ReleaseResources() {
+		t.Fatal("close-learning reservation did not reach deferred state")
+	}
+	terminalDone := make(chan bool, 1)
+	go func() {
+		terminalDone <- reservation.Terminate(runtimepredictive.TerminalCompleted)
+	}()
+	select {
+	case <-observeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("deferred learning did not start")
+	}
+	closeDone := make(chan error, 2)
+	go func() {
+		closeDone <- adapter.Close()
+	}()
+	go func() {
+		closeDone <- adapter.Close()
+	}()
+	select {
+	case err := <-closeDone:
+		t.Fatalf("concurrent adapter close returned before registered learning completed: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseObserve)
+	select {
+	case terminated := <-terminalDone:
+		if !terminated {
+			t.Fatal("registered deferred terminal outcome was rejected")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("deferred terminal did not finish after observer release")
+	}
+	for index := 0; index < 2; index++ {
+		select {
+		case err := <-closeDone:
+			if err != nil {
+				t.Fatalf("close adapter %d after registered learning: %v", index, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("adapter close %d did not finish after registered learning", index)
+		}
+	}
+	coordinator.mu.Lock()
+	outcomes := len(coordinator.outcomes)
+	accounting := len(coordinator.reservations)
+	coordinator.mu.Unlock()
+	if outcomes != 1 || accounting != 0 || calibrator.Snapshot(now).SamplesAccepted != 1 {
+		t.Fatalf("registered close-learning final state = %d/%d/%+v", outcomes, accounting, calibrator.Snapshot(now))
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Terminated != 1 || snapshot.Qualified != 1 {
+		t.Fatalf("registered close-learning telemetry = %+v", snapshot)
+	}
+}
+
+func TestApproximatePredictiveConcurrentResourceReleaseAndTerminalConverge(t *testing.T) {
+	now := time.Unix(49_900, 0)
+	calibrator := newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1)
+	coordinator := newRecordingUpperBoundCoordinator()
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new release-terminal race adapter: %v", err)
+	}
+	const rounds = 64
+	for index := 0; index < rounds; index++ {
+		requestID := fmt.Sprintf("release-terminal-race-%d", index)
+		reservation := adapter.DecideAndReserve(context.Background(), requestID, approximateAdapterTestInput())
+		if reservation == nil || !reservation.MarkForwarded() || !observePredictiveCompletion(reservation, predictiveCompletionObservation{
+			PromptTokens: 70, CompletionTokens: 5, ElapsedSinceRequest: 60 * time.Millisecond,
+			BackendMeanITL: 10 * time.Millisecond,
+		}) {
+			t.Fatalf("race reservation %d setup failed", index)
+		}
+		start := make(chan struct{})
+		results := make(chan bool, 2)
+		go func() {
+			<-start
+			results <- reservation.(predictiveResourceReleaser).ReleaseResources()
+		}()
+		go func() {
+			<-start
+			results <- reservation.Terminate(runtimepredictive.TerminalCompleted)
+		}()
+		close(start)
+		first, second := <-results, <-results
+		if !first && !second {
+			t.Fatalf("race reservation %d neither released nor terminated", index)
+		}
+		if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 {
+			t.Fatalf("race reservation %d left deferred state: %+v", index, snapshot)
+		}
+		coordinator.mu.Lock()
+		accounting := len(coordinator.reservations)
+		coordinator.mu.Unlock()
+		if accounting != 0 {
+			t.Fatalf("race reservation %d left manager accounting: %d", index, accounting)
+		}
+		now = now.Add(time.Second)
+	}
+	if snapshot := calibrator.Snapshot(now); snapshot.SamplesAccepted != rounds {
+		t.Fatalf("release-terminal race trained %d size samples, want exactly %d", snapshot.SamplesAccepted, rounds)
+	}
+}
+
 func TestApproximatePredictiveAdapterLearnsOnlyAfterTerminalReleaseForNextRequest(t *testing.T) {
 	now := time.Unix(50_000, 0)
 	calibrator := newApproximateAdapterTestCalibrator(t, 2)
@@ -399,6 +722,11 @@ func TestApproximatePredictiveConcurrentLifecycleAndCloseCompleteWithoutLeaks(t 
 				PromptTokens: 75, CompletionTokens: 5, ElapsedSinceRequest: 50 * time.Millisecond,
 				BackendMeanITL: 10 * time.Millisecond,
 			})
+			if index%2 == 0 {
+				if releaser, ok := reservation.(predictiveResourceReleaser); ok {
+					releaser.ReleaseResources()
+				}
+			}
 			cause := runtimepredictive.TerminalCompleted
 			if index%3 == 0 {
 				cause = runtimepredictive.TerminalClientCancelled
@@ -443,9 +771,10 @@ func TestApproximatePredictiveConcurrentLifecycleAndCloseCompleteWithoutLeaks(t 
 	}
 	adapter.mu.Lock()
 	remaining := len(adapter.reservations)
+	deferred := len(adapter.deferredOutcomes)
 	adapter.mu.Unlock()
-	if remaining != 0 || coordinator.Snapshot().Manager.Reservations != 0 {
-		t.Fatalf("concurrent lifecycle left adapter/coordinator reservations = %d/%d", remaining, coordinator.Snapshot().Manager.Reservations)
+	if remaining != 0 || deferred != 0 || coordinator.Snapshot().Manager.Reservations != 0 {
+		t.Fatalf("concurrent lifecycle left adapter/deferred/coordinator reservations = %d/%d/%d", remaining, deferred, coordinator.Snapshot().Manager.Reservations)
 	}
 	if reservation := adapter.DecideAndReserve(context.Background(), "after-close", approximateAdapterTestInput()); reservation != nil {
 		t.Fatal("closed adapter admitted a new request")
@@ -657,5 +986,38 @@ func BenchmarkApproximatePredictiveAdmissionLifecycle(b *testing.B) {
 	b.StopTimer()
 	if err := adapter.Close(); err != nil {
 		b.Fatalf("close approximate predictive adapter: %v", err)
+	}
+}
+
+func BenchmarkApproximatePredictiveDeferredOutcomeLifecycle(b *testing.B) {
+	now := time.Unix(91_000, 0)
+	calibrator := newApproximateAdapterTestCalibratorWithConfidence(b, 3, 1, 1)
+	coordinator := newRecordingUpperBoundCoordinator()
+	coordinator.recordProposals = false
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		b.Fatalf("new deferred benchmark adapter: %v", err)
+	}
+	input := approximateAdapterTestInput()
+	completion := predictiveCompletionObservation{
+		PromptTokens: 80, CompletionTokens: 5, ElapsedSinceRequest: 60 * time.Millisecond,
+		BackendMeanITL: 10 * time.Millisecond,
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		benchmarkPredictiveReservation = adapter.DecideAndReserve(context.Background(), "deferred-benchmark", input)
+		if benchmarkPredictiveReservation == nil || !benchmarkPredictiveReservation.MarkForwarded() ||
+			!observePredictiveCompletion(benchmarkPredictiveReservation, completion) ||
+			!benchmarkPredictiveReservation.(predictiveResourceReleaser).ReleaseResources() ||
+			!benchmarkPredictiveReservation.Terminate(runtimepredictive.TerminalCompleted) {
+			b.Fatal("predictive deferred lifecycle did not complete")
+		}
+	}
+	b.StopTimer()
+	if err := adapter.Close(); err != nil {
+		b.Fatalf("close deferred benchmark adapter: %v", err)
 	}
 }

@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"io"
@@ -13,6 +14,7 @@ import (
 const (
 	maximumCompletionUsageJSONBytes = 4 * 1024 * 1024
 	maximumCompletionUsageSSEBytes  = 64 * 1024
+	completionUsageLookaheadBytes   = 32 * 1024
 )
 
 type CompletionUsage struct {
@@ -24,38 +26,97 @@ type CompletionUsage struct {
 }
 
 type completionUsageCallback func(CompletionUsage)
+type completionUsageTerminalCallback func()
 
 type completionUsageBody struct {
-	source   io.ReadCloser
-	observer *CompletionUsageObserver
+	source            io.ReadCloser
+	lookahead         *bufio.Reader
+	observer          *CompletionUsageObserver
+	remaining         int64
+	hasExpectedLength bool
+	expectedLengthBad bool
 }
 
 func ObserveCompletionUsageBody(source io.ReadCloser, streaming bool, callback func(CompletionUsage)) io.ReadCloser {
-	if source == nil || callback == nil {
+	return observeCompletionUsageBody(source, streaming, -1, callback, nil)
+}
+
+func ObserveCompletionUsageBodyWithTerminal(source io.ReadCloser, streaming bool, callback func(CompletionUsage), onTerminal func()) io.ReadCloser {
+	return observeCompletionUsageBody(source, streaming, -1, callback, onTerminal)
+}
+
+func ObserveCompletionUsageBodyWithTerminalLength(source io.ReadCloser, streaming bool, contentLength int64, callback func(CompletionUsage), onTerminal func()) io.ReadCloser {
+	return observeCompletionUsageBody(source, streaming, contentLength, callback, onTerminal)
+}
+
+func observeCompletionUsageBody(source io.ReadCloser, streaming bool, contentLength int64, callback func(CompletionUsage), onTerminal func()) io.ReadCloser {
+	if source == nil || (callback == nil && onTerminal == nil) {
 		return source
 	}
-	return &completionUsageBody{
-		source:   source,
-		observer: NewCompletionUsageObserver(streaming, callback),
+	body := &completionUsageBody{
+		source:    source,
+		observer:  NewCompletionUsageObserverWithTerminal(streaming, callback, onTerminal),
+		remaining: -1,
 	}
+	if !streaming && onTerminal != nil && contentLength >= 0 {
+		body.remaining = contentLength
+		body.hasExpectedLength = true
+	} else if !streaming && onTerminal != nil {
+		body.lookahead = bufio.NewReaderSize(source, completionUsageLookaheadBytes)
+	}
+	return body
 }
 
 func NewCompletionUsageObserver(streaming bool, callback func(CompletionUsage)) *CompletionUsageObserver {
-	if callback == nil {
+	return NewCompletionUsageObserverWithTerminal(streaming, callback, nil)
+}
+
+func NewCompletionUsageObserverWithTerminal(streaming bool, callback func(CompletionUsage), onTerminal func()) *CompletionUsageObserver {
+	if callback == nil && onTerminal == nil {
 		return nil
 	}
-	return &CompletionUsageObserver{streaming: streaming, callback: callback}
+	return &CompletionUsageObserver{streaming: streaming, callback: callback, onTerminal: onTerminal}
 }
 
 func (b *completionUsageBody) Read(buffer []byte) (int, error) {
-	n, err := b.source.Read(buffer)
+	var n int
+	var err error
+	if b.lookahead != nil {
+		n, err = b.lookahead.Read(buffer)
+	} else {
+		n, err = b.source.Read(buffer)
+	}
 	if n > 0 {
 		b.observer.Observe(buffer[:n])
 	}
-	if err == io.EOF {
+	if b.hasExpectedLength {
+		b.observeExpectedLength(n, err)
+	} else if err == io.EOF {
 		b.observer.Finish()
+	} else if err == nil && n > 0 && b.lookahead != nil {
+		if _, peekErr := b.lookahead.Peek(1); peekErr == io.EOF {
+			b.observer.Finish()
+		}
 	}
 	return n, err
+}
+
+func (b *completionUsageBody) observeExpectedLength(n int, err error) {
+	if b == nil || b.expectedLengthBad || b.observer == nil {
+		return
+	}
+	if int64(n) > b.remaining {
+		b.expectedLengthBad = true
+		return
+	}
+	b.remaining -= int64(n)
+	if b.remaining == 0 && (err == nil || err == io.EOF) {
+		b.observer.Finish()
+		return
+	}
+	if err == io.EOF {
+		b.expectedLengthBad = true
+	}
 }
 
 func (b *completionUsageBody) Close() error {
@@ -63,9 +124,12 @@ func (b *completionUsageBody) Close() error {
 }
 
 type CompletionUsageObserver struct {
-	streaming bool
-	callback  completionUsageCallback
-	finished  bool
+	streaming        bool
+	callback         completionUsageCallback
+	onTerminal       completionUsageTerminalCallback
+	finished         bool
+	terminalSeen     bool
+	terminalNotified bool
 
 	candidate        CompletionUsage
 	candidateValid   bool
@@ -81,7 +145,7 @@ type CompletionUsageObserver struct {
 }
 
 func (o *CompletionUsageObserver) Observe(chunk []byte) {
-	if o == nil || o.finished || len(chunk) == 0 {
+	if o == nil || o.finished || o.terminalSeen || len(chunk) == 0 {
 		return
 	}
 	if !o.streaming {
@@ -91,6 +155,9 @@ func (o *CompletionUsageObserver) Observe(chunk []byte) {
 	for _, value := range chunk {
 		if value == '\n' {
 			o.processSSELine()
+			if o.finished || o.terminalSeen {
+				return
+			}
 			continue
 		}
 		if len(o.line) < maximumCompletionUsageSSEBytes {
@@ -143,9 +210,11 @@ func (o *CompletionUsageObserver) processSSELine() {
 }
 
 func (o *CompletionUsageObserver) finishSSEEvent() {
+	terminal := false
 	if !o.eventLimited && o.eventHasData {
 		data := bytes.TrimSpace(o.eventData)
-		if len(data) > 0 && !bytes.Equal(data, []byte("[DONE]")) && bytes.Contains(data, []byte(`"usage"`)) {
+		terminal = bytes.Equal(data, []byte("[DONE]"))
+		if len(data) > 0 && !terminal && bytes.Contains(data, []byte(`"usage"`)) {
 			if usage, ok := decodeCompletionUsage(data, true); ok {
 				usage.ObservedAt = time.Now()
 				if o.candidateValid {
@@ -160,6 +229,10 @@ func (o *CompletionUsageObserver) finishSSEEvent() {
 	o.eventData = o.eventData[:0]
 	o.eventLimited = false
 	o.eventHasData = false
+	if terminal {
+		o.terminalSeen = true
+		o.notifyTerminal()
+	}
 }
 
 func (o *CompletionUsageObserver) Finish() {
@@ -167,19 +240,25 @@ func (o *CompletionUsageObserver) Finish() {
 		return
 	}
 	if o.streaming {
-		if len(o.line) > 0 {
+		if !o.terminalSeen && len(o.line) > 0 {
 			o.processSSELine()
+			if o.finished || o.terminalSeen {
+				o.finishStreaming()
+				return
+			}
 		}
-		if o.eventHasData || o.eventLimited {
+		if !o.terminalSeen && (o.eventHasData || o.eventLimited) {
 			o.finishSSEEvent()
+			if o.finished || o.terminalSeen {
+				o.finishStreaming()
+				return
+			}
 		}
-		o.finished = true
-		if o.candidateValid && !o.candidateInvalid {
-			o.emit(o.candidate)
-		}
+		o.finishStreaming()
 		return
 	}
 	o.finished = true
+	defer o.notifyTerminal()
 	if o.jsonLimited || len(o.jsonBody) == 0 {
 		return
 	}
@@ -189,11 +268,36 @@ func (o *CompletionUsageObserver) Finish() {
 	}
 }
 
+func (o *CompletionUsageObserver) TerminalSeen() bool {
+	return o != nil && o.terminalSeen
+}
+
+func (o *CompletionUsageObserver) finishStreaming() {
+	if o == nil || o.finished {
+		return
+	}
+	o.finished = true
+	if o.candidateValid && !o.candidateInvalid {
+		o.emit(o.candidate)
+	}
+	o.notifyTerminal()
+}
+
 func (o *CompletionUsageObserver) emit(usage CompletionUsage) {
 	if o.callback == nil {
 		return
 	}
 	o.callback(usage)
+}
+
+func (o *CompletionUsageObserver) notifyTerminal() {
+	if o == nil || o.terminalNotified {
+		return
+	}
+	o.terminalNotified = true
+	if o.onTerminal != nil {
+		o.onTerminal()
+	}
 }
 
 type completionUsageEnvelope struct {

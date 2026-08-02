@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/semantic"
 )
@@ -103,11 +104,112 @@ func TestCopyResponseBodyMarksDecodeOnFirstSemanticDelta(t *testing.T) {
 	}
 	marked := 0
 	body := strings.NewReader("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
-	err = srv.copyResponseBody(context.Background(), httptest.NewRecorder(), body, true, semantic.New(time.Now()), func() { marked++ }, nil)
+	err = srv.copyResponseBody(context.Background(), httptest.NewRecorder(), body, true, semantic.New(time.Now()), semanticResponseCallbacks{
+		observed: func() { marked++ },
+	}, nil)
 	if err != nil {
 		t.Fatalf("copyResponseBody: %v", err)
 	}
 	if marked != 1 {
 		t.Fatalf("semantic mark count = %d, want 1", marked)
+	}
+}
+
+func TestCopyResponseBodyCommitsUpstreamSemanticTimeAfterSuccessfulDownstreamWrite(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer backend.Close()
+	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+	release := make(chan struct{})
+	writer := &blockingPredictiveResponseWriter{
+		header:  make(http.Header),
+		blocked: make(chan struct{}),
+		release: release,
+	}
+	started := time.Now().Add(-time.Second)
+	observed := make(chan time.Duration, 1)
+	done := make(chan error, 1)
+	body := strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+	go func() {
+		done <- srv.copyResponseBody(context.Background(), writer, body, true, semantic.New(started), semanticResponseCallbacks{
+			delivered: func(ttft time.Duration) { observed <- ttft },
+		}, nil)
+	}()
+	select {
+	case <-writer.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("downstream writer did not block")
+	}
+	blockedAt := time.Since(started)
+	select {
+	case ttft := <-observed:
+		t.Fatalf("semantic TTFT committed before downstream write succeeded: %s", ttft)
+	default:
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("copyResponseBody: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("response copy did not finish after downstream release")
+	}
+	select {
+	case ttft := <-observed:
+		if ttft <= 0 || ttft > blockedAt {
+			t.Fatalf("semantic TTFT = %s, want upstream observation no later than downstream block at %s", ttft, blockedAt)
+		}
+	default:
+		t.Fatal("successful downstream write did not commit semantic TTFT")
+	}
+}
+
+func TestCopyResponseBodyMarksUpstreamPrefillBeforeTerminalReleaseAndDefersTTFT(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer backend.Close()
+	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+	release := make(chan struct{})
+	writer := &blockingPredictiveResponseWriter{
+		header:  make(http.Header),
+		blocked: make(chan struct{}),
+		release: release,
+	}
+	order := make([]string, 0, 3)
+	completion := openai.NewCompletionUsageObserverWithTerminal(true, nil, func() {
+		order = append(order, "terminal")
+	})
+	body := strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n")
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.copyResponseBody(context.Background(), writer, body, true, semantic.New(time.Now()), semanticResponseCallbacks{
+			observed:  func() { order = append(order, "observed") },
+			delivered: func(time.Duration) { order = append(order, "delivered") },
+		}, completion)
+	}()
+	select {
+	case <-writer.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("downstream writer did not block")
+	}
+	if got := strings.Join(order, ","); got != "observed,terminal" {
+		t.Fatalf("pre-write semantic/terminal order = %q, want observed,terminal", got)
+	}
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("copyResponseBody: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("response copy did not finish")
+	}
+	if got := strings.Join(order, ","); got != "observed,terminal,delivered" {
+		t.Fatalf("final semantic/terminal order = %q, want observed,terminal,delivered", got)
 	}
 }

@@ -56,6 +56,13 @@ func (r *failureInjectingPredictiveReservation) ObserveCompletion(predictiveComp
 	return true
 }
 
+func (r *failureInjectingPredictiveReservation) ReleaseResources() bool {
+	if r.phase == "resource_release" {
+		panic("injected predictive resource release panic")
+	}
+	return true
+}
+
 func (r *failureInjectingPredictiveReservation) Terminate(runtimepredictive.TerminalCause) bool {
 	if r.phase == "terminal" {
 		panic("injected predictive terminal panic")
@@ -86,6 +93,26 @@ func TestGuardedPredictiveCompletionObservationRequiresOwnershipAndIsIdempotent(
 	defer underlying.mu.Unlock()
 	if len(underlying.completions) != 1 {
 		t.Fatalf("underlying completion observations = %v, want exactly one", underlying.completions)
+	}
+}
+
+func TestGuardedPredictiveResourceReleaseRequiresOwnershipAndIsIdempotent(t *testing.T) {
+	underlying := &failureInjectingPredictiveReservation{}
+	guarded := &guardedPredictiveReservation{reservation: underlying}
+	if guarded.ReleaseResources() {
+		t.Fatal("resource release was accepted before forward ownership")
+	}
+	if !guarded.MarkForwarded() || !guarded.ReleaseResources() {
+		t.Fatal("first owned resource release was not accepted")
+	}
+	if guarded.ReleaseResources() {
+		t.Fatal("duplicate resource release was accepted")
+	}
+	if !guarded.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("resource-released guarded reservation did not terminate")
+	}
+	if guarded.ReleaseResources() {
+		t.Fatal("resource release was accepted after terminal outcome")
 	}
 }
 
@@ -299,6 +326,30 @@ func TestPredictiveShadowCompletionPanicDoesNotChangeStreamingResponse(t *testin
 	srv.writeLocalMetrics(&output)
 	if !strings.Contains(output.String(), `pig_predictive_admission_failures_total{phase="completion"} 1`) {
 		t.Fatalf("completion panic metric missing: %s", output.String())
+	}
+}
+
+func TestPredictiveShadowResourceReleasePanicDoesNotChangeStreamingResponse(t *testing.T) {
+	response := "data: {\"choices\":[],\"usage\":{\"completion_tokens\":5},\"metrics\":{\"mean_itl_ms\":20}}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(response))
+	}))
+	defer backend.Close()
+
+	srv := newFailureInjectingShadowServer(t, backend.URL, &failureInjectingPredictiveShadow{phase: "resource_release"})
+	recorder := servePredictiveFailureRequest(srv, true)
+	if recorder.Code != http.StatusOK || recorder.Body.String() != response {
+		t.Fatalf("resource release panic changed response: status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if got := srv.predictiveShadowFailures.resourceRelease.Load(); got != 1 {
+		t.Fatalf("predictive resource release failures = %d, want 1", got)
+	}
+	var output strings.Builder
+	srv.writeLocalMetrics(&output)
+	if !strings.Contains(output.String(), `pig_predictive_admission_failures_total{phase="resource_release"} 1`) {
+		t.Fatalf("resource release panic metric missing: %s", output.String())
 	}
 }
 

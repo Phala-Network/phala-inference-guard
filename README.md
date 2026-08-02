@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.10.2 model-agnostic predictive admission
+### v0.10.3 model-agnostic predictive admission
 
-PIG v0.10.2 can estimate request size locally and predict the post-admit
+PIG v0.10.3 can estimate request size locally and predict the post-admit
 KV/TPS/TTFT/TPOT state before forwarding to a vLLM upstream:
 
 ```text
@@ -183,8 +183,11 @@ model-family branch, native FFI, tokenizer asset, or hot-path tokenizer RPC.
 The bounded O(body bytes) JSON scanner estimates a conservative interval and a
 bounded online calibrator learns from `usage.prompt_tokens`. Scheduler feedback
 for TPS and latency also affects only future predictions. Existing in-flight
-reservations remain immutable and are reconciled exactly once on completion,
-failure, cancellation, timeout, or shutdown.
+reservations remain immutable until a valid upstream terminal signal releases
+their GPU/KV/TPS accounting. Only bounded numeric outcome state may then wait
+for the final handler result; successful qualified outcomes train later
+predictions, while failure, cancellation, timeout, disconnect, or shutdown is
+censored or dropped without learned headroom.
 
 The predictor discovers vLLM's served-model identity, KV block size, and maximum
 KV token capacity from startup metrics, then watches freshness, waiting work,
@@ -229,7 +232,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.2
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.3
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

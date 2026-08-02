@@ -1,6 +1,7 @@
 package server
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,6 +14,10 @@ import (
 )
 
 const approximateHTTPUsageResponse = `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":12,"completion_tokens":5},"metrics":{"mean_itl_ms":10}}`
+
+const approximateHTTPStreamingUsageResponse = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n" +
+	"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5},\"metrics\":{\"mean_itl_ms\":10}}\n\n" +
+	"data: [DONE]\n\n"
 
 func TestApproximatePredictiveHTTPColdTPSRiskRejectsBeforeUpstream(t *testing.T) {
 	firstEntered := make(chan struct{})
@@ -56,6 +61,357 @@ func TestApproximatePredictiveHTTPColdTPSRiskRejectsBeforeUpstream(t *testing.T)
 	}
 	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot(); snapshot.Manager.Reservations != 0 {
 		t.Fatalf("post-cold HTTP lifecycle leaked reservation: %+v", snapshot.Manager)
+	}
+}
+
+func TestApproximatePredictiveHTTPUpstreamTerminalReleasesBeforeSlowDownstream(t *testing.T) {
+	firstUpstreamFinished := make(chan struct{})
+	var backendCalls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(approximateHTTPStreamingUsageResponse))
+		if backendCalls.Add(1) == 1 {
+			close(firstUpstreamFinished)
+		}
+	}))
+	defer backend.Close()
+	adapter, scheduler := newApproximateHTTPTestAdapter(t, 20)
+	srv := newApproximateHTTPTestServer(t, backend.URL, adapter)
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close predictive server: %v", err)
+		}
+	}()
+
+	releaseDownstream := make(chan struct{})
+	writer := &blockingPredictiveResponseWriter{
+		header:  make(http.Header),
+		blocked: make(chan struct{}),
+		release: releaseDownstream,
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		srv.ServeHTTP(writer, newApproximateStreamingHTTPRequest())
+	}()
+	downstreamReleased := false
+	defer func() {
+		if !downstreamReleased {
+			close(releaseDownstream)
+		}
+		select {
+		case <-firstDone:
+		case <-time.After(time.Second):
+			t.Errorf("slow-downstream request did not finish during cleanup")
+		}
+	}()
+
+	select {
+	case <-firstUpstreamFinished:
+	case <-time.After(time.Second):
+		t.Fatal("first upstream did not emit a terminal response")
+	}
+	select {
+	case <-writer.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("first downstream writer did not block")
+	}
+
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager.Reservations == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 0 {
+		t.Fatalf("upstream terminal retained resource reservation behind slow downstream: %+v", snapshot)
+	}
+
+	second := serveApproximateStreamingHTTPRequest(srv)
+	if second.Code != http.StatusOK {
+		t.Fatalf("safe request after upstream terminal = %d body=%q, want admitted before slow downstream returns", second.Code, second.Body.String())
+	}
+	if got := backendCalls.Load(); got != 2 {
+		t.Fatalf("safe request after upstream terminal did not reach backend: calls=%d", got)
+	}
+
+	close(releaseDownstream)
+	downstreamReleased = true
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first request did not finish after downstream release")
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 0 {
+		t.Fatalf("slow-downstream lifecycle leaked or resurrected a resource reservation: %+v", snapshot)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 2 {
+		t.Fatalf("qualified slow-downstream outcomes learned %d times, want exactly 2", snapshot.SamplesAccepted)
+	}
+}
+
+func TestApproximatePredictiveHTTPNonStreamTerminalReleasesBeforeSlowDownstream(t *testing.T) {
+	firstUpstreamFinished := make(chan struct{})
+	var backendCalls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(approximateHTTPUsageResponse))
+		if backendCalls.Add(1) == 1 {
+			close(firstUpstreamFinished)
+		}
+	}))
+	defer backend.Close()
+	adapter, scheduler := newApproximateHTTPTestAdapter(t, 20)
+	srv := newApproximateHTTPTestServer(t, backend.URL, adapter)
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close predictive server: %v", err)
+		}
+	}()
+
+	releaseDownstream := make(chan struct{})
+	writer := &blockingPredictiveResponseWriter{
+		header:  make(http.Header),
+		blocked: make(chan struct{}),
+		release: releaseDownstream,
+	}
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		srv.ServeHTTP(writer, newApproximateHTTPRequest())
+	}()
+	downstreamReleased := false
+	defer func() {
+		if !downstreamReleased {
+			close(releaseDownstream)
+		}
+		select {
+		case <-firstDone:
+		case <-time.After(time.Second):
+			t.Errorf("slow non-stream request did not finish during cleanup")
+		}
+	}()
+
+	select {
+	case <-firstUpstreamFinished:
+	case <-time.After(time.Second):
+		t.Fatal("first non-stream upstream did not emit a terminal response")
+	}
+	select {
+	case <-writer.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("first non-stream downstream writer did not block")
+	}
+	deadline := time.Now().Add(250 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager.Reservations == 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 0 {
+		t.Fatalf("non-stream upstream terminal retained resource reservation behind slow downstream: %+v", snapshot)
+	}
+
+	second := serveApproximateHTTPRequest(srv)
+	if second.Code != http.StatusOK {
+		t.Fatalf("safe non-stream request after upstream terminal = %d body=%q, want admitted", second.Code, second.Body.String())
+	}
+	if got := backendCalls.Load(); got != 2 {
+		t.Fatalf("safe non-stream request after upstream terminal did not reach backend: calls=%d", got)
+	}
+	close(releaseDownstream)
+	downstreamReleased = true
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first non-stream request did not finish after downstream release")
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 0 {
+		t.Fatalf("non-stream slow-downstream lifecycle leaked or resurrected a reservation: %+v", snapshot)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 2 {
+		t.Fatalf("qualified non-stream slow-downstream outcomes learned %d times, want exactly 2", snapshot.SamplesAccepted)
+	}
+}
+
+func TestApproximatePredictiveHTTPTruncatedSSEDoesNotReleaseBeforeSlowDownstream(t *testing.T) {
+	payload := "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5},\"metrics\":{\"mean_itl_ms\":10}}\n\n"
+	upstreamReturned := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		defer close(upstreamReturned)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Content-Length", "4096")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer backend.Close()
+	adapter, scheduler := newApproximateHTTPTestAdapter(t, 20)
+	srv := newApproximateHTTPTestServer(t, backend.URL, adapter)
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close predictive server: %v", err)
+		}
+	}()
+
+	releaseDownstream := make(chan struct{})
+	writer := &blockingPredictiveResponseWriter{
+		header:  make(http.Header),
+		blocked: make(chan struct{}),
+		release: releaseDownstream,
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.ServeHTTP(writer, newApproximateStreamingHTTPRequest())
+	}()
+	downstreamReleased := false
+	defer func() {
+		if !downstreamReleased {
+			close(releaseDownstream)
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Errorf("truncated slow-downstream request did not finish during cleanup")
+		}
+	}()
+	select {
+	case <-upstreamReturned:
+	case <-time.After(time.Second):
+		t.Fatal("truncated upstream did not return")
+	}
+	select {
+	case <-writer.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("truncated response did not reach the slow downstream")
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 1 {
+		t.Fatalf("truncated SSE released before downstream completion: %+v", snapshot)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Released != 0 {
+		t.Fatalf("truncated SSE created premature deferred outcome: %+v", snapshot)
+	}
+	close(releaseDownstream)
+	downstreamReleased = true
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("truncated request did not finish after downstream release")
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 0 {
+		t.Fatalf("truncated SSE leaked final resource accounting: %+v", snapshot)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Qualified != 0 {
+		t.Fatalf("truncated SSE retained or qualified deferred outcome: %+v", snapshot)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 0 {
+		t.Fatalf("truncated SSE trained %d scheduler samples", snapshot.SamplesAccepted)
+	}
+}
+
+func TestApproximatePredictiveHTTPTruncatedNonStreamDoesNotReleaseBeforeSlowDownstream(t *testing.T) {
+	upstreamReturned := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		defer close(upstreamReturned)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Length", "4096")
+		_, _ = w.Write([]byte(approximateHTTPUsageResponse))
+	}))
+	defer backend.Close()
+	adapter, scheduler := newApproximateHTTPTestAdapter(t, 20)
+	srv := newApproximateHTTPTestServer(t, backend.URL, adapter)
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close predictive server: %v", err)
+		}
+	}()
+
+	releaseDownstream := make(chan struct{})
+	writer := &blockingPredictiveResponseWriter{
+		header:  make(http.Header),
+		blocked: make(chan struct{}),
+		release: releaseDownstream,
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.ServeHTTP(writer, newApproximateHTTPRequest())
+	}()
+	downstreamReleased := false
+	defer func() {
+		if !downstreamReleased {
+			close(releaseDownstream)
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Errorf("truncated non-stream request did not finish during cleanup")
+		}
+	}()
+	select {
+	case <-upstreamReturned:
+	case <-time.After(time.Second):
+		t.Fatal("truncated non-stream upstream did not return")
+	}
+	select {
+	case <-writer.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("truncated non-stream response did not reach the slow downstream")
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 1 {
+		t.Fatalf("truncated non-stream released before downstream completion: %+v", snapshot)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Released != 0 {
+		t.Fatalf("truncated non-stream created premature deferred outcome: %+v", snapshot)
+	}
+	close(releaseDownstream)
+	downstreamReleased = true
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("truncated non-stream request did not finish after downstream release")
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 0 {
+		t.Fatalf("truncated non-stream leaked final resource accounting: %+v", snapshot)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Qualified != 0 {
+		t.Fatalf("truncated non-stream retained or qualified deferred outcome: %+v", snapshot)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 0 {
+		t.Fatalf("truncated non-stream trained %d scheduler samples", snapshot.SamplesAccepted)
+	}
+}
+
+func TestApproximatePredictiveHTTPDownstreamWriteErrorAfterResourceReleaseIsCensored(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(approximateHTTPStreamingUsageResponse))
+	}))
+	defer backend.Close()
+	adapter, scheduler := newApproximateHTTPTestAdapter(t, 20)
+	srv := newApproximateHTTPTestServer(t, backend.URL, adapter)
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close predictive server: %v", err)
+		}
+	}()
+	writer := &errorPredictiveResponseWriter{
+		header: make(http.Header),
+		err:    errors.New("injected downstream write failure"),
+	}
+	srv.ServeHTTP(writer, newApproximateStreamingHTTPRequest())
+	if !writer.wrote.Load() {
+		t.Fatal("downstream write failure was not exercised")
+	}
+	if snapshot := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; snapshot.Reservations != 0 {
+		t.Fatalf("downstream write failure leaked manager resources: %+v", snapshot)
+	}
+	if snapshot := adapter.PredictiveAdmissionTelemetry().DeferredOutcomes; snapshot.Active != 0 || snapshot.Released != 1 || snapshot.Terminated != 1 || snapshot.Censored != 1 || snapshot.Qualified != 0 {
+		t.Fatalf("downstream write failure deferred telemetry = %+v", snapshot)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.SamplesAccepted != 0 {
+		t.Fatalf("downstream write failure trained %d scheduler samples", snapshot.SamplesAccepted)
 	}
 }
 
@@ -303,10 +659,65 @@ func newApproximateHTTPTestServerWithMode(t *testing.T, upstream string, adapter
 }
 
 func serveApproximateHTTPRequest(srv *proxyServer) *httptest.ResponseRecorder {
-	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"arbitrary/model","messages":[{"role":"user","content":"hello"}],"max_tokens":8}`))
-	request.Header.Set("Authorization", "Bearer secret")
-	request.Header.Set("Content-Type", "application/json")
+	request := newApproximateHTTPRequest()
 	recorder := httptest.NewRecorder()
 	srv.ServeHTTP(recorder, request)
 	return recorder
+}
+
+func newApproximateHTTPRequest() *http.Request {
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"arbitrary/model","messages":[{"role":"user","content":"hello"}],"max_tokens":8}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	return request
+}
+
+func newApproximateStreamingHTTPRequest() *http.Request {
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"arbitrary/model","messages":[{"role":"user","content":"hello"}],"stream":true,"stream_options":{"include_usage":true},"max_tokens":8}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	return request
+}
+
+func serveApproximateStreamingHTTPRequest(srv *proxyServer) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	srv.ServeHTTP(recorder, newApproximateStreamingHTTPRequest())
+	return recorder
+}
+
+type blockingPredictiveResponseWriter struct {
+	header  http.Header
+	blocked chan struct{}
+	release <-chan struct{}
+	wrote   atomic.Bool
+}
+
+func (w *blockingPredictiveResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *blockingPredictiveResponseWriter) WriteHeader(int) {}
+
+func (w *blockingPredictiveResponseWriter) Write(body []byte) (int, error) {
+	if w.wrote.CompareAndSwap(false, true) {
+		close(w.blocked)
+		<-w.release
+	}
+	return len(body), nil
+}
+
+type errorPredictiveResponseWriter struct {
+	header http.Header
+	err    error
+	wrote  atomic.Bool
+}
+
+func (w *errorPredictiveResponseWriter) Header() http.Header { return w.header }
+
+func (*errorPredictiveResponseWriter) WriteHeader(int) {}
+
+func (w *errorPredictiveResponseWriter) Write([]byte) (int, error) {
+	w.wrote.Store(true)
+	return 0, w.err
 }

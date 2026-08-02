@@ -139,12 +139,14 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	prefillGrace := s.prefillGraceDuration(r, classification.Streaming)
 	markDecode, doneActive := s.trackActiveRequest(prefillGrace)
 	defer doneActive()
-	markSemanticOutput := markDecode
+	semanticCallbacks := semanticResponseCallbacks{observed: markDecode}
 	if predictiveForwarded {
-		markSemanticOutput = func() {
+		semanticCallbacks.observed = func() {
 			markDecode()
 			predictiveReservation.MarkPrefillComplete()
-			observePredictiveSemanticTTFT(predictiveReservation, time.Since(requestStart))
+		}
+		semanticCallbacks.delivered = func(ttft time.Duration) {
+			observePredictiveSemanticTTFT(predictiveReservation, ttft)
 		}
 	}
 	r.Header.Set("X-PIG-Lane", ln.Name())
@@ -156,7 +158,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var result proxyResult
 	if classification.Streaming {
 		allowEarlyBridge := s.cfg.SSEEarlyBridgeEnabled && s.safeForEarlySSEBridge(r, outputTokens, hasOutputTokens)
-		result = s.proxyStreamingRequest(backend, w, r, allowEarlyBridge, requestStart, markSemanticOutput)
+		result = s.proxyStreamingRequest(backend, w, r, allowEarlyBridge, requestStart, semanticCallbacks)
 	} else {
 		result = s.proxyRequest(backend, w, r)
 	}

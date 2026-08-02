@@ -59,14 +59,15 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 
 func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmissionInput {
 	input := metrics.PredictiveAdmissionInput{
-		Mode:              s.cfg.PredictiveAdmissionMode,
-		EnforcedRejects:   s.predictiveEnforcedRejects.Load(),
-		FailureClose:      s.predictiveShadowFailures.close.Load(),
-		FailureDecide:     s.predictiveShadowFailures.decide.Load(),
-		FailureForward:    s.predictiveShadowFailures.forward.Load(),
-		FailureSemantic:   s.predictiveShadowFailures.semantic.Load(),
-		FailureCompletion: s.predictiveShadowFailures.completion.Load(),
-		FailureTerminal:   s.predictiveShadowFailures.terminal.Load(),
+		Mode:                   s.cfg.PredictiveAdmissionMode,
+		EnforcedRejects:        s.predictiveEnforcedRejects.Load(),
+		FailureClose:           s.predictiveShadowFailures.close.Load(),
+		FailureDecide:          s.predictiveShadowFailures.decide.Load(),
+		FailureForward:         s.predictiveShadowFailures.forward.Load(),
+		FailureSemantic:        s.predictiveShadowFailures.semantic.Load(),
+		FailureCompletion:      s.predictiveShadowFailures.completion.Load(),
+		FailureResourceRelease: s.predictiveShadowFailures.resourceRelease.Load(),
+		FailureTerminal:        s.predictiveShadowFailures.terminal.Load(),
 	}
 	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
 	if !ok {
@@ -111,6 +112,14 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 		Qualified:  snapshot.ShadowObservations.Qualified,
 		Censored:   snapshot.ShadowObservations.Censored,
 		Dropped:    snapshot.ShadowObservations.Dropped,
+	}
+	input.DeferredOutcomes = metrics.PredictiveDeferredOutcomeInput{
+		Active:     snapshot.DeferredOutcomes.Active,
+		Released:   snapshot.DeferredOutcomes.Released,
+		Terminated: snapshot.DeferredOutcomes.Terminated,
+		Qualified:  snapshot.DeferredOutcomes.Qualified,
+		Censored:   snapshot.DeferredOutcomes.Censored,
+		Dropped:    snapshot.DeferredOutcomes.Dropped,
 	}
 	input.PredictionDuration = snapshot.PredictionDuration
 	input.EstimatorDuration = &s.kvEstimatorDuration

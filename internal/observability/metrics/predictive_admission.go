@@ -43,11 +43,13 @@ type PredictiveAdmissionInput struct {
 	TPSMissing             uint64
 	TPSRejected            uint64
 	ShadowObservations     PredictiveShadowObservationInput
+	DeferredOutcomes       PredictiveDeferredOutcomeInput
 	FailureClose           uint64
 	FailureDecide          uint64
 	FailureForward         uint64
 	FailureSemantic        uint64
 	FailureCompletion      uint64
+	FailureResourceRelease uint64
 	FailureTerminal        uint64
 	PredictionDuration     *histogram.DurationHistogram
 	EstimatorDuration      *histogram.DurationHistogram
@@ -56,6 +58,15 @@ type PredictiveAdmissionInput struct {
 type PredictiveShadowObservationInput struct {
 	Active     int
 	Created    uint64
+	Terminated uint64
+	Qualified  uint64
+	Censored   uint64
+	Dropped    uint64
+}
+
+type PredictiveDeferredOutcomeInput struct {
+	Active     int
+	Released   uint64
 	Terminated uint64
 	Qualified  uint64
 	Censored   uint64
@@ -107,11 +118,18 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_shadow_observations_total{result=%q} %d\n", "qualified", input.ShadowObservations.Qualified)
 	fmt.Fprintf(w, "pig_predictive_shadow_observations_total{result=%q} %d\n", "censored", input.ShadowObservations.Censored)
 	fmt.Fprintf(w, "pig_predictive_shadow_observations_total{result=%q} %d\n", "dropped", input.ShadowObservations.Dropped)
+	fmt.Fprintf(w, "pig_predictive_deferred_outcomes %d\n", input.DeferredOutcomes.Active)
+	fmt.Fprintf(w, "pig_predictive_deferred_outcomes_total{result=%q} %d\n", "released", input.DeferredOutcomes.Released)
+	fmt.Fprintf(w, "pig_predictive_deferred_outcomes_total{result=%q} %d\n", "terminated", input.DeferredOutcomes.Terminated)
+	fmt.Fprintf(w, "pig_predictive_deferred_outcomes_total{result=%q} %d\n", "qualified", input.DeferredOutcomes.Qualified)
+	fmt.Fprintf(w, "pig_predictive_deferred_outcomes_total{result=%q} %d\n", "censored", input.DeferredOutcomes.Censored)
+	fmt.Fprintf(w, "pig_predictive_deferred_outcomes_total{result=%q} %d\n", "dropped", input.DeferredOutcomes.Dropped)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "decide", input.FailureDecide)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "forward", input.FailureForward)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "semantic", input.FailureSemantic)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "completion", input.FailureCompletion)
+	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "resource_release", input.FailureResourceRelease)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "terminal", input.FailureTerminal)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_prediction_duration_seconds", input.PredictionDuration)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_estimator_duration_seconds", input.EstimatorDuration)

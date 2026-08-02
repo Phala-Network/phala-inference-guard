@@ -378,6 +378,25 @@ func (m *Manager) TerminateWithOutcome(requestID string, cause TerminalCause, ou
 			}
 		}
 	}
+	m.terminateReservationLocked(requestID, item, cause)
+	return true
+}
+
+func (m *Manager) ReleaseResources(requestID string) (outcomeInterfered bool, released bool) {
+	if m == nil || requestID == "" {
+		return false, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item, exists := m.reservations[requestID]
+	if !exists || !item.Forwarded {
+		return false, false
+	}
+	m.terminateReservationLocked(requestID, item, TerminalCompleted)
+	return item.OutcomeInterfered, true
+}
+
+func (m *Manager) terminateReservationLocked(requestID string, item reservation, cause TerminalCause) {
 	m.eventSequence++
 	item.TerminalCause = cause
 	if item.Assimilation == assimilationAbsorbed && item.PrefillComplete {
@@ -392,7 +411,6 @@ func (m *Manager) TerminateWithOutcome(requestID string, cause TerminalCause, ou
 		}
 	}
 	delete(m.reservations, requestID)
-	return true
 }
 
 func (m *Manager) InvalidateLearning() bool {
