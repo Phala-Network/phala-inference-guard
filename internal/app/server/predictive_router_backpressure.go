@@ -11,10 +11,18 @@ import (
 
 const (
 	minimumPredictiveRouterBackpressureHold = 2 * time.Second
-	maximumPredictiveRouterBackpressureHold = 5 * time.Second
+	maximumPredictiveRouterBackpressureHold = 30 * time.Second
+)
+
+type predictiveRouterBackpressureEventKind string
+
+const (
+	predictiveRouterBackpressureActivated predictiveRouterBackpressureEventKind = "activated"
+	predictiveRouterBackpressureRenewed   predictiveRouterBackpressureEventKind = "renewed"
 )
 
 type predictiveRouterBackpressureEvent struct {
+	Kind            predictiveRouterBackpressureEventKind
 	Activation      uint64
 	Scope           predictiveProtectionScope
 	Reason          domainpredictive.Reason
@@ -24,7 +32,10 @@ type predictiveRouterBackpressureEvent struct {
 	VirtualActiveKV int64
 	Hold            time.Duration
 	ActivatedAt     time.Time
+	RejectedAt      time.Time
 	Until           time.Time
+	Extensions      uint64
+	Suppressed      uint64
 }
 
 type predictiveRouterBackpressurePolicy struct {
@@ -53,18 +64,21 @@ type predictiveRequestRejectLogBucket struct {
 }
 
 type predictiveRouterBackpressureSnapshot struct {
-	Active         bool
-	Activation     uint64
-	Scope          predictiveProtectionScope
-	Reason         domainpredictive.Reason
-	Source         runtimepredictive.PredictionSource
-	Samples        int
-	ActivatedAt    time.Time
-	Until          time.Time
-	Hold           time.Duration
-	MinimumRunning int
-	Activations    uint64
-	Extensions     uint64
+	Active             bool
+	Activation         uint64
+	Scope              predictiveProtectionScope
+	Reason             domainpredictive.Reason
+	Source             runtimepredictive.PredictionSource
+	Samples            int
+	ActivatedAt        time.Time
+	Until              time.Time
+	Hold               time.Duration
+	MinimumRunning     int
+	Activations        uint64
+	Extensions         uint64
+	LatestRejectAt     time.Time
+	RenewalLogs        uint64
+	RenewalsSuppressed uint64
 }
 
 type predictiveRouterBackpressureState struct {
@@ -75,6 +89,7 @@ type predictiveRouterBackpressureState struct {
 	virtualActiveKV        int64
 	activatedAt            time.Time
 	until                  time.Time
+	latestRejectAt         time.Time
 	hold                   time.Duration
 	activation             uint64
 	availabilityActive     bool
@@ -83,10 +98,10 @@ type predictiveRouterBackpressureState struct {
 	availabilityActivation uint64
 	activations            uint64
 	extensions             uint64
-}
-
-func predictiveRouterBackpressureHold(pollInterval time.Duration) time.Duration {
-	return normalizePredictiveRouterBackpressureHold(2 * pollInterval)
+	lastRenewalLoggedAt    time.Time
+	renewalsPendingLog     uint64
+	renewalLogs            uint64
+	renewalsSuppressed     uint64
 }
 
 func normalizePredictiveRouterBackpressureHold(hold time.Duration) time.Duration {
@@ -112,12 +127,41 @@ func (s *predictiveRouterBackpressureState) Observe(
 	active := now.Before(s.until)
 	if active {
 		s.extensions++
-		// Keep the activation identity immutable for the fixed episode. The
-		// durable last-reject snapshot records later reasons independently; if
-		// these fields changed here, event=activated and the first
-		// event=router_capacity_applied scrape could describe different facts
-		// under the same activation ID.
-		return nil
+		if now.After(s.latestRejectAt) {
+			s.latestRejectAt = now
+		}
+		candidateUntil := s.latestRejectAt.Add(hold)
+		if candidateUntil.After(s.until) {
+			s.until = candidateUntil
+		}
+		// Keep the activation identity and its original reason immutable for the
+		// episode, but expose the latest typed reject in the bounded renewal log.
+		// The adapter's durable last-reject metrics carry the same latest reason.
+		if !s.lastRenewalLoggedAt.IsZero() && now.Before(s.lastRenewalLoggedAt.Add(hold)) {
+			s.renewalsPendingLog++
+			s.renewalsSuppressed++
+			return nil
+		}
+		event := &predictiveRouterBackpressureEvent{
+			Kind:            predictiveRouterBackpressureRenewed,
+			Activation:      s.activation,
+			Scope:           predictiveProtectionScopeLoad,
+			Reason:          result.Decision.Reason,
+			Source:          result.Prediction.Source,
+			Samples:         result.Prediction.Samples,
+			VirtualDecode:   result.Prediction.Features.ExistingDecodeSequences,
+			VirtualActiveKV: result.Prediction.Features.ExistingActiveKVUpper,
+			Hold:            hold,
+			ActivatedAt:     s.activatedAt,
+			RejectedAt:      s.latestRejectAt,
+			Until:           s.until,
+			Extensions:      s.extensions,
+			Suppressed:      s.renewalsPendingLog,
+		}
+		s.lastRenewalLoggedAt = now
+		s.renewalsPendingLog = 0
+		s.renewalLogs++
+		return event
 	}
 	s.activations++
 	s.activation = s.activations
@@ -128,8 +172,12 @@ func (s *predictiveRouterBackpressureState) Observe(
 	s.virtualDecode = result.Prediction.Features.ExistingDecodeSequences
 	s.virtualActiveKV = result.Prediction.Features.ExistingActiveKVUpper
 	s.until = now.Add(hold)
+	s.latestRejectAt = now
 	s.hold = hold
+	s.lastRenewalLoggedAt = time.Time{}
+	s.renewalsPendingLog = 0
 	return &predictiveRouterBackpressureEvent{
+		Kind:            predictiveRouterBackpressureActivated,
 		Activation:      s.activation,
 		Scope:           predictiveProtectionScopeLoad,
 		Reason:          s.reason,
@@ -139,6 +187,7 @@ func (s *predictiveRouterBackpressureState) Observe(
 		VirtualActiveKV: s.virtualActiveKV,
 		Hold:            hold,
 		ActivatedAt:     now,
+		RejectedAt:      now,
 		Until:           s.until,
 	}
 }
@@ -157,7 +206,10 @@ func (s *predictiveRouterBackpressureState) SetAvailability(now time.Time, unava
 			s.activations++
 			s.activation = s.activations
 			s.activatedAt = now
+			s.lastRenewalLoggedAt = time.Time{}
+			s.renewalsPendingLog = 0
 			return &predictiveRouterBackpressureEvent{
+				Kind:            predictiveRouterBackpressureActivated,
 				Activation:      s.activation,
 				Scope:           predictiveProtectionScopeLoad,
 				Reason:          s.reason,
@@ -181,6 +233,7 @@ func (s *predictiveRouterBackpressureState) SetAvailability(now time.Time, unava
 	s.availabilityActivated = now
 	s.availabilityActivation = s.activations
 	return &predictiveRouterBackpressureEvent{
+		Kind:          predictiveRouterBackpressureActivated,
 		Activation:    s.availabilityActivation,
 		Scope:         predictiveProtectionScopeAvailability,
 		Reason:        s.availabilityReason,
@@ -193,27 +246,33 @@ func (s *predictiveRouterBackpressureState) SetAvailability(now time.Time, unava
 func (s predictiveRouterBackpressureState) Snapshot(now time.Time) predictiveRouterBackpressureSnapshot {
 	if s.availabilityActive {
 		return predictiveRouterBackpressureSnapshot{
-			Active:         true,
-			Activation:     s.availabilityActivation,
-			Scope:          predictiveProtectionScopeAvailability,
-			Reason:         s.availabilityReason,
-			Source:         runtimepredictive.PredictionSourceUnavailable,
-			ActivatedAt:    s.availabilityActivated,
-			MinimumRunning: 1,
-			Activations:    s.activations,
-			Extensions:     s.extensions,
+			Active:             true,
+			Activation:         s.availabilityActivation,
+			Scope:              predictiveProtectionScopeAvailability,
+			Reason:             s.availabilityReason,
+			Source:             runtimepredictive.PredictionSourceUnavailable,
+			ActivatedAt:        s.availabilityActivated,
+			MinimumRunning:     1,
+			Activations:        s.activations,
+			Extensions:         s.extensions,
+			LatestRejectAt:     s.latestRejectAt,
+			RenewalLogs:        s.renewalLogs,
+			RenewalsSuppressed: s.renewalsSuppressed,
 		}
 	}
 	active := !s.until.IsZero() && now.Before(s.until)
 	snapshot := predictiveRouterBackpressureSnapshot{
-		Active:      active,
-		Activation:  s.activation,
-		Scope:       predictiveProtectionScopeLoad,
-		ActivatedAt: s.activatedAt,
-		Until:       s.until,
-		Hold:        s.hold,
-		Activations: s.activations,
-		Extensions:  s.extensions,
+		Active:             active,
+		Activation:         s.activation,
+		Scope:              predictiveProtectionScopeLoad,
+		ActivatedAt:        s.activatedAt,
+		Until:              s.until,
+		Hold:               s.hold,
+		Activations:        s.activations,
+		Extensions:         s.extensions,
+		LatestRejectAt:     s.latestRejectAt,
+		RenewalLogs:        s.renewalLogs,
+		RenewalsSuppressed: s.renewalsSuppressed,
 	}
 	if active {
 		snapshot.Reason = s.reason
@@ -342,7 +401,7 @@ func (s *proxyServer) logPredictiveFailureReject(phase string) {
 	}
 	now := time.Now()
 	s.predictiveFailureLogMu.Lock()
-	event := s.predictiveFailureRejectLogs.ObservePhase(now, predictiveRouterBackpressureHold(s.cfg.DynamicPollInterval), phase, runtimepredictive.CountAdmissionResult{
+	event := s.predictiveFailureRejectLogs.ObservePhase(now, s.cfg.PredictiveRouterBackpressureHold, phase, runtimepredictive.CountAdmissionResult{
 		Decision: domainpredictive.Decision{Reason: domainpredictive.ReasonPredictorProfileUnknown},
 		Prediction: runtimepredictive.SchedulerPrediction{
 			Source: runtimepredictive.PredictionSourceUnavailable,
@@ -355,6 +414,22 @@ func (s *proxyServer) logPredictiveFailureReject(phase string) {
 }
 
 func predictiveRouterBackpressureLogLine(event predictiveRouterBackpressureEvent) string {
+	if event.Kind == predictiveRouterBackpressureRenewed {
+		return fmt.Sprintf(
+			"predictive_router_backpressure event=renewed mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d virtual_decode=%d virtual_active_kv=%d extensions=%d suppressed=%d latest_reject_at=%s until=%s",
+			event.Activation,
+			event.Scope,
+			event.Reason,
+			event.Source,
+			event.Samples,
+			event.VirtualDecode,
+			event.VirtualActiveKV,
+			event.Extensions,
+			event.Suppressed,
+			event.RejectedAt.UTC().Format(time.RFC3339Nano),
+			predictiveRouterBackpressureTime(event.Until),
+		)
+	}
 	return fmt.Sprintf(
 		"predictive_router_backpressure event=activated mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d virtual_decode=%d virtual_active_kv=%d hold=%s activated_at=%s until=%s",
 		event.Activation,

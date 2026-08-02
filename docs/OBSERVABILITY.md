@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.10.5 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 reservations=1 virtual_decode=1 deferred=0 router_bp=1/1/existing_tps_at_risk effective=1/1 raw=1/50}
+pig_status v=PIG-v0.10.6 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 deferred=0 prefill_learning=0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
 ```
 
 The status line has three required parts:
@@ -18,8 +18,9 @@ The status line has three required parts:
 - `v`: PIG version.
 - `backend`: current backend load snapshot from vLLM or SGLang metrics.
 - `pig`: current PIG limits and counters.
-- `predictive`: predictive decisions, live reservations/deferred outcomes, and
-  Router backpressure as `active/applied/reason`, followed by effective and raw
+- `predictive`: predictive decisions, live reservations/deferred outcomes,
+  completion-observer stages, Router backpressure as
+  `active/applied/scope/reason`, lease counters/timestamps, and effective/raw
   `running/global-limit` pairs.
 - `kv_shadow`: optional and present only when the separate legacy
   `KV_ADMISSION_MODE=shadow` path is enabled.
@@ -31,10 +32,13 @@ bounded Router backpressure hold. Predictive TTFT observation is true only in
 `shadow` or `enforce`; it never authorizes a TTFT admission reject. Metrics remain authoritative for the full
 predictive decision, learning, reservation, and shadow-only observation state.
 An immediate `predictive_router_backpressure event=activated ...` line records
-each new bounded activation. Further protection signals inside that episode
-update the extension counter and latest reason/source without moving the fixed
-expiry or producing a per-request log storm. The first metrics response that
-actually applies the Router capacity projection also emits one
+each new bounded activation. Every later load-dependent reject renews the lease
+from that latest reject before PIG writes 429. The first in-episode renewal and
+then at most one per hold interval emit
+`predictive_router_backpressure event=renewed ...`; suppressed renewal logs
+still extend the deadline and advance durable counters/metrics, avoiding a
+per-request log storm. The first metrics response that actually applies the
+Router capacity projection also emits one
 `predictive_router_backpressure event=router_capacity_applied ...` line with
 the activation number and raw/effective running and global-limit values.
 Concurrent or repeated scrapes emit that record at most once per activation;
@@ -130,7 +134,12 @@ For production operation, watch these first:
   `pig_predictive_router_backpressure_applied`,
   `pig_predictive_router_backpressure_state_info`, expiry/hold timestamps, and
   activation/extension counters show whether a load-dependent predictive
-  protection is currently being projected to Router. `active=1,applied=0` is
+  protection is currently being projected to Router.
+  `pig_predictive_router_backpressure_latest_load_reject_at_seconds` and
+  `pig_predictive_router_backpressure_renewal_logs_total` /
+  `pig_predictive_router_backpressure_renewal_logs_suppressed_total` prove that
+  sustained 429 protection is renewing even when log output is rate-limited.
+  `active=1,applied=0` is
   the intentional idle escape hatch: the bounded state remains observable, but
   no Router capacity clamp is exported without live load.
 - `pig_predictive_admission_virtual_decode_sequences` is the predictive
@@ -184,6 +193,12 @@ For production operation, watch these first:
   distinguishes backend-timing targets, qualified local timing fallbacks,
   missing targets, and structurally rejected targets. Do not treat all terminal
   requests as valid TPS training data.
+- `pig_predictive_completion_observer_events_total{event="attached|claimed|usage|terminal"}`:
+  locates a missing completion-feedback stage without request identifiers or
+  payload labels. For ordinary successful predictive forwards, the four
+  cumulative stages should progress together; a widening gap identifies
+  attachment, response eligibility/claim, usage parsing, or terminal cleanup
+  before input-size and scheduler outcome counters are interpreted.
 - `pig_predictive_admission_prediction_duration_seconds` and
   `pig_predictive_admission_estimator_duration_seconds`: separate scheduler/
   reservation latency from the bounded JSON estimator. During the live gate,

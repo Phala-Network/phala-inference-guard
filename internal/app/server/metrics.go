@@ -58,16 +58,20 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 
 func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmissionInput {
 	input := metrics.PredictiveAdmissionInput{
-		Mode:                   s.cfg.PredictiveAdmissionMode,
-		EnforcedRejects:        s.predictiveEnforcedRejects.Load(),
-		FailureClose:           s.predictiveShadowFailures.close.Load(),
-		FailureDecide:          s.predictiveShadowFailures.decide.Load(),
-		FailureForward:         s.predictiveShadowFailures.forward.Load(),
-		FailureForwardRejected: s.predictiveShadowFailures.forwardRejected.Load(),
-		FailureSemantic:        s.predictiveShadowFailures.semantic.Load(),
-		FailureCompletion:      s.predictiveShadowFailures.completion.Load(),
-		FailureResourceRelease: s.predictiveShadowFailures.resourceRelease.Load(),
-		FailureTerminal:        s.predictiveShadowFailures.terminal.Load(),
+		Mode:                       s.cfg.PredictiveAdmissionMode,
+		EnforcedRejects:            s.predictiveEnforcedRejects.Load(),
+		FailureClose:               s.predictiveShadowFailures.close.Load(),
+		FailureDecide:              s.predictiveShadowFailures.decide.Load(),
+		FailureForward:             s.predictiveShadowFailures.forward.Load(),
+		FailureForwardRejected:     s.predictiveShadowFailures.forwardRejected.Load(),
+		FailureSemantic:            s.predictiveShadowFailures.semantic.Load(),
+		FailureCompletion:          s.predictiveShadowFailures.completion.Load(),
+		FailureResourceRelease:     s.predictiveShadowFailures.resourceRelease.Load(),
+		FailureTerminal:            s.predictiveShadowFailures.terminal.Load(),
+		CompletionObserverAttached: s.predictiveCompletionObserver.attached.Load(),
+		CompletionObserverClaimed:  s.predictiveCompletionObserver.claimed.Load(),
+		CompletionObserverUsage:    s.predictiveCompletionObserver.usage.Load(),
+		CompletionObserverTerminal: s.predictiveCompletionObserver.terminal.Load(),
 	}
 	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
 	if !ok {
@@ -143,18 +147,21 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 		LastExistingUserTPSValid: snapshot.ExistingPrefill.LastExistingUserTPSValid,
 	}
 	input.RouterBackpressure = metrics.PredictiveRouterBackpressureInput{
-		Active:         snapshot.RouterBackpressure.Active,
-		Activation:     snapshot.RouterBackpressure.Activation,
-		Scope:          string(snapshot.RouterBackpressure.Scope),
-		MinimumRunning: snapshot.RouterBackpressure.MinimumRunning,
-		Reason:         string(snapshot.RouterBackpressure.Reason),
-		Source:         string(snapshot.RouterBackpressure.Source),
-		Samples:        snapshot.RouterBackpressure.Samples,
-		ActivatedAt:    snapshot.RouterBackpressure.ActivatedAt,
-		Until:          snapshot.RouterBackpressure.Until,
-		Hold:           snapshot.RouterBackpressure.Hold,
-		Activations:    snapshot.RouterBackpressure.Activations,
-		Extensions:     snapshot.RouterBackpressure.Extensions,
+		Active:             snapshot.RouterBackpressure.Active,
+		Activation:         snapshot.RouterBackpressure.Activation,
+		Scope:              string(snapshot.RouterBackpressure.Scope),
+		MinimumRunning:     snapshot.RouterBackpressure.MinimumRunning,
+		Reason:             string(snapshot.RouterBackpressure.Reason),
+		Source:             string(snapshot.RouterBackpressure.Source),
+		Samples:            snapshot.RouterBackpressure.Samples,
+		ActivatedAt:        snapshot.RouterBackpressure.ActivatedAt,
+		Until:              snapshot.RouterBackpressure.Until,
+		Hold:               snapshot.RouterBackpressure.Hold,
+		Activations:        snapshot.RouterBackpressure.Activations,
+		Extensions:         snapshot.RouterBackpressure.Extensions,
+		LatestRejectAt:     snapshot.RouterBackpressure.LatestRejectAt,
+		RenewalLogs:        snapshot.RouterBackpressure.RenewalLogs,
+		RenewalsSuppressed: snapshot.RouterBackpressure.RenewalsSuppressed,
 	}
 	input.PredictionDuration = snapshot.PredictionDuration
 	input.EstimatorDuration = &s.kvEstimatorDuration

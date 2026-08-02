@@ -164,7 +164,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		Mode:                   cfg.PredictiveAdmissionMode,
 		ShadowObservationLimit: cfg.PredictiveShadowObservationLimit,
 		ShadowPendingPrefills:  shadowPendingPrefills,
-		RouterBackpressureHold: predictiveRouterBackpressureHold(cfg.DynamicPollInterval),
+		RouterBackpressureHold: cfg.PredictiveRouterBackpressureHold,
 		RouterBackpressure: predictiveRouterBackpressurePolicy{
 			PhysicalKVHard: protectedTokens,
 			ActiveKVHard:   protectedTokens,

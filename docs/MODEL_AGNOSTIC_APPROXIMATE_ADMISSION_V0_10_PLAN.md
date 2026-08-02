@@ -7,9 +7,12 @@ Last updated: 2026-08-02 (Asia/Shanghai).
 ## 1. Authoritative objective
 
 PIG predicts before a request enters the upstream. Feedback only improves later
-predictions. Per-user TPS is the primary service objective; TTFT, TPOT, KV
-capacity, and preemption remain joint constraints. Subject to those constraints,
-PIG should progressively increase SLO-compliant total throughput.
+predictions. Per-user TPS is the primary service objective; TPOT, KV capacity,
+workspace safety, and preemption remain joint protection constraints. TTFT is
+measurement, learning, diagnostics, and offline-comparison data only: it never
+rejects, activates Router backpressure, or changes Router capacity. Subject to
+the protected constraints, PIG should progressively increase SLO-compliant
+total throughput.
 
 Input size is deliberately approximate and model-agnostic:
 
@@ -61,7 +64,7 @@ bounded request classification
   -> model-agnostic input-size interval
   -> conservative learned size multiplier
   -> backend observation plus every unabsorbed reservation
-  -> post-admit KV/TPS/TTFT/TPOT forecast
+  -> post-admit KV/TPS/TPOT forecast plus observational TTFT estimate
   -> atomic decision and reservation
   -> local QoS gate and forward commit
   -> response usage/latency observation and terminal release
@@ -128,9 +131,11 @@ only when the request was forwarded, exactly one terminal usage object exists,
 `prompt_tokens > 0`, estimator/backend identities match, the raw estimate was
 retained in bounded reservation state, and the request completed successfully.
 
-TPS/TTFT/TPOT learning keeps the same next-request-only rule. Prefer backend mean
-ITL/generation duration and use local semantic timing only as a qualified
-fallback. Missing usage is telemetry, not fabricated evidence.
+TPS/TPOT learning and observational TTFT learning keep the same
+next-request-only rule. Prefer backend mean ITL/generation duration and use local
+semantic timing only as a qualified fallback. Missing usage is telemetry, not
+fabricated evidence. No TTFT estimate may enter the admission constraints or
+Router-capacity projection.
 
 Size samples are kept only in memory. A PIG restart starts cold; no stale model
 or traffic distribution is silently restored. Size-learning update occurs only
@@ -159,16 +164,17 @@ For every candidate:
 1. project observed KV + unabsorbed reservations + candidate upper;
 2. predict existing users' post-admit TPS;
 3. predict the candidate user's TPS;
-4. predict TTFT/TPOT upper bounds;
-5. risk/reject on KV, preemption cooldown, TPS, TTFT, or TPOT violation;
+4. predict TPOT upper bounds and an observational TTFT estimate;
+5. risk/reject on KV, workspace, preemption cooldown, TPS, or TPOT violation,
+   never TTFT;
 6. otherwise reserve future demand atomically.
 
 The objective is SLO-compliant goodput, not raw admitted requests. Cold QoS uses
 explicit conservative defaults and exposes `source=cold`; learned values become
 active only after the minimum qualified sample count. The coordinator continues
-admitting cold-safe work until an explicit, current KV, TPS, TTFT, TPOT,
-preemption, freshness, or lifecycle constraint binds. A learned state is not by
-itself a reason to stop intake.
+admitting cold-safe work until an explicit, current KV, workspace, TPS, TPOT,
+preemption, freshness, or lifecycle constraint binds. A learned state or TTFT
+observation is not by itself a reason to stop intake.
 
 ## 8. Configuration simplification
 
@@ -3621,3 +3627,913 @@ prove a registry image, Compose integration, Router-disabled deployment, live
 readiness, Router enablement, or a 30-minute traffic canary. Those layers must
 remain separately evidenced, in that order, with `use1-cb` disabled until both
 shadow and enforce live gates pass.
+
+#### v0.10.5 source release and immutable registry evidence — complete
+
+The r32 executable inputs remained byte-identical through the release commit.
+The nested repository release state is:
+
+```text
+branch:        codex/pig-v0.10.0-model-agnostic
+commit:        85047e4e5a1b7bafa5c628cd92f0481b86fcd65b
+annotated tag: v0.10.5
+tag object:    87f0cc266f25c205449855762b57a86c231ce7fc
+```
+
+The branch and annotated tag were pushed to `pig-origin`, which is the
+`Phala-Network/phala-inference-guard` repository. The similarly named `origin`
+remote points to a different repository and was not used.
+
+The tag workflow published the immutable deployment input:
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:84eee2b3008dec884ced7471d20f38eb64d0406473eb9d7196eb5acc962ab577
+```
+
+An independent registry pull passed the production image contract with OCI
+version `0.10.5`, entrypoint `/phala-inference-guard`, and the expected NVIDIA
+environment. The SHA-256 of `/phala-inference-guard` inside the published image
+is exactly the r32 tested-binary SHA-256:
+
+```text
+1f8f8d9ad5a19cd9b08987c0977e4348e365750f614a0e7656518a096180120b
+```
+
+The registry verification archive is
+`tmp/pig-v0105-use1-cb-20260802/registry-verify-evidence.tar`, SHA-256
+`2068fb6be73f67c9c7f6b78a6509d32e46ff3384efa2bb189a782d5c8e43f00b`.
+This proves registry identity and binary equivalence, not Compose integration,
+deployment, live readiness, Router enablement, or production behavior.
+
+#### v0.10.5 fresh live preflight — passed for Router-disabled shadow deploy
+
+At `2026-08-02T19:42:08Z`, a new read-only preflight was captured under
+`tmp/pig-v0105-use1-cb-live-20260802/predeploy-shadow-20260802T194208Z`.
+The target `a0f0bfb3-e46f-4b22-814e-24872f251193` was `running` with
+`in_progress=false`, no boot error, and exact live Docker Compose SHA-256
+`d014719f6d3926ad08c5ac76f1462ed72e4a1e130a0397b9f9c4e3b889568e29`.
+That byte-exact Compose is retained as the rollback input.
+
+The live PIG, vLLM, HAProxy, and dstack-ingress containers were running. The
+PIG and vLLM were idle: predictive reservations, shadow observations, deferred
+outcomes, vLLM running, vLLM waiting, KV usage, and preemptions were all zero;
+predictive intake was open and lifecycle failure counters were zero.
+Authenticated `/v1/models`, `/pig/metrics`, `/v1/metrics`, and attestation
+returned HTTP 200, NVIDIA attestation was non-empty, and both metrics paths
+returned 401 without authentication. The captured artifact secret scan passed.
+
+The current Router digest was
+`sha256:8969f268ba986f106f9085ffe64f48db9199c5527d0d4dd83c92b44b0a2499c1`.
+Its current enabled set was exactly `use1-4c`; `use1-9b` and `use1-cb` were
+both disabled. This differs from older snapshots and is now the preservation
+baseline: this rollout must not enable, disable, or otherwise modify `use1-9b`
+or another upstream. The target `use1-cb` route was disabled and had
+`running=0`. Its Router-side PIG state was `not_collected`/stale because the
+disabled route was not being polled; this is not evidence of a live metrics
+failure, and after a later authorized enable the canary must prove
+`pig_ok=true`, `stale=false`, and correct protection projection from fresh
+Router state.
+
+The next gate is to generate a shadow candidate from the exact rollback
+Compose and prove that its only semantic changes are the PIG image digest above
+and `PREDICTIVE_ADMISSION_MODE=enforce` to `shadow`. vLLM, HAProxy,
+dstack-ingress, all thresholds, `DYNAMIC_TTFT_ENABLED=false`, and every other
+field must remain unchanged. The centralized-KMS update must not pass `.env` to
+`phala deploy`.
+
+The generated Router-disabled shadow candidate is
+`tmp/pig-v0105-use1-cb-live-20260802/predeploy-shadow-20260802T194208Z/use1-cb.v0105.shadow.candidate.yaml`,
+SHA-256 `6644b9f2c148ddfa6b74b7f3b6fbc8c1abecb2965fa93245b201f6a76d24983f`.
+Its unified diff contains exactly the two authorized lines, and reversing those
+two replacements reproduces the rollback Compose byte-for-byte. A second live
+drift check at `2026-08-02T19:45:44Z` reproduced the same Compose SHA-256,
+Router digest, enabled set `use1-4c`, disabled/drained `use1-cb`, endpoint
+gates, and zero active PIG/vLLM resource state. This authorizes only the
+Router-disabled shadow deployment of that exact candidate.
+
+### v0.10.6 sustained protection publication and shadow-feedback repair plan — active 2026-08-02
+
+This section is the current corrective authority and supersedes the v0.10.5
+claim that load protection must use a non-renewing fixed episode. Fresh review
+of the retained v0.10.4 Router canary proves that claim was wrong. It also
+supersedes any earlier promotion statement for v0.10.5: the deployed v0.10.5
+runtime remains a Router-disabled shadow diagnostic only until every gate below
+passes on a new executable version.
+
+The user-visible defect is a broken publication control loop. PIG can reject a
+request pre-forward while its structured status log and Router-consumed metrics
+already present ordinary spare capacity. Router then continues selecting the
+node, another request reaches PIG, and the node alternates between 429 and new
+traffic instead of applying one coherent backpressure interval. Returning the
+correct 429 is therefore insufficient: the reject, durable diagnostics,
+effective-capacity projection, and later recovery must describe the same
+admission state.
+
+#### Corrected live evidence and root cause
+
+The retained v0.10.4 canary r2 is direct evidence of this failure. Predictive
+risk decisions advanced `116 -> 193`, enforced rejects advanced `118 -> 196`,
+and Router processed advanced `237759 -> 237901`. The fast Router observer saw
+fresh, healthy PIG scrapes but alternating effective capacity such as:
+
+```text
+13:12:41Z  observed_running/global_limit = 2/2   protected
+13:12:43Z  observed_running/global_limit = 1/50  unprotected
+13:12:45Z  observed_running/global_limit = 1/50  unprotected
+13:12:49Z  observed_running/global_limit = 2/2   protected
+13:12:51Z  observed_running/global_limit = 1/50  unprotected
+13:12:54Z  observed_running/global_limit = 3/3   protected
+13:12:56Z  observed_running/global_limit = 2/50  unprotected
+```
+
+Across only 244.922 seconds, activation count advanced `84 -> 129`; nineteen
+fast Router samples contained only ten full-capacity projections while traffic
+and rejects continued. At the first retained slow sample, PIG already had 149
+risk decisions and 151 enforced rejects, yet metrics reported
+`router_backpressure_active=0`, `router_backpressure_applied=0`, effective
+running `2`, and effective global limit `50`. The same snapshot reported 96
+activations and 52 extensions. This is internally inconsistent with sustained
+load protection and explains why Router continued to feed the node.
+
+Source review identifies the exact mechanism. The v0.10.5 state uses a hold
+derived from PIG's backend poll interval and clamps it to two through five
+seconds. A repeated load-dependent reject during an active episode increments
+`extensions` but does not advance `until`. The state therefore expires relative
+to the first reject even while later requests are still being rejected. A
+subsequent reject creates a new short activation, producing the observed
+protected/unprotected oscillation. The narrow cold test scraped inside one
+episode and could not detect this sustained-load failure. PIG's internal backend
+poll interval is not a valid proxy for Router's independent scrape cadence or
+jitter.
+
+Logging has the same semantic gap. The first load reject emits
+`event=activated`, but rejects inside the active interval produce no bounded
+extension event; a later five-second status line may therefore show inactive
+capacity even though cumulative enforced rejects continued. Metrics expose a
+cumulative extension count, but not a renewed deadline or a rate-limited record
+that ties the latest reject to the current lease. This is observability loss,
+not merely a log-format preference.
+
+The current deployed v0.10.5 shadow also produced a separate release blocker.
+Router remains disabled and shadow request-scoped risk correctly forwards
+without node-wide backpressure, but large cold `/v1/completions` risk requests
+created and terminated observation-only records without advancing accepted or
+rejected input-size feedback. A small fit `/v1/completions` request with the same
+2xx JSON usage shape did advance the input-size rejected counter. The defect is
+therefore narrowed to the observation-only risk response feedback path; it must
+be reproduced by a focused HTTP red test and fixed before v0.10.6 release. It
+must not be explained as `finish_reason=length`, because current usage parsing
+does not use finish reason and the retained response satisfies the parser's
+status, content type, body bound, choice-count, and positive-usage contract.
+
+#### v0.10.6 behavioral contract
+
+1. Prediction and rejection still occur before any vLLM action. Feedback may
+   only train a later request. TTFT remains measurement, learning, diagnostics,
+   and offline-comparison data only; it cannot reject, activate backpressure, or
+   modify Router capacity.
+2. One request-scoped oversized, unsupported, or otherwise intrinsically unsafe
+   request advances durable fixed-cardinality reject diagnostics and a bounded
+   payload-free log, but does not suppress an idle node. Only a load-dependent
+   reject with existing predicted work, or current node availability failure,
+   may create node-wide Router backpressure.
+3. Every load-dependent enforce reject atomically renews the current protection
+   lease from the **latest** reject, not the first reject. `until` must advance
+   monotonically to at least `reject_time + hold`; it must never move backward.
+   Rejections that continue faster than the hold therefore cannot create an
+   unprotected gap. A new activation identity is created only after a real
+   expiry, not for every short pulse.
+4. The hold is a PIG publication-delivery setting, independent of the backend
+   metrics poll interval. It must cover at least one complete Router scrape plus
+   normal jitter in the deployed configuration and be explicitly observable.
+   The implementation may expose a bounded configuration value, but invalid,
+   zero, negative, overflow, or unreasonably large values must fail startup or
+   normalize conservatively. The production default must not be the current
+   two-second value derived from a 100 ms backend poll.
+5. Backpressure `active` means a current load or availability lease exists.
+   Backpressure `applied` means that the same coherent snapshot has enough
+   current/predicted work to project Router fullness. While applied, Router's
+   exact consumed fields expose `effective_running >= 1`, `waiting` truthfully,
+   and `effective_global_limit <= effective_running`, while raw running, raw
+   global limit, and PIG-local admission limit remain separately truthful.
+6. A lease does not create low-flow or drain self-lock. If current and predicted
+   running both reach zero, capacity projection is not applied even before the
+   lease timer expires. With no later load reject, the lease expires after the
+   bounded hold. A subsequent cold-safe request is admitted, and all
+   active/applied/effective state converges to ordinary capacity without a
+   restart, manual reset, or new traffic requirement.
+7. The first reject in an episode emits one payload-free `event=activated`
+   record before the proxy writes 429. Renewals advance cumulative counters and
+   latest-reject/deadline metrics synchronously before 429. A bounded,
+   rate-limited `event=renewed` record must expose the activation, reason,
+   extension/suppression count, latest reject time, and renewed deadline without
+   logging every request. Metrics and logs may contain only fixed enums and
+   numeric/timestamp state—never model, user, request ID, prompt, response,
+   bearer, token IDs, or request body.
+8. The HTTP reject counter, decision reason, durable last reject, activation or
+   renewal, and capacity projection are derived from one typed decision under
+   the same adapter lock. The proxy may write 429 only after that state commit
+   and synchronous transition callback return. Metrics scraping may occur
+   concurrently but must observe either the complete previous snapshot or the
+   complete new snapshot, never a mixed state.
+9. Shadow mode records the same prediction reason and diagnostics but never
+   rejects or activates Router capacity. A valid 2xx usage response for an
+   observation-only shadow risk must be claimed, parsed, passed to
+   `ObserveCompletion`, and produce an accepted or safely rejected input-size
+   outcome before terminal cleanup. Failure phases use bounded counters so a
+   missing observer/usage outcome cannot remain silent.
+10. PIG still does not route and no Router or vLLM source change is authorized.
+    PIG's responsibility ends at publishing a coherent, timely capacity view;
+    the live gate separately proves that the existing Router consumes it and
+    stops selecting the node during sustained protection.
+
+#### Required red/green tests before implementation is accepted
+
+- A deterministic-clock unit red must show the current behavior: reject at
+  `t=0`, repeat at `t<hold`, then observe inactive state at the original
+  deadline even though the latest reject is newer. Green requires a monotonic
+  renewed deadline, one activation, one or more extensions, and no inactive
+  interval until `last_reject + hold`.
+- A real approximate-adapter HTTP enforce test must hold one decode open and
+  produce repeated load-dependent TPS rejects. Concurrent metrics scrapes at
+  adversarial points around the original deadline must always expose
+  active/applied and Router fullness while rejects continue. Upstream counters
+  remain unchanged for every 429.
+- A pre-429 publication test must execute the metrics/Router parser from inside
+  the synchronous activation and renewal callbacks and prove that the complete
+  new projection is already visible before `predictiveEnforcedRejects`, total
+  429, or the response writer advances.
+- A Router-cadence simulation must vary scrape phase, latency, and jitter. A
+  sustained stream of load rejects must be observed as continuously full after
+  the first delivered scrape; Router processed/selection is not allowed to
+  advance because of a protection-expiry gap. The simulation must also prove a
+  finite last reject yields bounded recovery.
+- A drain/low-flow test must renew protection many times, release all live and
+  reserved work, and prove `applied=0` immediately at terminal zero, `active=0`
+  after the hold, then admit a cold-safe request. Include cancellation,
+  completion, timeout, upstream error, coordinator reset, and close races.
+- Request-scoped large/unsupported input must still return typed 429 with
+  durable reason/log metrics while `router_backpressure_active=0` and ordinary
+  effective capacity remains visible. This prevents a single unusual request
+  from globally locking the node.
+- Availability protection remains health-driven rather than request-renewed and
+  clears as soon as coherent upstream/coordinator health returns. It must not be
+  conflated with the load lease.
+- Log tests require exactly one activation per episode, bounded renewal output
+  with correct suppression totals, a durable latest-reject timestamp/deadline,
+  and no payload/high-cardinality data. Race tests cover simultaneous rejects,
+  telemetry scrapes, expiry, health transitions, and close.
+- A focused shadow HTTP red must use cold `/v1/completions`, a request-scoped KV
+  risk, a non-stream 2xx JSON response with one choice and positive usage, and
+  assert observation create/forward/claim/parse/ObserveCompletion/terminate plus
+  an accepted-or-rejected input-size counter delta. Green must leave
+  observations, reservations, and deferred outcomes at zero.
+- Full remote-builder gates remain mandatory: formatting/static checks, all Go
+  tests, race tests, deterministic simulations, hot-path benchmarks, image
+  build and off/shadow/enforce contract smoke, protocol/auth tests, terminal
+  state, archive hashes, and secret scan. No Go/native test or benchmark is run
+  on local Windows.
+
+#### Version, review, and live execution order
+
+Executable changes require v0.10.6; v0.10.5 source, tag, registry digest, and
+evidence remain immutable. Work stays in the nested PIG repository. The source
+change must first prove focused red against v0.10.5 behavior, then focused
+green, complete builder matrix, and three recorded review passes: (1) causality
+and publication timing, (2) safety/efficiency/SOLID/lifecycle, and (3) evidence,
+version, image provenance, and rollout scope. Only then may source be committed,
+pushed and tagged, and an immutable image published and independently
+pull-verified for binary equivalence.
+
+Live execution remains strictly ordered on
+`a0f0bfb3-e46f-4b22-814e-24872f251193`: fresh read-only drift/rollback audit;
+Router-disabled shadow; protocol, observer-feedback, latency, sparse/low-flow,
+and terminal-zero gates; Router-disabled enforce; standalone request-scoped
+reject; sustained load-protection renewals; logs and both metrics paths before
+429; drain/recovery; and zero preemption/failure/leak gates. The target Router
+route and every unrelated route remain unchanged throughout these phases.
+
+Only after all disabled-route gates pass may exactly `use1-cb` be enabled while
+preserving the then-current enabled set. The existing Router must prove
+`pig_ok=true`, `stale=false`, a fresh age, at least one sustained protection
+interval with continuous full-capacity projection, no selection/processed
+advance attributable to expiry gaps during that interval, and prompt recovery
+after the final reject/drain. The 30-minute real-traffic observation then starts
+from zero and simultaneously tracks Router selection/processed, PIG attempts
+and rejects, vLLM inference, single-user TPS/TPOT, KV, waiting, preemption,
+goodput, logs, and metrics. Any publication mismatch, continued selection during
+sustained protection, TPS/TPOT/KV/preemption violation, observer failure,
+sticky lock, leak, fatal/OOM/Xid, or unrelated route drift immediately disables
+only `use1-cb`, retains bounded evidence, and restarts the repair loop with a new
+version.
+
+Current safe live state is unchanged: v0.10.5 runs in shadow on the authorized
+CVM, `DYNAMIC_TTFT_ENABLED=false`, `use1-cb` is Router-disabled and idle, and no
+enforce promotion or 30-minute canary is authorized by this plan update.
+
+#### v0.10.6 plan review pass 1 — causality and publication timing
+
+The first review retraced the real transaction and confirmed that the failure
+is not delayed backend feedback: the unsafe candidate is rejected from current
+prediction, but publication expires from the first reject while later rejects
+continue. The corrected causal invariant is
+`active_until >= latest_load_reject + hold`, committed under the adapter lock
+before the typed decision returns to
+the proxy. The synchronous callback executes only after that lock is released,
+so a callback may safely scrape the just-committed snapshot without deadlock and
+must complete before the proxy increments its enforced-reject/429 counters or
+writes the response.
+
+This review also corrected an over-broad Router assertion. Router `processed`
+or running can move briefly because a selection already in flight before the
+new scrape may complete. Live acceptance therefore captures activation time,
+first fresh full-capacity Router scrape, and a bounded propagation allowance;
+only selection/processed growth that begins after that boundary and is not an
+already-recorded in-flight request is a publication failure. The deterministic
+simulation has no such network ambiguity and still requires zero post-scrape
+selection during continuous protection.
+
+#### v0.10.6 plan review pass 2 — safety, efficiency, and SOLID
+
+The second review rejected any permanent latch or request-triggered global
+lock. Renewal is allowed only for load-scoped rejects whose atomic prediction
+contains existing sequences (including tracked pending-prefill reservations),
+or for the separately health-driven availability state. Intrinsically oversized
+or unsupported requests remain request-scoped. Projection is derived from an
+immutable telemetry snapshot and is not stored in the scheduler, manager, or
+Router client; this preserves estimator, scheduler, lifecycle, publication, and
+rendering responsibilities.
+
+The production publication lease is decoupled from `DYNAMIC_POLL_INTERVAL`.
+The implementation target is an optional
+`PREDICTIVE_ROUTER_BACKPRESSURE_HOLD` duration with a five-second default and a
+validated two-through-thirty-second bound. Direct adapter tests may inject a
+shorter deterministic hold, but production config cannot silently become 200
+ms merely because backend metrics poll every 100 ms. Every renewal is O(1),
+uses existing fixed state, and adds no request-keyed map or payload retention.
+Rate-limited renewal logs prevent request-volume amplification. Immediate
+`applied=0` at current and predicted running zero plus bounded expiry proves
+drain recovery and prevents low-flow self-lock.
+
+#### v0.10.6 plan review pass 3 — evidence and rollout boundary
+
+The third review separates four facts that earlier evidence conflated: a local
+429, a synchronous state commit, a PIG metrics scrape inside one short episode,
+and the Router actually consuming sustained protection. The new builder red
+must fail on non-renewal itself; the green must cover adversarial expiry/scrape
+interleavings, not only a convenient immediate scrape. Live shadow cannot prove
+429 or Router capacity behavior, and a disabled Router cannot prove consumption;
+therefore shadow feedback, disabled-route enforce publication, Router scrape,
+and the new 30-minute canary remain distinct gates.
+
+The review also keeps the observation-only `/v1/completions` anomaly as an
+independent v0.10.6 blocker. A passing renewal fix cannot hide missing feedback,
+and a passing observer fix cannot authorize Router traffic until sustained
+publication is proven. No current live mutation is needed for either focused
+red; all executable tests remain remote-builder-only. The plan document is the
+only changed repository path at this review point.
+
+#### v0.10.6 sustained-publication focused red r1 — exact builder evidence
+
+The first executable v0.10.6 gate ran remotely on
+`vllm-v024-patch-builder-use1` (`app_89811a9add5b20427ee1fbf4dc22a33984e41959`),
+not on local Windows. Direct SSH required the current `id_ed25519` key, the
+DStack TLS `ProxyCommand`, and gateway port `443`; the earlier port-22 attempt
+timed out before authentication. The long-running Ubuntu builder container had
+Git and Docker but no Go toolchain, so the test ran in the builder-local
+`golang:1.24.5-bookworm` image with registry digest
+`sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40`.
+The recorded environment was Go `1.24.5`, `linux/amd64`, `CGO_ENABLED=1`.
+
+The exact v0.10.5 baseline archive and test-only overlay were independently
+hashed before execution and again after transfer:
+
+```text
+base.tar.gz   b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16
+tests.patch   89a86fbaa02559d76272dcb561f19a2fa251d362bfefcf59a73c3a9bdaebb52e
+builder-red.sh 0635d88abc50b999eb226e44cbf779603dbcd1b11a2950a48864568459fa5ce6
+```
+
+`TestPredictiveRouterBackpressureRenewsFromLatestLoadReject` exited `1` for
+the intended product reason. After a first reject at `t=0`, a second reject at
+`t=1.5s`, and a snapshot at `t=2.5s`, the state reported `Extensions=1` but
+`Active=false`, activation `0`, and the original `Until=t+2s`. It therefore
+proved that the counter advanced while the publication lease did not renew.
+This is the deterministic source-level equivalent of the retained live
+protected/unprotected Router-capacity oscillation.
+
+The independent
+`TestApproximatePredictiveHTTPShadowRequestScopedCompletionRiskFeedsInputCalibration`
+fixture exited `0`: the small non-stream completion fixture successfully
+created and terminated its observation and produced input-size feedback. That
+pass does **not** close the retained live 1.6 MB completion anomaly. It narrows
+the next evidence step to a bounded large-body/ReverseProxy/response-observer
+fixture or observer-stage telemetry; no speculative learner change is allowed.
+
+Formatting was clean. The evidence archive is retained under
+`tmp/pig-v0106-use1-cb-20260802/red-r1/`, has SHA-256
+`5318211992fa3749abc7624d700fbb8ba0e5ab66eb228cf67bca53ab20bab1b6`,
+and records `overall.status=intended_renewal_red`. This red authorizes the
+smallest coherent v0.10.6 implementation slice; it is not green evidence, an
+image, a deployment, or permission to enable Router traffic.
+
+#### v0.10.6 minimal renewal slice focused green r2 — interim evidence
+
+The first green attempt, r1, was correctly rejected rather than promoted: the
+new zero-value hold validation exposed a test proxy fixture that had not set the
+five-second production default, and the formatting gate found three `gofmt`
+alignment diffs. The renewal test itself reported no separate failure, while
+the config and metrics packages passed. Its failed evidence archive is retained
+with SHA-256
+`562cd3dd24b0979f169c8dada04ac9abff4e33d3ab19466645d90a958fc83a5e`.
+
+After changing only that fixture and the reported formatting, r2 ran from the
+following independently verified inputs on the same Go 1.24.5 builder image:
+
+```text
+base.tar.gz       b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16
+source.patch      bd6915d6e181a71e0f54b3fb1707093800cfcb474337fc0f94f19c389ef31b8c
+builder-focused.sh 576d4be71b6a37c934d70f4b24bd9db8387349675e8819ee62151e0c7702bebc
+```
+
+The focused server suite passed the deterministic latest-reject renewal,
+immutable activation, bounded renewal log, request-scoped non-lock,
+availability overlap, effective-capacity, status, and small shadow completion
+feedback cases. Predictive config tests passed the independent five-second
+default, explicit duration, invalid/zero/out-of-range rejection, and TTFT-off
+contract. Predictive metrics writer tests passed, and `gofmt.diff` was empty.
+All three test statuses and `overall.status` were zero.
+
+The locally retained r2 evidence archive is under
+`tmp/pig-v0106-use1-cb-20260802/green-r2/` with SHA-256
+`6836af62568e5fbbc8e3caaf4a62f70a1e3f013eaf8b0ff2599b877449aae85a`.
+This is focused source green only. It does not yet prove sustained real HTTP
+429 publication across the old deadline, callback-before-429 visibility,
+adversarial Router scrape cadence, drain/race behavior, the retained large-body
+shadow anomaly, a complete builder matrix, image provenance, deployment, or
+live Router consumption.
+
+#### v0.10.6 sustained HTTP publication focused green r3 — interim evidence
+
+The r3 source added a real proxy HTTP sequence around the former expiry gap.
+Its independently verified remote-builder inputs were:
+
+```text
+base.tar.gz       b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16
+source.patch      ec02ba59390f4c8906afc76a8b824c5e62b7427cf18da88e61ed3fdbe9bd70b9
+builder-focused.sh 8b6ae9fa9f324d6c720a9a03e7b3d9f38b4e2f862c9033dfef5313ec4e33b964
+```
+
+Three HTTP requests at `t=0`, `t=1.5s`, and `t=1.6s` all returned 429 and
+made zero upstream calls. The activation callback scraped metrics before the
+first enforced-reject counter advanced; the first renewal callback scraped
+before the second counter advanced. Both callback snapshots already exposed
+`active=1`, `applied=1`, and the Router-consumed `running=1, limit=1` view. The
+third renewal log was rate-limited, but its state still advanced synchronously.
+
+At `t=3.55s`, both the original deadline and the logged-renewal deadline had
+passed. Only the rate-limited third renewal remained, and metrics still exposed
+one activation, two extensions, one renewal log, one suppressed renewal log,
+the latest reject at `t=1.6s`, `active=1`, `applied=1`, and Router fullness
+`1/1`. At `last_reject + hold + 1ns`, metrics returned to `active=0`,
+`applied=0`, and the ordinary Router limit `50`. This directly closes the
+source-level protected/unprotected gap while retaining bounded recovery.
+
+The expanded server, config, and metrics focused suites all exited zero and
+`gofmt.diff` was empty. The retained evidence archive is
+`tmp/pig-v0106-use1-cb-20260802/green-r3/evidence.tar`, SHA-256
+`1a86a803836e90d9321ac49027d0e99a53454656a2eb44714da81b4f335cf593`.
+This remains focused source evidence; race, cadence simulation, large-body
+shadow feedback, full-matrix, image, disabled-route runtime, and Router-live
+consumption gates are still open.
+
+#### v0.10.6 cadence, drain, and bounded large-body focused green r4 — interim evidence
+
+r4 extended the deterministic coverage beyond an immediate metrics scrape. Its
+independently verified remote-builder inputs were:
+
+```text
+base.tar.gz       b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16
+source.patch      208fd41fe2a0973efb02507e8112d127a9e38dcd914732490cba544b112a5f99
+builder-focused.sh 367688226b3df168b5040d66f5a76a8f96f7878c30765be2aa5e72fd9b2ccb96
+```
+
+The focused server command selected all predictive Router-backpressure tests,
+including the cadence/jitter simulation, together with HTTP renewal,
+request-scoped non-lock, multi-renewal drain/recovery, availability, and shadow
+completion feedback cases. The cadence test varied scrape phase and positive and
+negative jitter while load rejects arrived once per second. After the first
+delivered protected scrape, no later scrape observed an inactive or non-full
+capacity gap before `last_reject + hold`; the finite final reject still recovered
+within the bound. The drain test included a logged renewal and a rate-limited
+renewal, then cleared current/predicted work while the lease remained active and
+proved `applied=0`, ordinary Router capacity, timer expiry without new traffic,
+and a subsequent cold-safe admission. A bounded 1.6 MB shadow fixture also
+completed without a reservation/observation leak, but its request shape was not
+yet the exact retained live trailing-whitespace shape.
+
+Server, config, and metrics focused suites and formatting all exited zero. The
+downloaded archive is
+`tmp/pig-v0106-use1-cb-20260802/green-r4/evidence.tar`, SHA-256
+`f2537fec0c796301add8f0bd9887f3bbd245d39f0a395d32bc32720a7da3f69c`.
+The archive's internal `SHA256SUMS` was independently rechecked after download.
+This still does not constitute a complete race/full matrix, image, deployment,
+or live Router-consumption result.
+
+#### v0.10.6 exact live-shape shadow feedback focused green r5 — interim evidence
+
+Fresh inspection of the retained request established that the 1.6 MB live case
+was not a 1.6 MB prompt. It was an otherwise ordinary small JSON request followed
+by 1,600,000 bytes of trailing whitespace. r5 changed the fixture to that exact
+request-body shape and used a more vLLM-like non-stream `/v1/completions` 2xx JSON
+response with one choice, `finish_reason=length`, and positive prompt/completion
+usage. Its builder inputs were:
+
+```text
+base.tar.gz       b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16
+source.patch      a3791cd77c8acdf042633d053e6e9c3e63cc04d2abce5391d087ee4965b6cdc7
+builder-focused.sh 68fe6a3488e825704c4b909e4bb17c0b62c1ecc6d2ba10e922ea0ddf3fcbaa34
+```
+
+The fixture returned HTTP 200 with exactly one backend call, one risk decision,
+no Router backpressure in shadow, one created and terminated observation, one
+accepted-or-rejected input-size feedback delta, and zero remaining manager
+reservations. Server, config, metrics, and formatting statuses were all zero.
+This disproves a deterministic parser failure caused merely by the trailing
+whitespace or the vLLM-like response shape; it does not prove which stage was
+missing in the retained deployed runtime.
+
+The downloaded archive is
+`tmp/pig-v0106-use1-cb-20260802/green-r5/evidence.tar`, SHA-256
+`c9a4613cccb809a809abc3126c3ce8dac71cb2d130dd4159b1b9ffd39d5a43af`.
+Its internal `SHA256SUMS` also passed after download.
+
+#### v0.10.6 completion-observer stage telemetry r6/r7 — failed gate then focused green
+
+Because a passing synthetic fixture cannot localize the earlier live anomaly,
+the next source slice added four fixed-cardinality lifecycle counters:
+`attached`, `claimed`, `usage`, and `terminal`. They add no model, user, request,
+prompt, response, token, or bearer labels. The same four cumulative values are
+published in predictive metrics and the periodic status line so the next
+Router-disabled shadow gate can distinguish attachment, claim/content-type,
+usage parsing, and terminal/calibration failures without payload logging.
+
+r6 used source patch
+`63b64bbc73a1c7e3bbe195553dff2343fad3332ba583fbeee0b14771656f1f12`
+and reusable runner
+`e63b042a5baf63d9a4e8295d723762ddc67aa6aa9d42b09436eb436b52a72b3c`.
+All three Go suites exited zero, but the formatting gate exited `2` with four
+gofmt differences; consequently `overall.status=1`. Its downloaded evidence
+archive SHA-256 is
+`5e011f90bd86a16da862d15f3a511153f9b2105222a99734e89231817a586b61`.
+r6 is retained as a failed gate and is not green evidence.
+
+After applying exactly the reported formatting, r7 used source patch
+`57f2927cb2feeb505e31896b300c7085255d0843a41767ae15fa9f93d7b654d8`
+with the same runner. The exact live-shape fixture proved observer lifecycle
+`attached/claimed/usage/terminal = 1/1/1/1`, one input-size feedback outcome, and
+zero remaining reservations. Server, config, metrics, and formatting statuses
+all exited zero. The downloaded archive is
+`tmp/pig-v0106-use1-cb-20260802/green-r7/evidence.tar`, SHA-256
+`ec21f8c785e90f5cf08bef9b9b36dbb3d0f959e965142cf083a12306215a113e`;
+its internal `SHA256SUMS` passed independently after download.
+
+r7 is the latest focused source green only. The executable release identity is
+still v0.10.5, and no commit, push, tag, image build/publication, Compose change,
+CVM deployment, Router enablement, or production request was performed. The
+next mandatory gate is source review followed by the complete remote-builder
+test/race/simulation/benchmark/static matrix; focused evidence cannot authorize
+live traffic.
+
+#### v0.10.6 completion telemetry benchmark r8/r9 — superseded reconstruction then focused green
+
+The first benchmark attempt, r8, correctly remained superseded. Its focused
+server/config/metrics and formatting statuses were zero, but the locally new
+benchmark file was still untracked and therefore absent from the ordinary
+`git diff --binary` reconstruction patch. The remote command consequently
+compiled the r7 executable source and printed no benchmark rows. r8 is not used
+as performance evidence and did not change any live or release state.
+
+r9 marked the new benchmark path as intent-to-add only so the exact reconstruction
+patch contained it. The independently checked inputs were:
+
+```text
+base.tar.gz       b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16
+source.patch      ded8d4cc752605601b39d13173e06622d49a9ca2a4d445bdee2f9fc1585dd42b
+builder-focused.sh e63b042a5baf63d9a4e8295d723762ddc67aa6aa9d42b09436eb436b52a72b3c
+```
+
+The reconstructed source included
+`BenchmarkPredictiveCompletionObserverStageTelemetry`. Focused server, config,
+metrics, and formatting gates all exited zero. The 8-thread remote-builder
+contention benchmark ran five one-second samples for the same observer lifecycle
+with and without the four fixed counters:
+
+```text
+disabled: 12.30 .. 12.61 ns/op, 0 B/op, 0 allocs/op
+enabled:  147.0 .. 148.2 ns/op, 0 B/op, 0 allocs/op
+delta:    approximately 135 ns/lifecycle under shared-counter contention
+```
+
+This is a narrow CPU microbenchmark, not end-to-end service latency or GPU
+throughput evidence. It does establish that the diagnostic slice adds no heap
+allocation and remains well below the existing microsecond-scale estimator and
+admission budget, so a more complex sharded telemetry design is not justified
+before live evidence. The downloaded evidence archive is
+`tmp/pig-v0106-use1-cb-20260802/green-r9/evidence.tar`, SHA-256
+`70340ad5bac2b3bfa6991ae805e1a3e4ba56962337394560f7711c7b671fba16`.
+Its internal checksums and both focused and benchmark statuses were independently
+verified after download.
+
+#### v0.10.6 implementation review pass 1 — causal publication and observable coherence
+
+The post-implementation review retraced the actual request path rather than the
+state helper alone. A typed load-dependent reject is recorded under the adapter
+mutex; every in-episode reject advances `latestRejectAt`, monotonically extends
+`until` to at least `latestRejectAt + hold`, and updates fixed cumulative renewal
+telemetry before unlocking. The synchronous transition callback runs after the
+unlock, so it can scrape the committed snapshot without deadlock, but still
+returns before the proxy increments enforced-reject/429 counters or writes the
+response. The r3 HTTP callback test directly exercises this ordering.
+
+The metrics review confirmed that the same immutable adapter snapshot feeds both
+the predictive diagnostics and the exact Router-consumed dynamic fields. While
+load protection is active and current/predicted running is non-zero, it publishes
+`active=1`, `applied=1`, effective running at least one, and effective global
+limit no greater than effective running, while keeping raw running, raw global
+limit, waiting, and the PIG-local admission limit separate. r3 proves this across
+the old expiry deadline, and r4 proves it across Router scrape phases/jitter.
+Activation and renewal logs carry only fixed enums, counters, sizes, and times;
+the durable last-reject and periodic status fields expose any rate-limited renewal
+tail. No request, model, user, prompt, body, bearer, or token identifier enters
+the publication state.
+
+The review found no remaining causal publication gap in the current source.
+Request-scoped oversized/unsupported inputs intentionally do not suppress an
+idle node, and load projection stops applying immediately at current and
+predicted running zero. The next review pass remains contingent on complete race,
+lifecycle, simulation, and performance evidence; this source review alone is not
+a release or deployment gate.
+
+#### v0.10.6 pre-version full matrix r10/r11 — harness failure then intended stale-test red
+
+r10 used base archive
+`b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16`,
+source patch
+`e557f79f55a059a78d74170ff457646b579dcc9a41a3131b7e782e0b848b7661`,
+inner runner
+`d8dc9bb6daa0ec665dfaac615288d7849a3deb8d9a60b2e7dc5498fc38c313fd`,
+and host runner
+`b94d49ddc4ae0cb813fc20b0c92940091c0837b8d01b65fae71d063d63853b9d`.
+It did not enter any Go or image gate: the host runner incorrectly used the
+builder-container path `/persistent` as if it were writable on the DStack host.
+Host cache-directory creation failed immediately because that host path is
+read-only. The failure archive SHA-256 is
+`a01d37dc29820d9cfad86ae58932c89a1d56da9f8777b9facecfa7661c5ed7f2`.
+r10 is a harness failure only and proves no product red or green.
+
+r11 preserved the same source inputs and inner runner, changed only the host
+runner to SHA-256
+`ed13b9a1ae068cf4a9daae3599ac930bee37294f4273af5c1671a446f88021c6`,
+and used the real host persistent path
+`/var/volatile/dstack/persistent`. Reconstruction, formatting, the static
+model-agnostic/no-cache/TTFT-off contract, and `go vet ./...` all exited zero.
+The complete `go test ./...` gate then exited one for exactly one stale test:
+
+```text
+TestApproximatePredictiveEnforcePublishesBoundedRouterBackpressure
+Extensions=1
+Activations=1
+renewal callback count observed=2, old assertion expected=1
+```
+
+The test named every `OnRouterBackpressure` callback an "activation" and still
+encoded the superseded v0.10.5 expectation that an in-episode load reject emits
+no callback. The new callback was the required bounded `event=renewed`; the
+actual activation count correctly remained one and the renewed deadline was
+present. The r11 archive SHA-256 is
+`3a99ee0b38b2084d7144f9643571fcc11f6fc576b2f2cb449c48af57852440a7`.
+r11 is a valid test-suite red against obsolete test semantics, not a reason to
+remove renewal from the product.
+
+The correction changes only that test: it records transition kinds and requires
+the first callback to be `activated`, the second to be `renewed`, cumulative
+`Activations=1`, and `Extensions=1`. No production path changed. A new focused
+builder run must pass this exact corrected test before a fresh full matrix with a
+new run identity; r10 or r11 directories and evidence are not reused.
+
+#### v0.10.6 corrected renewal test focused green r12 — accepted interim evidence
+
+r12 reconstructed the corrected unversioned candidate from baseline archive
+SHA-256
+`b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16`
+and source patch SHA-256
+`c72b97eca8b551efe61f5319f9487528e701b50567c7ea5c0984b7b2a5f4d71c`.
+The generic focused runner was
+`e63b042a5baf63d9a4e8295d723762ddc67aa6aa9d42b09436eb436b52a72b3c`
+and ran in
+`docker.io/library/golang:1.24.5-bookworm@sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40`
+on builder CVM `vllm-v024-patch-builder-use1`. Server, config, metrics,
+formatting, and generic overall statuses were all zero.
+
+Because the generic focused regex did not select the corrected stale test, the
+same reconstructed source then independently ran:
+
+```text
+go test ./internal/app/server \
+  -run TestApproximatePredictiveEnforcePublishesBoundedRouterBackpressure \
+  -count=1
+```
+
+That exact test exited zero and proved one `activated` callback, one `renewed`
+callback, cumulative `Activations=1`, and `Extensions=1` under the corrected
+test semantics. The first evidence-control connection timed out after the
+remote test had completed, and its status writer encoded a literal `0n`; that
+malformed status artifact was rejected. The final accepted archive rewrote only
+the evidence status as bytes `30 0a`, regenerated the internal checksums, and
+retained the successful test log. Its downloaded archive is
+`tmp/pig-v0106-use1-cb-20260802/green-r12/evidence.tar`, SHA-256
+`2c3e6429a7ae461206e5ca9b154219f2558a04d3be3db28c2d746749f7d6a868`.
+All internal checksums, `exact-renewal-test.status=0`, and `overall.status=0`
+were independently verified after download.
+
+The retained r10 harness-failure archive and r11 stale-test-red archive were
+also downloaded without modification and their outer and internal SHA-256
+manifests were independently verified. r12 is focused evidence only: it does
+not replace the required fresh pre-version full matrix, complete race and
+simulation evidence, versioned-source matrix, image provenance, or any live
+gate.
+
+#### v0.10.6 pre-version full matrix r13 — complete green
+
+r13 used a fresh, non-reused run identity and reconstructed baseline archive
+SHA-256
+`b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16`
+with source patch SHA-256
+`d6dd70b5262fc40642d3123efba7ecd92d3d465ddc6e371e7cbe825c9bbc9d05`.
+The inner runner was
+`d8dc9bb6daa0ec665dfaac615288d7849a3deb8d9a60b2e7dc5498fc38c313fd`
+and the corrected host runner was
+`777f109ee585dc1682e671582eb08abf2db5249ac193772d93b4531cd70cdd5f`.
+Both runner syntax checks and all remote input hashes passed before execution.
+
+The matrix ran on builder CVM `vllm-v024-patch-builder-use1` with Go 1.24.5,
+`linux/amd64`, `CGO_ENABLED=1`, and toolchain image
+`docker.io/library/golang:1.24.5-bookworm@sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40`.
+Every status was zero for reconstruction, formatting, the
+model-agnostic/no-cache/TTFT-off source contract, `go vet ./...`,
+`go test ./... -count=1`, targeted race, full race, `go build ./...`,
+deterministic KV and KV-performance simulations, verbose and JSON goodput,
+candidate/baseline benchmarks in both execution orders, builder-local image
+build, production image contract, image inspect, source overall, and final
+overall.
+
+Across the 21-scenario goodput suite, model-agnostic approximate QoS completed
+51 SLO-compliant requests and 44,704 completion tokens, versus 37 and 39,840
+for the current threshold, 31 and 37,024 for exact-token KV-only, and 33 and
+37,536 for v0.9.0 KV-only. It recorded zero TPS, TPOT, KV-hard,
+preemption-proxy, false-accept, and reservation-leak violations, with seven
+false denies. Four TTFT violations remained diagnostic only and did not alter
+admission. The KV performance gate measured estimator 64 KiB p95 at 1.911 us,
+estimator 2 MiB p99 at 99.14 us, and shadow decision p99 at 4.276 us.
+
+The new four-stage completion-observer telemetry remained zero-allocation. Its
+eight-thread shared-atomic samples were 132.6-146.3 ns per lifecycle versus
+12.18-12.40 ns with counters disabled, a narrow approximately 120-134 ns CPU
+delta rather than a serving-latency or GPU-throughput claim. Existing admission
+and predictive-runtime benchmark samples remained in the same ranges in both
+candidate/baseline execution orders.
+
+The downloaded evidence archive is
+`tmp/pig-v0106-use1-cb-20260802/full-r13-preversion/evidence.tar`, SHA-256
+`fbeecf99774b1ce8cbf1bda9b9c1f560aaf56b2ac1f6d33b67a5aa525c3c8429`.
+Its relative-path internal manifest and every status were independently
+verified after download. This is pre-version evidence for executable identity
+v0.10.5 and cannot be used as the final v0.10.6 image or release matrix.
+
+#### v0.10.6 implementation review pass 2 — safety, lifecycle, SOLID, and efficiency
+
+The second post-implementation review rechecked the complete production diff
+and the real HTTP transaction. The adapter mutex serializes durable last-reject
+state, monotonic `latestRejectAt`, renewed `until`, activation/extension
+counters, and the immutable telemetry snapshot. Concurrent decisions whose
+captured clocks complete out of order cannot move the deadline backward because
+both latest-reject and deadline updates are maxima. Callback execution remains
+outside that mutex to avoid scrape/log deadlock, yet each requesting goroutine
+waits for its synchronous callback before incrementing the enforced-reject
+counter or writing 429. The targeted and full race gates plus concurrent
+reject/scrape integration test remained green.
+
+Lifecycle review confirmed that only typed load-dependent rejects with existing
+predicted work renew the load lease. Request-scoped oversized, unsupported, or
+intrinsically unsafe requests retain durable low-cardinality diagnostics but do
+not reduce idle Router capacity. Health-driven availability protection remains
+separate. At current and predicted running zero, `applied` becomes zero
+immediately even if the lease is still active; the lease then expires from the
+final reject without new traffic, and a later cold-safe request progresses.
+Reservations, shadow observations, deferred outcomes, cancellations, timeouts,
+upstream failures, reset, close, and release/terminal races left no leak in the
+complete matrix.
+
+Responsibility boundaries remain narrow: the estimator/calibrator owns bounded
+approximate size learning, the scheduler/coordinator owns the atomic
+counterfactual decision and reservation, the adapter owns typed protection
+state, the capacity projector maps one snapshot into existing Router-consumed
+metrics, and observability renders fixed-cardinality logs/status/metrics. No
+Router or vLLM source changed, no cache inspection was introduced, and
+production Go source contains no model-family branch or tokenizer asset.
+Renewal is O(1), stores no request-keyed or payload data, and rate-limits logs;
+the only new normal-forward hot-path work is four optional atomic telemetry
+increments with the measured zero-allocation cost above.
+
+No executable correction was required by this review. The only correction was
+to the plan's top-level authority, which still described TTFT as a rejecting
+constraint despite the later v0.10.6 section. The top-level objective,
+transaction, feedback, and TPS-first steps now state directly that TTFT is
+observation-only. Because this is a plan-only edit, it does not change the r13
+executable tree, but it will be included in the later versioned-source archive.
+
+#### v0.10.6 executable identity unification — complete, final matrix pending
+
+After r13 and implementation review pass 2, the current release surface was
+advanced without moving or rewriting v0.10.5:
+
+- the runtime constant is `PIG-v0.10.6`;
+- the OCI image label is `0.10.6`;
+- README, current Compose example, ADVANCED predictive configuration, and
+  OBSERVABILITY examples identify v0.10.6;
+- ADVANCED now documents
+  `PREDICTIVE_ROUTER_BACKPRESSURE_HOLD=5s` with the validated `2s..30s` range,
+  independence from `DYNAMIC_POLL_INTERVAL_MS`, and latest-reject renewal;
+- OBSERVABILITY now documents activation/renewal logs, durable lease metrics,
+  Router-consumed dynamic fields, completion-observer stages, and the idle
+  `active=1,applied=0` escape hatch;
+- the goodput simulator comment is version-independent while retaining TTFT as
+  diagnostic-only behavior.
+
+Historical v0.10.5 plan evidence, tag, registry digest, and deployment state
+remain unchanged. Static diff checks found no current v0.10.5 identity outside
+the mixed-history plan, and no stale fixed-expiry or backend-poll-derived hold
+description remains in current README, ADVANCED, or OBSERVABILITY. No Go test,
+race, simulation, benchmark, or image command was run on local Windows. A fresh
+versioned full matrix against the exact v0.10.6 source is mandatory and may not
+inherit r13's executable/image status.
+
+#### v0.10.6 final versioned full matrix r14 — complete green
+
+r14 used a fresh versioned run identity with baseline archive SHA-256
+`b85204d484e93365bfa65f47d1ceab2335e6bf9ca118405db46c5000596d6e16`,
+exact v0.10.6 source patch SHA-256
+`4deb57c265edc79281314ac5bb7ec1486be795a6f6b5934231cb8d4c4c526b4f`,
+inner runner
+`d8dc9bb6daa0ec665dfaac615288d7849a3deb8d9a60b2e7dc5498fc38c313fd`,
+and host runner
+`b2cf12f8d7af2dad385f7aec5d4e47d77198efa09210ddf5ab881ad2b211b68d`.
+Remote hashes and both runner syntax checks passed before execution.
+
+On the same pinned Go 1.24.5 Linux builder environment, every r14 status was
+zero for reconstruction, formatting, model-agnostic/no-cache/TTFT-off source
+contract, vet, all Go tests, targeted race, full race, build, deterministic KV
+and performance simulations, verbose/JSON goodput, both candidate/baseline
+benchmark orders, builder-local image build, image contract, image inspect,
+source overall, and final overall. The production image contract returned:
+
+```text
+PIG_PRODUCTION_IMAGE_CONTRACT_OK image=pig-v0106-versioned-r14:local version=0.10.6
+```
+
+The downloaded archive is
+`tmp/pig-v0106-use1-cb-20260802/full-r14-versioned/evidence.tar`, SHA-256
+`3c53694640943bf3a72140223e3082518a77705deb7678f0d5ade37b5fe7573b`.
+Its relative-path internal manifest and all statuses were independently
+verified. The goodput and performance results remain the r13 values because the
+intervening executable changes were release identity and a
+version-independent simulator comment; r14 nevertheless reran every gate and
+did not inherit those results.
+
+#### v0.10.6 implementation/release review pass 3 — evidence, identity, and scope
+
+The final pre-release review distinguishes the intended r1 non-renewal red,
+focused green r2-r9, r10 host-harness failure, r11 stale-test red, corrected
+focused r12, complete pre-version r13, and complete versioned r14. No failed or
+superseded artifact is counted as green. Exact inputs, builder identity,
+toolchain digest, statuses, simulations, benchmarks, image contract, outer
+archive hashes, and internal manifests are retained locally.
+
+Current identity review found runtime `PIG-v0.10.6`, OCI label `0.10.6`, and
+current README/ADVANCED/OBSERVABILITY release surfaces at v0.10.6. No v0.10.5
+identity remains outside mixed historical plan evidence, no local or remote
+`v0.10.6` tag exists yet, and `pig-origin` is the authoritative
+`Phala-Network/phala-inference-guard` remote. Diff and bounded secret scans were
+clean. The r14-tested executable diff excluding this evidence plan hashes as Git
+blob `c4dd85e69c25f0fe7f94f8d40e582c75f9d5aaf0`; this post-r14 section changes
+only the plan and must leave that hash unchanged at the commit gate.
+
+r14 authorizes the next source-release operations only: commit the reviewed
+tree, push the existing branch to `pig-origin`, create and push a new annotated
+`v0.10.6` tag, build/publish the immutable tag image from that commit, and
+independently pull-verify its OCI identity and binary equivalence. It does not
+prove a registry image, Compose integration, CVM deployment, live readiness,
+Router consumption, Router enablement, or the 30-minute traffic observation.
+`use1-cb` remains Router-disabled until all disabled-route shadow and enforce
+gates pass.

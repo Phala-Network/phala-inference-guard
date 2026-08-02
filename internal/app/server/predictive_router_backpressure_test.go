@@ -11,7 +11,7 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-func TestPredictiveRouterBackpressureIsFixedAndDoesNotLogRepeatedSignals(t *testing.T) {
+func TestPredictiveRouterBackpressureRenewsWithoutChangingActivationAndBoundsLogs(t *testing.T) {
 	now := time.Unix(80_000, 0)
 	hold := 2 * time.Second
 	result := runtimepredictive.CountAdmissionResult{
@@ -32,12 +32,20 @@ func TestPredictiveRouterBackpressureIsFixedAndDoesNotLogRepeatedSignals(t *test
 	}
 	changedReason := result
 	changedReason.Decision.Reason = domainpredictive.ReasonNewTPSAtRisk
-	if second := state.Observe(now.Add(time.Second), hold, changedReason, predictiveRouterBackpressurePolicy{}); second != nil {
-		t.Fatal("in-episode protection signal emitted another activation event")
+	second := state.Observe(now.Add(time.Second), hold, changedReason, predictiveRouterBackpressurePolicy{})
+	if second == nil || second.Kind != predictiveRouterBackpressureRenewed || second.Activation != first.Activation {
+		t.Fatalf("first in-episode protection signal did not emit a renewal for the original activation: %+v", second)
 	}
-	snapshot := state.Snapshot(now.Add(1500 * time.Millisecond))
-	if !snapshot.Active || snapshot.Activations != 1 || snapshot.Extensions != 1 {
-		t.Fatalf("active snapshot = %+v, want one activation and one extension", snapshot)
+	if suppressed := state.Observe(now.Add(1500*time.Millisecond), hold, changedReason, predictiveRouterBackpressurePolicy{}); suppressed != nil {
+		t.Fatalf("same-window renewal log was not bounded: %+v", suppressed)
+	}
+	bounded := state.Observe(now.Add(3100*time.Millisecond), hold, changedReason, predictiveRouterBackpressurePolicy{})
+	if bounded == nil || bounded.Kind != predictiveRouterBackpressureRenewed || bounded.Suppressed != 1 {
+		t.Fatalf("next bounded renewal did not expose one suppressed event: %+v", bounded)
+	}
+	snapshot := state.Snapshot(now.Add(3200 * time.Millisecond))
+	if !snapshot.Active || snapshot.Activations != 1 || snapshot.Extensions != 3 || snapshot.RenewalLogs != 2 || snapshot.RenewalsSuppressed != 1 {
+		t.Fatalf("active snapshot = %+v, want one activation, three extensions, and bounded renewal telemetry", snapshot)
 	}
 	if snapshot.Reason != domainpredictive.ReasonExistingTPSAtRisk ||
 		snapshot.Source != runtimepredictive.PredictionSourceCalibrated || snapshot.Samples != 7 {
@@ -46,18 +54,19 @@ func TestPredictiveRouterBackpressureIsFixedAndDoesNotLogRepeatedSignals(t *test
 	if !snapshot.ActivatedAt.Equal(now) {
 		t.Fatalf("in-episode signal changed activation time: got=%s want=%s", snapshot.ActivatedAt, now)
 	}
-	if !snapshot.Until.Equal(now.Add(hold)) {
-		t.Fatalf("extension changed fixed expiry: got=%s want=%s", snapshot.Until, now.Add(hold))
+	wantUntil := now.Add(3100*time.Millisecond + hold)
+	if !snapshot.Until.Equal(wantUntil) || !snapshot.LatestRejectAt.Equal(now.Add(3100*time.Millisecond)) {
+		t.Fatalf("renewal deadline/latest reject = %s/%s, want %s/%s", snapshot.Until, snapshot.LatestRejectAt, wantUntil, now.Add(3100*time.Millisecond))
 	}
-	if snapshot := state.Snapshot(now.Add(hold + time.Millisecond)); snapshot.Active || snapshot.Reason != "" || snapshot.Source != "" || snapshot.Samples != 0 {
+	if snapshot := state.Snapshot(wantUntil.Add(time.Millisecond)); snapshot.Active || snapshot.Reason != "" || snapshot.Source != "" || snapshot.Samples != 0 {
 		t.Fatalf("expired backpressure retained active reason/source/sample state: %+v", snapshot)
 	}
-	third := state.Observe(now.Add(hold+time.Millisecond), hold, result, predictiveRouterBackpressurePolicy{})
+	third := state.Observe(wantUntil.Add(time.Millisecond), hold, result, predictiveRouterBackpressurePolicy{})
 	if third == nil {
 		t.Fatal("first rejected probe after expiry did not start a new bounded episode")
 	}
-	if snapshot := state.Snapshot(now.Add(hold + 2*time.Millisecond)); snapshot.Activations != 2 || snapshot.Extensions != 1 {
-		t.Fatalf("new post-expiry episode telemetry = %+v, want two activations and one extension", snapshot)
+	if snapshot := state.Snapshot(wantUntil.Add(2 * time.Millisecond)); snapshot.Activations != 2 || snapshot.Extensions != 3 {
+		t.Fatalf("new post-expiry episode telemetry = %+v, want two activations and three cumulative extensions", snapshot)
 	}
 	line := predictiveRouterBackpressureLogLine(*first)
 	for _, want := range []string{
@@ -73,10 +82,135 @@ func TestPredictiveRouterBackpressureIsFixedAndDoesNotLogRepeatedSignals(t *test
 			t.Fatalf("activation log missing %q: %s", want, line)
 		}
 	}
+	renewalLine := predictiveRouterBackpressureLogLine(*bounded)
+	for _, want := range []string{
+		"event=renewed",
+		"activation=1",
+		"reason=new_tps_at_risk",
+		"extensions=3",
+		"suppressed=1",
+		"latest_reject_at=1970-01-01T22:13:23.1Z",
+		"until=1970-01-01T22:13:25.1Z",
+	} {
+		if !strings.Contains(renewalLine, want) {
+			t.Fatalf("renewal log missing %q: %s", want, renewalLine)
+		}
+	}
 	for _, forbidden := range []string{"model=", "user=", "request_id=", "prompt=", "body=", "bearer=", "token="} {
 		if strings.Contains(strings.ToLower(line), forbidden) {
 			t.Fatalf("activation log contains request or secret field %q: %s", forbidden, line)
 		}
+		if strings.Contains(strings.ToLower(renewalLine), forbidden) {
+			t.Fatalf("renewal log contains request or secret field %q: %s", forbidden, renewalLine)
+		}
+	}
+}
+
+func TestPredictiveRouterBackpressureRenewsFromLatestLoadReject(t *testing.T) {
+	now := time.Unix(90_000, 0)
+	hold := 2 * time.Second
+	result := runtimepredictive.CountAdmissionResult{
+		Decision: domainpredictive.Decision{Reason: domainpredictive.ReasonExistingTPSAtRisk},
+		Prediction: runtimepredictive.SchedulerPrediction{
+			Source: runtimepredictive.PredictionSourceStatic,
+			Features: runtimepredictive.SchedulerFeatures{
+				ExistingDecodeSequences: 1,
+				ExistingActiveKVUpper:   128,
+			},
+		},
+	}
+
+	var state predictiveRouterBackpressureState
+	first := state.Observe(now, hold, result, predictiveRouterBackpressurePolicy{})
+	if first == nil {
+		t.Fatal("first load reject did not activate Router backpressure")
+	}
+	latestReject := now.Add(1500 * time.Millisecond)
+	_ = state.Observe(latestReject, hold, result, predictiveRouterBackpressurePolicy{})
+
+	betweenDeadlines := now.Add(2500 * time.Millisecond)
+	snapshot := state.Snapshot(betweenDeadlines)
+	wantUntil := latestReject.Add(hold)
+	if !snapshot.Active || snapshot.Activation != first.Activation {
+		t.Fatalf("renewed snapshot at %s = %+v, want original activation still active", betweenDeadlines, snapshot)
+	}
+	if !snapshot.Until.Equal(wantUntil) {
+		t.Fatalf("renewed until = %s, want latest reject deadline %s", snapshot.Until, wantUntil)
+	}
+	if snapshot.Activations != 1 || snapshot.Extensions != 1 {
+		t.Fatalf("renewed activation/extension counts = %d/%d, want 1/1", snapshot.Activations, snapshot.Extensions)
+	}
+	if state.Snapshot(wantUntil.Add(time.Nanosecond)).Active {
+		t.Fatal("load backpressure remained active after the renewed deadline")
+	}
+}
+
+func TestPredictiveRouterBackpressureCoversRouterCadenceJitterAndRecovers(t *testing.T) {
+	started := time.Unix(95_000, 0)
+	hold := 5 * time.Second
+	rejectInterval := time.Second
+	lastReject := started.Add(20 * time.Second)
+	result := runtimepredictive.CountAdmissionResult{
+		Decision: domainpredictive.Decision{Reason: domainpredictive.ReasonExistingTPSAtRisk},
+		Prediction: runtimepredictive.SchedulerPrediction{
+			Source: runtimepredictive.PredictionSourceCalibrated,
+			Features: runtimepredictive.SchedulerFeatures{
+				ExistingDecodeSequences: 1,
+				ExistingActiveKVUpper:   256,
+			},
+		},
+	}
+	jitter := []time.Duration{-400 * time.Millisecond, 350 * time.Millisecond, -150 * time.Millisecond, 200 * time.Millisecond}
+	for _, phase := range []time.Duration{0, 250 * time.Millisecond, 1900 * time.Millisecond} {
+		t.Run(phase.String(), func(t *testing.T) {
+			var state predictiveRouterBackpressureState
+			nextReject := started
+			processedRejects := 0
+			for scrapeIndex := 0; ; scrapeIndex++ {
+				scrapeAt := started.Add(phase + time.Duration(scrapeIndex)*2*time.Second + jitter[scrapeIndex%len(jitter)])
+				if !scrapeAt.Before(lastReject.Add(hold)) {
+					break
+				}
+				if scrapeAt.Before(started) {
+					continue
+				}
+				for !nextReject.After(scrapeAt) && !nextReject.After(lastReject) {
+					state.Observe(nextReject, hold, result, predictiveRouterBackpressurePolicy{})
+					processedRejects++
+					nextReject = nextReject.Add(rejectInterval)
+				}
+				if processedRejects == 0 {
+					continue
+				}
+				snapshot := state.Snapshot(scrapeAt)
+				if !snapshot.Active || snapshot.Activation != 1 || snapshot.Activations != 1 {
+					t.Fatalf("scrape at %s saw publication gap after %d rejects: %+v", scrapeAt.Sub(started), processedRejects, snapshot)
+				}
+				capacity := predictiveRouterCapacity(
+					"enforce",
+					snapshot,
+					1,
+					runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50},
+				)
+				if !capacity.BackpressureApplied || capacity.EffectiveRunning != 1 || capacity.EffectiveGlobalLimit != 1 {
+					t.Fatalf("scrape at %s saw unprotected Router capacity: %+v", scrapeAt.Sub(started), capacity)
+				}
+			}
+			for !nextReject.After(lastReject) {
+				state.Observe(nextReject, hold, result, predictiveRouterBackpressurePolicy{})
+				processedRejects++
+				nextReject = nextReject.Add(rejectInterval)
+			}
+			if processedRejects != 21 {
+				t.Fatalf("processed rejects = %d, want 21", processedRejects)
+			}
+			if snapshot := state.Snapshot(lastReject.Add(hold - time.Nanosecond)); !snapshot.Active || snapshot.Activations != 1 || snapshot.Extensions != 20 {
+				t.Fatalf("publication did not cover the final pre-expiry instant: %+v", snapshot)
+			}
+			if snapshot := state.Snapshot(lastReject.Add(hold + time.Nanosecond)); snapshot.Active || snapshot.Activation != 0 {
+				t.Fatalf("finite rejection stream did not recover after last_reject+hold: %+v", snapshot)
+			}
+		})
 	}
 }
 
@@ -380,11 +514,11 @@ func TestPredictiveRouterCapacityEventIsLoggedOncePerAppliedEpisode(t *testing.T
 }
 
 func TestPredictiveRouterBackpressureHoldIsBounded(t *testing.T) {
-	if got := predictiveRouterBackpressureHold(time.Millisecond); got != minimumPredictiveRouterBackpressureHold {
-		t.Fatalf("short poll hold=%s want=%s", got, minimumPredictiveRouterBackpressureHold)
+	if got := normalizePredictiveRouterBackpressureHold(time.Millisecond); got != minimumPredictiveRouterBackpressureHold {
+		t.Fatalf("short direct hold=%s want=%s", got, minimumPredictiveRouterBackpressureHold)
 	}
-	if got := predictiveRouterBackpressureHold(time.Hour); got != maximumPredictiveRouterBackpressureHold {
-		t.Fatalf("long poll hold=%s want=%s", got, maximumPredictiveRouterBackpressureHold)
+	if got := normalizePredictiveRouterBackpressureHold(time.Hour); got != maximumPredictiveRouterBackpressureHold {
+		t.Fatalf("long direct hold=%s want=%s", got, maximumPredictiveRouterBackpressureHold)
 	}
 	var state predictiveRouterBackpressureState
 	result := runtimepredictive.CountAdmissionResult{
@@ -404,14 +538,18 @@ func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) 
 		Mode: "enforce", Attempts: 12, Fits: 4, Risks: 8, EnforcedRejects: 8,
 		LastReason: "existing_tps_at_risk", LastSource: "calibrated", LastSamples: 6,
 		Reservations: 1, VirtualDecodeSequences: 3, DeferredOutcomes: metrics.PredictiveDeferredOutcomeInput{Active: 2},
+		CompletionObserverAttached: 4, CompletionObserverClaimed: 3, CompletionObserverUsage: 2, CompletionObserverTerminal: 3,
 		RouterBackpressure: metrics.PredictiveRouterBackpressureInput{
 			Active: true, Applied: true, Scope: "load", Reason: "existing_tps_at_risk",
+			Activation: 2, Extensions: 5, RenewalLogs: 2, RenewalsSuppressed: 3,
+			LatestRejectAt: time.Unix(84_000, 0), Until: time.Unix(84_005, 0),
 			RawRunning: 1, EffectiveRunning: 1, RawGlobalLimit: 50, EffectiveGlobalLimit: 1,
 		},
 	})
 	for _, want := range []string{
 		"predictive={mode=enforce", "attempts=12", "risk=8", "last=existing_tps_at_risk/calibrated/6",
-		"last_reject=none/unknown/none/0", "reservations=1", "virtual_decode=3", "pending_prefill=0/0", "deferred=2", "router_bp=1/1/load/existing_tps_at_risk", "effective=1/1", "raw=1/50",
+		"last_reject=none/unknown/none/0", "reservations=1", "virtual_decode=3", "pending_prefill=0/0", "deferred=2", "completion_observer=4/3/2/3", "router_bp=1/1/load/existing_tps_at_risk", "effective=1/1", "raw=1/50",
+		"router_lease=2/5/2/3/1970-01-01T23:20:00Z/1970-01-01T23:20:05Z",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("predictive status missing %q: %s", want, line)

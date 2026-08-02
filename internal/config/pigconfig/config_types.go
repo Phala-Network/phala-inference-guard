@@ -127,6 +127,7 @@ type Config struct {
 	PredictiveLearningMaximumCells     int
 	PredictiveShadowObservationLimit   int
 	PredictiveLearningMaxAge           time.Duration
+	PredictiveRouterBackpressureHold   time.Duration
 	PredictiveMinimumConfidence        float64
 	PredictiveColdConfidence           float64
 	PredictiveLearnedConfidence        float64

@@ -145,7 +145,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if predictiveForwarded {
-		r = attachPredictiveResponseObserver(r, predictiveReservation, requestStart, classification.Streaming)
+		r = attachPredictiveResponseObserver(r, predictiveReservation, requestStart, classification.Streaming, &s.predictiveCompletionObserver)
 	}
 	s.globalLn.ObserveAccepted()
 	ln.ObserveAccepted()

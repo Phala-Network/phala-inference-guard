@@ -17,6 +17,8 @@ import (
 
 const approximateHTTPUsageResponse = `{"choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":12,"completion_tokens":5},"metrics":{"mean_itl_ms":10}}`
 
+const approximateHTTPVLLMCompletionUsageResponse = `{"id":"cmpl-test","object":"text_completion","created":1,"model":"google/gemma-4-31B-it","choices":[{"text":"OK","index":0,"finish_reason":"length"}],"service_tier":null,"system_fingerprint":null,"usage":{"prompt_tokens":4,"completion_tokens":8,"total_tokens":12},"kv_transfer_params":null}`
+
 const approximateHTTPStreamingUsageResponse = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n" +
 	"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":5},\"metrics\":{\"mean_itl_ms\":10}}\n\n" +
 	"data: [DONE]\n\n"
@@ -505,6 +507,94 @@ func TestApproximatePredictiveHTTPShadowTPSRiskForwardsAndLearnsWithoutAccountin
 	}
 }
 
+func TestApproximatePredictiveHTTPShadowRequestScopedCompletionRiskFeedsInputCalibration(t *testing.T) {
+	var backendCalls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(approximateHTTPVLLMCompletionUsageResponse))
+	}))
+	defer backend.Close()
+
+	adapter := newApproximateHTTPShadowRequestRiskAdapter(t)
+	srv := newApproximateHTTPTestServerWithMode(t, backend.URL, adapter, "shadow")
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close predictive shadow server: %v", err)
+		}
+	}()
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(`{"model":"arbitrary/model","prompt":"hello","max_tokens":8}`))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || backendCalls.Load() != 1 {
+		t.Fatalf("shadow request-scoped risk response/backend = %d/%d, want unchanged 200/1", recorder.Code, backendCalls.Load())
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.Attempts.Risks != 1 || telemetry.Attempts.Fits != 0 || telemetry.RouterBackpressure.Active {
+		t.Fatalf("shadow request-scoped risk telemetry = %+v", telemetry)
+	}
+	if telemetry.ShadowObservations.Active != 0 || telemetry.ShadowObservations.Created != 1 || telemetry.ShadowObservations.Terminated != 1 {
+		t.Fatalf("shadow request-scoped observation lifecycle = %+v", telemetry.ShadowObservations)
+	}
+	size := adapter.calibrator.Snapshot(time.Now())
+	if size.SamplesAccepted+size.SamplesRejected != 1 {
+		t.Fatalf("shadow request-scoped completion input feedback = accepted %d rejected %d, want exactly one outcome", size.SamplesAccepted, size.SamplesRejected)
+	}
+	if manager := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; manager.Reservations != 0 {
+		t.Fatalf("shadow request-scoped completion leaked manager state: %+v", manager)
+	}
+}
+
+func TestApproximatePredictiveHTTPLargeBodyShadowRequestRiskCompletesInputFeedback(t *testing.T) {
+	var backendCalls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(approximateHTTPVLLMCompletionUsageResponse))
+	}))
+	defer backend.Close()
+
+	adapter := newApproximateHTTPShadowRequestRiskAdapter(t)
+	srv := newApproximateHTTPTestServerWithMode(t, backend.URL, adapter, "shadow")
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close predictive shadow server: %v", err)
+		}
+	}()
+
+	body := `{"model":"google/gemma-4-31B-it","prompt":"Return exactly OK.","max_tokens":8,"temperature":0}` + strings.Repeat(" ", 1_600_000)
+	request := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	recorder := httptest.NewRecorder()
+	srv.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK || backendCalls.Load() != 1 {
+		t.Fatalf("large shadow request-scoped risk response/backend = %d/%d, want unchanged 200/1", recorder.Code, backendCalls.Load())
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.Attempts.Risks != 1 || telemetry.Attempts.Fits != 0 || telemetry.RouterBackpressure.Active {
+		t.Fatalf("large shadow request-scoped risk telemetry = %+v", telemetry)
+	}
+	if telemetry.ShadowObservations.Active != 0 || telemetry.ShadowObservations.Created != 1 || telemetry.ShadowObservations.Terminated != 1 {
+		t.Fatalf("large shadow request observation lifecycle = %+v", telemetry.ShadowObservations)
+	}
+	size := adapter.calibrator.Snapshot(time.Now())
+	if size.SamplesAccepted+size.SamplesRejected != 1 {
+		t.Fatalf("large shadow request input feedback = accepted %d rejected %d, want exactly one outcome", size.SamplesAccepted, size.SamplesRejected)
+	}
+	if attached, claimed, usage, terminal := srv.predictiveCompletionObserver.attached.Load(), srv.predictiveCompletionObserver.claimed.Load(), srv.predictiveCompletionObserver.usage.Load(), srv.predictiveCompletionObserver.terminal.Load(); attached != 1 || claimed != 1 || usage != 1 || terminal != 1 {
+		t.Fatalf("large shadow completion observer stages = %d/%d/%d/%d, want 1/1/1/1", attached, claimed, usage, terminal)
+	}
+	if manager := adapter.coordinator.(*runtimepredictive.CountCoordinator).Snapshot().Manager; manager.Reservations != 0 {
+		t.Fatalf("large shadow request leaked manager reservations: %+v", manager)
+	}
+}
+
 func TestApproximatePredictiveHTTPQualifiedTPSHeadroomAdmitsNextConcurrency(t *testing.T) {
 	fourthEntered := make(chan struct{})
 	releaseFourth := make(chan struct{})
@@ -669,6 +759,61 @@ func newApproximateHTTPTestAdapterWithMode(t *testing.T, targetTPS float64, mode
 		t.Fatalf("new approximate HTTP adapter: %v", err)
 	}
 	return adapter, scheduler
+}
+
+func newApproximateHTTPShadowRequestRiskAdapter(t *testing.T) *approximatePredictiveShadow {
+	t.Helper()
+	identity := runtimepredictive.ModelIdentity{
+		ProfileID: "approx-http", BackendEpoch: "approx-http-epoch", PredictorVersion: "approx-http-v1",
+	}
+	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
+		Identity: identity, BaseCompletionTPS: 20,
+		BaseTTFT: 100 * time.Millisecond, BaseTPOT: 25 * time.Millisecond,
+		TPOTPerExistingDecodeSequence: 25 * time.Millisecond,
+		Confidence:                    0.99,
+	}, runtimepredictive.ResidualCalibratorConfig{
+		Identity: identity, MinimumSamples: 3, MaximumSamplesPerCell: 16, MaximumCells: 32,
+		MaxAge: time.Minute, LowerQuantile: 0.10, UpperQuantile: 0.90,
+		MinimumTPSMultiplier: 0.10, MaximumTPSMultiplier: 8,
+		MinimumLatencyMultiplier: 0.25, MaximumLatencyMultiplier: 4,
+		CalibratedConfidence: 0.99, DecodeSequenceBucket: 1,
+		ContextTokenBucket: 1_024, PrefillTokenBucket: 1_024, KVTokenBucket: 1_024,
+	})
+	if err != nil {
+		t.Fatalf("new request-risk HTTP scheduler: %v", err)
+	}
+	coordinator, err := runtimepredictive.NewCountCoordinator(runtimepredictive.CountCoordinatorConfig{
+		Identity: runtimepredictive.CoordinatorIdentity{
+			ManifestID: "approx-http-manifest", BackendEpoch: identity.BackendEpoch,
+			Scheduler: identity, BlockSize: 4,
+		},
+		ModelMaximumLength: 1_000_000,
+		Constraints: domainpredictive.Constraints{
+			PhysicalKVHard: 4, ActiveKVHard: 4, UserTPSTarget: 20,
+			TPOTSLO:           50 * time.Millisecond,
+			MinimumConfidence: 0.90,
+		},
+		Scheduler: scheduler,
+	})
+	if err != nil {
+		t.Fatalf("new request-risk HTTP coordinator: %v", err)
+	}
+	calibrator, err := runtimepredictive.NewInputSizeCalibrator(runtimepredictive.InputSizeCalibratorConfig{
+		EstimatorVersion: "approx-http-json-v1", MinimumSamples: 3, MaximumSamplesPerClass: 16,
+		MaxAge: time.Minute, UpperQuantile: 0.95, SafetyMargin: 1.10,
+		MinimumMultiplier: 0.25, MaximumMultiplier: 8,
+		ColdConfidence: 0.95, LearnedConfidence: 0.99,
+	})
+	if err != nil {
+		t.Fatalf("new request-risk HTTP size calibrator: %v", err)
+	}
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Learner: scheduler, Mode: "shadow",
+	})
+	if err != nil {
+		t.Fatalf("new request-risk HTTP adapter: %v", err)
+	}
+	return adapter
 }
 
 func newApproximateHTTPTestServer(t *testing.T, upstream string, adapter *approximatePredictiveShadow) *proxyServer {

@@ -39,6 +39,9 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 		if cfg.PredictiveShadowObservationLimit <= 0 || cfg.PredictiveShadowObservationLimit > predictiveMaximumShadowObservations {
 			return fmt.Errorf("predictive shadow observation bound must be in [1, 4096]")
 		}
+		if cfg.PredictiveRouterBackpressureHold < predictiveMinimumRouterBackpressureHold || cfg.PredictiveRouterBackpressureHold > predictiveMaximumRouterBackpressureHold {
+			return fmt.Errorf("predictive Router backpressure hold must be in [%s, %s]", predictiveMinimumRouterBackpressureHold, predictiveMaximumRouterBackpressureHold)
+		}
 		if !validPredictiveUnitInterval(cfg.PredictiveMinimumConfidence) || !validPredictiveUnitInterval(cfg.PredictiveColdConfidence) || !validPredictiveUnitInterval(cfg.PredictiveLearnedConfidence) || cfg.PredictiveColdConfidence < cfg.PredictiveMinimumConfidence || cfg.PredictiveLearnedConfidence < cfg.PredictiveColdConfidence {
 			return fmt.Errorf("predictive confidence bounds are invalid")
 		}

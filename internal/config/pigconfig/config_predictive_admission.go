@@ -9,12 +9,15 @@ import (
 )
 
 const (
-	predictiveMaximumStartupProbeTimeout = 5 * time.Minute
-	predictiveMaximumMetricsRequestTime  = time.Minute
-	predictiveMaximumLearningSamples     = 256
-	predictiveMaximumLearningCells       = 256
-	predictiveMaximumShadowObservations  = 4_096
-	predictiveMaximumLearningAge         = 24 * time.Hour
+	predictiveMaximumStartupProbeTimeout    = 5 * time.Minute
+	predictiveMaximumMetricsRequestTime     = time.Minute
+	predictiveMaximumLearningSamples        = 256
+	predictiveMaximumLearningCells          = 256
+	predictiveMaximumShadowObservations     = 4_096
+	predictiveMaximumLearningAge            = 24 * time.Hour
+	predictiveMinimumRouterBackpressureHold = 2 * time.Second
+	predictiveMaximumRouterBackpressureHold = 30 * time.Second
+	predictiveDefaultRouterBackpressureHold = 5 * time.Second
 )
 
 func loadPredictiveAdmissionConfig(cfg *Config) error {
@@ -46,6 +49,20 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	maxAgeSeconds, err := env.Int("PREDICTIVE_LEARNING_MAX_AGE_SECONDS", 1_800)
 	if err != nil {
 		return err
+	}
+	routerBackpressureHold, err := time.ParseDuration(env.String(
+		"PREDICTIVE_ROUTER_BACKPRESSURE_HOLD",
+		predictiveDefaultRouterBackpressureHold.String(),
+	))
+	if err != nil {
+		return fmt.Errorf("PREDICTIVE_ROUTER_BACKPRESSURE_HOLD must be a valid duration: %w", err)
+	}
+	if routerBackpressureHold < predictiveMinimumRouterBackpressureHold || routerBackpressureHold > predictiveMaximumRouterBackpressureHold {
+		return fmt.Errorf(
+			"PREDICTIVE_ROUTER_BACKPRESSURE_HOLD must be in [%s, %s]",
+			predictiveMinimumRouterBackpressureHold,
+			predictiveMaximumRouterBackpressureHold,
+		)
 	}
 	integerBounds := []struct {
 		name    string
@@ -112,5 +129,6 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveLearningMaximumCells = maximumCells
 	cfg.PredictiveShadowObservationLimit = maximumShadowObservations
 	cfg.PredictiveLearningMaxAge = time.Duration(maxAgeSeconds) * time.Second
+	cfg.PredictiveRouterBackpressureHold = routerBackpressureHold
 	return nil
 }

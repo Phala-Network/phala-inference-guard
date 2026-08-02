@@ -16,16 +16,21 @@ type predictiveResponseObserver struct {
 	requestStarted time.Time
 	streaming      bool
 	claimed        atomic.Bool
+	counters       *predictiveCompletionObserverCounters
 }
 
-func attachPredictiveResponseObserver(r *http.Request, reservation predictiveShadowReservation, requestStarted time.Time, streaming bool) *http.Request {
+func attachPredictiveResponseObserver(r *http.Request, reservation predictiveShadowReservation, requestStarted time.Time, streaming bool, counters *predictiveCompletionObserverCounters) *http.Request {
 	if r == nil || reservation == nil || requestStarted.IsZero() {
 		return r
+	}
+	if counters != nil {
+		counters.attached.Add(1)
 	}
 	observer := &predictiveResponseObserver{
 		reservation:    reservation,
 		requestStarted: requestStarted,
 		streaming:      streaming,
+		counters:       counters,
 	}
 	return r.WithContext(context.WithValue(r.Context(), predictiveCompletionContextKey{}, observer))
 }
@@ -57,12 +62,18 @@ func claimPredictiveResponseObserver(response *http.Response, streaming bool) *p
 	if !openai.CompletionUsageContentTypeEligible(response.Header.Get("Content-Type"), streaming) || !observer.claimed.CompareAndSwap(false, true) {
 		return nil
 	}
+	if observer.counters != nil {
+		observer.counters.claimed.Add(1)
+	}
 	return observer
 }
 
 func (o *predictiveResponseObserver) observeUsage(usage openai.CompletionUsage) {
 	if o == nil {
 		return
+	}
+	if o.counters != nil {
+		o.counters.usage.Add(1)
 	}
 	elapsed := time.Since(o.requestStarted)
 	if !usage.ObservedAt.IsZero() {
@@ -80,6 +91,9 @@ func (o *predictiveResponseObserver) observeUsage(usage openai.CompletionUsage) 
 func (o *predictiveResponseObserver) observeTerminal() {
 	if o == nil {
 		return
+	}
+	if o.counters != nil {
+		o.counters.terminal.Add(1)
 	}
 	releaser, ok := o.reservation.(predictiveResourceReleaser)
 	if ok {

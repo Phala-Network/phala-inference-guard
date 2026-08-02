@@ -153,14 +153,16 @@ func TestApproximatePredictiveEnforcePublishesBoundedRouterBackpressure(t *testi
 	coordinator.reject = true
 	coordinator.rejectReason = domainpredictive.ReasonExistingTPSAtRisk
 	coordinator.virtual = domainpredictive.VirtualState{DecodeSequences: 1, ActiveKVUpper: 256}
-	activations := 0
+	var transitions []predictiveRouterBackpressureEventKind
 	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
 		Calibrator:             newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1),
 		Coordinator:            coordinator,
 		Mode:                   "enforce",
 		Now:                    func() time.Time { return now },
 		RouterBackpressureHold: 2 * time.Second,
-		OnRouterBackpressure:   func(predictiveRouterBackpressureEvent) { activations++ },
+		OnRouterBackpressure: func(event predictiveRouterBackpressureEvent) {
+			transitions = append(transitions, event.Kind)
+		},
 	})
 	if err != nil {
 		t.Fatalf("new adapter: %v", err)
@@ -169,14 +171,16 @@ func TestApproximatePredictiveEnforcePublishesBoundedRouterBackpressure(t *testi
 		t.Fatal("enforce risk unexpectedly returned a reservation")
 	}
 	telemetry := adapter.PredictiveAdmissionTelemetry()
-	if !telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.Reason != domainpredictive.ReasonExistingTPSAtRisk || activations != 1 {
-		t.Fatalf("first backpressure telemetry=%+v activations=%d", telemetry.RouterBackpressure, activations)
+	if !telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.Reason != domainpredictive.ReasonExistingTPSAtRisk ||
+		len(transitions) != 1 || transitions[0] != predictiveRouterBackpressureActivated {
+		t.Fatalf("first backpressure telemetry=%+v transitions=%v", telemetry.RouterBackpressure, transitions)
 	}
 	now = now.Add(time.Second)
 	_ = adapter.DecideAndReserve(context.Background(), "risk-2", approximateAdapterTestInput())
 	telemetry = adapter.PredictiveAdmissionTelemetry()
-	if telemetry.RouterBackpressure.Extensions != 1 || activations != 1 {
-		t.Fatalf("extension telemetry=%+v activations=%d", telemetry.RouterBackpressure, activations)
+	if telemetry.RouterBackpressure.Activations != 1 || telemetry.RouterBackpressure.Extensions != 1 ||
+		len(transitions) != 2 || transitions[1] != predictiveRouterBackpressureRenewed {
+		t.Fatalf("extension telemetry=%+v transitions=%v", telemetry.RouterBackpressure, transitions)
 	}
 	now = now.Add(3 * time.Second)
 	if telemetry := adapter.PredictiveAdmissionTelemetry(); telemetry.RouterBackpressure.Active {

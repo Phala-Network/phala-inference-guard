@@ -17,6 +17,32 @@ func TestLoadPredictiveAdmissionDefaultsOff(t *testing.T) {
 	if cfg.PredictiveLatencyMinimumMultiplier != 0.10 {
 		t.Fatalf("predictive minimum learned latency multiplier = %.3f, want 0.10", cfg.PredictiveLatencyMinimumMultiplier)
 	}
+	if cfg.PredictiveRouterBackpressureHold != 5*time.Second {
+		t.Fatalf("predictive Router backpressure hold = %s, want 5s", cfg.PredictiveRouterBackpressureHold)
+	}
+}
+
+func TestLoadPredictiveRouterBackpressureHoldIsIndependentOfDynamicPoll(t *testing.T) {
+	t.Setenv("DYNAMIC_POLL_INTERVAL_MS", "100")
+	t.Setenv("PREDICTIVE_ROUTER_BACKPRESSURE_HOLD", "7s")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.PredictiveRouterBackpressureHold != 7*time.Second {
+		t.Fatalf("predictive Router backpressure hold = %s, want 7s", cfg.PredictiveRouterBackpressureHold)
+	}
+}
+
+func TestLoadPredictiveRouterBackpressureHoldRejectsInvalidOrUnboundedValues(t *testing.T) {
+	for _, value := range []string{"not-a-duration", "0", "1s", "31s", "-2s"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("PREDICTIVE_ROUTER_BACKPRESSURE_HOLD", value)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "PREDICTIVE_ROUTER_BACKPRESSURE_HOLD") {
+				t.Fatalf("Load error = %v, want Router backpressure hold rejection", err)
+			}
+		})
+	}
 }
 
 func TestValidateAcceptsPredictiveAdmissionEnforce(t *testing.T) {

@@ -60,7 +60,7 @@ type AdmissionTrace struct {
 }
 
 func (m Metrics) SafetyViolations() int {
-	// TTFT remains measured, but v0.10.5 explicitly removes it from admission
+	// TTFT remains measured, but the current predictive contract removes it from admission
 	// protection. Keep TTFTViolations as diagnostic evidence without treating it
 	// as a protected-QoS failure.
 	return m.ExistingOrNewTPSViolations + m.TPOTViolations + m.KVHardViolations + m.PreemptionProxyEvents + m.ReservationLeaks

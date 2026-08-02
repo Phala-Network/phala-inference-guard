@@ -385,6 +385,7 @@ func testProxyConfig(upstream string) config {
 		PredictiveLearningMaximumCells:     64,
 		PredictiveShadowObservationLimit:   256,
 		PredictiveLearningMaxAge:           30 * time.Minute,
+		PredictiveRouterBackpressureHold:   5 * time.Second,
 		PredictiveMinimumConfidence:        0.90,
 		PredictiveColdConfidence:           0.95,
 		PredictiveLearnedConfidence:        0.99,

@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.10.5 model-agnostic predictive admission
+### v0.10.6 model-agnostic predictive admission
 
-PIG v0.10.5 can estimate request size locally and predict the post-admit
+PIG v0.10.6 can estimate request size locally and predict the post-admit
 KV/TPS/TPOT/preemption state before forwarding to a vLLM upstream. TTFT is
 still measured and learned for diagnosis, but it is observation-only and can
 never reject a request:
@@ -180,7 +180,7 @@ payload-free observation record so qualified completion feedback improves only
 later predictions. `enforce` rejects a non-fit or unknown decision before
 upstream forwarding with the normal OpenAI-compatible PIG 429 response.
 Predictive `shadow` and `enforce` require `DYNAMIC_TTFT_ENABLED=false`; this is
-also the v0.10.5 default. Legacy dynamic TTFT limiting remains available only
+also the v0.10.6 default. Legacy dynamic TTFT limiting remains available only
 as an explicit opt-in while predictive admission is `off`.
 
 This path is model-family neutral: it has no model tokenizer, chat template,
@@ -199,18 +199,23 @@ KV token capacity from startup metrics, then watches freshness, waiting work,
 preemptions, running sequences, KV use, and generation timing. It does not
 inspect prefix-cache hits, does not route, and does not change vLLM.
 
-In `enforce`, a load-dependent predictive reject creates a short, bounded
-Router-visible capacity clamp. The existing `pig_dynamic_observed_running` and
-`pig_dynamic_global_limit` fields carry the effective values consumed by the
-current Router; `*_raw` metrics preserve the backend observation and dynamic
-limit. The clamp applies only while the predictive coordinator's current
-virtual upper state still contains decode work. That state combines its latest
-backend observation with unabsorbed reservations, so it closes a dynamic-poll
-visibility gap without retaining the rejected request as artificial load. The
-window expires after 2--5 seconds and the clamp is removed immediately when
-the reconciled virtual load reaches idle. Request-specific
-oversized/malformed/unknown failures do not clamp the whole node. Structured
-activation logs and the periodic `predictive={...}` status suffix expose the
+In `enforce`, a load-dependent predictive reject creates a bounded,
+Router-visible capacity clamp. Every later load-dependent reject renews the same
+activation from the latest reject, so sustained protection cannot expose an
+unprotected capacity gap between Router scrapes. The existing
+`pig_dynamic_observed_running` and `pig_dynamic_global_limit` fields carry the
+effective values consumed by the current Router; `*_raw` metrics preserve the
+backend observation and dynamic limit. The clamp applies only while the
+predictive coordinator's current virtual upper state still contains decode
+work. That state combines its latest backend observation with unabsorbed
+reservations, so it closes a dynamic-poll visibility gap without retaining the
+rejected request as artificial load. The default publication hold is five
+seconds, independently configurable as `PREDICTIVE_ROUTER_BACKPRESSURE_HOLD`
+within `2s..30s`. The clamp is removed immediately when reconciled virtual and
+current load reach idle, then the lease expires without requiring new traffic.
+Request-specific oversized/malformed/unknown failures do not clamp the whole
+node. Bounded activation/renewal logs, durable lease metrics, completion-observer
+stage counters, and the periodic `predictive={...}` status suffix expose the
 protection without request content or credentials.
 
 Use `shadow` first. Promote the same immutable image to `enforce` only after the
@@ -251,7 +256,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.5
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.6
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

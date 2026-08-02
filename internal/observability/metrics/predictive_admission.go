@@ -71,6 +71,10 @@ type PredictiveAdmissionInput struct {
 	FailureCompletion                       uint64
 	FailureResourceRelease                  uint64
 	FailureTerminal                         uint64
+	CompletionObserverAttached              uint64
+	CompletionObserverClaimed               uint64
+	CompletionObserverUsage                 uint64
+	CompletionObserverTerminal              uint64
 	PredictionDuration                      *histogram.DurationHistogram
 	EstimatorDuration                       *histogram.DurationHistogram
 	RouterBackpressure                      PredictiveRouterBackpressureInput
@@ -90,6 +94,9 @@ type PredictiveRouterBackpressureInput struct {
 	Hold                 time.Duration
 	Activations          uint64
 	Extensions           uint64
+	LatestRejectAt       time.Time
+	RenewalLogs          uint64
+	RenewalsSuppressed   uint64
 	PredictiveRunning    int
 	RawRunning           int
 	EffectiveRunning     int
@@ -186,6 +193,9 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_hold_seconds %.6f\n", input.RouterBackpressure.Hold.Seconds())
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_activations_total %d\n", input.RouterBackpressure.Activations)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_extensions_total %d\n", input.RouterBackpressure.Extensions)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_latest_load_reject_at_seconds %.6f\n", predictiveMetricUnixSeconds(input.RouterBackpressure.LatestRejectAt))
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_renewal_logs_total %d\n", input.RouterBackpressure.RenewalLogs)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_renewal_logs_suppressed_total %d\n", input.RouterBackpressure.RenewalsSuppressed)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_predictive_running %d\n", input.RouterBackpressure.PredictiveRunning)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_raw_running %d\n", input.RouterBackpressure.RawRunning)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_effective_running %d\n", input.RouterBackpressure.EffectiveRunning)
@@ -213,6 +223,10 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "local", input.TPSLocal)
 	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "missing", input.TPSMissing)
 	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "rejected", input.TPSRejected)
+	fmt.Fprintf(w, "pig_predictive_completion_observer_events_total{event=%q} %d\n", "attached", input.CompletionObserverAttached)
+	fmt.Fprintf(w, "pig_predictive_completion_observer_events_total{event=%q} %d\n", "claimed", input.CompletionObserverClaimed)
+	fmt.Fprintf(w, "pig_predictive_completion_observer_events_total{event=%q} %d\n", "usage", input.CompletionObserverUsage)
+	fmt.Fprintf(w, "pig_predictive_completion_observer_events_total{event=%q} %d\n", "terminal", input.CompletionObserverTerminal)
 	fmt.Fprintf(w, "pig_predictive_shadow_observations %d\n", input.ShadowObservations.Active)
 	fmt.Fprintf(w, "pig_predictive_shadow_observations_total{result=%q} %d\n", "created", input.ShadowObservations.Created)
 	fmt.Fprintf(w, "pig_predictive_shadow_observations_total{result=%q} %d\n", "terminated", input.ShadowObservations.Terminated)
