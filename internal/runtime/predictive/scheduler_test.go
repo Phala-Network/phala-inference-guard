@@ -32,13 +32,15 @@ func TestLearnedSchedulerChangesAdmissionWithCurrentMetricsHeldConstant(t *testi
 
 	coldManager := NewManager("test-profile", state, constraints, scheduler)
 	cold := coldManager.DecideAndReserve(now, "cold", cost)
-	if cold.Reason != domain.ReasonExistingTPSAtRisk {
-		t.Fatalf("cold reason = %s, want %s (estimate=%+v)", cold.Reason, domain.ReasonExistingTPSAtRisk, cold.Scheduler)
+	if cold.Reason != domain.ReasonNewTPSAtRisk {
+		t.Fatalf("cold reason = %s, want %s (estimate=%+v)", cold.Reason, domain.ReasonNewTPSAtRisk, cold.Scheduler)
 	}
 
 	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
 		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
 		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index+1)*time.Second))
+		outcome.ExistingUserTPS = prediction.Prior.ExistingUserTPSLower * 1.20
+		outcome.ExistingUserTPSValid = true
 		if err := scheduler.Observe(prediction, outcome); err != nil {
 			t.Fatalf("observe healthy sample %d: %v", index, err)
 		}
@@ -54,6 +56,363 @@ func TestLearnedSchedulerChangesAdmissionWithCurrentMetricsHeldConstant(t *testi
 	}
 	if learned.Scheduler.NewUserTPSLower <= cold.Scheduler.NewUserTPSLower {
 		t.Fatalf("learned TPS %.3f did not exceed cold %.3f", learned.Scheduler.NewUserTPSLower, cold.Scheduler.NewUserTPSLower)
+	}
+}
+
+func TestJoiningCompletionTPSDoesNotCertifyExistingPrefillSafety(t *testing.T) {
+	now := time.Unix(3_500, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1}
+	cost := learnedTestCost()
+	prior := scheduler.Predict(now, state, cost)
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
+		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		outcome.UserTPS = 80
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe joining-user completion sample %d: %v", index, err)
+		}
+	}
+
+	learned := scheduler.Predict(now.Add(10*time.Second), state, cost)
+	if learned.Estimate.NewUserTPSLower <= prior.Estimate.NewUserTPSLower {
+		t.Fatalf("joining-user completion evidence did not raise its decode bound: prior=%+v learned=%+v", prior, learned)
+	}
+	if learned.Estimate.ExistingUserTPSLower != prior.Estimate.ExistingUserTPSLower {
+		t.Fatalf("joining-user completion evidence certified existing-user prefill safety: prior=%+v learned=%+v", prior, learned)
+	}
+}
+
+func TestAdversePostPrefillTPSSurvivesSmallerApproximateRequestEstimate(t *testing.T) {
+	now := time.Unix(3_625, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 50
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MinimumTPSMultiplier = 0.1
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	sampleState := domain.VirtualState{}
+	sampleCost := learnedTestCost()
+	sampleCost.InputTokens = 64
+	sampleCost.RequestComplexityTokensUpper = 64
+	sampleCost.UncachedPrefillUpper = 64
+	sampleCost.ActiveContextTokensUpper = 128
+	sampleCost.KV.PhysicalKVUpper = 128
+	sampleCost.KV.ActiveKVUpper = 128
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), sampleState, sampleCost)
+		if err := scheduler.Observe(prediction, SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: now.Add(time.Duration(index)*time.Second + 500*time.Millisecond), Attributed: true,
+			UserTPS: 20, UserTPSValid: true,
+		}); err != nil {
+			t.Fatalf("observe adverse decode sample %d: %v", index, err)
+		}
+	}
+
+	queryState := domain.VirtualState{
+		DecodeSequences: 1, ActiveContextTokens: 118, PhysicalKVUpper: 128, ActiveKVUpper: 128,
+	}
+	queryCost := sampleCost
+	queryCost.InputTokens = 54
+	queryCost.RequestComplexityTokensUpper = 54
+	queryCost.UncachedPrefillUpper = 54
+	queryCost.ActiveContextTokensUpper = 118
+	prediction := scheduler.Predict(now.Add(10*time.Second), queryState, queryCost)
+	if prediction.Source != PredictionSourceCalibrated || prediction.Samples != config.MinimumSamples || prediction.Estimate.NewUserTPSLower >= 25 {
+		t.Fatalf("smaller approximate estimate erased adverse decode capacity: %+v", prediction)
+	}
+}
+
+func TestLearnedSchedulerDoesNotReuseLowerPressureEvidenceInsideCoarseLocalCell(t *testing.T) {
+	now := time.Unix(3_750, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1}
+	small := learnedTestCost()
+	small.InputTokens = 100
+	small.RequestComplexityTokensUpper = 100
+	small.UncachedPrefillUpper = 100
+	small.ActiveContextTokensUpper = 356
+	small.KV.PhysicalKVUpper = 384
+	small.KV.ActiveKVUpper = 384
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, small)
+		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index)*time.Second+500*time.Millisecond))
+		outcome.UserTPS = 80
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe small-request headroom sample %d: %v", index, err)
+		}
+	}
+
+	large := small
+	large.InputTokens = 900
+	large.RequestComplexityTokensUpper = 900
+	large.UncachedPrefillUpper = 900
+	large.ActiveContextTokensUpper = 1_156
+	large.KV.PhysicalKVUpper = 1_184
+	large.KV.ActiveKVUpper = 1_184
+	prediction := scheduler.Predict(now.Add(10*time.Second), state, large)
+	if prediction.Source != PredictionSourceStatic || prediction.Estimate != prediction.Prior {
+		t.Fatalf("lower-pressure evidence leaked inside one coarse local cell: %+v", prediction)
+	}
+}
+
+func TestExistingPrefillZeroTPSImmediatelyTightensNextCompatiblePrediction(t *testing.T) {
+	now := time.Unix(3_800, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	state := domain.VirtualState{
+		DecodeSequences: 1, ActiveContextTokens: 10_000, PhysicalKVUpper: 12_000, ActiveKVUpper: 12_000,
+	}
+	cost := learnedTestCost()
+	prior := scheduler.Predict(now, state, cost)
+	if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+		Identity:                scheduler.Identity(),
+		StartedAt:               now,
+		ObservedAt:              now.Add(time.Second),
+		Features:                prior.Features,
+		ExistingDecodeSequences: 1,
+		PendingPrefillSequences: 1,
+		PendingPrefillTokens:    1_000,
+		ExistingUserTPS:         0,
+	}); err != nil {
+		t.Fatalf("observe zero-generation prefill stall: %v", err)
+	}
+	next := scheduler.Predict(now.Add(2*time.Second), state, cost)
+	if next.Source != PredictionSourceCalibrated || next.Samples != 1 || next.Estimate.ExistingUserTPSLower >= prior.Estimate.ExistingUserTPSLower {
+		t.Fatalf("single adverse prefill outcome did not immediately tighten next prediction: prior=%+v next=%+v", prior, next)
+	}
+	if next.Estimate.ExistingUserTPSLower <= 0 {
+		t.Fatalf("zero TPS feedback created a sticky zero floor: %+v", next)
+	}
+	snapshot := scheduler.Snapshot()
+	if snapshot.ExistingUserTPSSamples != 1 || snapshot.NewUserTPSSamples != 0 {
+		t.Fatalf("phase-specific learner counters = %+v", snapshot)
+	}
+}
+
+func TestStaticTPSProtectsOnlyExistingSequencesThatCompletedPrefill(t *testing.T) {
+	now := time.Unix(3_825, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	cost := learnedTestCost()
+	allPending := scheduler.Predict(now, domain.VirtualState{
+		DecodeSequences: 2, PendingPrefillSequences: 2, UncachedPrefillTokens: 2_000,
+	}, cost)
+	if !allPending.Prior.ExistingUserTPSNotApplicable || allPending.Prior.ExistingUserTPSLower != 0 {
+		t.Fatalf("all-pending prior protected nonexistent existing decoders: %+v", allPending.Prior)
+	}
+	if allPending.Prior.NewUserTPSLower != scheduler.profile.BaseCompletionTPS/3 {
+		t.Fatalf("all-pending prior lost post-join total concurrency: %+v", allPending.Prior)
+	}
+
+	oneReady := scheduler.Predict(now, domain.VirtualState{
+		DecodeSequences: 2, PendingPrefillSequences: 1, UncachedPrefillTokens: 2_000,
+	}, cost)
+	twoReady := scheduler.Predict(now, domain.VirtualState{
+		DecodeSequences: 2, PendingPrefillSequences: 0, UncachedPrefillTokens: 2_000,
+	}, cost)
+	if oneReady.Prior.ExistingUserTPSNotApplicable || twoReady.Prior.ExistingUserTPSNotApplicable ||
+		math.Abs(oneReady.Prior.ExistingUserTPSLower-2*twoReady.Prior.ExistingUserTPSLower) > 1e-9 {
+		t.Fatalf("ready-decoder TPS denominator mismatch: one=%+v two=%+v", oneReady.Prior, twoReady.Prior)
+	}
+	if oneReady.Prior.NewUserTPSLower != allPending.Prior.NewUserTPSLower || twoReady.Prior.NewUserTPSLower != allPending.Prior.NewUserTPSLower {
+		t.Fatalf("pending phase changed post-join total TPS: all=%+v one=%+v two=%+v", allPending.Prior, oneReady.Prior, twoReady.Prior)
+	}
+}
+
+func TestExistingPrefillOptimisticRelaxationRequiresMinimumSamples(t *testing.T) {
+	now := time.Unix(3_850, 0)
+	config := testResidualConfig()
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), config)
+	state := domain.VirtualState{DecodeSequences: 1, ActiveContextTokens: 10_000, PhysicalKVUpper: 12_000, ActiveKVUpper: 12_000}
+	cost := learnedTestCost()
+	prior := scheduler.Predict(now, state, cost)
+	for index := 0; index < config.MinimumSamples; index++ {
+		if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+			Identity:                scheduler.Identity(),
+			StartedAt:               now.Add(time.Duration(index) * 2 * time.Second),
+			ObservedAt:              now.Add(time.Duration(index)*2*time.Second + time.Second),
+			Features:                prior.Features,
+			ExistingDecodeSequences: 1,
+			PendingPrefillSequences: 1,
+			PendingPrefillTokens:    1_000,
+			ExistingUserTPS:         prior.Prior.ExistingUserTPSLower * 1.20,
+		}); err != nil {
+			t.Fatalf("observe optimistic prefill sample %d: %v", index, err)
+		}
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*2*time.Second+1500*time.Millisecond), state, cost)
+		if index+1 < config.MinimumSamples && prediction.Estimate.ExistingUserTPSLower != prior.Estimate.ExistingUserTPSLower {
+			t.Fatalf("immature optimistic evidence relaxed existing TPS after %d samples: %+v", index+1, prediction)
+		}
+	}
+	learned := scheduler.Predict(now.Add(10*time.Second), state, cost)
+	if learned.Source != PredictionSourceCalibrated || learned.Estimate.ExistingUserTPSLower <= prior.Estimate.ExistingUserTPSLower {
+		t.Fatalf("mature optimistic prefill evidence did not relax prediction: prior=%+v learned=%+v", prior, learned)
+	}
+}
+
+func TestOptimisticExistingPrefillResidualCannotIncreaseDecodeConcurrency(t *testing.T) {
+	now := time.Unix(3_875, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	cost := learnedTestCost()
+
+	sampleState := domain.VirtualState{DecodeSequences: 1}
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), sampleState, cost)
+		outcome := SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: now.Add(time.Duration(index)*time.Second + 500*time.Millisecond), Attributed: true,
+			ExistingUserTPS: prediction.Prior.ExistingUserTPSLower * 4, ExistingUserTPSValid: true,
+		}
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe low-concurrency optimistic sample %d: %v", index, err)
+		}
+	}
+
+	higherConcurrency := scheduler.Predict(now.Add(10*time.Second), domain.VirtualState{DecodeSequences: 2}, cost)
+	if higherConcurrency.Estimate.ExistingUserTPSLower != higherConcurrency.Prior.ExistingUserTPSLower {
+		t.Fatalf("lower-concurrency optimistic evidence leaked into higher concurrency: %+v", higherConcurrency)
+	}
+}
+
+func TestMatureHigherPressureOptimisticEvidenceTransfersToLowerPressureQuery(t *testing.T) {
+	now := time.Unix(3_890, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	cost := learnedTestCost()
+	higherPressure := learnedTestState()
+	higherPressure.UncachedPrefillTokens = 3_000
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), higherPressure, cost)
+		outcome := SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: now.Add(time.Duration(index)*time.Second + 500*time.Millisecond), Attributed: true,
+			ExistingUserTPS: prediction.Prior.ExistingUserTPSLower * 2, ExistingUserTPSValid: true,
+		}
+		if err := scheduler.Observe(prediction, outcome); err != nil {
+			t.Fatalf("observe higher-pressure optimistic sample %d: %v", index, err)
+		}
+	}
+
+	lowerPressure := scheduler.Predict(now.Add(10*time.Second), domain.VirtualState{DecodeSequences: 1}, cost)
+	if lowerPressure.Source != PredictionSourceCalibrated || lowerPressure.Estimate.ExistingUserTPSLower <= lowerPressure.Prior.ExistingUserTPSLower {
+		t.Fatalf("mature higher-pressure evidence did not safely transfer downward: %+v", lowerPressure)
+	}
+}
+
+func TestPostPrefillTPSResidualIgnoresDecisionPhasePendingCount(t *testing.T) {
+	sample := SchedulerFeatures{
+		DecodeSequences:         2,
+		PendingPrefillSequences: 1,
+		UncachedPrefillTokens:   2_000,
+		ActiveContextTokens:     4_000,
+		PhysicalKVUpper:         4_096,
+		ActiveKVUpper:           4_096,
+	}
+	query := sample
+	query.PendingPrefillSequences = 2
+	if !tpsResidualCompatible(sample, query, 1.25) {
+		t.Fatal("post-prefill decode-capacity evidence was coupled to decision-phase pending count")
+	}
+}
+
+func TestPostPrefillResidualsIgnoreDecisionPhasePrefillPressure(t *testing.T) {
+	sample := SchedulerFeatures{
+		DecodeSequences:         4,
+		PendingPrefillSequences: 1,
+		UncachedPrefillTokens:   3_074,
+		ActiveContextTokens:     14_592,
+		PhysicalKVUpper:         14_592,
+		ActiveKVUpper:           14_592,
+	}
+	query := sample
+	query.PendingPrefillSequences = 4
+	query.UncachedPrefillTokens = 4 * sample.UncachedPrefillTokens
+	if !tpsResidualCompatible(sample, query, 1.25) {
+		t.Fatal("post-prefill TPS evidence was coupled to prefill-only pressure")
+	}
+	if !latencyResidualCompatible(sample, query, 0.50) {
+		t.Fatal("post-prefill TPOT evidence was coupled to prefill-only pressure")
+	}
+}
+
+func TestOptimisticPostPrefillResidualRequiresDecodePressureDominance(t *testing.T) {
+	sample := SchedulerFeatures{
+		DecodeSequences:     4,
+		ActiveContextTokens: 14_592,
+		PhysicalKVUpper:     14_592,
+		ActiveKVUpper:       14_592,
+	}
+	query := sample
+	query.ActiveContextTokens++
+	query.PhysicalKVUpper++
+	query.ActiveKVUpper++
+	if tpsResidualCompatible(sample, query, 1.25) {
+		t.Fatal("optimistic post-prefill TPS evidence crossed into higher decode pressure")
+	}
+	if latencyResidualCompatible(sample, query, 0.50) {
+		t.Fatal("optimistic post-prefill TPOT evidence crossed into higher decode pressure")
+	}
+}
+
+func TestExistingPrefillTPSResidualRequiresPendingPressureDominance(t *testing.T) {
+	sample := SchedulerFeatures{
+		DecodeSequences:         2,
+		PendingPrefillSequences: 1,
+		UncachedPrefillTokens:   2_000,
+		ActiveContextTokens:     4_000,
+		PhysicalKVUpper:         4_096,
+		ActiveKVUpper:           4_096,
+	}
+	query := sample
+	query.PendingPrefillSequences = 2
+	if existingTPSResidualCompatible(sample, query, 1.25) {
+		t.Fatal("optimistic existing-prefill evidence crossed into higher pending-prefill pressure")
+	}
+}
+
+func TestAdverseLowerPressureEvidenceTransfersToLargerQuery(t *testing.T) {
+	now := time.Unix(3_900, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	state := domain.VirtualState{DecodeSequences: 1}
+	small := learnedTestCost()
+	smallPrediction := scheduler.Predict(now, state, small)
+	if err := scheduler.Observe(smallPrediction, SchedulerOutcome{
+		Identity:             scheduler.Identity(),
+		ObservedAt:           now.Add(time.Second),
+		Attributed:           true,
+		ExistingUserTPS:      smallPrediction.Prior.ExistingUserTPSLower * 0.50,
+		ExistingUserTPSValid: true,
+	}); err != nil {
+		t.Fatalf("observe adverse small-request prefill evidence: %v", err)
+	}
+	large := small
+	large.InputTokens = 2_000
+	large.RequestComplexityTokensUpper = 2_000
+	large.UncachedPrefillUpper = 2_000
+	large.ActiveContextTokensUpper = 2_256
+	large.KV.PhysicalKVUpper = 2_304
+	large.KV.ActiveKVUpper = 2_304
+	largePrediction := scheduler.Predict(now.Add(2*time.Second), state, large)
+	if largePrediction.Source != PredictionSourceCalibrated || largePrediction.Samples != 1 || largePrediction.Estimate.ExistingUserTPSLower >= largePrediction.Prior.ExistingUserTPSLower {
+		t.Fatalf("larger query ignored compatible adverse lower-pressure evidence: %+v", largePrediction)
 	}
 }
 
@@ -74,7 +433,9 @@ func TestAdverseLearnedResidualChangesFitToTPSRisk(t *testing.T) {
 	for index := 0; index < testResidualConfig().MinimumSamples; index++ {
 		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), state, cost)
 		outcome := healthyLearnedOutcome(prediction, now.Add(time.Duration(index+1)*time.Second))
-		outcome.UserTPS = prediction.Prior.NewUserTPSLower * 0.60
+		outcome.ExistingUserTPS = prediction.Prior.ExistingUserTPSLower * 0.40
+		outcome.ExistingUserTPSValid = true
+		outcome.UserTPS = prediction.Prior.NewUserTPSLower * 0.90
 		outcome.TTFT = prediction.Prior.TTFTUpper * 3 / 2
 		outcome.TPOT = prediction.Prior.TPOTUpper * 3 / 2
 		if err := scheduler.Observe(prediction, outcome); err != nil {
@@ -172,7 +533,7 @@ func TestTerminalOutcomeCommitAndReservationReleaseAreAtomicAgainstReconciliatio
 	}
 }
 
-func TestStaticSchedulerAppliesPrefillPenaltyToEveryPostJoinUser(t *testing.T) {
+func TestStaticSchedulerSeparatesExistingPrefillTPSFromPostPrefillNewUserTPS(t *testing.T) {
 	now := time.Unix(6_000, 0)
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
 	state := domain.VirtualState{DecodeSequences: 2}
@@ -185,12 +546,13 @@ func TestStaticSchedulerAppliesPrefillPenaltyToEveryPostJoinUser(t *testing.T) {
 		Confidence:           0.99,
 	}
 	prediction := scheduler.Predict(now, state, cost)
-	wantTPS := (testLearnedProfile().BaseCompletionTPS - testLearnedProfile().PrefillTPSPenaltyPerKToken) / 3
-	if math.Abs(prediction.Estimate.ExistingUserTPSLower-wantTPS) > 1e-9 {
-		t.Fatalf("existing-user TPS = %.6f, want post-join prefill-adjusted %.6f", prediction.Estimate.ExistingUserTPSLower, wantTPS)
+	wantExistingTPS := (testLearnedProfile().BaseCompletionTPS - testLearnedProfile().PrefillTPSPenaltyPerKToken) / 2
+	if math.Abs(prediction.Estimate.ExistingUserTPSLower-wantExistingTPS) > 1e-9 {
+		t.Fatalf("existing-user TPS = %.6f, want prefill-era adjusted %.6f", prediction.Estimate.ExistingUserTPSLower, wantExistingTPS)
 	}
-	if math.Abs(prediction.Estimate.NewUserTPSLower-wantTPS) > 1e-9 {
-		t.Fatalf("new-user TPS = %.6f, want post-join prefill-adjusted %.6f", prediction.Estimate.NewUserTPSLower, wantTPS)
+	wantNewTPS := testLearnedProfile().BaseCompletionTPS / 3
+	if math.Abs(prediction.Estimate.NewUserTPSLower-wantNewTPS) > 1e-9 {
+		t.Fatalf("new-user TPS = %.6f, want post-prefill decode %.6f", prediction.Estimate.NewUserTPSLower, wantNewTPS)
 	}
 }
 
@@ -214,13 +576,13 @@ func TestStaticSchedulerChargesAccruedLocalAdmissionLatencyToTTFT(t *testing.T) 
 	}
 }
 
-func TestZeroTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testing.T) {
+func TestZeroExistingTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testing.T) {
 	now := time.Unix(8_000, 0)
 	profile := testLearnedProfile()
 	profile.BaseCompletionTPS = 1
 	profile.PrefillTPSPenaltyPerKToken = 2
 	scheduler := mustLearnedScheduler(t, profile, testResidualConfig())
-	manager := NewManager("test-profile", domain.VirtualState{}, testLearnedConstraints(), scheduler)
+	manager := NewManager("test-profile", domain.VirtualState{DecodeSequences: 1}, testLearnedConstraints(), scheduler)
 	decision := manager.DecideAndReserve(now, "zero-tps", domain.RequestCost{
 		ManifestID:               "test-profile",
 		InputTokens:              1_000,
@@ -232,8 +594,8 @@ func TestZeroTPSLowerBoundIsAProspectiveRiskRatherThanInvalidPrediction(t *testi
 		FutureContextTokensUpper: 16,
 		Confidence:               0.99,
 	})
-	if decision.Reason != domain.ReasonNewTPSAtRisk || decision.Scheduler.NewUserTPSLower != 0 {
-		t.Fatalf("zero-TPS decision = %+v, want explicit %s at 0 TPS", decision, domain.ReasonNewTPSAtRisk)
+	if decision.Reason != domain.ReasonExistingTPSAtRisk || decision.Scheduler.ExistingUserTPSLower != 0 {
+		t.Fatalf("zero-TPS decision = %+v, want explicit %s at 0 TPS", decision, domain.ReasonExistingTPSAtRisk)
 	}
 }
 
@@ -389,13 +751,13 @@ func TestFreshCompatibleResidualRatiosSelectsMatureLevelPerDimensionInOnePass(t 
 
 func TestGlobalFallbackScanIsNotTriggeredOnlyForObservationalTTFT(t *testing.T) {
 	mature := make([]float64, 3)
-	if requiresGlobalResidualFallback(residualRatios{UserTPS: mature, TPOT: mature}, 3) {
+	if requiresGlobalResidualFallback(residualRatios{UserTPS: mature, TPOT: mature}, 3, false) {
 		t.Fatal("mature protected dimensions scanned global history only for TTFT")
 	}
-	if !requiresGlobalResidualFallback(residualRatios{UserTPS: mature[:2], TPOT: mature}, 3) {
+	if !requiresGlobalResidualFallback(residualRatios{UserTPS: mature[:2], TPOT: mature}, 3, false) {
 		t.Fatal("immature TPS did not request global fallback")
 	}
-	if !requiresGlobalResidualFallback(residualRatios{UserTPS: mature, TPOT: mature[:2]}, 3) {
+	if !requiresGlobalResidualFallback(residualRatios{UserTPS: mature, TPOT: mature[:2]}, 3, false) {
 		t.Fatal("immature TPOT did not request global fallback")
 	}
 }

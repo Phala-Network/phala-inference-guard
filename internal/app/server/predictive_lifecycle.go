@@ -17,18 +17,59 @@ type predictiveCoordinatorSnapshotter interface {
 	Snapshot() runtimepredictive.CountCoordinatorSnapshot
 }
 
+type predictiveAvailabilityProvider interface {
+	Available() bool
+}
+
+func predictiveUpstreamHealthy(upstream predictiveUpstreamState, now time.Time) (healthy bool) {
+	if upstream == nil {
+		return true
+	}
+	defer func() {
+		if recover() != nil {
+			healthy = false
+		}
+	}()
+	return upstream.Healthy(now)
+}
+
+func predictiveCoordinatorAvailable(provider predictiveAvailabilityProvider) (available bool) {
+	if provider == nil {
+		return true
+	}
+	defer func() {
+		if recover() != nil {
+			available = false
+		}
+	}()
+	return provider.Available()
+}
+
 type predictiveLearningSnapshotter interface {
 	Snapshot() runtimepredictive.LearnedSchedulerSnapshot
 }
 
+type predictiveProtectionScope string
+
+const (
+	predictiveProtectionScopeRequest      predictiveProtectionScope = "request"
+	predictiveProtectionScopeLoad         predictiveProtectionScope = "load"
+	predictiveProtectionScopeAvailability predictiveProtectionScope = "availability"
+)
+
 type predictiveAttemptSnapshot struct {
-	Attempts    uint64
-	Fits        uint64
-	Risks       uint64
-	Unknown     uint64
-	LastReason  domainpredictive.Reason
-	LastSource  runtimepredictive.PredictionSource
-	LastSamples int
+	Attempts          uint64
+	Fits              uint64
+	Risks             uint64
+	Unknown           uint64
+	LastReason        domainpredictive.Reason
+	LastSource        runtimepredictive.PredictionSource
+	LastSamples       int
+	LastRejectReason  domainpredictive.Reason
+	LastRejectSource  runtimepredictive.PredictionSource
+	LastRejectScope   predictiveProtectionScope
+	LastRejectSamples int
+	LastRejectAt      time.Time
 }
 
 type predictiveTPSTargetSource uint8

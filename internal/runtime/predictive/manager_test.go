@@ -19,6 +19,14 @@ type panickingOutcomeScheduler struct {
 	safeScheduler
 }
 
+type panickingPredictionScheduler struct {
+	safeScheduler
+}
+
+func (panickingPredictionScheduler) Predict(time.Time, domain.VirtualState, domain.RequestCost) SchedulerPrediction {
+	panic("injected scheduler prediction panic")
+}
+
 type recordingOutcomeScheduler struct {
 	safeScheduler
 	mu       sync.Mutex
@@ -50,12 +58,14 @@ func (safeScheduler) Predict(now time.Time, state domain.VirtualState, request d
 	return SchedulerPrediction{
 		Identity:    safeSchedulerIdentity(),
 		PredictedAt: now,
+		Features:    schedulerFeatures(state, request),
 		Estimate: domain.SchedulerEstimate{
 			ExistingUserTPSLower: 30,
 			NewUserTPSLower:      30,
 			TTFTUpper:            100 * time.Millisecond,
 			TPOTUpper:            25 * time.Millisecond,
 		},
+		Source:     PredictionSourceStatic,
 		Confidence: 0.99,
 	}
 }
@@ -98,6 +108,42 @@ func testRequest() domain.RequestCost {
 		DecodeSequencesUpper:     1,
 		ActiveContextTokensUpper: 10_000,
 		Confidence:               0.99,
+	}
+}
+
+func TestManagerSnapshotExposesOnlyForwardedPendingPrefillDemand(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	now := time.Unix(450, 0)
+	if decision := manager.DecideAndReserve(now, "pending", testRequest()); decision.Reason != domain.ReasonFit {
+		t.Fatalf("pending admission reason = %s", decision.Reason)
+	}
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 0 || snapshot.ForwardedPendingPrefillTokens != 0 {
+		t.Fatalf("unforwarded reservation appeared as a pending prefill: %+v", snapshot)
+	}
+	if !manager.MarkForwarded("pending") {
+		t.Fatal("pending reservation was not forwarded")
+	}
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 1 || snapshot.ForwardedPendingPrefillTokens != testRequest().UncachedPrefillUpper ||
+		!snapshot.ForwardedPendingPrefillFeaturesValid || snapshot.ForwardedPendingPrefillFeatures != schedulerFeatures(domain.VirtualState{}, testRequest()) {
+		t.Fatalf("forwarded pending prefill snapshot = %+v", snapshot)
+	}
+	if decision := manager.DecideAndReserve(now.Add(time.Millisecond), "second-pending", testRequest()); decision.Reason != domain.ReasonFit {
+		t.Fatalf("second pending admission reason = %s", decision.Reason)
+	}
+	if !manager.MarkForwarded("second-pending") {
+		t.Fatal("second pending reservation was not forwarded")
+	}
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 2 || snapshot.ForwardedPendingPrefillFeaturesValid {
+		t.Fatalf("ambiguous concurrent prefills exposed trainable features: %+v", snapshot)
+	}
+	if !manager.Terminate("second-pending", TerminalExpired) {
+		t.Fatal("second pending reservation was not terminated")
+	}
+	if !manager.MarkPrefillComplete("pending") {
+		t.Fatal("pending reservation did not complete prefill")
+	}
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 0 || snapshot.ForwardedPendingPrefillTokens != 0 {
+		t.Fatalf("completed prefill remained in pending counters: %+v", snapshot)
 	}
 }
 
@@ -595,6 +641,43 @@ func TestManagerRejectsMismatchedTokenizerManifestWithoutReservation(t *testing.
 	}
 }
 
+func TestManagerReturnsDecisionSequenceFromTheAtomicAdmissionSnapshot(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	admitted := manager.decideAndReserve(time.Unix(0, 0), "sequence", testRequest())
+	if admitted.Decision.Reason != domain.ReasonFit || admitted.DecisionManagerSequence != 1 {
+		t.Fatalf("admitted decision sequence = %+v, want fit at sequence 1", admitted)
+	}
+	rejected := manager.decideAndReserve(time.Unix(0, 1), "sequence", testRequest())
+	if rejected.Decision.Reason != domain.ReasonDuplicateRequest || rejected.DecisionManagerSequence != 1 {
+		t.Fatalf("rejected decision sequence = %+v, want duplicate at unchanged sequence 1", rejected)
+	}
+	if snapshot := manager.Snapshot(); snapshot.EventSequence != rejected.DecisionManagerSequence {
+		t.Fatalf("decision/snapshot sequence mismatch: result=%+v snapshot=%+v", rejected, snapshot)
+	}
+}
+
+func TestManagerTracksPendingPrefillSeparatelyFromReadyDecodeSequences(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	if result := manager.DecideAndReserve(time.Unix(0, 0), "pending", testRequest()); result.Reason != domain.ReasonFit {
+		t.Fatalf("pending admission = %+v", result)
+	}
+	if snapshot := manager.Snapshot(); snapshot.Virtual.Upper.DecodeSequences != 1 || snapshot.Virtual.Upper.PendingPrefillSequences != 1 {
+		t.Fatalf("reserved prefill state = %+v, want total/pending 1/1", snapshot.Virtual.Upper)
+	}
+	if !manager.MarkForwarded("pending") {
+		t.Fatal("pending reservation was not forwarded")
+	}
+	if snapshot := manager.Snapshot(); snapshot.Virtual.Upper.DecodeSequences != 1 || snapshot.Virtual.Upper.PendingPrefillSequences != 1 {
+		t.Fatalf("forwarded prefill state = %+v, want total/pending 1/1", snapshot.Virtual.Upper)
+	}
+	if !manager.MarkPrefillComplete("pending") {
+		t.Fatal("pending reservation did not become decode-ready")
+	}
+	if snapshot := manager.Snapshot(); snapshot.Virtual.Upper.DecodeSequences != 1 || snapshot.Virtual.Upper.PendingPrefillSequences != 0 {
+		t.Fatalf("decode-ready state = %+v, want total/pending 1/0", snapshot.Virtual.Upper)
+	}
+}
+
 func TestManagerRejectsMismatchedSchedulerPredictionWithoutReservation(t *testing.T) {
 	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), mismatchedPredictionScheduler{})
 
@@ -602,8 +685,26 @@ func TestManagerRejectsMismatchedSchedulerPredictionWithoutReservation(t *testin
 	if decision.Reason != domain.ReasonPredictorProfileUnknown {
 		t.Fatalf("reason = %s, want %s", decision.Reason, domain.ReasonPredictorProfileUnknown)
 	}
-	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 {
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.EventSequence != 0 || snapshot.IntakeOpen {
 		t.Fatalf("mismatched scheduler prediction changed manager state: %+v", snapshot)
+	}
+	if manager.Available() {
+		t.Fatal("mismatched scheduler prediction did not quarantine availability")
+	}
+}
+
+func TestManagerConvertsSchedulerPredictionPanicIntoAvailabilityQuarantine(t *testing.T) {
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), panickingPredictionScheduler{})
+	result := manager.decideAndReserve(time.Unix(0, 0), "panic-predictor", testRequest())
+	if result.Decision.Reason != domain.ReasonPredictorProfileUnknown || !result.AvailabilityUnavailable ||
+		result.Prediction.Source != PredictionSourceUnavailable {
+		t.Fatalf("panicking scheduler result = %+v", result)
+	}
+	if manager.Available() {
+		t.Fatal("panicking scheduler did not quarantine current availability")
+	}
+	if snapshot := manager.Snapshot(); snapshot.IntakeOpen || snapshot.Reservations != 0 || snapshot.EventSequence != 0 {
+		t.Fatalf("panicking scheduler quarantine state = %+v", snapshot)
 	}
 }
 
@@ -953,6 +1054,9 @@ func TestReconcileRetiredQueuePreservesSequenceSemantics(t *testing.T) {
 
 func TestManagerEpochInvalidationClosesIntakeButPreservesTerminalRelease(t *testing.T) {
 	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	if !manager.Available() {
+		t.Fatal("new manager unexpectedly unavailable")
+	}
 	first := manager.DecideAndReserve(time.Unix(20_000, 0), "in-flight", testRequest())
 	if first.Reason != domain.ReasonFit {
 		t.Fatalf("initial reservation = %+v", first)
@@ -962,6 +1066,9 @@ func TestManagerEpochInvalidationClosesIntakeButPreservesTerminalRelease(t *test
 	}
 	if manager.InvalidateEpoch() {
 		t.Fatal("duplicate epoch invalidation reported a state change")
+	}
+	if manager.Available() {
+		t.Fatal("epoch-invalidated manager still reported available")
 	}
 	blocked := manager.DecideAndReserve(time.Unix(20_001, 0), "after-drift", testRequest())
 	if blocked.Reason != domain.ReasonPredictorProfileUnknown {

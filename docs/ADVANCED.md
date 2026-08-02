@@ -477,7 +477,7 @@ labels through `pig_dynamic_capacity_projected_limit` and
 : Default: `16`. Minimum running load before severe pressure is treated as
   representative for learning.
 
-## PREDICTIVE ADMISSION (v0.10.4)
+## PREDICTIVE ADMISSION (v0.10.5)
 
 Predictive admission is a pre-forward guard for one configured vLLM upstream.
 It uses a bounded model-family-neutral JSON size interval, vLLM KV capacity and

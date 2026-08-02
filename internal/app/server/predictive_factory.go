@@ -12,8 +12,10 @@ import (
 const (
 	predictiveApproximateManifestID       = "model-agnostic-json-v1"
 	predictiveApproximateProfileID        = "model-agnostic-qos-v2"
-	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v2"
+	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v3"
 	predictiveApproximateEstimatorVersion = "json-cost-v1"
+	predictiveColdParallelUsers           = 2
+	predictivePrefillHeadroomSafetyShares = 4
 )
 
 func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
@@ -35,6 +37,9 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		return nil, err
 	}
 	targetTPS := cfg.DynamicUserTPSRed
+	baseCompletionTPS := predictiveColdBaseCompletionTPS(targetTPS, cfg.DynamicUserTPSYellow)
+	featureTokenBucket := predictiveFeatureTokenBucket(protectedTokens, startup.BlockSize)
+	prefillTPSPenaltyPerKToken := predictivePrefillTPSPenaltyPerKToken(baseCompletionTPS, targetTPS, protectedTokens)
 	ttftReference, err := predictiveSecondsDuration(cfg.DynamicTTFTPolicy.TargetSeconds)
 	if err != nil {
 		return nil, fmt.Errorf("construct predictive TTFT observation reference: %w", err)
@@ -59,8 +64,8 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	}
 	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
 		Identity:                      identity,
-		BaseCompletionTPS:             targetTPS,
-		PrefillTPSPenaltyPerKToken:    0,
+		BaseCompletionTPS:             baseCompletionTPS,
+		PrefillTPSPenaltyPerKToken:    prefillTPSPenaltyPerKToken,
 		BaseTTFT:                      baseTTFT,
 		TTFTPerUncachedPrefillToken:   predictiveTTFTPerToken(ttftReference-baseTTFT, protectedTokens),
 		BaseTPOT:                      baseTPOT,
@@ -82,9 +87,9 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		MaximumLatencyMultiplier: cfg.PredictiveLatencyMaximumMultiplier,
 		CalibratedConfidence:     cfg.PredictiveLearnedConfidence,
 		DecodeSequenceBucket:     1,
-		ContextTokenBucket:       predictiveFeatureTokenBucket(protectedTokens, startup.BlockSize),
-		PrefillTokenBucket:       predictiveFeatureTokenBucket(protectedTokens, startup.BlockSize),
-		KVTokenBucket:            predictiveFeatureTokenBucket(protectedTokens, startup.BlockSize),
+		ContextTokenBucket:       featureTokenBucket,
+		PrefillTokenBucket:       featureTokenBucket,
+		KVTokenBucket:            featureTokenBucket,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct model-neutral predictive scheduler: %w", err)
@@ -132,18 +137,21 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	if err != nil {
 		return nil, fmt.Errorf("construct predictive input-size calibrator: %w", err)
 	}
+	shadowPendingPrefills := newPredictiveShadowPendingPrefillStore(cfg.PredictiveShadowObservationLimit)
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
-		MetricsURL:           metricsURL,
-		ModelIdentitySHA256:  startup.ModelIdentitySHA256,
-		MaximumKVTokens:      startup.CapacityTokens,
-		BlockSize:            startup.BlockSize,
-		PollInterval:         cfg.DynamicPollInterval,
-		MaximumAge:           cfg.KVAdmissionPolicy.MaxMetricsAge,
-		RequestTimeout:       cfg.PredictiveMetricsRequestTimeout,
-		PreemptionCooldown:   cfg.KVAdmissionPolicy.PreemptionCooldown,
-		Coordinator:          coordinator,
-		LearningInvalidators: []predictiveLearningInvalidator{calibrator},
-		Initial:              startup,
+		MetricsURL:             metricsURL,
+		ModelIdentitySHA256:    startup.ModelIdentitySHA256,
+		MaximumKVTokens:        startup.CapacityTokens,
+		BlockSize:              startup.BlockSize,
+		PollInterval:           cfg.DynamicPollInterval,
+		MaximumAge:             cfg.KVAdmissionPolicy.MaxMetricsAge,
+		RequestTimeout:         cfg.PredictiveMetricsRequestTimeout,
+		PreemptionCooldown:     cfg.KVAdmissionPolicy.PreemptionCooldown,
+		Coordinator:            coordinator,
+		ExistingPrefillLearner: scheduler,
+		ShadowPendingPrefills:  shadowPendingPrefills,
+		LearningInvalidators:   []predictiveLearningInvalidator{calibrator},
+		Initial:                startup,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct predictive vLLM observer: %w", err)
@@ -155,12 +163,14 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		Upstream:               observer,
 		Mode:                   cfg.PredictiveAdmissionMode,
 		ShadowObservationLimit: cfg.PredictiveShadowObservationLimit,
+		ShadowPendingPrefills:  shadowPendingPrefills,
 		RouterBackpressureHold: predictiveRouterBackpressureHold(cfg.DynamicPollInterval),
 		RouterBackpressure: predictiveRouterBackpressurePolicy{
 			PhysicalKVHard: protectedTokens,
 			ActiveKVHard:   protectedTokens,
 		},
 		OnRouterBackpressure: logPredictiveRouterBackpressure,
+		OnRequestReject:      logPredictiveRequestReject,
 	})
 	if err != nil {
 		_ = observer.Close()
@@ -191,6 +201,23 @@ func predictiveFeatureTokenBucket(protectedTokens int64, blockSize int) int64 {
 		bucket += int64(blockSize) - remainder
 	}
 	return bucket
+}
+
+func predictiveColdBaseCompletionTPS(targetTPS, yellowTPS float64) float64 {
+	perUser := math.Max(targetTPS, yellowTPS)
+	return perUser * predictiveColdParallelUsers
+}
+
+func predictivePrefillTPSPenaltyPerKToken(baseCompletionTPS, targetTPS float64, protectedTokens int64) float64 {
+	if baseCompletionTPS <= targetTPS || targetTPS <= 0 || protectedTokens <= 0 {
+		return 0
+	}
+	// Charge prompt pressure against the complete protected KV budget. The
+	// safety-share multiplier deliberately consumes the cold TPS headroom at
+	// one safety share of that budget; using the feature-cell bucket here made
+	// the penalty 64x steeper a second time and collapsed ordinary long prompts
+	// to a zero existing-user prior before learning could make progress.
+	return float64(predictivePrefillHeadroomSafetyShares) * (baseCompletionTPS - targetTPS) * 1_000 / float64(protectedTokens)
 }
 
 func predictiveSecondsDuration(seconds float64) (time.Duration, error) {

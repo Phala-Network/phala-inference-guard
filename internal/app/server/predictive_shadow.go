@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -27,8 +28,49 @@ type predictiveShadowReservation interface {
 	Terminate(runtimepredictive.TerminalCause) bool
 }
 
+type predictiveAdmissionOutcome string
+
+const (
+	predictiveAdmissionOutcomeForward                predictiveAdmissionOutcome = "forward"
+	predictiveAdmissionOutcomeRequestReject          predictiveAdmissionOutcome = "request_reject"
+	predictiveAdmissionOutcomeLoadProtection         predictiveAdmissionOutcome = "load_protection"
+	predictiveAdmissionOutcomeAvailabilityProtection predictiveAdmissionOutcome = "availability_protection"
+)
+
+type predictiveAdmissionDecision struct {
+	Outcome     predictiveAdmissionOutcome
+	Reservation predictiveShadowReservation
+	Reason      domainpredictive.Reason
+	Source      runtimepredictive.PredictionSource
+	Samples     int
+}
+
+func (d predictiveAdmissionDecision) rejectsForward() bool {
+	switch d.Outcome {
+	case predictiveAdmissionOutcomeRequestReject,
+		predictiveAdmissionOutcomeLoadProtection,
+		predictiveAdmissionOutcomeAvailabilityProtection:
+		return true
+	default:
+		return false
+	}
+}
+
+func (d predictiveAdmissionDecision) validEnforceResult() bool {
+	switch d.Outcome {
+	case predictiveAdmissionOutcomeForward:
+		return d.Reservation != nil
+	case predictiveAdmissionOutcomeRequestReject,
+		predictiveAdmissionOutcomeLoadProtection,
+		predictiveAdmissionOutcomeAvailabilityProtection:
+		return d.Reservation == nil
+	default:
+		return false
+	}
+}
+
 type predictiveAdmissionShadow interface {
-	DecideAndReserve(context.Context, string, predictiveShadowInput) predictiveShadowReservation
+	Decide(context.Context, string, predictiveShadowInput) predictiveAdmissionDecision
 	Close() error
 }
 
@@ -37,15 +79,25 @@ type predictiveAdmissionTelemetryProvider interface {
 }
 
 type predictiveAdmissionTelemetrySnapshot struct {
-	Attempts           predictiveAttemptSnapshot
-	Manager            runtimepredictive.Snapshot
-	Learning           runtimepredictive.LearnedSchedulerSnapshot
-	InputSize          runtimepredictive.InputSizeCalibratorSnapshot
-	PredictionDuration *durationHistogram
-	TPSOutcomes        predictiveTPSOutcomeSnapshot
-	ShadowObservations predictiveShadowObservationSnapshot
-	DeferredOutcomes   predictiveDeferredOutcomeSnapshot
-	RouterBackpressure predictiveRouterBackpressureSnapshot
+	Attempts              predictiveAttemptSnapshot
+	Manager               runtimepredictive.Snapshot
+	Learning              runtimepredictive.LearnedSchedulerSnapshot
+	InputSize             runtimepredictive.InputSizeCalibratorSnapshot
+	PredictionDuration    *durationHistogram
+	TPSOutcomes           predictiveTPSOutcomeSnapshot
+	ShadowObservations    predictiveShadowObservationSnapshot
+	ShadowPendingPrefills predictiveShadowPendingPrefillSnapshot
+	DeferredOutcomes      predictiveDeferredOutcomeSnapshot
+	RouterBackpressure    predictiveRouterBackpressureSnapshot
+	ExistingPrefill       predictiveExistingPrefillObservationSnapshot
+}
+
+type predictiveExistingPrefillObservationSnapshot struct {
+	Accepted                 uint64
+	Rejected                 uint64
+	Censored                 uint64
+	LastExistingUserTPS      float64
+	LastExistingUserTPSValid bool
 }
 
 type predictiveTPSOutcomeSnapshot struct {
@@ -128,9 +180,9 @@ func observePredictiveCompletion(reservation predictiveShadowReservation, observ
 	return ok && observer.ObserveCompletion(observation)
 }
 
-func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predictiveShadowInput) (result predictiveShadowReservation) {
-	if s == nil || s.predictiveShadow == nil || (input.Body == nil && !input.Cost.Supported) {
-		return nil
+func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predictiveShadowInput) (result predictiveAdmissionDecision) {
+	if s == nil || s.predictiveShadow == nil {
+		return predictiveAdmissionDecision{}
 	}
 	if input.Body != nil {
 		defer clear(input.Body)
@@ -138,16 +190,21 @@ func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predicti
 	defer func() {
 		if recover() != nil {
 			s.predictiveShadowFailures.decide.Add(1)
-			result = nil
+			s.logPredictiveFailureReject("decision_panic")
+			result = predictiveAdmissionDecision{
+				Outcome: predictiveAdmissionOutcomeRequestReject,
+				Reason:  domainpredictive.ReasonPredictorProfileUnknown,
+				Source:  runtimepredictive.PredictionSourceUnavailable,
+			}
 		}
 	}()
 	requestID := "http-" + strconv.FormatUint(s.nextPredictiveID.Add(1), 10)
-	reservation := s.predictiveShadow.DecideAndReserve(ctx, requestID, input)
-	if reservation == nil {
-		return nil
+	decision := s.predictiveShadow.Decide(ctx, requestID, input)
+	if decision.Reservation == nil {
+		return decision
 	}
-	return &guardedPredictiveReservation{
-		reservation: reservation,
+	decision.Reservation = &guardedPredictiveReservation{
+		reservation: decision.Reservation,
 		onForwardCallFailure: func() {
 			s.predictiveShadowFailures.forward.Add(1)
 		},
@@ -164,6 +221,7 @@ func (s *proxyServer) decidePredictiveShadow(ctx context.Context, input predicti
 			s.predictiveShadowFailures.terminal.Add(1)
 		},
 	}
+	return decision
 }
 
 func (r *guardedPredictiveReservation) MarkForwarded() bool {

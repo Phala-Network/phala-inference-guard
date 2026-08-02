@@ -27,6 +27,14 @@ type recordingUpperBoundCoordinator struct {
 	outcomes            []runtimepredictive.SchedulerOutcome
 	interference        int
 	correctAfterOutcome bool
+	available           bool
+	managerSequence     uint64
+}
+
+type blockingUpperBoundCoordinator struct {
+	*recordingUpperBoundCoordinator
+	entered chan struct{}
+	release chan struct{}
 }
 
 func newRecordingUpperBoundCoordinator() *recordingUpperBoundCoordinator {
@@ -36,7 +44,20 @@ func newRecordingUpperBoundCoordinator() *recordingUpperBoundCoordinator {
 		identity: runtimepredictive.ModelIdentity{
 			ProfileID: "approximate-test", BackendEpoch: "capacity-1000-block-4", PredictorVersion: "approx-json-v1",
 		},
+		available: true,
 	}
+}
+
+func (c *blockingUpperBoundCoordinator) DecideUpperBoundAndReserve(now time.Time, proposal runtimepredictive.UpperBoundAdmissionProposal) runtimepredictive.CountAdmissionResult {
+	close(c.entered)
+	<-c.release
+	return c.recordingUpperBoundCoordinator.DecideUpperBoundAndReserve(now, proposal)
+}
+
+func (c *recordingUpperBoundCoordinator) Available() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.available
 }
 
 func (c *recordingUpperBoundCoordinator) DecideUpperBoundAndReserve(now time.Time, proposal runtimepredictive.UpperBoundAdmissionProposal) runtimepredictive.CountAdmissionResult {
@@ -45,12 +66,51 @@ func (c *recordingUpperBoundCoordinator) DecideUpperBoundAndReserve(now time.Tim
 	if c.recordProposals {
 		c.proposals = append(c.proposals, proposal)
 	}
+	activeContext := proposal.InputTokensUpper + proposal.DecodeHorizonUpper
+	physicalKV := activeContext
+	if remainder := physicalKV % 4; remainder != 0 {
+		physicalKV += 4 - remainder
+	}
+	requestComplexity := proposal.RawInputTokensHigh
+	if requestComplexity < proposal.InputTokensUpper {
+		requestComplexity = proposal.InputTokensUpper
+	}
 	prediction := runtimepredictive.SchedulerPrediction{
 		Identity: c.identity, PredictedAt: now, Source: runtimepredictive.PredictionSourceStatic, Confidence: 1,
 		Features: runtimepredictive.SchedulerFeatures{
-			ExistingDecodeSequences: c.virtual.DecodeSequences,
-			ExistingActiveKVUpper:   c.virtual.ActiveKVUpper,
+			ExistingDecodeSequences:         c.virtual.DecodeSequences,
+			DecodeSequences:                 c.virtual.DecodeSequences + 1,
+			ExistingPendingPrefillSequences: c.virtual.PendingPrefillSequences,
+			PendingPrefillSequences:         c.virtual.PendingPrefillSequences + 1,
+			ExistingActiveContextTokens:     c.virtual.ActiveContextTokens,
+			ExistingUncachedPrefill:         c.virtual.UncachedPrefillTokens,
+			ExistingPhysicalKVUpper:         c.virtual.PhysicalKVUpper,
+			ExistingActiveKVUpper:           c.virtual.ActiveKVUpper,
+			RequestComplexityTokensUpper:    requestComplexity,
+			ActiveContextTokens:             c.virtual.ActiveContextTokens + activeContext,
+			UncachedPrefillTokens:           c.virtual.UncachedPrefillTokens + proposal.InputTokensUpper,
+			AccruedLocalAdmissionLatency:    proposal.AccruedLocalAdmissionLatency,
+			PhysicalKVUpper:                 c.virtual.PhysicalKVUpper + physicalKV,
+			ActiveKVUpper:                   c.virtual.ActiveKVUpper + physicalKV,
+			DecodeHorizonUpper:              proposal.DecodeHorizonUpper,
 		},
+	}
+	cost := runtimepredictive.CountRequestCost{
+		ManifestID:                   "model-agnostic-test",
+		BackendEpoch:                 c.identity.BackendEpoch,
+		InputTokens:                  proposal.InputTokensUpper,
+		RequestComplexityTokensUpper: requestComplexity,
+		AccruedLocalAdmissionLatency: proposal.AccruedLocalAdmissionLatency,
+		PhysicalKVUpper:              physicalKV,
+		ActiveKVUpper:                physicalKV,
+		FuturePhysicalKVUpper:        physicalKV - proposal.InputTokensUpper,
+		FutureActiveKVUpper:          physicalKV - proposal.InputTokensUpper,
+		UncachedPrefillUpper:         proposal.InputTokensUpper,
+		DecodeHorizonUpper:           proposal.DecodeHorizonUpper,
+		DecodeSequencesUpper:         1,
+		ActiveContextTokensUpper:     activeContext,
+		FutureContextTokensUpper:     proposal.DecodeHorizonUpper,
+		Confidence:                   proposal.Confidence,
 	}
 	if c.reject {
 		reason := c.rejectReason
@@ -58,18 +118,19 @@ func (c *recordingUpperBoundCoordinator) DecideUpperBoundAndReserve(now time.Tim
 			reason = domainpredictive.ReasonNewTPSAtRisk
 		}
 		return runtimepredictive.CountAdmissionResult{
-			Decision:   domainpredictive.Decision{Reason: reason},
-			Prediction: prediction,
-			Cost: runtimepredictive.CountRequestCost{
-				ManifestID: "model-agnostic-test", BackendEpoch: c.identity.BackendEpoch,
-			},
+			Decision:                domainpredictive.Decision{Reason: reason},
+			Prediction:              prediction,
+			Cost:                    cost,
+			DecisionManagerSequence: c.managerSequence,
 		}
 	}
 	c.reservations[proposal.RequestID] = struct{}{}
 	return runtimepredictive.CountAdmissionResult{
-		Decision:   domainpredictive.Decision{Reason: domainpredictive.ReasonFit},
-		Prediction: prediction,
-		Reserved:   true,
+		Decision:                domainpredictive.Decision{Reason: domainpredictive.ReasonFit},
+		Prediction:              prediction,
+		Cost:                    cost,
+		Reserved:                true,
+		DecisionManagerSequence: c.managerSequence,
 	}
 }
 
@@ -77,7 +138,8 @@ func (c *recordingUpperBoundCoordinator) Snapshot() runtimepredictive.CountCoord
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return runtimepredictive.CountCoordinatorSnapshot{Manager: runtimepredictive.Snapshot{
-		IntakeOpen: true,
+		IntakeOpen:    true,
+		EventSequence: c.managerSequence,
 		Virtual: domainpredictive.VirtualStateInterval{
 			Lower: c.virtual,
 			Upper: c.virtual,
@@ -119,6 +181,194 @@ func TestApproximatePredictiveEnforcePublishesBoundedRouterBackpressure(t *testi
 	now = now.Add(3 * time.Second)
 	if telemetry := adapter.PredictiveAdmissionTelemetry(); telemetry.RouterBackpressure.Active {
 		t.Fatalf("backpressure remained active after expiry: %+v", telemetry.RouterBackpressure)
+	}
+}
+
+func TestApproximatePredictiveInputEstimateChangesRealPreForwardDecisionWithBackendStateFixed(t *testing.T) {
+	now := time.Unix(44_250, 0)
+	identity := adapterTestIdentity()
+	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
+		Identity: identity, BaseCompletionTPS: 100, PrefillTPSPenaltyPerKToken: 40,
+		BaseTTFT: time.Millisecond, BaseTPOT: time.Millisecond, Confidence: 1,
+	}, runtimepredictive.ResidualCalibratorConfig{
+		Identity: identity, MinimumSamples: 3, MaximumSamplesPerCell: 8, MaximumCells: 32, MaxAge: time.Minute,
+		LowerQuantile: 0.1, UpperQuantile: 0.9, MinimumTPSMultiplier: 0.2, MaximumTPSMultiplier: 1,
+		MinimumLatencyMultiplier: 1, MaximumLatencyMultiplier: 2, CalibratedConfidence: 1,
+		DecodeSequenceBucket: 1, ContextTokenBucket: 128, PrefillTokenBucket: 128, KVTokenBucket: 128,
+	})
+	if err != nil {
+		t.Fatalf("new causality scheduler: %v", err)
+	}
+	coordinator, err := runtimepredictive.NewCountCoordinator(runtimepredictive.CountCoordinatorConfig{
+		Identity: runtimepredictive.CoordinatorIdentity{
+			ManifestID: "adapter-test-manifest", BackendEpoch: identity.BackendEpoch, Scheduler: identity, BlockSize: 4,
+		},
+		ModelMaximumLength: 10_000,
+		Initial: domainpredictive.VirtualState{
+			PhysicalKVUpper: 1_000, ActiveKVUpper: 1_000, DecodeSequences: 1, ActiveContextTokens: 1_000,
+		},
+		Constraints: domainpredictive.Constraints{
+			PhysicalKVHard: 9_000, ActiveKVHard: 9_000, UserTPSTarget: 25, TPOTSLO: time.Second,
+			WorkspaceRiskBudget: 1, PreemptionRiskBudget: 1, MinimumConfidence: 1,
+		},
+		Scheduler: scheduler,
+	})
+	if err != nil {
+		t.Fatalf("new causality coordinator: %v", err)
+	}
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:  newApproximateAdapterTestCalibratorWithConfidence(t, 3, 1, 1),
+		Coordinator: coordinator, Learner: scheduler, Mode: "enforce", Now: func() time.Time { return now },
+		RouterBackpressureHold: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new causality adapter: %v", err)
+	}
+	small := approximateAdapterTestInput()
+	small.Cost.EstimatedInputLow = 100
+	small.Cost.EstimatedInputHigh = 100
+	smallDecision := adapter.Decide(context.Background(), "small-fixed-state", small)
+	if smallDecision.Outcome != predictiveAdmissionOutcomeForward || smallDecision.Reservation == nil {
+		t.Fatalf("small fixed-state input decision = %+v, want forward", smallDecision)
+	}
+	if !smallDecision.Reservation.Terminate(runtimepredictive.TerminalExpired) {
+		t.Fatal("small fixed-state reservation did not release")
+	}
+
+	large := small
+	large.Cost.EstimatedInputLow = 2_000
+	large.Cost.EstimatedInputHigh = 2_000
+	largeDecision := adapter.Decide(context.Background(), "large-fixed-state", large)
+	if largeDecision.Outcome != predictiveAdmissionOutcomeLoadProtection || largeDecision.Reservation != nil ||
+		largeDecision.Reason != domainpredictive.ReasonExistingTPSAtRisk {
+		t.Fatalf("larger approximate input did not change the real pre-forward decision: %+v", largeDecision)
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.Attempts.Fits != 1 || telemetry.Attempts.Risks != 1 || !telemetry.RouterBackpressure.Active ||
+		telemetry.RouterBackpressure.Reason != domainpredictive.ReasonExistingTPSAtRisk || telemetry.Manager.Reservations != 0 {
+		t.Fatalf("fixed-state tokenizer causality telemetry = %+v", telemetry)
+	}
+}
+
+func TestApproximatePredictiveTwentySparseRequestsNeverSelfLock(t *testing.T) {
+	now := time.Unix(44_500, 0)
+	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 0)
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:  newApproximateAdapterTestCalibratorWithConfidence(t, 3, 1, 1),
+		Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+		RouterBackpressureHold: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new sparse-flow adapter: %v", err)
+	}
+	for index := 0; index < 20; index++ {
+		requestID := fmt.Sprintf("sparse-%02d", index)
+		decision := adapter.Decide(context.Background(), requestID, approximateAdapterTestInput())
+		if decision.Outcome != predictiveAdmissionOutcomeForward || decision.Reservation == nil || !decision.Reservation.MarkForwarded() {
+			t.Fatalf("sparse request %d failed to make forward progress: %+v", index, decision)
+		}
+		if !decision.Reservation.Terminate(runtimepredictive.TerminalExpired) {
+			t.Fatalf("sparse request %d did not release", index)
+		}
+		now = now.Add(10 * time.Second)
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.Attempts.Attempts != 20 || telemetry.Attempts.Fits != 20 || telemetry.Attempts.Risks != 0 || telemetry.Attempts.Unknown != 0 ||
+		telemetry.Manager.Reservations != 0 || telemetry.DeferredOutcomes.Active != 0 || telemetry.RouterBackpressure.Active {
+		t.Fatalf("twenty sparse requests left a false lock or lifecycle state: %+v", telemetry)
+	}
+}
+
+func TestApproximatePredictiveBurstAcrossRouterEpisodesCannotBypassAtomicTPSForecast(t *testing.T) {
+	now := time.Unix(44_625, 0)
+	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 60)
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:  newApproximateAdapterTestCalibratorWithConfidence(t, 3, 1, 1),
+		Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+		RouterBackpressureHold: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new burst adapter: %v", err)
+	}
+	first := adapter.Decide(context.Background(), "burst-first", approximateAdapterTestInput())
+	if first.Outcome != predictiveAdmissionOutcomeForward || first.Reservation == nil || !first.Reservation.MarkForwarded() {
+		t.Fatalf("first burst request did not establish protected load: %+v", first)
+	}
+	for episode := 0; episode < 4; episode++ {
+		decision := adapter.Decide(context.Background(), fmt.Sprintf("burst-retry-%d", episode), approximateAdapterTestInput())
+		if decision.Outcome != predictiveAdmissionOutcomeLoadProtection || decision.Reservation != nil {
+			t.Fatalf("Router episode %d bypassed the TPS forecast: %+v", episode, decision)
+		}
+		snapshot := coordinator.Snapshot().Manager
+		if snapshot.Reservations != 1 {
+			t.Fatalf("Router episode %d accumulated reservations: %+v", episode, snapshot)
+		}
+		now = now.Add(3 * time.Second)
+	}
+	if !first.Reservation.Terminate(runtimepredictive.TerminalExpired) {
+		t.Fatal("first burst reservation did not release")
+	}
+	now = now.Add(3 * time.Second)
+	afterDrain := adapter.Decide(context.Background(), "burst-after-drain", approximateAdapterTestInput())
+	if afterDrain.Outcome != predictiveAdmissionOutcomeForward || afterDrain.Reservation == nil {
+		t.Fatalf("drained burst remained locked: %+v", afterDrain)
+	}
+	if !afterDrain.Reservation.Terminate(runtimepredictive.TerminalExpired) {
+		t.Fatal("post-drain burst reservation did not release")
+	}
+}
+
+func TestApproximatePredictiveCloseDuringDecisionPublishesAvailabilityAndReleasesReservation(t *testing.T) {
+	now := time.Unix(44_750, 0)
+	coordinator := &blockingUpperBoundCoordinator{
+		recordingUpperBoundCoordinator: newRecordingUpperBoundCoordinator(),
+		entered:                        make(chan struct{}),
+		release:                        make(chan struct{}),
+	}
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:  newApproximateAdapterTestCalibratorWithConfidence(t, 3, 1, 1),
+		Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+		RouterBackpressureHold: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new close-race adapter: %v", err)
+	}
+
+	decisionDone := make(chan predictiveAdmissionDecision, 1)
+	go func() {
+		decisionDone <- adapter.Decide(context.Background(), "close-race", approximateAdapterTestInput())
+	}()
+	select {
+	case <-coordinator.entered:
+	case <-time.After(time.Second):
+		t.Fatal("decision did not enter the coordinator")
+	}
+	if err := adapter.Close(); err != nil {
+		t.Fatalf("close adapter during decision: %v", err)
+	}
+	close(coordinator.release)
+
+	var decision predictiveAdmissionDecision
+	select {
+	case decision = <-decisionDone:
+	case <-time.After(time.Second):
+		t.Fatal("decision did not finish after coordinator release")
+	}
+	if decision.Outcome != predictiveAdmissionOutcomeAvailabilityProtection || decision.Reservation != nil ||
+		decision.Source != runtimepredictive.PredictionSourceUnavailable {
+		t.Fatalf("close-race result = %+v, want availability protection", decision)
+	}
+	coordinator.mu.Lock()
+	remaining := len(coordinator.reservations)
+	coordinator.mu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("close-race leaked %d coordinator reservations", remaining)
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.Attempts.Attempts != 1 || telemetry.Attempts.Unknown != 1 ||
+		telemetry.Attempts.LastRejectScope != predictiveProtectionScopeAvailability ||
+		!telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.Scope != predictiveProtectionScopeAvailability {
+		t.Fatalf("close-race availability publication = %+v", telemetry)
 	}
 }
 
@@ -244,6 +494,62 @@ func TestApproximatePredictiveShadowRiskFeedbackCanCorrectNextPredictionWithoutR
 	}
 	if !next.Terminate(runtimepredictive.TerminalExpired) {
 		t.Fatal("corrected next reservation did not release")
+	}
+}
+
+func TestApproximatePredictiveShadowRiskPublishesAnonymousPendingPrefillWithoutResourceReservation(t *testing.T) {
+	coordinator := newRecordingUpperBoundCoordinator()
+	coordinator.reject = true
+	coordinator.rejectReason = domainpredictive.ReasonExistingTPSAtRisk
+	coordinator.managerSequence = 17
+	coordinator.virtual = domainpredictive.VirtualState{
+		PhysicalKVUpper:     1_000,
+		ActiveKVUpper:       1_000,
+		DecodeSequences:     1,
+		ActiveContextTokens: 1_000,
+	}
+	shadowPrefills := newPredictiveShadowPendingPrefillStore(4)
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:             newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1),
+		Coordinator:            coordinator,
+		Mode:                   "shadow",
+		ShadowObservationLimit: 4,
+		ShadowPendingPrefills:  shadowPrefills,
+	})
+	if err != nil {
+		t.Fatalf("new shadow-prefill adapter: %v", err)
+	}
+
+	decision := adapter.Decide(context.Background(), "private-request-id", approximateAdapterTestInput())
+	if decision.Outcome != predictiveAdmissionOutcomeForward || decision.Reservation == nil {
+		t.Fatalf("shadow risk decision = %+v", decision)
+	}
+	if snapshot := shadowPrefills.Snapshot(); snapshot.Count != 0 || snapshot.Tokens != 0 {
+		t.Fatalf("unforwarded shadow risk appeared as pending prefill: %+v", snapshot)
+	}
+	if !decision.Reservation.MarkForwarded() {
+		t.Fatal("shadow risk did not enter the forwarded lifecycle")
+	}
+	pending := shadowPrefills.Snapshot()
+	if pending.Count != 1 || pending.Tokens <= 0 || !pending.FeaturesValid ||
+		pending.Features.ExistingDecodeSequences != 1 || pending.Features.DecodeSequences != 2 ||
+		pending.DecisionManagerSequence != 17 {
+		t.Fatalf("forwarded shadow risk was not published as one anonymous pending prefill: %+v", pending)
+	}
+	coordinator.mu.Lock()
+	accountingReservations := len(coordinator.reservations)
+	coordinator.mu.Unlock()
+	if accountingReservations != 0 || coordinator.Snapshot().Manager.Reservations != 0 {
+		t.Fatalf("shadow pending-prefill observation entered resource accounting: local=%d manager=%+v", accountingReservations, coordinator.Snapshot().Manager)
+	}
+	if !decision.Reservation.MarkPrefillComplete() {
+		t.Fatal("shadow pending prefill did not complete")
+	}
+	if snapshot := shadowPrefills.Snapshot(); snapshot.Count != 0 || snapshot.Tokens != 0 || snapshot.FeaturesValid {
+		t.Fatalf("semantic output left a shadow pending-prefill observation: %+v", snapshot)
+	}
+	if !decision.Reservation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("shadow observation did not terminate after semantic output")
 	}
 }
 
@@ -835,8 +1141,8 @@ func TestApproximatePredictiveConcurrentLifecycleAndCloseCompleteWithoutLeaks(t 
 	if remaining != 0 || deferred != 0 || coordinator.Snapshot().Manager.Reservations != 0 {
 		t.Fatalf("concurrent lifecycle left adapter/deferred/coordinator reservations = %d/%d/%d", remaining, deferred, coordinator.Snapshot().Manager.Reservations)
 	}
-	if reservation := adapter.DecideAndReserve(context.Background(), "after-close", approximateAdapterTestInput()); reservation != nil {
-		t.Fatal("closed adapter admitted a new request")
+	if decision := adapter.Decide(context.Background(), "after-close", approximateAdapterTestInput()); decision.Outcome != predictiveAdmissionOutcomeAvailabilityProtection || decision.Reservation != nil || decision.Source != runtimepredictive.PredictionSourceUnavailable {
+		t.Fatalf("closed adapter decision = %+v, want availability protection", decision)
 	}
 }
 

@@ -63,6 +63,7 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 		FailureClose:           s.predictiveShadowFailures.close.Load(),
 		FailureDecide:          s.predictiveShadowFailures.decide.Load(),
 		FailureForward:         s.predictiveShadowFailures.forward.Load(),
+		FailureForwardRejected: s.predictiveShadowFailures.forwardRejected.Load(),
 		FailureSemantic:        s.predictiveShadowFailures.semantic.Load(),
 		FailureCompletion:      s.predictiveShadowFailures.completion.Load(),
 		FailureResourceRelease: s.predictiveShadowFailures.resourceRelease.Load(),
@@ -80,9 +81,20 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.LastReason = string(snapshot.Attempts.LastReason)
 	input.LastSource = string(snapshot.Attempts.LastSource)
 	input.LastSamples = snapshot.Attempts.LastSamples
+	input.LastRejectReason = string(snapshot.Attempts.LastRejectReason)
+	input.LastRejectSource = string(snapshot.Attempts.LastRejectSource)
+	input.LastRejectScope = string(snapshot.Attempts.LastRejectScope)
+	input.LastRejectSamples = snapshot.Attempts.LastRejectSamples
+	input.LastRejectAt = snapshot.Attempts.LastRejectAt
 	input.IntakeOpen = snapshot.Manager.IntakeOpen
 	input.Reservations = snapshot.Manager.Reservations
 	input.VirtualDecodeSequences = snapshot.Manager.Virtual.Upper.DecodeSequences
+	input.ForwardedPendingPrefills = snapshot.Manager.ForwardedPendingPrefills
+	input.ForwardedPendingPrefillTokens = snapshot.Manager.ForwardedPendingPrefillTokens
+	input.ForwardedPendingPrefillAttributionValid = snapshot.Manager.ForwardedPendingPrefillFeaturesValid
+	input.ShadowPendingPrefills = snapshot.ShadowPendingPrefills.Count
+	input.ShadowPendingPrefillTokens = snapshot.ShadowPendingPrefills.Tokens
+	input.ShadowPendingPrefillAttributionValid = snapshot.ShadowPendingPrefills.FeaturesValid
 	input.RetiredReservations = snapshot.Manager.RetiredReservations
 	input.RetiredEvictions = snapshot.Manager.RetiredEvictions
 	input.LearningAccepted = snapshot.Learning.SamplesAccepted
@@ -90,6 +102,8 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.LearningInvalidations = snapshot.Learning.Invalidations
 	input.LearningCells = snapshot.Learning.Cells
 	input.LearningGlobalSamples = snapshot.Learning.GlobalSamples
+	input.LearningExistingTPSSamples = snapshot.Learning.ExistingUserTPSSamples
+	input.LearningNewTPSSamples = snapshot.Learning.NewUserTPSSamples
 	input.InputSizeAccepted = snapshot.InputSize.SamplesAccepted
 	input.InputSizeRejected = snapshot.InputSize.SamplesRejected
 	input.InputSizeInvalidations = snapshot.InputSize.Invalidations
@@ -121,16 +135,26 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 		Censored:   snapshot.DeferredOutcomes.Censored,
 		Dropped:    snapshot.DeferredOutcomes.Dropped,
 	}
+	input.ExistingPrefill = metrics.PredictiveExistingPrefillInput{
+		Accepted:                 snapshot.ExistingPrefill.Accepted,
+		Rejected:                 snapshot.ExistingPrefill.Rejected,
+		Censored:                 snapshot.ExistingPrefill.Censored,
+		LastExistingUserTPS:      snapshot.ExistingPrefill.LastExistingUserTPS,
+		LastExistingUserTPSValid: snapshot.ExistingPrefill.LastExistingUserTPSValid,
+	}
 	input.RouterBackpressure = metrics.PredictiveRouterBackpressureInput{
-		Active:      snapshot.RouterBackpressure.Active,
-		Reason:      string(snapshot.RouterBackpressure.Reason),
-		Source:      string(snapshot.RouterBackpressure.Source),
-		Samples:     snapshot.RouterBackpressure.Samples,
-		ActivatedAt: snapshot.RouterBackpressure.ActivatedAt,
-		Until:       snapshot.RouterBackpressure.Until,
-		Hold:        snapshot.RouterBackpressure.Hold,
-		Activations: snapshot.RouterBackpressure.Activations,
-		Extensions:  snapshot.RouterBackpressure.Extensions,
+		Active:         snapshot.RouterBackpressure.Active,
+		Activation:     snapshot.RouterBackpressure.Activation,
+		Scope:          string(snapshot.RouterBackpressure.Scope),
+		MinimumRunning: snapshot.RouterBackpressure.MinimumRunning,
+		Reason:         string(snapshot.RouterBackpressure.Reason),
+		Source:         string(snapshot.RouterBackpressure.Source),
+		Samples:        snapshot.RouterBackpressure.Samples,
+		ActivatedAt:    snapshot.RouterBackpressure.ActivatedAt,
+		Until:          snapshot.RouterBackpressure.Until,
+		Hold:           snapshot.RouterBackpressure.Hold,
+		Activations:    snapshot.RouterBackpressure.Activations,
+		Extensions:     snapshot.RouterBackpressure.Extensions,
 	}
 	input.PredictionDuration = snapshot.PredictionDuration
 	input.EstimatorDuration = &s.kvEstimatorDuration
@@ -279,7 +303,7 @@ func (s *proxyServer) writePredictiveAndDynamicMetrics(w io.Writer) {
 	snapshot := s.dynamicController.Snapshot()
 	routerCapacity := predictiveRouterCapacity(
 		predictive.Mode,
-		predictive.RouterBackpressure.Active,
+		predictiveRouterBackpressureFromMetrics(predictive.RouterBackpressure),
 		predictive.VirtualDecodeSequences,
 		snapshot,
 	)

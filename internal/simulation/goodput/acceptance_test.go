@@ -69,9 +69,10 @@ func TestModelAgnosticApproximatePredictiveAdmissionMeetsCompletionGoodputGate(t
 			scenario.Policies[PolicyPredictiveQoS].SafetyViolations(),
 			scenario.Policies[PolicyPredictiveQoS].TTFTViolations,
 		)
-		if scenario.Name == "low_kv_excessive_ttft" {
+		switch scenario.Name {
+		case "short_prompt_long_decode", "same_poll_short_burst_near_kv", "many_decode_sequences_low_kv", "repeated_prefixes_charged_cold", "low_kv_excessive_ttft":
 			for _, trace := range scenario.Policies[PolicyPredictiveQoS].AdmissionTrace {
-				t.Logf("low-kv TTFT-observational admission trace=%+v", trace)
+				t.Logf("scenario=%s predictive admission trace=%+v", scenario.Name, trace)
 			}
 		}
 	}
@@ -250,9 +251,10 @@ func TestPredictiveTPSLearningPreventsKnownViolationAndRecoversGoodput(t *testin
 		t.Fatalf("idle recovery probe after adverse TPS history = %t/%s, want true/%s", admitted, reason, domainpredictive.ReasonFit)
 	}
 	controller.MarkForwarded(risky.ID)
+	controller.MarkSemantic(risky.ID)
 	concurrent := request("known-slow-concurrent", 0, 49, 64, 64)
 	if admitted, reason := controller.Admit(riskAt, concurrent); admitted || (reason != string(domainpredictive.ReasonExistingTPSAtRisk) && reason != string(domainpredictive.ReasonNewTPSAtRisk)) {
-		t.Fatalf("known slow concurrent TPS admission = %t/%s, want predictive TPS rejection", admitted, reason)
+		t.Fatalf("known slow concurrent TPS admission = %t/%s, want predictive TPS rejection (prediction=%+v)", admitted, reason, controller.lastAdmission.Prediction)
 	}
 	controller.Terminate(riskAt.Add(500*time.Millisecond), risky.ID, runtimepredictive.TerminalClientCancelled, simulatedRequestOutcome{})
 	if controller.Reservations() != 0 {
@@ -300,9 +302,10 @@ func TestPredictiveWarmupEnablesOnlyLearnedSafeConcurrency(t *testing.T) {
 		candidate := request(fmt.Sprintf("learned-concurrent-%d", index), 0, 49, 64, 64)
 		admitted, reason := controller.Admit(now, candidate)
 		if !admitted {
-			t.Fatalf("learned safe concurrency %d rejected as %s", index+1, reason)
+			t.Fatalf("learned safe concurrency %d rejected as %s (prediction=%+v)", index+1, reason, controller.lastAdmission.Prediction)
 		}
 		controller.MarkForwarded(candidate.ID)
+		controller.MarkSemantic(candidate.ID)
 	}
 	unsafe := request("learned-concurrent-unsafe", 0, 49, 64, 64)
 	if admitted, reason := controller.Admit(now, unsafe); admitted || (reason != string(domainpredictive.ReasonExistingTPSAtRisk) && reason != string(domainpredictive.ReasonNewTPSAtRisk)) {

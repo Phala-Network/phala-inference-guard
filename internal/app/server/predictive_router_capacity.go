@@ -11,6 +11,8 @@ import (
 )
 
 type predictiveRouterCapacityProjection struct {
+	Activation           uint64
+	Scope                predictiveProtectionScope
 	BackpressureActive   bool
 	BackpressureApplied  bool
 	PredictiveRunning    int
@@ -22,6 +24,7 @@ type predictiveRouterCapacityProjection struct {
 
 type predictiveRouterCapacityEvent struct {
 	Activation           uint64
+	Scope                string
 	Reason               string
 	Source               string
 	Samples              int
@@ -38,9 +41,18 @@ type predictiveRouterCapacityLogState struct {
 	loggedActivation atomic.Uint64
 }
 
+func predictiveRouterBackpressureFromMetrics(input metrics.PredictiveRouterBackpressureInput) predictiveRouterBackpressureSnapshot {
+	return predictiveRouterBackpressureSnapshot{
+		Active:         input.Active,
+		Activation:     input.Activation,
+		Scope:          predictiveProtectionScope(input.Scope),
+		MinimumRunning: input.MinimumRunning,
+	}
+}
+
 func predictiveRouterCapacity(
 	mode string,
-	backpressureActive bool,
+	backpressure predictiveRouterBackpressureSnapshot,
 	predictiveRunning int,
 	snapshot runtimedynamic.Snapshot,
 ) predictiveRouterCapacityProjection {
@@ -53,12 +65,17 @@ func predictiveRouterCapacity(
 	if mode != "enforce" {
 		return capacity
 	}
-	capacity.BackpressureActive = backpressureActive
-	if !backpressureActive {
+	capacity.Activation = backpressure.Activation
+	capacity.Scope = backpressure.Scope
+	capacity.BackpressureActive = backpressure.Active
+	if !backpressure.Active {
 		return capacity
 	}
 	if predictiveRunning < 0 {
 		predictiveRunning = 0
+	}
+	if predictiveRunning < backpressure.MinimumRunning {
+		predictiveRunning = backpressure.MinimumRunning
 	}
 	capacity.PredictiveRunning = predictiveRunning
 	if predictiveRunning > capacity.EffectiveRunning {
@@ -114,10 +131,10 @@ func (s *predictiveRouterCapacityLogState) Claim(
 	input metrics.PredictiveAdmissionInput,
 	capacity predictiveRouterCapacityProjection,
 ) *predictiveRouterCapacityEvent {
-	if s == nil || !capacity.BackpressureApplied || input.RouterBackpressure.Activations == 0 {
+	if s == nil || !capacity.BackpressureApplied || capacity.Activation == 0 {
 		return nil
 	}
-	activation := input.RouterBackpressure.Activations
+	activation := capacity.Activation
 	for {
 		logged := s.loggedActivation.Load()
 		if logged >= activation {
@@ -128,6 +145,7 @@ func (s *predictiveRouterCapacityLogState) Claim(
 		}
 		return &predictiveRouterCapacityEvent{
 			Activation:           activation,
+			Scope:                input.RouterBackpressure.Scope,
 			Reason:               input.RouterBackpressure.Reason,
 			Source:               input.RouterBackpressure.Source,
 			Samples:              input.RouterBackpressure.Samples,
@@ -152,8 +170,9 @@ func predictiveRouterCapacityLogLine(event predictiveRouterCapacityEvent) string
 		source = "unknown"
 	}
 	return fmt.Sprintf(
-		"predictive_router_backpressure event=router_capacity_applied mode=enforce activation=%d reason=%s source=%s samples=%d predictive_running=%d raw_running=%d effective_running=%d raw_global_limit=%d effective_global_limit=%d activated_at=%s until=%s",
+		"predictive_router_backpressure event=router_capacity_applied mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d predictive_running=%d raw_running=%d effective_running=%d raw_global_limit=%d effective_global_limit=%d activated_at=%s until=%s",
 		event.Activation,
+		event.Scope,
 		reason,
 		source,
 		event.Samples,
@@ -163,7 +182,7 @@ func predictiveRouterCapacityLogLine(event predictiveRouterCapacityEvent) string
 		event.RawGlobalLimit,
 		event.EffectiveGlobalLimit,
 		event.ActivatedAt.UTC().Format(time.RFC3339Nano),
-		event.Until.UTC().Format(time.RFC3339Nano),
+		predictiveRouterBackpressureTime(event.Until),
 	)
 }
 

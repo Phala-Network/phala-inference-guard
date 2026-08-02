@@ -17,19 +17,34 @@ type failureInjectingPredictiveShadow struct {
 }
 
 type failureInjectingPredictiveReservation struct {
-	phase string
+	phase          string
+	terminateCalls int
+	terminalCause  runtimepredictive.TerminalCause
+}
+
+type fixedDecisionPredictiveShadow struct {
+	decision predictiveAdmissionDecision
 }
 
 func (s *failureInjectingPredictiveShadow) Close() error {
 	return nil
 }
 
-func (s *failureInjectingPredictiveShadow) DecideAndReserve(_ context.Context, _ string, input predictiveShadowInput) predictiveShadowReservation {
+func (s *fixedDecisionPredictiveShadow) Close() error { return nil }
+
+func (s *fixedDecisionPredictiveShadow) Decide(context.Context, string, predictiveShadowInput) predictiveAdmissionDecision {
+	return s.decision
+}
+
+func (s *failureInjectingPredictiveShadow) Decide(_ context.Context, _ string, input predictiveShadowInput) predictiveAdmissionDecision {
 	s.retainedBody = input.Body
 	if s.phase == "decide" {
 		panic("injected predictive decide panic")
 	}
-	return &failureInjectingPredictiveReservation{phase: s.phase}
+	return predictiveAdmissionDecision{
+		Outcome:     predictiveAdmissionOutcomeForward,
+		Reservation: &failureInjectingPredictiveReservation{phase: s.phase},
+	}
 }
 
 func (r *failureInjectingPredictiveReservation) MarkPrefillComplete() bool {
@@ -63,7 +78,9 @@ func (r *failureInjectingPredictiveReservation) ReleaseResources() bool {
 	return true
 }
 
-func (r *failureInjectingPredictiveReservation) Terminate(runtimepredictive.TerminalCause) bool {
+func (r *failureInjectingPredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {
+	r.terminateCalls++
+	r.terminalCause = cause
 	if r.phase == "terminal" {
 		panic("injected predictive terminal panic")
 	}
@@ -192,6 +209,66 @@ func TestPredictiveEnforceDecidePanicFailsClosedBeforeUpstream(t *testing.T) {
 	}
 }
 
+func TestPredictiveEnforceInvalidTypedResultsFailClosedAndReleaseReservations(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		outcome     predictiveAdmissionOutcome
+		reservation bool
+	}{
+		{name: "forward_without_reservation", outcome: predictiveAdmissionOutcomeForward},
+		{name: "request_reject_with_reservation", outcome: predictiveAdmissionOutcomeRequestReject, reservation: true},
+		{name: "load_protection_with_reservation", outcome: predictiveAdmissionOutcomeLoadProtection, reservation: true},
+		{name: "availability_protection_with_reservation", outcome: predictiveAdmissionOutcomeAvailabilityProtection, reservation: true},
+		{name: "unknown_outcome_with_reservation", outcome: predictiveAdmissionOutcome("unknown"), reservation: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backendCalls := 0
+			backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				backendCalls++
+			}))
+			defer backend.Close()
+
+			var reservation *failureInjectingPredictiveReservation
+			decision := predictiveAdmissionDecision{Outcome: test.outcome}
+			if test.reservation {
+				reservation = &failureInjectingPredictiveReservation{}
+				decision.Reservation = reservation
+			}
+			cfg := testProxyConfig(backend.URL)
+			cfg.PredictiveAdmissionMode = "enforce"
+			srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+				NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) {
+					return &fixedDecisionPredictiveShadow{decision: decision}, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("new enforcing server: %v", err)
+			}
+			defer srv.Close()
+
+			recorder := servePredictiveFailureRequest(srv, false)
+			if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
+				t.Fatalf("invalid result response/backend = %d/%d, want 429/0", recorder.Code, backendCalls)
+			}
+			if got := srv.predictiveShadowFailures.decide.Load(); got != 1 {
+				t.Fatalf("invalid result decision failures = %d, want 1", got)
+			}
+			if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
+				t.Fatalf("invalid result enforced rejects = %d, want 1", got)
+			}
+			if reservation != nil && (reservation.terminateCalls != 1 || reservation.terminalCause != runtimepredictive.TerminalLocalQoSReject) {
+				t.Fatalf("invalid result reservation cleanup = calls=%d cause=%s", reservation.terminateCalls, reservation.terminalCause)
+			}
+			var output strings.Builder
+			srv.writeLocalMetrics(&output)
+			if !strings.Contains(output.String(), `pig_predictive_admission_failures_total{phase="decide"} 1`) ||
+				!strings.Contains(output.String(), "pig_predictive_router_backpressure_active 0") {
+				t.Fatalf("invalid request-scoped result metrics are incomplete:\n%s", output.String())
+			}
+		})
+	}
+}
+
 func TestPredictiveEnforceForwardCommitPanicFailsClosedBeforeUpstream(t *testing.T) {
 	backendCalls := 0
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -221,6 +298,9 @@ func TestPredictiveEnforceForwardCommitPanicFailsClosedBeforeUpstream(t *testing
 	srv.writeLocalMetrics(&metrics)
 	if !strings.Contains(metrics.String(), `pig_predictive_admission_failures_total{phase="forward"} 1`) {
 		t.Fatalf("predictive metrics do not classify the commit panic as forward: %s", metrics.String())
+	}
+	if !strings.Contains(metrics.String(), `pig_predictive_admission_failures_total{phase="forward_rejected"} 1`) {
+		t.Fatalf("predictive metrics do not publish the resulting pre-forward rejection: %s", metrics.String())
 	}
 	if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
 		t.Fatalf("predictive enforced rejects = %d, want 1", got)
@@ -254,6 +334,14 @@ func TestPredictiveEnforceForwardCommitFalseFailsClosedBeforeUpstream(t *testing
 	}
 	if got := srv.predictiveShadowFailures.forward.Load(); got != 0 {
 		t.Fatalf("predictive forward panic failures = %d, want 0 for a false return", got)
+	}
+	if got := srv.predictiveShadowFailures.forwardRejected.Load(); got != 1 {
+		t.Fatalf("predictive forward false rejections = %d, want 1", got)
+	}
+	var metrics strings.Builder
+	srv.writeLocalMetrics(&metrics)
+	if !strings.Contains(metrics.String(), `pig_predictive_admission_failures_total{phase="forward_rejected"} 1`) {
+		t.Fatalf("predictive metrics hide a false forward commit: %s", metrics.String())
 	}
 	if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
 		t.Fatalf("predictive enforced rejects = %d, want 1", got)

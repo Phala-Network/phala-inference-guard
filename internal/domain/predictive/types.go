@@ -13,11 +13,12 @@ type Projection struct {
 }
 
 type VirtualState struct {
-	PhysicalKVUpper       int64
-	ActiveKVUpper         int64
-	DecodeSequences       int
-	ActiveContextTokens   int64
-	UncachedPrefillTokens int64
+	PhysicalKVUpper         int64
+	ActiveKVUpper           int64
+	DecodeSequences         int
+	PendingPrefillSequences int
+	ActiveContextTokens     int64
+	UncachedPrefillTokens   int64
 }
 
 type VirtualStateInterval struct {

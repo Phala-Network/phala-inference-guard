@@ -398,6 +398,7 @@ type shadowWarmupDecision struct {
 	admission runtimepredictive.CountAdmissionResult
 	size      runtimepredictive.InputSizeEstimate
 	reserved  bool
+	semantic  bool
 }
 
 // warmPredictiveShadowPrefixes models the bounded shadow phase required before
@@ -578,7 +579,6 @@ func admitWarmupWave(controller simulationController, profile serviceProfile, no
 		return fmt.Errorf("observe warmup wave: %w", err)
 	}
 	decisions := make([]shadowWarmupDecision, 0, len(requests))
-	var totalInput int64
 	for index, candidate := range requests {
 		admitted, reason := controller.Admit(now, candidate)
 		predictive, predictiveMode := controller.(*predictiveSimulationController)
@@ -592,23 +592,38 @@ func admitWarmupWave(controller simulationController, profile serviceProfile, no
 		}
 		if admitted {
 			controller.MarkForwarded(candidate.ID)
+			if index < len(requests)-1 {
+				controller.MarkSemantic(candidate.ID)
+				decision.semantic = true
+			}
 		} else {
 			predictive.coordinator.MarkLiveOutcomesInterfered()
+			if index < len(requests)-1 {
+				return fmt.Errorf("warmup concurrency %d could not establish existing decoder %d: %s", len(requests), index+1, reason)
+			}
 		}
 		decisions = append(decisions, decision)
-		totalInput = addInt64(totalInput, candidate.InputTokens)
 	}
-	for _, decision := range decisions {
-		if decision.reserved {
-			controller.MarkSemantic(decision.request.ID)
+
+	predictive, predictiveMode := controller.(*predictiveSimulationController)
+	last := &decisions[len(decisions)-1]
+	if predictiveMode && len(decisions) > 1 {
+		existingCapacity := profile.baseCompletionTPS - profile.prefillPenaltyPerK*float64(last.request.InputTokens)/1_000
+		if existingCapacity < 0 {
+			existingCapacity = 0
+		}
+		existingUserTPS := existingCapacity / float64(len(decisions)-1)
+		if err := predictive.observeExistingPrefill(now.Add(100*time.Millisecond), last.admission, existingUserTPS); err != nil {
+			return fmt.Errorf("observe warmup existing-prefill concurrency %d: %w", len(decisions), err)
 		}
 	}
-	aggregateTPS := profile.baseCompletionTPS - profile.prefillPenaltyPerK*float64(totalInput)/1_000
-	if aggregateTPS < 0 {
-		aggregateTPS = 0
+	if last.reserved && !last.semantic {
+		controller.MarkSemantic(last.request.ID)
+		last.semantic = true
 	}
-	userTPS := aggregateTPS / float64(len(requests))
-	ttft := profile.baseTTFT + multiplyDuration(profile.backendTTFTPerToken, totalInput)
+
+	userTPS := profile.baseCompletionTPS / float64(len(requests))
+	ttft := profile.baseTTFT + multiplyDuration(profile.backendTTFTPerToken, last.request.InputTokens)
 	tpot := profile.baseTPOT + time.Duration(len(requests)-1)*profile.tpotPerExisting
 	observedAt := now.Add(250 * time.Millisecond)
 	for index, decision := range decisions {
@@ -653,18 +668,27 @@ func admitWarmupWave(controller simulationController, profile serviceProfile, no
 			}
 		}
 	}
+	if err := controller.Observe(observedAt.Add(time.Millisecond), observedState{}); err != nil {
+		return fmt.Errorf("reconcile drained warmup wave: %w", err)
+	}
 	return nil
 }
 
 func matureSafeConcurrency(profile serviceProfile, shape requestSpec) int {
 	result := 0
 	for concurrency := 1; concurrency <= 8; concurrency++ {
-		prefill := int64(concurrency) * shape.InputTokens
-		aggregateTPS := profile.baseCompletionTPS - profile.prefillPenaltyPerK*float64(prefill)/1_000
-		userTPS := aggregateTPS / float64(concurrency)
+		newUserTPS := profile.baseCompletionTPS / float64(concurrency)
+		existingUserTPS := profile.baseCompletionTPS
+		if concurrency > 1 {
+			existingCapacity := profile.baseCompletionTPS - profile.prefillPenaltyPerK*float64(shape.InputTokens)/1_000
+			if existingCapacity < 0 {
+				existingCapacity = 0
+			}
+			existingUserTPS = existingCapacity / float64(concurrency-1)
+		}
 		tpot := profile.baseTPOT + time.Duration(concurrency-1)*profile.tpotPerExisting
 		projectedKV := int64(concurrency) * roundedTokens(shape.InputTokens+shape.OutputUpper)
-		if userTPS < profile.userTPSTarget || tpot > profile.tpotSLO || projectedKV > profile.protected {
+		if existingUserTPS < profile.userTPSTarget || newUserTPS < profile.userTPSTarget || tpot > profile.tpotSLO || projectedKV > profile.protected {
 			break
 		}
 		result = concurrency
@@ -1052,6 +1076,7 @@ type simulatedSizeReservation struct {
 type predictiveSimulationController struct {
 	coordinator      *runtimepredictive.CountCoordinator
 	identity         runtimepredictive.ModelIdentity
+	existingPrefill  *runtimepredictive.LearnedScheduler
 	sizeCalibrator   *runtimepredictive.InputSizeCalibrator
 	sizeReservations map[string]simulatedSizeReservation
 	learnsQoS        bool
@@ -1079,10 +1104,12 @@ func newPredictiveSimulationController(policy PolicyName, profile serviceProfile
 		MinimumConfidence: 0.99,
 	}
 	if policy == PolicyPredictiveQoS {
+		coldBaseCompletionTPS := predictiveSimulationColdBaseCompletionTPS(profile.userTPSTarget)
+		prefillTPSPenalty := predictiveSimulationPrefillTPSPenaltyPerKToken(coldBaseCompletionTPS, profile.userTPSTarget, profile.protected)
 		learned, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
 			Identity:                      identity,
-			BaseCompletionTPS:             profile.userTPSTarget,
-			PrefillTPSPenaltyPerKToken:    0,
+			BaseCompletionTPS:             coldBaseCompletionTPS,
+			PrefillTPSPenaltyPerKToken:    prefillTPSPenalty,
 			BaseTTFT:                      profile.ttftSLO / 4,
 			TTFTPerUncachedPrefillToken:   (profile.ttftSLO - profile.ttftSLO/4) / time.Duration(profile.protected),
 			BaseTPOT:                      time.Duration(float64(time.Second) / profile.userTPSTarget / 2),
@@ -1145,11 +1172,47 @@ func newPredictiveSimulationController(policy PolicyName, profile serviceProfile
 		return nil, err
 	}
 	return &predictiveSimulationController{
-		coordinator: coordinator, identity: identity, sizeCalibrator: sizeCalibrator,
+		coordinator: coordinator, identity: identity, existingPrefill: func() *runtimepredictive.LearnedScheduler {
+			if learned, ok := scheduler.(*runtimepredictive.LearnedScheduler); ok {
+				return learned
+			}
+			return nil
+		}(), sizeCalibrator: sizeCalibrator,
 		sizeReservations: make(map[string]simulatedSizeReservation),
 		learnsQoS:        policy == PolicyPredictiveQoS, usesExactInput: policy == PolicyExactKVOnly,
 		maxAge: 750 * time.Millisecond, epochHealthy: true, learningMinimum: 4,
 	}, nil
+}
+
+func predictiveSimulationColdBaseCompletionTPS(userTPSTarget float64) float64 {
+	return userTPSTarget * 2
+}
+
+func predictiveSimulationPrefillTPSPenaltyPerKToken(baseCompletionTPS, userTPSTarget float64, protectedTokens int64) float64 {
+	if baseCompletionTPS <= userTPSTarget || userTPSTarget <= 0 || protectedTokens <= 0 {
+		return 0
+	}
+	return 4 * (baseCompletionTPS - userTPSTarget) * 1_000 / float64(protectedTokens)
+}
+
+func (c *predictiveSimulationController) observeExistingPrefill(now time.Time, admission runtimepredictive.CountAdmissionResult, existingUserTPS float64) error {
+	if c == nil || c.existingPrefill == nil {
+		return fmt.Errorf("existing-prefill learner is unavailable")
+	}
+	pending, ok := runtimepredictive.PendingPrefillObservationForResult(admission)
+	if !ok || pending.Features.ExistingDecodeSequences <= 0 || pending.Features.ExistingUncachedPrefill != 0 {
+		return fmt.Errorf("pending-prefill attribution is invalid")
+	}
+	return c.existingPrefill.ObserveExistingPrefill(runtimepredictive.ExistingPrefillOutcome{
+		Identity:                c.identity,
+		StartedAt:               now.Add(-100 * time.Millisecond),
+		ObservedAt:              now,
+		Features:                pending.Features,
+		ExistingDecodeSequences: pending.Features.ExistingDecodeSequences,
+		PendingPrefillSequences: 1,
+		PendingPrefillTokens:    pending.Tokens,
+		ExistingUserTPS:         existingUserTPS,
+	})
 }
 
 func (c *predictiveSimulationController) Admit(now time.Time, request requestSpec) (bool, string) {

@@ -31,6 +31,31 @@ type SchedulerLearningInvalidator interface {
 	InvalidateLearning()
 }
 
+func validatedSchedulerIdentity(scheduler Scheduler) (identity ModelIdentity, valid bool) {
+	if scheduler == nil {
+		return ModelIdentity{}, false
+	}
+	defer func() {
+		if recover() != nil {
+			identity = ModelIdentity{}
+			valid = false
+		}
+	}()
+	identity = scheduler.Identity()
+	return identity, identity.Validate() == nil
+}
+
+func validatedSchedulerPrediction(scheduler Scheduler, now time.Time, state domain.VirtualState, cost domain.RequestCost) (prediction SchedulerPrediction, valid bool) {
+	defer func() {
+		if recover() != nil {
+			prediction = SchedulerPrediction{}
+			valid = false
+		}
+	}()
+	prediction = scheduler.Predict(now, state, cost)
+	return prediction, true
+}
+
 type assimilationState uint8
 
 const (
@@ -155,19 +180,25 @@ type Manager struct {
 }
 
 type Snapshot struct {
-	IntakeOpen          bool
-	Reservations        int
-	ReservedPhysicalKV  int64
-	ReservedActiveKV    int64
-	EventSequence       uint64
-	RetiredReservations int
-	RetiredEvictions    uint64
-	Virtual             domain.VirtualStateInterval
+	IntakeOpen                           bool
+	Reservations                         int
+	ReservedPhysicalKV                   int64
+	ReservedActiveKV                     int64
+	ForwardedPendingPrefills             int
+	ForwardedPendingPrefillTokens        int64
+	ForwardedPendingPrefillFeatures      SchedulerFeatures
+	ForwardedPendingPrefillFeaturesValid bool
+	EventSequence                        uint64
+	RetiredReservations                  int
+	RetiredEvictions                     uint64
+	Virtual                              domain.VirtualStateInterval
 }
 
 type managerAdmissionResult struct {
-	Decision   domain.Decision
-	Prediction SchedulerPrediction
+	Decision                domain.Decision
+	Prediction              SchedulerPrediction
+	DecisionManagerSequence uint64
+	AvailabilityUnavailable bool
 }
 
 func NewManager(manifestID string, base domain.VirtualState, constraints domain.Constraints, scheduler Scheduler) *Manager {
@@ -190,34 +221,46 @@ func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.
 
 func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.RequestCost) managerAdmissionResult {
 	if m == nil {
-		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
+		return managerUnavailableResult(0)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if !m.intakeOpen {
-		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
+		return managerUnavailableResult(m.eventSequence)
 	}
 	if m.manifestID == "" || cost.ManifestID == "" || cost.ManifestID != m.manifestID {
-		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonTokenizerProfileUnknown}}
+		return managerAdmissionResult{
+			Decision:                domain.Decision{Reason: domain.ReasonTokenizerProfileUnknown},
+			DecisionManagerSequence: m.eventSequence,
+		}
 	}
 	if requestID == "" || !validRequestCost(cost) {
-		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
+		return managerAdmissionResult{
+			Decision:                domain.Decision{Reason: domain.ReasonPredictorProfileUnknown},
+			DecisionManagerSequence: m.eventSequence,
+		}
 	}
 	if _, exists := m.reservations[requestID]; exists {
-		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonDuplicateRequest}}
+		return managerAdmissionResult{
+			Decision:                domain.Decision{Reason: domain.ReasonDuplicateRequest},
+			DecisionManagerSequence: m.eventSequence,
+		}
 	}
 	if m.scheduler == nil {
-		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
+		m.intakeOpen = false
+		return managerUnavailableResult(m.eventSequence)
 	}
-	schedulerIdentity := m.scheduler.Identity()
-	if schedulerIdentity.Validate() != nil {
-		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
+	schedulerIdentity, identityValid := validatedSchedulerIdentity(m.scheduler)
+	if !identityValid {
+		m.intakeOpen = false
+		return managerUnavailableResult(m.eventSequence)
 	}
 	state := m.virtualStateIntervalLocked().Upper
-	prediction := m.scheduler.Predict(now, state, cost)
-	if prediction.Identity != schedulerIdentity || !validSchedulerPrediction(prediction) {
-		return managerAdmissionResult{Decision: domain.Decision{Reason: domain.ReasonPredictorProfileUnknown}}
+	prediction, predictionValid := validatedSchedulerPrediction(m.scheduler, now, state, cost)
+	if !predictionValid || prediction.Identity != schedulerIdentity || !validSchedulerPrediction(prediction) {
+		m.intakeOpen = false
+		return managerUnavailableResult(m.eventSequence)
 	}
 	projection := domain.Projection{
 		PhysicalKVUpper: addInt64Saturating(state.PhysicalKVUpper, cost.KV.PhysicalKVUpper),
@@ -242,9 +285,35 @@ func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.
 		}
 	}
 	return managerAdmissionResult{
-		Decision:   decision,
-		Prediction: prediction,
+		Decision:                decision,
+		Prediction:              prediction,
+		DecisionManagerSequence: m.eventSequence,
 	}
+}
+
+func managerUnavailableResult(decisionManagerSequence uint64) managerAdmissionResult {
+	return managerAdmissionResult{
+		Decision:                domain.Decision{Reason: domain.ReasonPredictorProfileUnknown},
+		Prediction:              SchedulerPrediction{Source: PredictionSourceUnavailable},
+		DecisionManagerSequence: decisionManagerSequence,
+		AvailabilityUnavailable: true,
+	}
+}
+
+func (m *Manager) Available() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.intakeOpen || m.scheduler == nil {
+		return false
+	}
+	_, valid := validatedSchedulerIdentity(m.scheduler)
+	if !valid {
+		m.intakeOpen = false
+	}
+	return valid
 }
 
 // MarkLiveOutcomesInterfered censors QoS outcomes whose original prediction
@@ -471,7 +540,9 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 	if m.hasSample && sample.FinishedSequence < m.lastSampleFinished {
 		return fmt.Errorf("sample finish watermark is stale")
 	}
-	if sample.Observed.PhysicalKVUpper < 0 || sample.Observed.ActiveKVUpper < 0 || sample.Observed.DecodeSequences < 0 || sample.Observed.ActiveContextTokens < 0 || sample.Observed.UncachedPrefillTokens < 0 {
+	if sample.Observed.PhysicalKVUpper < 0 || sample.Observed.ActiveKVUpper < 0 || sample.Observed.DecodeSequences < 0 ||
+		sample.Observed.PendingPrefillSequences < 0 || sample.Observed.PendingPrefillSequences > sample.Observed.DecodeSequences ||
+		sample.Observed.ActiveContextTokens < 0 || sample.Observed.UncachedPrefillTokens < 0 {
 		return fmt.Errorf("sample state must be non-negative")
 	}
 
@@ -531,8 +602,49 @@ func (m *Manager) Snapshot() Snapshot {
 	for _, item := range m.reservations {
 		result.ReservedPhysicalKV += item.Cost.KV.PhysicalKVUpper
 		result.ReservedActiveKV += item.Cost.KV.ActiveKVUpper
+		if item.Forwarded && !item.PrefillComplete {
+			result.ForwardedPendingPrefills++
+			result.ForwardedPendingPrefillTokens = addInt64Saturating(result.ForwardedPendingPrefillTokens, item.Cost.UncachedPrefillUpper)
+			if result.ForwardedPendingPrefills == 1 {
+				result.ForwardedPendingPrefillFeatures, result.ForwardedPendingPrefillFeaturesValid = pendingPrefillFeatures(item.Prediction, item.Cost)
+			} else {
+				// Concurrent prefills cannot be attributed to one candidate's
+				// pre-forward feature vector without retaining request identity or
+				// guessing materialization order. Keep the aggregate accounting, but
+				// censor this window for learning.
+				result.ForwardedPendingPrefillFeatures = SchedulerFeatures{}
+				result.ForwardedPendingPrefillFeaturesValid = false
+			}
+		}
 	}
 	return result
+}
+
+func pendingPrefillFeatures(prediction SchedulerPrediction, cost domain.RequestCost) (SchedulerFeatures, bool) {
+	features := prediction.Features
+	requestComplexity := cost.RequestComplexityTokensUpper
+	if requestComplexity < cost.InputTokens {
+		requestComplexity = cost.InputTokens
+	}
+	if features.ExistingDecodeSequences < 0 || features.ExistingDecodeSequences == math.MaxInt ||
+		features.DecodeSequences != features.ExistingDecodeSequences+1 ||
+		features.ExistingPendingPrefillSequences < 0 || features.ExistingPendingPrefillSequences > features.ExistingDecodeSequences ||
+		features.PendingPrefillSequences != features.ExistingPendingPrefillSequences+1 ||
+		features.ExistingActiveContextTokens < 0 || features.ExistingUncachedPrefill < 0 ||
+		features.ExistingPhysicalKVUpper < 0 || features.ExistingActiveKVUpper < 0 ||
+		features.ActiveContextTokens < features.ExistingActiveContextTokens ||
+		features.UncachedPrefillTokens < features.ExistingUncachedPrefill ||
+		features.PhysicalKVUpper < features.ExistingPhysicalKVUpper ||
+		features.ActiveKVUpper < features.ExistingActiveKVUpper ||
+		features.ActiveContextTokens-features.ExistingActiveContextTokens != cost.ActiveContextTokensUpper ||
+		features.UncachedPrefillTokens-features.ExistingUncachedPrefill != cost.UncachedPrefillUpper ||
+		features.PhysicalKVUpper-features.ExistingPhysicalKVUpper != cost.KV.PhysicalKVUpper ||
+		features.ActiveKVUpper-features.ExistingActiveKVUpper != cost.KV.ActiveKVUpper ||
+		features.RequestComplexityTokensUpper != requestComplexity ||
+		features.DecodeHorizonUpper != cost.DecodeHorizonUpper {
+		return SchedulerFeatures{}, false
+	}
+	return features, true
 }
 
 func (m *Manager) virtualStateIntervalLocked() domain.VirtualStateInterval {
@@ -543,6 +655,10 @@ func (m *Manager) virtualStateIntervalLocked() domain.VirtualStateInterval {
 			cost := fullReservationStateCost(item)
 			state.Lower = addState(state.Lower, cost)
 			state.Upper = addState(state.Upper, cost)
+			if !item.PrefillComplete {
+				state.Lower.PendingPrefillSequences = addIntSaturating(state.Lower.PendingPrefillSequences, 1)
+				state.Upper.PendingPrefillSequences = addIntSaturating(state.Upper.PendingPrefillSequences, 1)
+			}
 		case assimilationAmbiguous:
 			state.Lower = addState(state.Lower, futureReservationStateCost(item))
 			state.Upper = addState(state.Upper, fullReservationStateCost(item))

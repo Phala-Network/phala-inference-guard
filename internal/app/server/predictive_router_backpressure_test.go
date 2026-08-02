@@ -39,8 +39,9 @@ func TestPredictiveRouterBackpressureIsFixedAndDoesNotLogRepeatedSignals(t *test
 	if !snapshot.Active || snapshot.Activations != 1 || snapshot.Extensions != 1 {
 		t.Fatalf("active snapshot = %+v, want one activation and one extension", snapshot)
 	}
-	if snapshot.Reason != domainpredictive.ReasonNewTPSAtRisk {
-		t.Fatalf("in-episode diagnostics did not retain latest reason: %+v", snapshot)
+	if snapshot.Reason != domainpredictive.ReasonExistingTPSAtRisk ||
+		snapshot.Source != runtimepredictive.PredictionSourceCalibrated || snapshot.Samples != 7 {
+		t.Fatalf("in-episode signal changed the immutable activation identity: %+v", snapshot)
 	}
 	if !snapshot.ActivatedAt.Equal(now) {
 		t.Fatalf("in-episode signal changed activation time: got=%s want=%s", snapshot.ActivatedAt, now)
@@ -72,10 +73,47 @@ func TestPredictiveRouterBackpressureIsFixedAndDoesNotLogRepeatedSignals(t *test
 			t.Fatalf("activation log missing %q: %s", want, line)
 		}
 	}
-	for _, forbidden := range []string{"prompt=", "body=", "bearer=", "token="} {
+	for _, forbidden := range []string{"model=", "user=", "request_id=", "prompt=", "body=", "bearer=", "token="} {
 		if strings.Contains(strings.ToLower(line), forbidden) {
 			t.Fatalf("activation log contains request or secret field %q: %s", forbidden, line)
 		}
+	}
+}
+
+func TestLoadAndAvailabilityProtectionOverlapKeepsCoherentActivationIdentity(t *testing.T) {
+	now := time.Unix(80_500, 0)
+	hold := 2 * time.Second
+	result := runtimepredictive.CountAdmissionResult{
+		Decision: domainpredictive.Decision{Reason: domainpredictive.ReasonExistingTPSAtRisk},
+		Prediction: runtimepredictive.SchedulerPrediction{
+			Source: runtimepredictive.PredictionSourceCalibrated,
+			Features: runtimepredictive.SchedulerFeatures{
+				ExistingDecodeSequences: 1,
+				ExistingActiveKVUpper:   512,
+			},
+		},
+	}
+	var state predictiveRouterBackpressureState
+	load := state.Observe(now, hold, result, predictiveRouterBackpressurePolicy{})
+	if load == nil || load.Activation != 1 || load.Scope != predictiveProtectionScopeLoad {
+		t.Fatalf("initial load activation = %+v", load)
+	}
+	availability := state.SetAvailability(now.Add(500*time.Millisecond), true)
+	if availability == nil || availability.Activation != 2 || availability.Scope != predictiveProtectionScopeAvailability {
+		t.Fatalf("availability overlap activation = %+v", availability)
+	}
+	if snapshot := state.Snapshot(now.Add(750 * time.Millisecond)); !snapshot.Active || snapshot.Activation != 2 || snapshot.Scope != predictiveProtectionScopeAvailability || snapshot.MinimumRunning != 1 {
+		t.Fatalf("availability overlap snapshot = %+v", snapshot)
+	}
+	restoredLoad := state.SetAvailability(now.Add(time.Second), false)
+	if restoredLoad == nil || restoredLoad.Activation != 3 || restoredLoad.Scope != predictiveProtectionScopeLoad || restoredLoad.Reason != domainpredictive.ReasonExistingTPSAtRisk {
+		t.Fatalf("restored load activation = %+v", restoredLoad)
+	}
+	if snapshot := state.Snapshot(now.Add(1500 * time.Millisecond)); !snapshot.Active || snapshot.Activation != 3 || snapshot.Scope != predictiveProtectionScopeLoad || snapshot.Reason != domainpredictive.ReasonExistingTPSAtRisk {
+		t.Fatalf("restored load snapshot = %+v", snapshot)
+	}
+	if snapshot := state.Snapshot(now.Add(hold + time.Millisecond)); snapshot.Active || snapshot.Activation != 0 || snapshot.Scope != "" {
+		t.Fatalf("overlap state did not expire with the original fixed load window: %+v", snapshot)
 	}
 }
 
@@ -148,9 +186,87 @@ func TestPredictiveRouterBackpressureDistinguishesLoadDependentKVFromOversizedRe
 	}
 }
 
+func TestEveryLoadDependentQoSReasonActivatesRouterBackpressure(t *testing.T) {
+	now := time.Unix(81_750, 0)
+	for _, reason := range []domainpredictive.Reason{
+		domainpredictive.ReasonExistingTPSAtRisk,
+		domainpredictive.ReasonNewTPSAtRisk,
+		domainpredictive.ReasonTPOTAtRisk,
+		domainpredictive.ReasonWorkspaceAtRisk,
+		domainpredictive.ReasonPreemptionAtRisk,
+	} {
+		t.Run(string(reason), func(t *testing.T) {
+			var state predictiveRouterBackpressureState
+			result := runtimepredictive.CountAdmissionResult{
+				Decision: domainpredictive.Decision{Reason: reason},
+				Prediction: runtimepredictive.SchedulerPrediction{
+					Source:   runtimepredictive.PredictionSourceStatic,
+					Features: runtimepredictive.SchedulerFeatures{ExistingDecodeSequences: 1},
+				},
+			}
+			event := state.Observe(now, 2*time.Second, result, predictiveRouterBackpressurePolicy{})
+			if event == nil || event.Scope != predictiveProtectionScopeLoad || event.Reason != reason {
+				t.Fatalf("load-dependent reason did not publish a protection episode: %+v", event)
+			}
+		})
+	}
+}
+
+func TestRequestRejectLogIsBoundedWithoutLosingSuppressionCount(t *testing.T) {
+	now := time.Unix(81_900, 0)
+	result := runtimepredictive.CountAdmissionResult{
+		Decision:   domainpredictive.Decision{Reason: domainpredictive.ReasonNewTPSAtRisk},
+		Prediction: runtimepredictive.SchedulerPrediction{Source: runtimepredictive.PredictionSourceStatic},
+	}
+	var state predictiveRequestRejectLogState
+	first := state.Observe(now, 2*time.Second, result)
+	if first == nil {
+		t.Fatal("first request-scoped reject was not logged")
+	}
+	if duplicate := state.Observe(now.Add(time.Second), 2*time.Second, result); duplicate != nil {
+		t.Fatalf("same-window request reject was not bounded: %+v", duplicate)
+	}
+	next := state.Observe(now.Add(3*time.Second), 2*time.Second, result)
+	if next == nil || next.Suppressed != 1 {
+		t.Fatalf("next bounded log did not report suppressed count: %+v", next)
+	}
+	line := predictiveRequestRejectLogLine(*next)
+	for _, want := range []string{"event=request_rejected", "scope=request", "reason=new_tps_at_risk", "suppressed=1"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("request reject log missing %q: %s", want, line)
+		}
+	}
+	for _, forbidden := range []string{"model=", "user=", "request_id=", "prompt=", "body=", "bearer=", "token="} {
+		if strings.Contains(strings.ToLower(line), forbidden) {
+			t.Fatalf("request reject log contains request or secret field %q: %s", forbidden, line)
+		}
+	}
+}
+
+func TestFailureRejectLogRateLimitsEachFixedPhaseIndependently(t *testing.T) {
+	now := time.Unix(81_950, 0)
+	result := runtimepredictive.CountAdmissionResult{
+		Decision:   domainpredictive.Decision{Reason: domainpredictive.ReasonPredictorProfileUnknown},
+		Prediction: runtimepredictive.SchedulerPrediction{Source: runtimepredictive.PredictionSourceUnavailable},
+	}
+	var state predictiveRequestRejectLogState
+	decisionPanic := state.ObservePhase(now, 2*time.Second, "decision_panic", result)
+	forwardCommit := state.ObservePhase(now.Add(time.Millisecond), 2*time.Second, "forward_commit", result)
+	if decisionPanic == nil || decisionPanic.Phase != "decision_panic" || forwardCommit == nil || forwardCommit.Phase != "forward_commit" {
+		t.Fatalf("distinct failure phases suppressed one another: decision=%+v forward=%+v", decisionPanic, forwardCommit)
+	}
+	if duplicate := state.ObservePhase(now.Add(time.Second), 2*time.Second, "forward_commit", result); duplicate != nil {
+		t.Fatalf("same failure phase was not bounded: %+v", duplicate)
+	}
+	if next := state.ObservePhase(now.Add(3*time.Second), 2*time.Second, "forward_commit", result); next == nil || next.Suppressed != 1 {
+		t.Fatalf("phase-local suppression count was lost: %+v", next)
+	}
+}
+
 func TestPredictiveRouterCapacityClampsOnlyEnforceWithActiveLoad(t *testing.T) {
 	snapshot := runtimedynamic.Snapshot{Running: 1, GlobalLimit: 50, QOSLimit: 50}
-	got := predictiveRouterCapacity("enforce", true, 2, snapshot)
+	active := predictiveRouterBackpressureSnapshot{Active: true, Activation: 1, Scope: predictiveProtectionScopeLoad}
+	got := predictiveRouterCapacity("enforce", active, 2, snapshot)
 	if !got.BackpressureApplied || got.EffectiveRunning != 2 || got.EffectiveGlobalLimit != 2 {
 		t.Fatalf("enforce capacity = %+v, want full at two effective active requests", got)
 	}
@@ -161,26 +277,32 @@ func TestPredictiveRouterCapacityClampsOnlyEnforceWithActiveLoad(t *testing.T) {
 		t.Fatalf("predictive load was not retained in the projection: %+v", got)
 	}
 
-	laggingDynamic := predictiveRouterCapacity("enforce", true, 3, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
+	laggingDynamic := predictiveRouterCapacity("enforce", active, 3, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
 	if !laggingDynamic.BackpressureApplied || laggingDynamic.RawRunning != 0 || laggingDynamic.PredictiveRunning != 3 || laggingDynamic.EffectiveRunning != 3 || laggingDynamic.EffectiveGlobalLimit != 3 {
 		t.Fatalf("predictive load did not close the Router visibility gap while dynamic metrics lagged: %+v", laggingDynamic)
 	}
 
-	idle := predictiveRouterCapacity("enforce", true, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
+	idle := predictiveRouterCapacity("enforce", active, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
 	if idle.BackpressureApplied || idle.EffectiveGlobalLimit != 50 {
 		t.Fatalf("idle backpressure self-locked capacity: %+v", idle)
 	}
-	shadow := predictiveRouterCapacity("shadow", true, 2, snapshot)
+	shadow := predictiveRouterCapacity("shadow", active, 2, snapshot)
 	if shadow.BackpressureApplied || shadow.EffectiveRunning != 1 || shadow.EffectiveGlobalLimit != 50 {
 		t.Fatalf("shadow mode altered Router capacity: %+v", shadow)
 	}
-	expired := predictiveRouterCapacity("enforce", false, 2, snapshot)
+	expired := predictiveRouterCapacity("enforce", predictiveRouterBackpressureSnapshot{}, 2, snapshot)
 	if expired.BackpressureApplied || expired.PredictiveRunning != 0 || expired.EffectiveRunning != 1 || expired.EffectiveGlobalLimit != 50 {
 		t.Fatalf("expired hold retained Router clamp: %+v", expired)
 	}
-	unavailable := predictiveRouterCapacity("enforce", true, 2, runtimedynamic.Snapshot{GlobalLimit: 0, QOSLimit: 0})
+	unavailable := predictiveRouterCapacity("enforce", active, 2, runtimedynamic.Snapshot{GlobalLimit: 0, QOSLimit: 0})
 	if !unavailable.BackpressureApplied || unavailable.EffectiveRunning != 2 || unavailable.EffectiveGlobalLimit != 2 || unavailable.RawGlobalLimit != 0 {
 		t.Fatalf("zero raw capacity did not project Router-blocking fullness while preserving raw state: %+v", unavailable)
+	}
+	availability := predictiveRouterCapacity("enforce", predictiveRouterBackpressureSnapshot{
+		Active: true, Activation: 2, Scope: predictiveProtectionScopeAvailability, MinimumRunning: 1,
+	}, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
+	if !availability.BackpressureApplied || availability.PredictiveRunning != 1 || availability.EffectiveRunning != 1 || availability.EffectiveGlobalLimit != 1 {
+		t.Fatalf("availability protection did not publish a Router-blocking sentinel: %+v", availability)
 	}
 }
 
@@ -189,6 +311,8 @@ func TestPredictiveRouterCapacityEventIsLoggedOncePerAppliedEpisode(t *testing.T
 	input := metrics.PredictiveAdmissionInput{
 		RouterBackpressure: metrics.PredictiveRouterBackpressureInput{
 			Active:      true,
+			Activation:  1,
+			Scope:       string(predictiveProtectionScopeLoad),
 			Applied:     true,
 			Reason:      "existing_tps_at_risk",
 			Source:      "calibrated",
@@ -199,6 +323,8 @@ func TestPredictiveRouterCapacityEventIsLoggedOncePerAppliedEpisode(t *testing.T
 		},
 	}
 	capacity := predictiveRouterCapacityProjection{
+		Activation:           1,
+		Scope:                predictiveProtectionScopeLoad,
 		BackpressureActive:   true,
 		BackpressureApplied:  true,
 		PredictiveRunning:    1,
@@ -218,6 +344,7 @@ func TestPredictiveRouterCapacityEventIsLoggedOncePerAppliedEpisode(t *testing.T
 	for _, want := range []string{
 		"event=router_capacity_applied",
 		"activation=1",
+		"scope=load",
 		"reason=existing_tps_at_risk",
 		"source=calibrated",
 		"samples=7",
@@ -233,13 +360,14 @@ func TestPredictiveRouterCapacityEventIsLoggedOncePerAppliedEpisode(t *testing.T
 			t.Fatalf("capacity log missing %q: %s", want, line)
 		}
 	}
-	for _, forbidden := range []string{"prompt=", "body=", "bearer=", "token="} {
+	for _, forbidden := range []string{"model=", "user=", "request_id=", "prompt=", "body=", "bearer=", "token="} {
 		if strings.Contains(strings.ToLower(line), forbidden) {
 			t.Fatalf("capacity log contains request or secret field %q: %s", forbidden, line)
 		}
 	}
 
 	input.RouterBackpressure.Activations = 2
+	capacity.Activation = 2
 	if next := state.Claim(input, capacity); next == nil || next.Activation != 2 {
 		t.Fatalf("next applied episode did not claim a new capacity log event: %+v", next)
 	}
@@ -277,13 +405,13 @@ func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) 
 		LastReason: "existing_tps_at_risk", LastSource: "calibrated", LastSamples: 6,
 		Reservations: 1, VirtualDecodeSequences: 3, DeferredOutcomes: metrics.PredictiveDeferredOutcomeInput{Active: 2},
 		RouterBackpressure: metrics.PredictiveRouterBackpressureInput{
-			Active: true, Applied: true, Reason: "existing_tps_at_risk",
+			Active: true, Applied: true, Scope: "load", Reason: "existing_tps_at_risk",
 			RawRunning: 1, EffectiveRunning: 1, RawGlobalLimit: 50, EffectiveGlobalLimit: 1,
 		},
 	})
 	for _, want := range []string{
 		"predictive={mode=enforce", "attempts=12", "risk=8", "last=existing_tps_at_risk/calibrated/6",
-		"reservations=1", "virtual_decode=3", "deferred=2", "router_bp=1/1/existing_tps_at_risk", "effective=1/1", "raw=1/50",
+		"last_reject=none/unknown/none/0", "reservations=1", "virtual_decode=3", "pending_prefill=0/0", "deferred=2", "router_bp=1/1/load/existing_tps_at_risk", "effective=1/1", "raw=1/50",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("predictive status missing %q: %s", want, line)

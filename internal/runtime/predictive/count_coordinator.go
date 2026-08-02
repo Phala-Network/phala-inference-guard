@@ -16,10 +16,12 @@ type CountCoordinatorConfig struct {
 }
 
 type CountAdmissionResult struct {
-	Decision   domain.Decision
-	Prediction SchedulerPrediction
-	Cost       CountRequestCost
-	Reserved   bool
+	Decision                domain.Decision
+	Prediction              SchedulerPrediction
+	Cost                    CountRequestCost
+	Reserved                bool
+	DecisionManagerSequence uint64
+	AvailabilityUnavailable bool
 }
 
 type CountCoordinatorSnapshot struct {
@@ -29,6 +31,15 @@ type CountCoordinatorSnapshot struct {
 type ResourceReleaseResult struct {
 	Released          bool
 	OutcomeInterfered bool
+}
+
+// PendingPrefillObservation is the immutable, anonymous feature vector needed
+// to qualify an existing-user prefill interval. It deliberately contains no
+// request identity, model name, user value, or request payload.
+type PendingPrefillObservation struct {
+	Tokens                  int64
+	Features                SchedulerFeatures
+	DecisionManagerSequence uint64
 }
 
 type CountCoordinator struct {
@@ -65,7 +76,7 @@ func NewCountCoordinator(config CountCoordinatorConfig) (*CountCoordinator, erro
 
 func (c *CountCoordinator) DecideAndReserve(now time.Time, proposal CountAdmissionProposal) CountAdmissionResult {
 	if c == nil || c.manager == nil {
-		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+		return countAdmissionUnavailable()
 	}
 	cost, reason := buildCountRequestCost(c.identity, c.modelMaximumLength, proposal)
 	if reason != domain.ReasonFit {
@@ -73,16 +84,18 @@ func (c *CountCoordinator) DecideAndReserve(now time.Time, proposal CountAdmissi
 	}
 	managerResult := c.manager.decideAndReserve(now, proposal.RequestID, cost.managerCost())
 	return CountAdmissionResult{
-		Decision:   managerResult.Decision,
-		Prediction: managerResult.Prediction,
-		Cost:       cost,
-		Reserved:   managerResult.Decision.Reason == domain.ReasonFit,
+		Decision:                managerResult.Decision,
+		Prediction:              managerResult.Prediction,
+		Cost:                    cost,
+		Reserved:                managerResult.Decision.Reason == domain.ReasonFit,
+		DecisionManagerSequence: managerResult.DecisionManagerSequence,
+		AvailabilityUnavailable: managerResult.AvailabilityUnavailable,
 	}
 }
 
 func (c *CountCoordinator) DecideUpperBoundAndReserve(now time.Time, proposal UpperBoundAdmissionProposal) CountAdmissionResult {
 	if c == nil || c.manager == nil {
-		return countAdmissionFailure(domain.ReasonPredictorProfileUnknown)
+		return countAdmissionUnavailable()
 	}
 	cost, reason := buildUpperBoundRequestCost(c.identity, c.modelMaximumLength, proposal)
 	if reason != domain.ReasonFit {
@@ -90,10 +103,12 @@ func (c *CountCoordinator) DecideUpperBoundAndReserve(now time.Time, proposal Up
 	}
 	managerResult := c.manager.decideAndReserve(now, proposal.RequestID, cost.managerCost())
 	return CountAdmissionResult{
-		Decision:   managerResult.Decision,
-		Prediction: managerResult.Prediction,
-		Cost:       cost,
-		Reserved:   managerResult.Decision.Reason == domain.ReasonFit,
+		Decision:                managerResult.Decision,
+		Prediction:              managerResult.Prediction,
+		Cost:                    cost,
+		Reserved:                managerResult.Decision.Reason == domain.ReasonFit,
+		DecisionManagerSequence: managerResult.DecisionManagerSequence,
+		AvailabilityUnavailable: managerResult.AvailabilityUnavailable,
 	}
 }
 
@@ -171,6 +186,10 @@ func (c *CountCoordinator) InvalidateEpoch() bool {
 	return c != nil && c.manager != nil && c.manager.InvalidateEpoch()
 }
 
+func (c *CountCoordinator) Available() bool {
+	return c != nil && c.manager != nil && c.manager.Available()
+}
+
 func (c *CountCoordinator) Snapshot() CountCoordinatorSnapshot {
 	if c == nil {
 		return CountCoordinatorSnapshot{}
@@ -178,6 +197,33 @@ func (c *CountCoordinator) Snapshot() CountCoordinatorSnapshot {
 	return CountCoordinatorSnapshot{Manager: c.manager.Snapshot()}
 }
 
+// PendingPrefillObservationForResult extracts the same validated pre-forward
+// feature vector used by Manager snapshots without creating a reservation or
+// mutating coordinator resource accounting.
+func PendingPrefillObservationForResult(result CountAdmissionResult) (PendingPrefillObservation, bool) {
+	if result.AvailabilityUnavailable || result.Prediction.Identity.Validate() != nil || result.Cost.BackendEpoch == "" ||
+		result.Prediction.Identity.BackendEpoch != result.Cost.BackendEpoch {
+		return PendingPrefillObservation{}, false
+	}
+	features, ok := pendingPrefillFeatures(result.Prediction, result.Cost.managerCost())
+	if !ok || result.Cost.UncachedPrefillUpper <= 0 {
+		return PendingPrefillObservation{}, false
+	}
+	return PendingPrefillObservation{
+		Tokens:                  result.Cost.UncachedPrefillUpper,
+		Features:                features,
+		DecisionManagerSequence: result.DecisionManagerSequence,
+	}, true
+}
+
 func countAdmissionFailure(reason domain.Reason) CountAdmissionResult {
 	return CountAdmissionResult{Decision: domain.Decision{Reason: reason}}
+}
+
+func countAdmissionUnavailable() CountAdmissionResult {
+	return CountAdmissionResult{
+		Decision:                domain.Decision{Reason: domain.ReasonPredictorProfileUnknown},
+		Prediction:              SchedulerPrediction{Source: PredictionSourceUnavailable},
+		AvailabilityUnavailable: true,
+	}
 }

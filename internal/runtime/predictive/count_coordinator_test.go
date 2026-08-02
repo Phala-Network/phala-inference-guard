@@ -130,13 +130,28 @@ func TestCountCoordinatorRejectsIdentityAndProposalErrorsWithoutMutation(t *test
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			result := coordinator.DecideAndReserve(time.Unix(0, 0), test.proposal)
-			if result.Decision.Reason != test.want || result.Reserved {
+			if result.Decision.Reason != test.want || result.Reserved || result.AvailabilityUnavailable {
 				t.Fatalf("result = %+v, want non-reserved %s", result, test.want)
 			}
 		})
 	}
 	if snapshot := coordinator.Snapshot(); snapshot.Manager.Reservations != 0 || snapshot.Manager.EventSequence != 0 {
 		t.Fatalf("invalid proposals mutated state: %+v", snapshot)
+	}
+}
+
+func TestCountCoordinatorPublishesNodeAvailabilitySeparatelyFromRequestErrors(t *testing.T) {
+	coordinator := newCountTestCoordinator(t, domain.VirtualState{}, 1_000)
+	if !coordinator.Available() {
+		t.Fatal("new coordinator unexpectedly unavailable")
+	}
+	if !coordinator.InvalidateEpoch() || coordinator.Available() {
+		t.Fatal("epoch invalidation did not close current coordinator availability")
+	}
+	result := coordinator.DecideAndReserve(time.Unix(0, 0), countTestProposal("unavailable", 5, 5))
+	if result.Reserved || result.Decision.Reason != domain.ReasonPredictorProfileUnknown ||
+		!result.AvailabilityUnavailable || result.Prediction.Source != PredictionSourceUnavailable {
+		t.Fatalf("unavailable coordinator result = %+v", result)
 	}
 }
 
@@ -178,8 +193,8 @@ func TestCountCoordinatorConsumesLearnedResidualBeforeForwardWithStateHeldConsta
 	}
 
 	cold := newCountLearnedCoordinator(t, scheduler, constraints).DecideAndReserve(now, proposal)
-	if cold.Decision.Reason != domain.ReasonExistingTPSAtRisk || cold.Reserved {
-		t.Fatalf("cold decision = %+v, want prospective existing-user TPS risk", cold)
+	if cold.Decision.Reason != domain.ReasonNewTPSAtRisk || cold.Reserved {
+		t.Fatalf("cold decision = %+v, want prospective post-prefill new-user TPS risk", cold)
 	}
 
 	trainingConstraints := constraints
@@ -212,8 +227,8 @@ func TestCountCoordinatorConsumesLearnedResidualBeforeForwardWithStateHeldConsta
 	if learned.Decision.Projection != cold.Decision.Projection {
 		t.Fatalf("current-state projection changed: cold=%+v learned=%+v", cold.Decision.Projection, learned.Decision.Projection)
 	}
-	if learned.Prediction.Estimate.ExistingUserTPSLower <= cold.Prediction.Estimate.ExistingUserTPSLower {
-		t.Fatalf("learned existing-user TPS %.3f did not exceed cold %.3f", learned.Prediction.Estimate.ExistingUserTPSLower, cold.Prediction.Estimate.ExistingUserTPSLower)
+	if learned.Prediction.Estimate.NewUserTPSLower <= cold.Prediction.Estimate.NewUserTPSLower {
+		t.Fatalf("learned new-user TPS %.3f did not exceed cold %.3f", learned.Prediction.Estimate.NewUserTPSLower, cold.Prediction.Estimate.NewUserTPSLower)
 	}
 }
 
@@ -240,6 +255,13 @@ func TestCountCoordinatorReservesApproximateUpperWithoutExactTokenizerIdentity(t
 	})
 	if !result.Reserved || result.Cost.InputTokens != 75 || result.Cost.UncachedPrefillUpper != 75 || result.Cost.RequestComplexityTokensUpper != 100 {
 		t.Fatalf("approximate upper was not reserved as full prefill: %+v", result)
+	}
+	if result.DecisionManagerSequence != 1 {
+		t.Fatalf("approximate decision manager sequence = %d, want 1", result.DecisionManagerSequence)
+	}
+	pending, ok := PendingPrefillObservationForResult(result)
+	if !ok || pending.DecisionManagerSequence != result.DecisionManagerSequence {
+		t.Fatalf("pending-prefill decision sequence was not preserved: pending=%+v result=%+v", pending, result)
 	}
 	if result.Cost.PhysicalKVUpper != 88 || result.Cost.FuturePhysicalKVUpper != 12 {
 		t.Fatalf("approximate block-rounded cost = %+v, want total/future 88/12", result.Cost)

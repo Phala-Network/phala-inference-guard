@@ -46,6 +46,8 @@ type approximatePredictiveShadowConfig struct {
 	RouterBackpressureHold time.Duration
 	RouterBackpressure     predictiveRouterBackpressurePolicy
 	OnRouterBackpressure   func(predictiveRouterBackpressureEvent)
+	OnRequestReject        func(predictiveRequestRejectEvent)
+	ShadowPendingPrefills  *predictiveShadowPendingPrefillStore
 	Now                    func() time.Time
 }
 
@@ -72,9 +74,12 @@ type approximatePredictiveShadow struct {
 	predictionDuration  durationHistogram
 	tpsOutcomes         predictiveTPSOutcomeSnapshot
 	routerBackpressure  predictiveRouterBackpressureState
+	requestRejectLogs   predictiveRequestRejectLogState
 	backpressurePolicy  predictiveRouterBackpressurePolicy
 	backpressureHold    time.Duration
 	onBackpressure      func(predictiveRouterBackpressureEvent)
+	onRequestReject     func(predictiveRequestRejectEvent)
+	shadowPrefills      *predictiveShadowPendingPrefillStore
 }
 
 type approximatePredictiveReservation struct {
@@ -95,6 +100,12 @@ type approximatePredictiveReservation struct {
 	forwarded                   bool
 	resourcesReleased           bool
 	deferredOutcomeDropped      bool
+	shadowPrefill               *predictiveShadowPrefillReservation
+}
+
+type predictiveShadowPrefillReservation struct {
+	observation runtimepredictive.PendingPrefillObservation
+	handle      *predictiveShadowPendingPrefillHandle
 }
 
 func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*approximatePredictiveShadow, error) {
@@ -136,6 +147,9 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if mode == "shadow" && config.ShadowPendingPrefills == nil {
+		config.ShadowPendingPrefills = newPredictiveShadowPendingPrefillStore(maximumObservations)
+	}
 	config.RouterBackpressureHold = normalizePredictiveRouterBackpressureHold(config.RouterBackpressureHold)
 	return &approximatePredictiveShadow{
 		calibrator:          config.Calibrator,
@@ -154,58 +168,67 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 		backpressurePolicy:  config.RouterBackpressure,
 		backpressureHold:    config.RouterBackpressureHold,
 		onBackpressure:      config.OnRouterBackpressure,
+		onRequestReject:     config.OnRequestReject,
+		shadowPrefills:      config.ShadowPendingPrefills,
 	}, nil
 }
 
-func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requestID string, input predictiveShadowInput) predictiveShadowReservation {
+func (s *approximatePredictiveShadow) Decide(ctx context.Context, requestID string, input predictiveShadowInput) predictiveAdmissionDecision {
 	if s == nil || requestID == "" {
-		return nil
+		return predictiveAdmissionDecision{
+			Outcome: predictiveAdmissionOutcomeRequestReject,
+			Reason:  domainpredictive.ReasonPredictorProfileUnknown,
+			Source:  runtimepredictive.PredictionSourceUnavailable,
+		}
 	}
 	started := time.Now()
 	defer func() { s.predictionDuration.Observe(time.Since(started)) }()
 	if err := ctx.Err(); err != nil {
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
-		return nil
+		return s.rejectionDecision(predictiveProtectionScopeRequest, domainpredictive.ReasonPredictorProfileUnknown, "", 0)
 	}
 	if !input.Cost.Supported {
 		s.recordUnknown(domainpredictive.ReasonRequestSizeUnknown)
-		return nil
+		return s.rejectionDecision(predictiveProtectionScopeRequest, domainpredictive.ReasonRequestSizeUnknown, "", 0)
 	}
 	class, ok := approximateRequestClass(input.Path)
 	if !ok {
 		s.recordUnknown(domainpredictive.ReasonRequestSizeUnknown)
-		return nil
+		return s.rejectionDecision(predictiveProtectionScopeRequest, domainpredictive.ReasonRequestSizeUnknown, "", 0)
 	}
 
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
 	if closed {
-		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
-		return nil
+		closedAt := s.now()
+		s.recordAvailabilityUnknown(closedAt)
+		return s.rejectionDecision(predictiveProtectionScopeAvailability, domainpredictive.ReasonPredictorProfileUnknown, runtimepredictive.PredictionSourceUnavailable, 0)
 	}
 	decisionTime := s.now()
-	if s.upstream != nil && !s.upstream.Healthy(decisionTime) {
-		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
-		return nil
+	if s.availabilityUnavailable(decisionTime) {
+		s.recordAvailabilityUnknown(decisionTime)
+		return s.rejectionDecision(predictiveProtectionScopeAvailability, domainpredictive.ReasonPredictorProfileUnknown, runtimepredictive.PredictionSourceUnavailable, 0)
 	}
+	s.setAvailabilityProtection(decisionTime, false)
 	size := s.calibrator.Estimate(decisionTime, class, input.Cost.EstimatedInputLow, input.Cost.EstimatedInputHigh)
 	if !size.Known {
 		s.recordUnknown(domainpredictive.ReasonRequestSizeUnknown)
-		return nil
+		return s.rejectionDecision(predictiveProtectionScopeRequest, domainpredictive.ReasonRequestSizeUnknown, "", 0)
 	}
 	decodeUpper, ok := approximateDecodeUpper(input)
 	if !ok {
 		s.recordUnknown(domainpredictive.ReasonRequestSizeUnknown)
-		return nil
+		return s.rejectionDecision(predictiveProtectionScopeRequest, domainpredictive.ReasonRequestSizeUnknown, "", 0)
 	}
 	if err := ctx.Err(); err != nil {
 		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
-		return nil
+		return s.rejectionDecision(predictiveProtectionScopeRequest, domainpredictive.ReasonPredictorProfileUnknown, "", 0)
 	}
-	if s.upstream != nil && !s.upstream.Healthy(s.now()) {
-		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
-		return nil
+	secondHealthCheck := s.now()
+	if s.availabilityUnavailable(secondHealthCheck) {
+		s.recordAvailabilityUnknown(secondHealthCheck)
+		return s.rejectionDecision(predictiveProtectionScopeAvailability, domainpredictive.ReasonPredictorProfileUnknown, runtimepredictive.PredictionSourceUnavailable, 0)
 	}
 	admissionStarted := input.RequestStartedAt
 	if admissionStarted.IsZero() {
@@ -226,21 +249,24 @@ func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requ
 		if result.Reserved {
 			s.coordinator.Terminate(requestID, runtimepredictive.TerminalExpired)
 		}
-		s.recordUnknown(domainpredictive.ReasonPredictorProfileUnknown)
-		return nil
+		closedAt := s.now()
+		s.recordAvailabilityUnknown(closedAt)
+		return s.rejectionDecision(predictiveProtectionScopeAvailability, domainpredictive.ReasonPredictorProfileUnknown, runtimepredictive.PredictionSourceUnavailable, 0)
 	}
-	backpressureEvent := s.recordResultLocked(result, decisionTime)
+	backpressureEvent, requestRejectEvent, scope := s.recordResultLocked(result, decisionTime)
 	if !result.Reserved {
 		if s.mode != "shadow" || !validShadowObservationResult(result) {
 			s.mu.Unlock()
 			s.emitRouterBackpressure(backpressureEvent)
-			return nil
+			s.emitRequestReject(requestRejectEvent)
+			return s.rejectionDecision(scope, result.Decision.Reason, result.Prediction.Source, result.Prediction.Samples)
 		}
 		if len(s.observations) >= s.maximumObservations {
 			s.observationStats.Dropped++
 			s.mu.Unlock()
 			s.emitRouterBackpressure(backpressureEvent)
-			return nil
+			s.emitRequestReject(requestRejectEvent)
+			return predictiveAdmissionDecision{Outcome: predictiveAdmissionOutcomeForward}
 		}
 		observation := &approximatePredictiveReservation{
 			owner:              s,
@@ -251,11 +277,17 @@ func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requ
 			decodeHorizonUpper: decodeUpper,
 			observationOnly:    true,
 		}
+		if scope == predictiveProtectionScopeLoad {
+			if pending, valid := runtimepredictive.PendingPrefillObservationForResult(result); valid {
+				observation.shadowPrefill = &predictiveShadowPrefillReservation{observation: pending}
+			}
+		}
 		s.observations[requestID] = observation
 		s.observationStats.Created++
 		s.mu.Unlock()
 		s.emitRouterBackpressure(backpressureEvent)
-		return observation
+		s.emitRequestReject(requestRejectEvent)
+		return predictiveAdmissionDecision{Outcome: predictiveAdmissionOutcomeForward, Reservation: observation}
 	}
 	s.markShadowObservationsInterferedLocked("")
 	reservation := &approximatePredictiveReservation{
@@ -269,7 +301,12 @@ func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requ
 	s.reservations[requestID] = reservation
 	s.mu.Unlock()
 	s.emitRouterBackpressure(backpressureEvent)
-	return reservation
+	s.emitRequestReject(requestRejectEvent)
+	return predictiveAdmissionDecision{Outcome: predictiveAdmissionOutcomeForward, Reservation: reservation}
+}
+
+func (s *approximatePredictiveShadow) DecideAndReserve(ctx context.Context, requestID string, input predictiveShadowInput) predictiveShadowReservation {
+	return s.Decide(ctx, requestID, input).Reservation
 }
 
 func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveAdmissionTelemetrySnapshot {
@@ -277,7 +314,9 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 		return predictiveAdmissionTelemetrySnapshot{}
 	}
 	now := s.now()
+	availabilityUnavailable := s.availabilityUnavailable(now)
 	s.mu.Lock()
+	availabilityEvent := s.routerBackpressure.SetAvailability(now, s.closed || availabilityUnavailable)
 	attempts := s.attempts
 	tpsOutcomes := s.tpsOutcomes
 	observationStats := s.observationStats
@@ -286,6 +325,7 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 	deferredStats.Active = len(s.deferredOutcomes)
 	routerBackpressure := s.routerBackpressure.Snapshot(now)
 	s.mu.Unlock()
+	s.emitRouterBackpressure(availabilityEvent)
 	telemetry := predictiveAdmissionTelemetrySnapshot{
 		Attempts:           attempts,
 		PredictionDuration: &s.predictionDuration,
@@ -293,6 +333,12 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 		ShadowObservations: observationStats,
 		DeferredOutcomes:   deferredStats,
 		RouterBackpressure: routerBackpressure,
+	}
+	if s.shadowPrefills != nil {
+		telemetry.ShadowPendingPrefills = s.shadowPrefills.Snapshot()
+	}
+	if provider, ok := s.upstream.(predictiveExistingPrefillTelemetryProvider); ok {
+		telemetry.ExistingPrefill = provider.ExistingPrefillTelemetry()
 	}
 	telemetry.InputSize = s.calibrator.Snapshot(now)
 	if coordinator, ok := s.coordinator.(predictiveCoordinatorSnapshotter); ok {
@@ -319,6 +365,10 @@ func (s *approximatePredictiveShadow) Close() error {
 		return closeErr
 	}
 	s.closed = true
+	var availabilityEvent *predictiveRouterBackpressureEvent
+	if s.mode == "enforce" {
+		availabilityEvent = s.routerBackpressure.SetAvailability(s.now(), true)
+	}
 	failed := 0
 	for requestID := range s.reservations {
 		if !s.coordinator.Terminate(requestID, runtimepredictive.TerminalExpired) {
@@ -328,11 +378,15 @@ func (s *approximatePredictiveShadow) Close() error {
 	}
 	s.observationStats.Terminated += uint64(len(s.observations))
 	clear(s.observations)
+	if s.shadowPrefills != nil {
+		s.shadowPrefills.Clear()
+	}
 	s.deferredStats.Terminated += uint64(len(s.deferredOutcomes))
 	s.deferredStats.Censored += uint64(len(s.deferredOutcomes))
 	clear(s.deferredOutcomes)
 	upstream := s.upstream
 	s.mu.Unlock()
+	s.emitRouterBackpressure(availabilityEvent)
 	s.learningOutcomes.Wait()
 	var result error
 	if upstream != nil {
@@ -365,6 +419,9 @@ func (r *approximatePredictiveReservation) MarkForwarded() bool {
 		r.owner.markShadowObservationsInterferedLocked(r.requestID)
 		observer := r.owner.coordinator.(predictiveShadowObservationCoordinator)
 		observer.MarkLiveOutcomesInterfered()
+		if r.shadowPrefill != nil && r.owner.shadowPrefills != nil {
+			r.shadowPrefill.handle = r.owner.shadowPrefills.Begin(r.shadowPrefill.observation)
+		}
 	} else if !r.owner.coordinator.MarkForwarded(r.requestID) {
 		return false
 	}
@@ -384,8 +441,17 @@ func (r *approximatePredictiveReservation) MarkPrefillComplete() bool {
 	if !r.observationOnly && !r.owner.coordinator.MarkPrefillComplete(r.requestID) {
 		return false
 	}
+	r.endShadowPrefillLocked()
 	r.prefillComplete = true
 	return true
+}
+
+func (r *approximatePredictiveReservation) endShadowPrefillLocked() {
+	if r == nil || r.shadowPrefill == nil || r.shadowPrefill.handle == nil {
+		return
+	}
+	r.shadowPrefill.handle.End()
+	r.shadowPrefill.handle = nil
 }
 
 func (r *approximatePredictiveReservation) ObserveSemanticTTFT(ttft time.Duration) bool {
@@ -494,6 +560,7 @@ func (r *approximatePredictiveReservation) Terminate(cause runtimepredictive.Ter
 	}
 
 	if r.observationOnly {
+		r.endShadowPrefillLocked()
 		delete(r.owner.observations, r.requestID)
 		r.owner.observationStats.Terminated++
 		if schedulerOutcome != nil && r.outcomeInterfered {
@@ -675,17 +742,66 @@ func (s *approximatePredictiveShadow) recordUnknown(reason domainpredictive.Reas
 	s.attempts.LastReason = reason
 	s.attempts.LastSource = ""
 	s.attempts.LastSamples = 0
+	var rejectEvent *predictiveRequestRejectEvent
+	if s.mode == "enforce" {
+		now := s.now()
+		s.recordLastRejectLocked(now, reason, "", 0, predictiveProtectionScopeRequest)
+		rejectEvent = s.requestRejectLogs.Observe(now, s.backpressureHold, runtimepredictive.CountAdmissionResult{
+			Decision: domainpredictive.Decision{Reason: reason},
+		})
+	}
 	s.mu.Unlock()
+	s.emitRequestReject(rejectEvent)
 }
 
-func (s *approximatePredictiveShadow) recordResultLocked(result runtimepredictive.CountAdmissionResult, now time.Time) *predictiveRouterBackpressureEvent {
+func (s *approximatePredictiveShadow) recordAvailabilityUnknown(now time.Time) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.attempts.Attempts++
+	s.attempts.Unknown++
+	s.attempts.LastReason = domainpredictive.ReasonPredictorProfileUnknown
+	s.attempts.LastSource = runtimepredictive.PredictionSourceUnavailable
+	s.attempts.LastSamples = 0
+	var event *predictiveRouterBackpressureEvent
+	if s.mode == "enforce" {
+		s.recordLastRejectLocked(now, domainpredictive.ReasonPredictorProfileUnknown, runtimepredictive.PredictionSourceUnavailable, 0, predictiveProtectionScopeAvailability)
+		event = s.routerBackpressure.SetAvailability(now, true)
+	}
+	s.mu.Unlock()
+	s.emitRouterBackpressure(event)
+}
+
+func (s *approximatePredictiveShadow) setAvailabilityProtection(now time.Time, unavailable bool) {
+	if s == nil || s.mode != "enforce" {
+		return
+	}
+	s.mu.Lock()
+	event := s.routerBackpressure.SetAvailability(now, unavailable)
+	s.mu.Unlock()
+	s.emitRouterBackpressure(event)
+}
+
+func (s *approximatePredictiveShadow) availabilityUnavailable(now time.Time) bool {
+	if s == nil {
+		return true
+	}
+	if !predictiveUpstreamHealthy(s.upstream, now) {
+		return true
+	}
+	provider, ok := s.coordinator.(predictiveAvailabilityProvider)
+	return ok && !predictiveCoordinatorAvailable(provider)
+}
+
+func (s *approximatePredictiveShadow) recordResultLocked(result runtimepredictive.CountAdmissionResult, now time.Time) (*predictiveRouterBackpressureEvent, *predictiveRequestRejectEvent, predictiveProtectionScope) {
 	s.attempts.Attempts++
 	s.attempts.LastReason = result.Decision.Reason
 	s.attempts.LastSource = result.Prediction.Source
 	s.attempts.LastSamples = result.Prediction.Samples
 	if result.Reserved {
 		s.attempts.Fits++
-		return nil
+		return nil, nil, ""
 	}
 	switch result.Decision.Reason {
 	case domainpredictive.ReasonTokenizerProfileUnknown,
@@ -696,9 +812,47 @@ func (s *approximatePredictiveShadow) recordResultLocked(result runtimepredictiv
 		s.attempts.Risks++
 	}
 	if s.mode != "enforce" {
-		return nil
+		return nil, nil, predictiveProtectionScopeForResult(result, s.backpressurePolicy)
 	}
-	return s.routerBackpressure.Observe(now, s.backpressureHold, result, s.backpressurePolicy)
+	scope := predictiveProtectionScopeForResult(result, s.backpressurePolicy)
+	s.recordLastRejectLocked(now, result.Decision.Reason, result.Prediction.Source, result.Prediction.Samples, scope)
+	switch scope {
+	case predictiveProtectionScopeLoad:
+		return s.routerBackpressure.Observe(now, s.backpressureHold, result, s.backpressurePolicy), nil, scope
+	case predictiveProtectionScopeAvailability:
+		return s.routerBackpressure.SetAvailability(now, true), nil, scope
+	default:
+		return nil, s.requestRejectLogs.Observe(now, s.backpressureHold, result), scope
+	}
+}
+
+func (s *approximatePredictiveShadow) rejectionDecision(scope predictiveProtectionScope, reason domainpredictive.Reason, source runtimepredictive.PredictionSource, samples int) predictiveAdmissionDecision {
+	decision := predictiveAdmissionDecision{
+		Outcome: predictiveAdmissionOutcomeForward,
+		Reason:  reason,
+		Source:  source,
+		Samples: samples,
+	}
+	if s == nil || s.mode != "enforce" {
+		return decision
+	}
+	switch scope {
+	case predictiveProtectionScopeLoad:
+		decision.Outcome = predictiveAdmissionOutcomeLoadProtection
+	case predictiveProtectionScopeAvailability:
+		decision.Outcome = predictiveAdmissionOutcomeAvailabilityProtection
+	default:
+		decision.Outcome = predictiveAdmissionOutcomeRequestReject
+	}
+	return decision
+}
+
+func (s *approximatePredictiveShadow) recordLastRejectLocked(now time.Time, reason domainpredictive.Reason, source runtimepredictive.PredictionSource, samples int, scope predictiveProtectionScope) {
+	s.attempts.LastRejectReason = reason
+	s.attempts.LastRejectSource = source
+	s.attempts.LastRejectScope = scope
+	s.attempts.LastRejectSamples = samples
+	s.attempts.LastRejectAt = now
 }
 
 func (s *approximatePredictiveShadow) emitRouterBackpressure(event *predictiveRouterBackpressureEvent) {
@@ -706,6 +860,13 @@ func (s *approximatePredictiveShadow) emitRouterBackpressure(event *predictiveRo
 		return
 	}
 	s.onBackpressure(*event)
+}
+
+func (s *approximatePredictiveShadow) emitRequestReject(event *predictiveRequestRejectEvent) {
+	if event == nil || s == nil || s.onRequestReject == nil {
+		return
+	}
+	s.onRequestReject(*event)
 }
 
 func approximateRequestClass(path string) (runtimepredictive.RequestClass, bool) {

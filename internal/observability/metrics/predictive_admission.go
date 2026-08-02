@@ -10,56 +10,77 @@ import (
 )
 
 type PredictiveAdmissionInput struct {
-	Mode                   string
-	Attempts               uint64
-	Fits                   uint64
-	Risks                  uint64
-	Unknown                uint64
-	EnforcedRejects        uint64
-	LastReason             string
-	LastSource             string
-	LastSamples            int
-	IntakeOpen             bool
-	Reservations           int
-	VirtualDecodeSequences int
-	RetiredReservations    int
-	RetiredEvictions       uint64
-	LearningAccepted       uint64
-	LearningRejected       uint64
-	LearningInvalidations  uint64
-	LearningCells          int
-	LearningGlobalSamples  int
-	InputSizeAccepted      uint64
-	InputSizeRejected      uint64
-	InputSizeInvalidations uint64
-	InputSizeStored        int
-	InputSizeClasses       int
-	InputSizeCold          uint64
-	InputSizeLearned       uint64
-	InputSizeLastSource    string
-	InputSizeLastSamples   int
-	InputSizeLastRawHigh   int64
-	InputSizeLastUpper     int64
-	TPSBackend             uint64
-	TPSLocal               uint64
-	TPSMissing             uint64
-	TPSRejected            uint64
-	ShadowObservations     PredictiveShadowObservationInput
-	DeferredOutcomes       PredictiveDeferredOutcomeInput
-	FailureClose           uint64
-	FailureDecide          uint64
-	FailureForward         uint64
-	FailureSemantic        uint64
-	FailureCompletion      uint64
-	FailureResourceRelease uint64
-	FailureTerminal        uint64
-	PredictionDuration     *histogram.DurationHistogram
-	EstimatorDuration      *histogram.DurationHistogram
-	RouterBackpressure     PredictiveRouterBackpressureInput
+	Mode     string
+	Attempts uint64
+	Fits     uint64
+	Risks    uint64
+	Unknown  uint64
+	// EnforcedRejects counts HTTP requests for which the proxy emitted an
+	// enforced predictive rejection. Router protection is published earlier
+	// from RouterBackpressure and must never be inferred from this counter.
+	EnforcedRejects                         uint64
+	LastReason                              string
+	LastSource                              string
+	LastSamples                             int
+	LastRejectReason                        string
+	LastRejectSource                        string
+	LastRejectScope                         string
+	LastRejectSamples                       int
+	LastRejectAt                            time.Time
+	IntakeOpen                              bool
+	Reservations                            int
+	VirtualDecodeSequences                  int
+	ForwardedPendingPrefills                int
+	ForwardedPendingPrefillTokens           int64
+	ForwardedPendingPrefillAttributionValid bool
+	ShadowPendingPrefills                   int
+	ShadowPendingPrefillTokens              int64
+	ShadowPendingPrefillAttributionValid    bool
+	RetiredReservations                     int
+	RetiredEvictions                        uint64
+	LearningAccepted                        uint64
+	LearningRejected                        uint64
+	LearningInvalidations                   uint64
+	LearningCells                           int
+	LearningGlobalSamples                   int
+	LearningExistingTPSSamples              uint64
+	LearningNewTPSSamples                   uint64
+	InputSizeAccepted                       uint64
+	InputSizeRejected                       uint64
+	InputSizeInvalidations                  uint64
+	InputSizeStored                         int
+	InputSizeClasses                        int
+	InputSizeCold                           uint64
+	InputSizeLearned                        uint64
+	InputSizeLastSource                     string
+	InputSizeLastSamples                    int
+	InputSizeLastRawHigh                    int64
+	InputSizeLastUpper                      int64
+	TPSBackend                              uint64
+	TPSLocal                                uint64
+	TPSMissing                              uint64
+	TPSRejected                             uint64
+	ShadowObservations                      PredictiveShadowObservationInput
+	DeferredOutcomes                        PredictiveDeferredOutcomeInput
+	ExistingPrefill                         PredictiveExistingPrefillInput
+	FailureClose                            uint64
+	FailureDecide                           uint64
+	FailureForward                          uint64
+	FailureForwardRejected                  uint64
+	FailureSemantic                         uint64
+	FailureCompletion                       uint64
+	FailureResourceRelease                  uint64
+	FailureTerminal                         uint64
+	PredictionDuration                      *histogram.DurationHistogram
+	EstimatorDuration                       *histogram.DurationHistogram
+	RouterBackpressure                      PredictiveRouterBackpressureInput
 }
 
 type PredictiveRouterBackpressureInput struct {
 	Active               bool
+	Activation           uint64
+	Scope                string
+	MinimumRunning       int
 	Applied              bool
 	Reason               string
 	Source               string
@@ -94,6 +115,14 @@ type PredictiveDeferredOutcomeInput struct {
 	Dropped    uint64
 }
 
+type PredictiveExistingPrefillInput struct {
+	Accepted                 uint64
+	Rejected                 uint64
+	Censored                 uint64
+	LastExistingUserTPS      float64
+	LastExistingUserTPSValid bool
+}
+
 func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	mode := input.Mode
 	if mode != "shadow" && mode != "enforce" {
@@ -107,6 +136,22 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	if backpressureSource == "" {
 		backpressureSource = "unknown"
 	}
+	lastRejectReason := input.LastRejectReason
+	if lastRejectReason == "" {
+		lastRejectReason = "none"
+	}
+	lastRejectSource := input.LastRejectSource
+	if lastRejectSource == "" {
+		lastRejectSource = "unknown"
+	}
+	lastRejectScope := input.LastRejectScope
+	if lastRejectScope == "" {
+		lastRejectScope = "none"
+	}
+	backpressureScope := input.RouterBackpressure.Scope
+	if backpressureScope == "" {
+		backpressureScope = "none"
+	}
 	fmt.Fprintf(w, "pig_predictive_admission_mode_info{mode=%q} 1\n", mode)
 	fmt.Fprintf(w, "pig_predictive_admission_enabled %d\n", num.BoolAsInt(mode != "off"))
 	fmt.Fprintf(w, "pig_predictive_admission_enforce %d\n", num.BoolAsInt(mode == "enforce"))
@@ -117,14 +162,24 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_enforced_rejects_total %d\n", input.EnforcedRejects)
 	fmt.Fprintf(w, "pig_predictive_admission_last_decision_info{reason=%q,source=%q} 1\n", input.LastReason, input.LastSource)
 	fmt.Fprintf(w, "pig_predictive_admission_last_samples %d\n", input.LastSamples)
+	fmt.Fprintf(w, "pig_predictive_admission_last_reject_info{reason=%q,source=%q,scope=%q} 1\n", lastRejectReason, lastRejectSource, lastRejectScope)
+	fmt.Fprintf(w, "pig_predictive_admission_last_reject_samples %d\n", input.LastRejectSamples)
+	fmt.Fprintf(w, "pig_predictive_admission_last_reject_at_seconds %.6f\n", predictiveMetricUnixSeconds(input.LastRejectAt))
 	fmt.Fprintf(w, "pig_predictive_admission_intake_open %d\n", num.BoolAsInt(input.IntakeOpen))
 	fmt.Fprintf(w, "pig_predictive_admission_reservations %d\n", input.Reservations)
 	fmt.Fprintf(w, "pig_predictive_admission_virtual_decode_sequences %d\n", input.VirtualDecodeSequences)
+	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefills %d\n", input.ForwardedPendingPrefills)
+	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefill_tokens %d\n", input.ForwardedPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefill_attribution_valid %d\n", num.BoolAsInt(input.ForwardedPendingPrefillAttributionValid))
+	fmt.Fprintf(w, "pig_predictive_admission_shadow_pending_prefills %d\n", input.ShadowPendingPrefills)
+	fmt.Fprintf(w, "pig_predictive_admission_shadow_pending_prefill_tokens %d\n", input.ShadowPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_admission_shadow_pending_prefill_attribution_valid %d\n", num.BoolAsInt(input.ShadowPendingPrefillAttributionValid))
 	fmt.Fprintf(w, "pig_predictive_admission_retired_reservations %d\n", input.RetiredReservations)
 	fmt.Fprintf(w, "pig_predictive_admission_retired_evictions_total %d\n", input.RetiredEvictions)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_active %d\n", num.BoolAsInt(input.RouterBackpressure.Active))
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_applied %d\n", num.BoolAsInt(input.RouterBackpressure.Applied))
-	fmt.Fprintf(w, "pig_predictive_router_backpressure_state_info{reason=%q,source=%q} 1\n", backpressureReason, backpressureSource)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_state_info{scope=%q,reason=%q,source=%q} 1\n", backpressureScope, backpressureReason, backpressureSource)
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_activation %d\n", input.RouterBackpressure.Activation)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_samples %d\n", input.RouterBackpressure.Samples)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_activated_at_seconds %.6f\n", predictiveMetricUnixSeconds(input.RouterBackpressure.ActivatedAt))
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_until_seconds %.6f\n", predictiveMetricUnixSeconds(input.RouterBackpressure.Until))
@@ -141,6 +196,8 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_learning_invalidations_total %d\n", input.LearningInvalidations)
 	fmt.Fprintf(w, "pig_predictive_learning_cells %d\n", input.LearningCells)
 	fmt.Fprintf(w, "pig_predictive_learning_global_samples %d\n", input.LearningGlobalSamples)
+	fmt.Fprintf(w, "pig_predictive_learning_tps_samples_total{phase=%q} %d\n", "existing_prefill", input.LearningExistingTPSSamples)
+	fmt.Fprintf(w, "pig_predictive_learning_tps_samples_total{phase=%q} %d\n", "new_decode", input.LearningNewTPSSamples)
 	fmt.Fprintf(w, "pig_predictive_input_size_samples_total{result=%q} %d\n", "accepted", input.InputSizeAccepted)
 	fmt.Fprintf(w, "pig_predictive_input_size_samples_total{result=%q} %d\n", "rejected", input.InputSizeRejected)
 	fmt.Fprintf(w, "pig_predictive_input_size_invalidations_total %d\n", input.InputSizeInvalidations)
@@ -168,9 +225,15 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_deferred_outcomes_total{result=%q} %d\n", "qualified", input.DeferredOutcomes.Qualified)
 	fmt.Fprintf(w, "pig_predictive_deferred_outcomes_total{result=%q} %d\n", "censored", input.DeferredOutcomes.Censored)
 	fmt.Fprintf(w, "pig_predictive_deferred_outcomes_total{result=%q} %d\n", "dropped", input.DeferredOutcomes.Dropped)
+	fmt.Fprintf(w, "pig_predictive_existing_prefill_outcomes_total{result=%q} %d\n", "accepted", input.ExistingPrefill.Accepted)
+	fmt.Fprintf(w, "pig_predictive_existing_prefill_outcomes_total{result=%q} %d\n", "rejected", input.ExistingPrefill.Rejected)
+	fmt.Fprintf(w, "pig_predictive_existing_prefill_outcomes_total{result=%q} %d\n", "censored", input.ExistingPrefill.Censored)
+	fmt.Fprintf(w, "pig_predictive_existing_prefill_last_user_tps %.6f\n", input.ExistingPrefill.LastExistingUserTPS)
+	fmt.Fprintf(w, "pig_predictive_existing_prefill_last_user_tps_valid %d\n", num.BoolAsInt(input.ExistingPrefill.LastExistingUserTPSValid))
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "decide", input.FailureDecide)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "forward", input.FailureForward)
+	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "forward_rejected", input.FailureForwardRejected)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "semantic", input.FailureSemantic)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "completion", input.FailureCompletion)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "resource_release", input.FailureResourceRelease)

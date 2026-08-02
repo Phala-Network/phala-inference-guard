@@ -41,8 +41,8 @@ func TestLearnedSchedulerUsesEligibleResidualsAndFallsBackWhenStale(t *testing.T
 	if calibrated.Source != PredictionSourceCalibrated || calibrated.Samples != 3 {
 		t.Fatalf("calibrated source/samples = %s/%d, want calibrated/3", calibrated.Source, calibrated.Samples)
 	}
-	if calibrated.Estimate.NewUserTPSLower <= calibrated.Prior.NewUserTPSLower || calibrated.Estimate.ExistingUserTPSLower <= calibrated.Prior.ExistingUserTPSLower {
-		t.Fatalf("one per-user residual did not raise both TPS bounds: prior=%+v estimate=%+v", calibrated.Prior, calibrated.Estimate)
+	if calibrated.Estimate.NewUserTPSLower <= calibrated.Prior.NewUserTPSLower || calibrated.Estimate.ExistingUserTPSLower != calibrated.Prior.ExistingUserTPSLower {
+		t.Fatalf("joining completion residual did not raise only the new-user TPS bound: prior=%+v estimate=%+v", calibrated.Prior, calibrated.Estimate)
 	}
 	if calibrated.Estimate.TTFTUpper >= calibrated.Prior.TTFTUpper {
 		t.Fatalf("calibrated TTFT = %s, want below prior %s", calibrated.Estimate.TTFTUpper, calibrated.Prior.TTFTUpper)
@@ -193,7 +193,7 @@ func TestFreshCensoredOutcomeIsRejectedWithoutChangingQualifiedHeadroom(t *testi
 	}
 
 	guarded := scheduler.Predict(now.Add(5*time.Second), state, cost)
-	if guarded.Estimate.ExistingUserTPSLower <= guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower <= guarded.Prior.NewUserTPSLower {
+	if guarded.Estimate.ExistingUserTPSLower != guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower <= guarded.Prior.NewUserTPSLower {
 		t.Fatalf("censored outcome poisoned qualified TPS headroom: %+v", guarded)
 	}
 	if guarded.Estimate.TTFTUpper >= guarded.Prior.TTFTUpper || guarded.Estimate.TPOTUpper >= guarded.Prior.TPOTUpper {
@@ -228,7 +228,7 @@ func TestFreshPartialOutcomeWithoutTPSDoesNotPoisonQualifiedTPSHeadroom(t *testi
 	}
 
 	guarded := scheduler.Predict(now.Add(5*time.Second), state, cost)
-	if guarded.Estimate.ExistingUserTPSLower <= guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower <= guarded.Prior.NewUserTPSLower {
+	if guarded.Estimate.ExistingUserTPSLower != guarded.Prior.ExistingUserTPSLower || guarded.Estimate.NewUserTPSLower <= guarded.Prior.NewUserTPSLower {
 		t.Fatalf("fresh outcome without TPS poisoned qualified TPS headroom: %+v", guarded)
 	}
 }

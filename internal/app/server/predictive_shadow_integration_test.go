@@ -38,14 +38,14 @@ type rejectingPredictiveAdmission struct {
 	inputs []predictiveShadowInput
 }
 
-func (a *rejectingPredictiveAdmission) DecideAndReserve(_ context.Context, _ string, input predictiveShadowInput) predictiveShadowReservation {
+func (a *rejectingPredictiveAdmission) Decide(_ context.Context, _ string, input predictiveShadowInput) predictiveAdmissionDecision {
 	a.mu.Lock()
 	a.calls++
 	owned := input
 	owned.Body = append([]byte(nil), input.Body...)
 	a.inputs = append(a.inputs, owned)
 	a.mu.Unlock()
-	return nil
+	return predictiveAdmissionDecision{Outcome: predictiveAdmissionOutcomeRequestReject}
 }
 
 func (a *rejectingPredictiveAdmission) Close() error { return nil }
@@ -66,7 +66,7 @@ func (r *recordingPredictiveReservation) MarkForwarded() bool {
 	return r.forwarded == 1
 }
 
-func (s *recordingPredictiveShadow) DecideAndReserve(_ context.Context, _ string, input predictiveShadowInput) predictiveShadowReservation {
+func (s *recordingPredictiveShadow) Decide(_ context.Context, _ string, input predictiveShadowInput) predictiveAdmissionDecision {
 	request := &recordingPredictiveReservation{}
 	s.mu.Lock()
 	owned := input
@@ -78,7 +78,7 @@ func (s *recordingPredictiveShadow) DecideAndReserve(_ context.Context, _ string
 	if mutateBody && len(input.Body) > 0 {
 		input.Body[0] ^= 0xff
 	}
-	return request
+	return predictiveAdmissionDecision{Outcome: predictiveAdmissionOutcomeForward, Reservation: request}
 }
 
 func (s *recordingPredictiveShadow) Close() error {
@@ -362,8 +362,8 @@ func TestPredictiveEnforceRejectsUnscannableBodyBeforeAnyUpstreamAction(t *testi
 	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
 		t.Fatalf("unscannable enforce response/backend = %d/%d, want 429/0", recorder.Code, backendCalls)
 	}
-	if calls, _ := admission.Snapshot(); calls != 0 {
-		t.Fatalf("unscannable body invoked predictor %d times, want 0", calls)
+	if calls, input := admission.Snapshot(); calls != 1 || input.Cost.Supported || input.Cost.UnsupportedReason != "body_too_large" {
+		t.Fatalf("unscannable body was not published as a typed request reject: calls=%d input=%+v", calls, input)
 	}
 	if got := srv.predictiveEnforcedRejects.Load(); got != 1 {
 		t.Fatalf("predictive enforced rejects = %d, want 1", got)

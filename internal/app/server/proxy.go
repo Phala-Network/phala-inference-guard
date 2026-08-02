@@ -56,7 +56,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.kvShadow != nil || predictiveAdmissionEnabled(s.cfg.PredictiveAdmissionMode) {
 		s.kvEstimatorDuration.Observe(time.Since(estimatorStart))
 	}
-	predictiveReservation := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
+	predictiveDecision := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
 		Path:             r.URL.Path,
 		Cost:             classification.KVCost,
 		RequestStartedAt: requestStart,
@@ -64,7 +64,19 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		HasOutputTokens:  classification.PredictiveHasOutputTokens,
 		Streaming:        classification.Streaming,
 	})
-	if s.cfg.PredictiveAdmissionMode == "enforce" && predictiveReservation == nil {
+	predictiveReservation := predictiveDecision.Reservation
+	if s.cfg.PredictiveAdmissionMode == "enforce" && !predictiveDecision.validEnforceResult() {
+		s.decisionDuration.Observe(time.Since(decisionStart))
+		s.predictiveShadowFailures.decide.Add(1)
+		s.logPredictiveFailureReject("invalid_decision_result")
+		if predictiveReservation != nil {
+			predictiveReservation.Terminate(runtimepredictive.TerminalLocalQoSReject)
+		}
+		s.predictiveEnforcedRejects.Add(1)
+		s.reject(w, s.globalLn, "predictive_admission")
+		return
+	}
+	if s.cfg.PredictiveAdmissionMode == "enforce" && predictiveDecision.rejectsForward() {
 		s.decisionDuration.Observe(time.Since(decisionStart))
 		s.predictiveEnforcedRejects.Add(1)
 		s.reject(w, s.globalLn, "predictive_admission")
@@ -125,6 +137,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		predictiveForwarded = predictiveReservation.MarkForwarded()
 		if !predictiveForwarded && s.cfg.PredictiveAdmissionMode == "enforce" {
 			predictiveCause = runtimepredictive.TerminalLocalQoSReject
+			s.predictiveShadowFailures.forwardRejected.Add(1)
+			s.logPredictiveFailureReject("forward_commit")
 			s.predictiveEnforcedRejects.Add(1)
 			s.reject(w, s.globalLn, "predictive_admission")
 			return

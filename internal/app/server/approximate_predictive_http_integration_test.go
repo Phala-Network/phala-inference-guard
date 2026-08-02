@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	appdynamic "github.com/Phala-Network/phala-inference-guard/internal/app/dynamic"
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
@@ -34,7 +36,14 @@ func TestApproximatePredictiveHTTPColdTPSRiskRejectsBeforeUpstream(t *testing.T)
 	}))
 	defer backend.Close()
 	adapter, _ := newApproximateHTTPTestAdapter(t, 20)
+	var activationLogs []string
+	adapter.onBackpressure = func(event predictiveRouterBackpressureEvent) {
+		activationLogs = append(activationLogs, predictiveRouterBackpressureLogLine(event))
+	}
 	srv := newApproximateHTTPTestServer(t, backend.URL, adapter)
+	srv.dynamicController = appdynamic.New(appdynamic.Config{
+		GlobalGreen: 50, GlobalYellow: 50, GlobalRed: 50,
+	}, appdynamic.Dependencies{GlobalLimit: func() int { return 50 }})
 	defer func() {
 		if err := srv.Close(); err != nil {
 			t.Errorf("close predictive server: %v", err)
@@ -54,6 +63,27 @@ func TestApproximatePredictiveHTTPColdTPSRiskRejectsBeforeUpstream(t *testing.T)
 	}
 	if got := backendCalls.Load(); got != 1 {
 		t.Fatalf("cold TPS-risk request reached upstream: calls=%d", got)
+	}
+	if len(activationLogs) != 1 || !strings.Contains(activationLogs[0], "scope=load") {
+		t.Fatalf("real scheduler rejection activation logs = %v", activationLogs)
+	}
+	var protected bytes.Buffer
+	srv.writePredictiveAndDynamicMetrics(&protected)
+	for _, want := range []string{
+		"pig_predictive_admission_enforced_rejects_total 1",
+		`scope="load"`,
+		"pig_predictive_router_backpressure_active 1",
+		"pig_predictive_router_backpressure_applied 1",
+		"pig_dynamic_observed_running 1",
+		"pig_dynamic_observed_waiting 0",
+		"pig_dynamic_global_limit 1",
+	} {
+		if !strings.Contains(protected.String(), want) {
+			t.Fatalf("real scheduler protection metrics missing %q:\n%s", want, protected.String())
+		}
+	}
+	if router := parseRouterConsumedCapacity(t, protected.String()); router.running != 1 || router.waiting != 0 || router.limit != 1 || router.fullness() < 1 {
+		t.Fatalf("real scheduler protection did not block Router capacity: %+v", router)
 	}
 	close(releaseFirst)
 	if first := <-firstDone; first.Code != http.StatusOK {

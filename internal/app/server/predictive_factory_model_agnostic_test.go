@@ -2,12 +2,16 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
+	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 func TestDefaultPredictiveFactoryConstructsApproximateShadowWithoutModelAssets(t *testing.T) {
@@ -50,6 +54,18 @@ vllm:generation_tokens_total{model_name="vendor/arbitrary-model-v17",engine="0"}
 	}
 	if shadow.upstream == nil || !shadow.upstream.Healthy(time.Now()) {
 		t.Fatal("model-neutral predictive observer did not become healthy from coherent vLLM metrics")
+	}
+	scheduler, ok := shadow.learner.(*runtimepredictive.LearnedScheduler)
+	if !ok {
+		t.Fatalf("model-neutral learner = %T, want *predictive.LearnedScheduler", shadow.learner)
+	}
+	state := domainpredictive.VirtualState{DecodeSequences: 1}
+	small := domainpredictive.RequestCost{InputTokens: 100, UncachedPrefillUpper: 100, DecodeSequencesUpper: 1}
+	large := domainpredictive.RequestCost{InputTokens: 5_000, UncachedPrefillUpper: 5_000, DecodeSequencesUpper: 1}
+	smallPrediction := scheduler.Predict(time.Now(), state, small)
+	largePrediction := scheduler.Predict(time.Now(), state, large)
+	if largePrediction.Prior.ExistingUserTPSLower >= smallPrediction.Prior.ExistingUserTPSLower {
+		t.Fatalf("production request size did not reduce existing-user TPS prior: small=%+v large=%+v", smallPrediction.Prior, largePrediction.Prior)
 	}
 }
 
@@ -114,3 +130,22 @@ func TestPredictiveProtectedTokensUsesObservedCapacityAndBlockAlignment(t *testi
 		t.Fatalf("protected tokens = %d, want floor(floor(1003*0.84)/64)*64 = 832", protected)
 	}
 }
+
+func TestPredictivePrefillTPSPenaltyUsesProtectedCapacityScale(t *testing.T) {
+	const (
+		baseTPS   = 50.0
+		targetTPS = 25.0
+		protected = int64(900_000)
+	)
+	penalty := predictivePrefillTPSPenaltyPerKToken(baseTPS, targetTPS, protected)
+	usedHeadroom := penalty * float64(protected/predictivePrefillHeadroomSafetyShares) / 1_000
+	if math.Abs(usedHeadroom-(baseTPS-targetTPS)) > 1e-9 {
+		t.Fatalf("prefill penalty consumed %.6f TPS at one safety share, want %.6f", usedHeadroom, baseTPS-targetTPS)
+	}
+	featureBucket := predictiveFeatureTokenBucket(protected, int(simulationCompatibleBlockSizeForTest))
+	if featureBucket >= protected || penalty >= predictivePrefillTPSPenaltyPerKToken(baseTPS, targetTPS, featureBucket) {
+		t.Fatalf("prefill penalty still appears feature-bucket-scaled: protected=%d bucket=%d penalty=%.9f", protected, featureBucket, penalty)
+	}
+}
+
+const simulationCompatibleBlockSizeForTest = 64

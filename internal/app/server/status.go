@@ -21,7 +21,7 @@ func (s *proxyServer) statusLogLine() string {
 	predictive := s.predictiveAdmissionMetricsInput()
 	routerCapacity := predictiveRouterCapacity(
 		predictive.Mode,
-		predictive.RouterBackpressure.Active,
+		predictiveRouterBackpressureFromMetrics(predictive.RouterBackpressure),
 		predictive.VirtualDecodeSequences,
 		snapshot,
 	)
@@ -65,8 +65,24 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 	if backpressureReason == "" {
 		backpressureReason = "none"
 	}
+	backpressureScope := backpressure.Scope
+	if backpressureScope == "" {
+		backpressureScope = "none"
+	}
+	lastRejectReason := input.LastRejectReason
+	if lastRejectReason == "" {
+		lastRejectReason = "none"
+	}
+	lastRejectSource := input.LastRejectSource
+	if lastRejectSource == "" {
+		lastRejectSource = "unknown"
+	}
+	lastRejectScope := input.LastRejectScope
+	if lastRejectScope == "" {
+		lastRejectScope = "none"
+	}
 	return fmt.Sprintf(
-		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s/%d reservations=%d virtual_decode=%d deferred=%d router_bp=%d/%d/%s effective=%d/%d raw=%d/%d}",
+		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s/%d last_reject=%s/%s/%s/%d reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d deferred=%d prefill_learning=%d/%d/%d router_bp=%d/%d/%s/%s effective=%d/%d raw=%d/%d}",
 		input.Mode,
 		input.Attempts,
 		input.Fits,
@@ -76,11 +92,22 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 		reason,
 		source,
 		input.LastSamples,
+		lastRejectReason,
+		lastRejectSource,
+		lastRejectScope,
+		input.LastRejectSamples,
 		input.Reservations,
 		input.VirtualDecodeSequences,
+		input.ForwardedPendingPrefills,
+		input.ForwardedPendingPrefillTokens,
+		boolInt(input.ForwardedPendingPrefillAttributionValid),
 		input.DeferredOutcomes.Active,
+		input.ExistingPrefill.Accepted,
+		input.ExistingPrefill.Rejected,
+		input.ExistingPrefill.Censored,
 		boolInt(backpressure.Active),
 		boolInt(backpressure.Applied),
+		backpressureScope,
 		backpressureReason,
 		backpressure.EffectiveRunning,
 		backpressure.EffectiveGlobalLimit,
