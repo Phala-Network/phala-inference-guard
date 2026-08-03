@@ -4817,3 +4817,29 @@ denies. The four TTFT violations were observation-only diagnostics and did not
 alter admission. This is exact source and builder-local image evidence only;
 registry publication, digest pull, binary equivalence, live deployment, and
 Router behavior remain unverified at this point.
+
+#### v0.10.7 source and registry release evidence
+
+The reviewed source was committed as
+`c1ff24e03024a31bce1df309ace483ec663042ff`, pushed only to
+`pig-origin/codex/pig-v0.10.0-model-agnostic`, and annotated tag `v0.10.7`
+(tag object `a078142196fc0edbc2d3621c26f503586d9b63c0`) was pushed to the
+same `pig-origin`. GitHub `Publish Image` run `30773617149` completed with
+`success` for that exact commit and tag.
+
+An independent builder pull of
+`ghcr.io/phala-network/phala-inference-guard:v0.10.7` resolved the immutable
+registry reference:
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:112ad16bee5498c0b5fd233538047075ce360d135bd14587b57cb1f5ce684d5d
+```
+
+The pulled amd64 image ID is
+`sha256:89286d0b54c53de4c5934386d39626a2741adf1fa88e4ce0f0b949b8292ae2a9`,
+its OCI label is `0.10.7`, and the production image contract passed. The
+registry binary SHA-256 is
+`7dcac5a23c309851d35c2dd1900028e28718c7068e6f5a443f7ca7955cdba911`;
+it is byte-identical by both SHA-256 and `cmp` to the r6 builder-local binary.
+The registry image is therefore eligible to generate a fresh Router-disabled
+shadow candidate, but it has not yet been put into any live Compose.
