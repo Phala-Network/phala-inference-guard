@@ -4961,3 +4961,368 @@ that case keep `use1-cb` disabled, retain the exact evidence, implement a new
 version, and repeat builder, shadow, and enforce gates. Only a complete green
 enforce result can authorize enabling `use1-cb` and starting the separately
 timed 30-minute real-traffic canary.
+
+#### v0.10.7 real-traffic result and v0.10.8 throughput-learning correction — active 2026-08-03
+
+This section supersedes the preceding “mandatory next step”. The v0.10.7
+Router-disabled enforce publication gate passed, and the separately timed
+real-traffic canary completed its strict interval, but the release failed the
+product throughput objective. Safety and publication correctness do not make a
+release acceptable when it protects TPS far above the configured service band
+and leaves most usable capacity idle.
+
+The target was enabled for the strict UTC window `2026-08-03T01:44:28Z` through
+`2026-08-03T02:14:28Z`. The supervisor completed normally, and a fresh capture
+at `02:15:43Z` covered the final interval. The canary recorded 1,222 prediction
+attempts, 746 fits, 444 forecast risks, 32 unknown requests, 476 enforced
+rejects, and 716 vLLM successes. There were zero preemptions, zero sampled
+waiting, zero vLLM errors, zero predictive failures, zero resource release
+failures, zero dropped deferred outcomes, and no final deferred leak.
+Protection was visible and coherent in the typed reject, bounded logs, both PIG
+metrics paths, and Router effective capacity. TTFT protection was disabled and
+there were no TTFT rejects or TTFT backpressure activations.
+
+The exact same-window Grafana comparison was captured read-only from the Model
+Nodes Historical Load dashboard:
+
+| 30-minute mean unless noted | old `use1-4c` | v0.10.7 `use1-cb` | `cb / 4c` |
+| --- | ---: | ---: | ---: |
+| Running requests | 18.4 | 1.81 | 9.84% |
+| Output TPS | 568 tok/s | 241 tok/s | 42.43% |
+| KV cache usage | 38.55% | 3.76% | 9.75% |
+| Tok/s per running request | 54.3 tok/s | 147.0 tok/s | 270.72% |
+| Queue p95 | 623.80 ms | 308.45 ms | 49.45% |
+| ITL p95 | 2.094 s | 46.311 ms | 2.21% |
+| Prompt TPS | 1,248 tok/s | 1,281 tok/s | 102.64% |
+| Cache hit rate | 4.96% | 7.31% | 147.38% |
+| Spec-decode acceptance | 63.75% | 69.81% | 109.51% |
+| Preemptions / paused | 0 | 0 | equal zero |
+
+The live traffic shapes were not identical: prompt-token p95 means were 36,582
+versus 12,433, generated-token p95 means were 7,601 versus 2,175, and requested
+maximum-token p95 means were 139,292 versus 126,682. Therefore the raw 568
+versus 241 output-TPS difference is not a controlled causal estimate. The
+combined result is nevertheless a product failure: `use1-cb` used only about a
+tenth of the old node's running concurrency and KV, had much higher per-running
+request TPS and much lower ITL, saw comparable prompt TPS, had no cache-hit or
+speculative-acceptance disadvantage, and neither node preempted. Returning to
+the old uncontrolled policy is not the correction because its QoS was
+materially worse. The candidate must move toward the safe capacity frontier
+instead of remaining far above the TPS target.
+
+The canary was removed from Router at `2026-08-03T02:36:10Z` by changing only
+`use1-cb.enabled=true` to `false`. The enabled set is exactly `use1-4c`.
+`use1-4c`, weights, policies, bearer configuration, metrics paths, Router and
+vLLM source, CVM Compose, and running containers were not changed. At the
+disable evidence capture, the target CVM still ran the v0.10.7 enforce Compose
+and immutable image while Router-disabled; this is a timestamped fact and must
+be freshly re-queried before any later deployment. Evidence is retained under
+`tmp/pig-v0107-use1-cb-live-20260803/canary-r19`, including
+`analysis-summary.json`, `grafana-use1-4c-vs-use1-cb.md`, the fresh final health
+and log captures, and `router-disable-throughput-fail/mutation-summary.json`.
+
+##### Source-and-telemetry root-cause hypothesis to reproduce before repair
+
+Learning was wired and active. Global scheduler samples increased from 7 to
+192, input-size stored samples from 14 to 91, learned input estimates from 81
+to 1,256, and the last decision moved from static to calibrated. The failure is
+that the current learner can retreat but cannot reliably recover or acquire
+evidence beyond the concurrency it already admits.
+
+The strongest concrete mechanism is the existing-prefill TPS residual path:
+
+1. The observer accepts a stable one-prefill window and computes aggregate
+   generation-counter delta divided by elapsed time and existing decoders.
+2. During the canary, accepted existing-prefill evidence advanced from 2 to 6
+   at sample 19, whose last observed existing-user TPS was only `5.000989`.
+   Later accepted evidence reported `235.119367`, `387.519504`, and the fresh
+   final value `237.595379` tok/s.
+3. `preferExistingTPSRatios` calls `minimumAdverseRatio` before applying the
+   normal `MinimumSamples=3` maturity rule. One ratio below 1 therefore becomes
+   an immediately calibrated lower bound.
+4. The minimum adverse ratio is retained across compatible local and global
+   evidence for the full configured 1,800-second learning age. Later healthy
+   ratios do not displace it. The multiplier is clamped to the configured 0.10
+   minimum rather than returning to a healthy estimate.
+5. The canary consequently ended with calibrated
+   `existing_tps_at_risk`; 180 of 210 protection activations had exactly that
+   reason/source, while sampled running peaked at 5, average KV was 3.85%, and
+   single-user TPS samples were 106.72–448.09 tok/s.
+
+This explains a sticky conservative frontier without claiming that every
+5 tok/s stable-prefill sample is measurement noise. A real severe sample must
+cause an immediate bounded retreat. The bug is allowing one such sample to
+dominate for the entire generic learning age with no qualified recovery path.
+The static TPOT slope, residual compatibility, outcome attribution, and
+calibrated decision order can also contribute and must be isolated by failing
+tests; they are not yet accepted as additional live root causes.
+
+##### v0.10.8 product and algorithm contract
+
+Version v0.10.8 must remain model-agnostic and tokenizer-first. Prediction,
+decision, and reservation occur before forwarding to vLLM. Feedback changes
+only later decisions. The approximate estimator remains simple and bounded;
+there are no model-specific assets, exact-tokenizer requirement, cache-aware or
+cache-hit algorithm, routing responsibility, Router source change, vLLM source
+change, or TTFT admission protection.
+
+The correction is a bounded safe-frontier learner, not a lower TPS threshold
+and not an unconditional concurrency increase:
+
+1. Keep the red TPS value as the hard service floor. Use the yellow TPS value
+   as the normal target band: increase only while qualified lower-bound TPS and
+   upper-bound TPOT have explicit margin above/below that band. A mixed
+   aggregate mean is not itself a per-user guarantee. Pass the yellow target
+   and its reciprocal TPOT target explicitly into scheduler configuration for
+   exploratory qualification; do not infer them from a residual ratio or
+   replace the manager's existing red hard constraint.
+2. A newly qualified adverse TPS/TPOT outcome immediately lowers or freezes the
+   learned frontier and starts a bounded cooldown. Waiting, any preemption,
+   observer/epoch incoherence, workspace risk, or hard KV risk immediately
+   blocks exploration and uses the existing conservative protection path. A
+   waiting observation also records a fixed-cardinality load-pressure event so
+   a newly healthy scrape cannot instantly reuse the old optimistic frontier;
+   preemption continues to invalidate learning and also starts the cooldown.
+   Availability loss blocks admission from current health but never creates or
+   clears throughput evidence.
+3. Replace the indefinite minimum-adverse latch with a separate, short adverse
+   evidence horizon derived from the observer maximum-metrics-age contract,
+   strictly shorter than the generic learning age. Do not add a second
+   user-facing timer knob unless builder evidence proves it necessary. One
+   adverse sample may trigger immediate retreat, but it
+   cannot remain the sole controlling statistic for the generic 1,800-second
+   learning age. Repeated qualified adverse outcomes refresh the short horizon;
+   after it expires, recovery still requires the normal minimum number of
+   newer, qualified, compatible healthy outcomes. Censored, unattributed,
+   stale, request-unknown, and TTFT-only outcomes neither raise nor clear the
+   evidence frontier.
+4. Reuse the existing bounded scheduler residual cells as the safe evidence
+   frontier. Mature optimistic evidence may extrapolate to exactly one decode
+   bucket above the highest compatible mature evidence and no farther. The
+   query must not have greater normalized prefill/context/KV pressure than the
+   evidence permits. Mark this prediction as exploratory; no timer alone raises
+   capacity.
+5. An exploratory prediction is eligible only when observer and coordinator
+   samples are coherent, waiting is zero, the preemption cooldown is clear,
+   compatible evidence has reached the minimum sample count, every protected
+   forecast used for extrapolation remains on the safe side of the explicit
+   yellow-TPS/reciprocal-TPOT band, and the ordinary counterfactual hard bounds for physical KV,
+   active KV, workspace, preemption, confidence, request size, and lifecycle
+   all pass. The normal evaluator must still produce `fit`; exploration never
+   overrides a reject. Unknown, availability, oversized-request, or
+   hard-resource decisions can therefore never be bypassed.
+6. The existing manager lock, virtual upper state, and reservation remain the
+   only admission transaction. Once one next-bucket reservation is present, a
+   concurrent next request observes another decode bucket and cannot reuse the
+   same evidence to skip a second level. The exploratory bit is retained in the
+   immutable prediction/reservation for fixed-cardinality telemetry and outcome
+   qualification; it is not a second lease or independently mutable permit.
+7. A qualified, uncensored safe outcome at the exploratory bucket becomes
+   ordinary residual evidence at that bucket. Only the normal minimum sample
+   count can make it mature enough for another one-step extrapolation. An
+   adverse result enters the short adverse horizon and retreats/frees the next
+   decision immediately. A censored outcome supplies no promotion or adverse
+   evidence; normal terminal handling still releases the reservation exactly
+   once.
+8. Add no new request-keyed map or parallel capacity controller. Reuse the
+   existing fixed `MaximumCells`, per-cell sample bound, global sample bound,
+   backend-epoch identity, maximum age, invalidation, and eviction semantics.
+   Any added adverse-horizon state is fixed-size scheduler state and uses a
+   monotonic timestamp plus bounded counters, never model IDs, prompts, users,
+   or payload data.
+9. Exploration changes only admission on the target PIG process. It does not
+   select an upstream. Node-wide load/availability protection remains published
+   coherently to the typed reject, bounded logs, `/pig/metrics`, `/v1/metrics`,
+   and Router effective capacity. Request-scoped risk still rejects only that
+   request and cannot lock an idle node.
+10. The existing 500 ms metrics request timeout remains unchanged until a
+    controlled test proves it is the cause of false availability. The five
+    naturally recovered canary availability episodes remain a separate
+    observation, not justification for fail-open or a blind timeout increase.
+
+Keep SOLID ownership narrow: the scheduler owns forecast calibration, adverse
+horizon, and the one-step evidence rule; the manager owns the unchanged atomic
+check/reserve transaction; the observer supplies qualified backend evidence and
+health events; and the HTTP adapter owns only request lifecycle plus bounded
+publication. Do not add another controller that independently mutates
+admission limits outside the predictive transaction. Observer health callbacks
+must run after releasing the observer mutex, may not call back into Manager from
+inside the scheduler lock, and must use panic-safe narrow interfaces to preserve
+the existing lock order.
+
+##### Mandatory red/green and efficiency gates
+
+Before implementation is accepted, the current v0.10.7 source must fail a
+focused deterministic reproduction that feeds healthy existing-prefill
+evidence, one `5.000989`-style adverse sample, then multiple newer 200+ tok/s
+same-or-higher-pressure samples. The red must prove both failure modes: the
+single adverse residual remains controlling beyond its intended cooldown, and
+the scheduler cannot cross the rejected next bucket despite sustained margin.
+The red is invalid if it fails only because of a fixture, identity, timestamp,
+or missing dependency.
+
+The v0.10.8 candidate must then pass all of the following:
+
+1. In a deterministic backend whose safe capacity maintains at least 40 TPS
+   through decode concurrency 8, cold admission remains conservative, then
+   bounded probes reach at least decode 7 and at least 80% of the oracle's
+   SLO-compliant output-token goodput. v0.10.7 and v0.10.8 use the same fixed
+   workload and both execution orders; the candidate must improve compliant
+   output-token goodput by at least 30% without a red-TPS, TPOT, waiting,
+   preemption, KV, workspace, lifecycle, or publication violation.
+2. In a backend whose capacity knee is decode 6, the candidate may expose at
+   most one decode bucket beyond the highest mature safe evidence, must retreat
+   no later than the first qualified unsafe result, and must not extrapolate a
+   second bucket until the normal minimum sample count matures at the first.
+   Repeated adverse outcomes prevent recovery; three or more qualified newer
+   healthy outcomes may resume only one-step extrapolation after cooldown.
+3. A single zero/near-zero generation-counter interval causes an immediate
+   bounded retreat but not a 30-minute sticky minimum. Metric scrape timing,
+   counter lag/reset, empty decode, prefill-only windows, and censored or
+   unattributed outcomes cannot falsely promote or permanently suppress the
+   frontier.
+4. Bursts, mixed short/long prompt and decode horizons, oversized input,
+   request-size unknown, cancellation, disconnect, slow downstream, response
+   before the next poll, stale/failed metrics, availability loss, backend epoch
+   reset, waiting, preemption, and shutdown preserve conservative behavior and
+   release every ordinary/probe reservation exactly once.
+5. Parallel decisions under the manager lock cannot cross more than one bucket
+   beyond the highest mature compatible evidence. Race and property tests prove
+   no oversubscription, double release, stale promotion, counter underflow, or
+   unsafe reuse of one-step evidence.
+6. Low-flow and sparse traffic do not self-lock. A request-scoped rejection,
+   an unqualified outcome, cooldown expiry, no natural probe opportunity, or
+   completed probe cannot create sticky zero, continuous Router fullness, or a
+   permanent inability to admit a cold-safe request.
+7. Load and availability protection still appears coherently before 429 in the
+   typed reject, activation/renewal log, both metrics paths, and Router effective
+   capacity. Probe telemetry uses fixed enums/counters/gauges and contains no
+   payload, user, request, model, token content, bearer, or unbounded label.
+8. TTFT can be observed and reported, but changing only TTFT never changes a
+   decision, frontier, probe, Router backpressure state, or effective capacity.
+   Cache-hit and routing state are absent from the prediction and learner.
+9. Focused tests, all Go tests, race tests, formatting/static checks,
+   deterministic simulations, count/size-estimator tests, and applicable native
+   gates pass on a clean remote builder. No Go/native/race/build/image test runs
+   on local Windows.
+10. Predictor and estimator benchmarks are compared to exact v0.10.7 in both
+    orders on the same builder. The predictive hot path must add no unbounded
+    work or request-keyed allocation and must not regress steady-state ns/op or
+    allocations/op by more than 10%. Standalone builder timing remains CPU
+    evidence, not a production latency or GPU-throughput claim.
+
+##### Version and execution order
+
+Do not mutate the released v0.10.7 tag. Implement the smallest coherent
+vertical slice as v0.10.8 only after preserving the focused red against the
+exact v0.10.7 executable tree. Run focused green first, then the complete clean
+builder matrix and controlled v0.10.7/candidate comparison. Record source
+commit/archive SHA-256, builder identity, exact commands, exits, and evidence
+hashes. Complete and revise the three review passes below before version/tag.
+
+Only a reviewed, clean-builder-green commit may be pushed to `pig-origin`,
+tagged v0.10.8, built on the approved builder, and published as an immutable
+multi-architecture registry image. Source, tag, amd64 image ID, registry digest,
+and attested binary version must agree. This does not authorize production
+traffic by itself.
+
+After registry smoke, generate a one-field image candidate from fresh live
+Compose and deploy only to authorized CVM
+`a0f0bfb3-e46f-4b22-814e-24872f251193` while `use1-cb` remains Router-disabled.
+Repeat protocol, identity, estimator/predictor latency, learning, sparse/low-flow,
+sticky-zero, terminal-zero, log/metrics coherence, availability, and no-fatal
+gates in shadow and then Router-disabled enforce. Any failure retains v0.10.7
+or the last known live rollback and keeps `use1-cb` disabled.
+
+Only after every disabled-route gate passes may the then-current Router document
+be changed solely from `use1-cb.enabled=false` to `true`. Start a fresh strict
+30-minute window at the first proven real request. Collect Router fast samples,
+PIG/vLLM metrics, logs, serial logs, endpoint/attestation health, and the exact
+same-window Grafana comparison. Judge SLO-compliant completion goodput, output
+TPS, running/KV utilization, reject rate, TPS/TPOT distribution, waiting,
+preemption, errors, estimator/predictor latency, and publication coherence
+together. Real traffic is observational, not a controlled A/B. A safety,
+publication, lifecycle, or material throughput failure disables only
+`use1-cb`, preserves evidence, and repeats the flow with a new version. If no
+obvious problem remains, retain the node enabled for continued observation.
+
+##### v0.10.8 plan review pass 1 — model and causality
+
+Completed 2026-08-03 and revised the contract before executable changes. The
+first draft introduced a separate frontier controller and one probe per
+pressure class. That duplicated scheduler ownership and could allow unrelated
+classes to stack several unverified probes against one GPU. It was replaced by
+one-step extrapolation from the existing bounded residual evidence. The
+manager's locked virtual upper state makes the first exploratory reservation
+visible to the next decision, so the same mature bucket cannot skip two levels.
+
+The review also found that terminal completion cannot be the sole promotion
+signal: `markLiveOutcomesInterferedLocked` correctly censors an older request
+when later work was absent from its forecast. v0.10.8 therefore creates no weak
+synthetic target. It reuses only already qualified, uncensored completion
+outcomes and stable existing-prefill outcomes, requires the normal sample
+minimum, and keeps pressure compatibility directional. The focused red must
+independently prove the short-adverse recovery and the one-step evidence path.
+Every producing request retains its immutable pre-forward prediction; an
+outcome is observed only after forwarding/terminal or a later stable metrics
+window and can affect only a subsequent call to `Predict`.
+
+##### v0.10.8 plan review pass 2 — safety, lifecycle, efficiency, and SOLID
+
+Completed 2026-08-03 and revised the contract before executable changes. The
+review found that “healthy evidence” was underspecified: a residual ratio above
+one does not prove the user's absolute TPS band, and a red-floor fit is not
+enough margin for deliberate exploration. Scheduler configuration must
+therefore receive the yellow TPS target and reciprocal TPOT target explicitly;
+ordinary admission continues to use the red floor in Manager. TTFT is absent
+from both conditions.
+
+The review also found a recovery race after backend waiting. Current health
+correctly blocks admission while waiting is non-zero, but clearing waiting could
+immediately expose old optimistic samples. The plan now requires a bounded
+load-pressure cooldown on waiting and preemption, while keeping transient
+availability separate and retaining conservative evidence. The cooldown is
+derived from the already bounded metrics-freshness contract rather than another
+operator timer. Repeated adverse or pressure evidence refreshes it; time alone
+can only remove a temporary adverse override and can never promote a bucket.
+
+The one-step rule remains inside Scheduler and the ordinary reservation remains
+inside Manager, so cancellation, disconnect, forward failure, timeout,
+completion, deferred outcome, epoch reset, close, and panic keep their existing
+single ownership. No probe resource exists to leak. Any exploratory marker is
+immutable metadata only. New observer-to-scheduler pressure feedback must be a
+narrow panic-safe call made outside the observer lock, with no reverse callback,
+which preserves lock order. Existing bounded cells/global samples are reused;
+there is no new request-keyed allocation or label. Low flow falls back to the
+cold policy after temporary evidence expires and therefore cannot become zero
+or permanently closed merely because no promotion sample arrives.
+
+##### v0.10.8 plan review pass 3 — evidence and release boundary
+
+Completed 2026-08-03 and revised the contract before executable changes. The
+review distinguishes the exact v0.10.7 executable baseline from the current
+documentation HEAD: prove executable-tree equivalence or use tag `v0.10.7`
+directly in an independent builder checkout before accepting the focused red.
+The test patch and deterministic workload must be byte-identical for baseline
+and candidate, and their order must be reversed on the same builder. A harness,
+dependency, identity, or timestamp failure is not product red evidence.
+
+The deterministic 40-TPS-through-decode-8 and capacity-knee-6 scenarios provide
+absolute safety/frontier assertions; the 80%-of-oracle and 30%-over-v0.10.7
+requirements provide relative goodput assertions. Both are required. CPU
+microbenchmarks, deterministic goodput, Router-disabled protocol tests, and
+live Grafana observations remain separate evidence layers. In particular, the
+mixed live 568 versus 241 tok/s comparison proves the product problem when
+combined with utilization/QoS evidence but is not reused as the v0.10.8 causal
+gain number.
+
+The review also corrected a drift-prone operational statement: v0.10.7 Compose,
+container, and Router-disabled state are recorded at the disable capture, not
+asserted indefinitely. Fresh CVM, Compose hash, image digest, Router document,
+enabled set, endpoints, and rollback are mandatory before a later write. No
+source green authorizes an image; no image green authorizes Compose; no
+Router-disabled green authorizes traffic. Only the explicit ordered gates above
+can reach the strict 30-minute canary, and any failure changes only
+`use1-cb.enabled` back to false. The current user contract and this later plan
+section supersede older goal wording that mentioned TTFT protection: TTFT is
+observation-only throughout v0.10.8.
