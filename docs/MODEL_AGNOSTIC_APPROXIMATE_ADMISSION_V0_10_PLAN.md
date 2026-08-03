@@ -4843,3 +4843,121 @@ registry binary SHA-256 is
 it is byte-identical by both SHA-256 and `cmp` to the r6 builder-local binary.
 The registry image is therefore eligible to generate a fresh Router-disabled
 shadow candidate, but it has not yet been put into any live Compose.
+
+#### v0.10.7 Router-disabled shadow deployment and gates
+
+The immutable registry digest above was subsequently deployed only to the
+authorized CVM `a0f0bfb3-e46f-4b22-814e-24872f251193` while `use1-cb` remained
+Router-disabled. The deployment used Compose-only update without `.env`. The
+predeploy rollback Compose SHA-256 was
+`f94d85c3d977fae346caa0f0c03544f165f8e4fea7d440efd931ca1a1cbfeeb2`; the live
+v0.10.7 shadow Compose SHA-256 is
+`e8099a2793e65694b7cc753feda6f4317939e1491ebc408774c9397abd9f410a`.
+The only Compose text change was the immutable PIG digest. Runtime startup
+reported `PIG-v0.10.7`, `predictive_admission=shadow`,
+`dynamic_ttft_protect=false`, `predictive_ttft_protect=false`, and a five-second
+predictive Router-backpressure hold. TTFT therefore remains observation-only
+and is not a protection or capacity signal.
+
+Fresh read-only state at `2026-08-03T00:30:00.1431482Z` and again after all
+shadow gates at `2026-08-03T00:36:23.6122122Z` proved the CVM, PIG, and vLLM
+containers running with no platform operation in progress; authenticated
+models, both metrics paths, and attestation returned HTTP 200; unauthenticated
+metrics returned 401. Router digest remained
+`sha256:8969f268ba986f106f9085ffe64f48db9199c5527d0d4dd83c92b44b0a2499c1`,
+the enabled set remained exactly `use1-4c`, target processed remained `237910`,
+and `use1-cb` remained disabled. Its Router-side `pig_ok=false/stale=true` is the
+expected not-collected state for a disabled route and is not a reason to mutate
+Router configuration.
+
+The Router-disabled protocol gate returned HTTP 200 for all five cases: normal
+chat, streaming with terminal usage, required tool call, strict JSON schema,
+and CJK. The low-flow gate then completed 21 sparse requests with 21 HTTP 200
+responses. Input-size estimation reached learned mode after the second maturity
+request; final counters recorded 20 learned estimates, 22 accepted samples,
+four safely rejected samples, zero invalidations, and 22 bounded stored samples.
+The deliberate safe low-ratio sample did not invalidate or erase mature state.
+Prediction and estimator histograms both recorded 21/21 observations at or
+below 0.25 ms. Risk, unknown, enforced reject, preemption, and lifecycle-failure
+deltas were zero; intake stayed open and reservations, shadow observations,
+deferred outcomes, backend running, and backend waiting all returned to zero.
+This passes the sparse-progress, no-false-lock, no-self-lock, no-sticky-zero,
+latency, and terminal-convergence shadow gates.
+
+The first explicit `Expect: 100-continue` harness invocation is retained only
+as a harness failure. PowerShell `Start-Process` split the header value into a
+second curl URL, so curl completed one real 200 request and then reported DNS
+failure for `100-continue`. It is not product red or green evidence. The
+corrected harness placed the explicit header in a temporary header file that
+was scrubbed after execution and started from a new metrics baseline.
+
+The corrected 1,600,119-byte request proved a provisional HTTP 100 followed by
+client-final HTTP 200. vLLM success increased by one. PIG final 2xx increased by
+one and 1xx by zero; predictive risk increased by one while enforced rejects
+remained unchanged in shadow. Input-size feedback terminated exactly once, TPS
+rejected increased by zero, completion-observer
+`attached/claimed/usage/terminal` each increased by one, and shadow-observation
+created/terminated each increased by one. `/pig/metrics` and `/v1/metrics`
+published identical PIG-local values after terminal convergence. Router
+backpressure stayed inactive and unapplied, raw/effective Router capacity stayed
+equal, preemptions did not increase, and every reservation, observation,
+deferred outcome, running, and waiting gauge returned to zero. This closes the
+v0.10.7 live interim-response shadow gate.
+
+#### v0.10.7 Router-disabled enforce publication gate — mandatory next step
+
+The user has reiterated that returning a local 429 is not a complete protection
+loop. Before any Router enablement, a load- or availability-scoped protection
+must be committed and observable before the client receives 429: the typed
+last reject, activation or renewal state, structured event log, both metrics
+paths, and the exact effective running/global-limit fields consumed by Router
+must describe one coherent 100%-full capacity view. Otherwise Router continues
+to feed the node and the protection is ineffective.
+
+No further source change is justified solely by the old v0.10.4 oscillation:
+v0.10.6 changed the lease to renew from the latest load reject, and current
+source tests cover the former gap. That source evidence is not live proof.
+Generate a fresh candidate from the just-queried v0.10.7 shadow Compose and
+change exactly `PREDICTIVE_ADMISSION_MODE=shadow` to `enforce`; preserve the
+same immutable digest, `DYNAMIC_TTFT_ENABLED=false`, the five-second hold, all
+other Compose bytes, and the Router-disabled state. Then require all of the
+following from the deployed runtime:
+
+1. A request-scoped 429 publishes its fixed reason, scope, counter, and bounded
+   payload-free log but leaves Router backpressure `active=0`, `applied=0`, raw
+   and effective capacity equal, and a subsequent cold-safe request able to
+   enter. It must not lock an idle node.
+2. A load-scoped 429 makes zero upstream calls and, before returning the 429,
+   publishes the same reason/source/scope/activation in the reject record,
+   `event=activated`, `event=router_capacity_applied`, `/pig/metrics`, and
+   `/v1/metrics`. Both paths must expose `active=1`, `applied=1`, effective
+   running greater than zero, and effective global limit no greater than
+   effective running so the Router parser computes at least 100% fullness.
+3. Repeated load-scoped rejects renew one continuous episode from the latest
+   reject. Every decision remains pre-forward, cumulative extension counters
+   advance, renewal logs are bounded rather than absent, and no Router scrape
+   phase or jitter may observe the old protected/unprotected oscillation while
+   current or predicted work remains non-zero.
+4. When current and predicted work both reach zero, `applied` returns to zero
+   immediately and raw capacity is restored even if the finite lease is still
+   active. With no new traffic, `active` then expires. A later cold-safe request
+   must pass; sticky zero, timer-driven self-lock, and low-flow lock are release
+   blockers.
+5. Availability protection must publish the same coherent full-capacity
+   sentinel and recover from current health. Unsupported input, an oversized
+   individual request, client cancellation, or TTFT observation must never be
+   reclassified as node-wide availability or load pressure.
+6. Status logs and metrics must expose the durable latest reject, activation,
+   extension/renewal, current active/applied state, and raw/effective capacity.
+   No model, prompt, user, request ID, body, response, bearer, or token content
+   may appear. TTFT metrics may change only as observation; they must never
+   change the admission result, Router-backpressure state, or Router capacity.
+
+Any missing log, disagreement between the two metrics paths, Router-consumed
+fullness below 100% during a binding load/availability rejection, upstream
+counter increase on a 429, renewal gap, premature recovery, delayed drain,
+sticky protection, preemption, or terminal leak stops the live sequence. In
+that case keep `use1-cb` disabled, retain the exact evidence, implement a new
+version, and repeat builder, shadow, and enforce gates. Only a complete green
+enforce result can authorize enabling `use1-cb` and starting the separately
+timed 30-minute real-traffic canary.
