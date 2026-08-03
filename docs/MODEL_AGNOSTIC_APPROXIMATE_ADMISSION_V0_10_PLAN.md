@@ -6200,3 +6200,46 @@ CVM deployment, live readiness, Router enablement, or a 30-minute canary. Those
 layers remain separate gates, and `use1-cb` must stay Router-disabled until the
 published immutable image passes fresh shadow and Router-disabled enforce
 validation.
+
+##### v0.10.8 source publication and immutable image evidence — complete
+
+The reviewed source was committed as
+`9f135840806d4242ed34191cb3adcb1e9803b3d1` (`feat: release throughput-first
+predictive admission v0.10.8`). Annotated tag object
+`954dd88863a68ce586749117cae39bc0461dbe9d` names `v0.10.8` and dereferences to
+that exact commit. Branch and tag were pushed atomically only to `pig-origin`;
+the unrelated `origin` remote was not touched. The official `Publish Image`
+workflow run
+`https://github.com/Phala-Network/phala-inference-guard/actions/runs/30796047711`
+completed successfully for head branch `v0.10.8` and head SHA
+`9f135840806d4242ed34191cb3adcb1e9803b3d1` at `2026-08-03T08:07:05Z`.
+
+An independent fixed-builder pull resolved the mutable tag to the deployment
+input:
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:c05bbb572292067a93dd1bdfce3da9b4ae0197e79e796f1d53ce2c0d551f1d3c
+```
+
+The builder image ID is
+`sha256:7f4618ded6722d850e7448d31ccbfaa8392a7f175ee171a770a3593c1a76f68f`,
+the OCI version label is `0.10.8`, and the image is `linux/amd64` with
+`NVIDIA_VISIBLE_DEVICES=all`. The production image contract passed against the
+immutable digest, including distroless/CGO/native-NVML requirements. Extracted
+runtime binary SHA-256 is
+`c11c1db7242b33bacfe119e24fb290677d65e8f617a0145569e626df67e9d158`,
+and a real container startup line identified `PIG-v0.10.8` with predictive,
+KV-admission, and dynamic controllers explicitly off for the isolated smoke.
+
+The image evidence is
+`tmp/pig-v0108-use1-cb-20260803/image-r1/evidence.tar`, SHA-256
+`0f95608f216878871799f31041e95bc2cbddbb8f91ea0ef6dcc360a6eb272419`.
+The downloaded copy matches the remote hash; all 19 internal manifest entries
+were independently verified and all seven status files are zero. This completes
+source commit/push/tag, official registry publication, immutable digest pull,
+image inspection, production image contract, extracted binary identity, and
+isolated runtime-version layers. It does not prove Compose integration, CVM
+deployment, live readiness, Router enablement, real GPU traffic, or a 30-minute
+canary. The next permitted action is a fresh read-only snapshot of the sole
+authorized CVM and Router state, followed only by an exact Router-disabled
+shadow candidate with byte-exact rollback.
