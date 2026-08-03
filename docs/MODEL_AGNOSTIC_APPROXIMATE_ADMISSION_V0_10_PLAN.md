@@ -4537,3 +4537,283 @@ prove a registry image, Compose integration, CVM deployment, live readiness,
 Router consumption, Router enablement, or the 30-minute traffic observation.
 `use1-cb` remains Router-disabled until all disabled-route shadow and enforce
 gates pass.
+
+#### v0.10.6 source release and immutable registry evidence — complete
+
+The reviewed source was committed and pushed to the authoritative `pig-origin`
+remote:
+
+```text
+branch:        codex/pig-v0.10.0-model-agnostic
+commit:        5ca048d6905e7a054d5290199488471bcf02723a
+annotated tag: v0.10.6
+tag object:    12ae853f65c6c509d286f074c4f02d662c9f7c67
+```
+
+Remote tag dereference resolves to the same source commit. The tag-triggered
+GitHub workflow `Publish Image` run `30771150853` completed successfully at
+[GitHub Actions](https://github.com/Phala-Network/phala-inference-guard/actions/runs/30771150853):
+checkout, GHCR login, v0.10.6 production image contract, build, and push all
+reported success.
+
+The independently pulled immutable registry image is:
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:96ae0b9ffbae926932ce62b0bc01702a40c9740cf559fce5b96946f803417848
+```
+
+The binary extracted from the r14 builder-local tested image and the binary
+extracted after an independent pull by that registry digest are byte-identical:
+
+```text
+aca9e8f65b3cfae96ee1609ad6bd055a4b1508eb83c04230b19ab6e13b8568f0
+```
+
+The digest-pinned image independently passed the production image contract with
+OCI version `0.10.6`. Registry verification evidence is
+`tmp/pig-v0106-use1-cb-20260802/registry-verify-r15/evidence.tar`, SHA-256
+`da395cfd1195b506ed2c224d2da9556d501609d16b663d28f2aa95920d316428`;
+every internal checksum and status was verified after download.
+
+This completes source, tag, workflow publication, immutable digest, and binary
+equivalence only. It still does not prove Compose integration, deployment,
+runtime readiness, Router-disabled shadow/enforce behavior, Router consumption,
+route enablement, or production traffic behavior. No CVM or Router mutation has
+occurred in this v0.10.6 release phase yet.
+
+#### v0.10.6 Router-disabled shadow live gate — stopped by interim-status accounting defect
+
+Fresh read-only preflight at `2026-08-02T23:08:49Z`, repeated immediately
+before deployment at `2026-08-02T23:11:40Z`, proved CVM
+`a0f0bfb3-e46f-4b22-814e-24872f251193` was `running`,
+`in_progress=false`, idle, and still Router-disabled. The complete Router
+enabled set was exactly `use1-4c`; `use1-cb` and the unrelated `use1-9b`
+remained disabled. The live rollback Compose SHA-256 was
+`6644b9f2c148ddfa6b74b7f3b6fbc8c1abecb2965fa93245b201f6a76d24983f`.
+Authenticated `/v1/models`, `/pig/metrics`, `/v1/metrics`, and attestation were
+200, unauthenticated metrics were 401, and the target reported zero running,
+waiting, KV usage, and preemptions.
+
+The shadow candidate was regenerated from that exact live Compose and changed
+only the PIG immutable digest from v0.10.5 to the independently verified
+v0.10.6 digest plus the new explicit
+`PREDICTIVE_ROUTER_BACKPRESSURE_HOLD=5s`. `PREDICTIVE_ADMISSION_MODE=shadow`
+and `DYNAMIC_TTFT_ENABLED=false` remained unchanged. Candidate SHA-256 was
+`f94d85c3d977fae346caa0f0c03544f165f8e4fea7d440efd931ca1a1cbfeeb2`.
+Deployment supplied no `.env`, exited zero, and the live Compose hash exactly
+matched the candidate. The immutable PIG digest and container image ID were
+verified independently. vLLM restarted cleanly and `/v1/models` recovered from
+503 to 200 after approximately 4 minutes 44 seconds; no OOM, Xid, fatal, or
+restart loop was observed. Startup logs proved `PIG-v0.10.6`, shadow mode,
+legacy and predictive TTFT protection disabled, TTFT observation enabled, and
+the 5-second Router publication hold. Router state and enabled set did not
+change.
+
+The ordinary shadow gates passed before the stopping defect:
+
+- normal chat, streaming with usage, tool call, strict structured output, and
+  CJK requests all returned valid 200 responses;
+- 21 sparse learning requests all progressed, reached the learned approximate
+  input-size source after two maturity requests, preserved learning through a
+  deliberately low-ratio sample, and ended with zero reservations,
+  observations, deferred outcomes, running, waiting, and preemptions;
+- all 21 incremental estimator and decision samples were at or below 0.25 ms;
+- Router backpressure remained inactive and unapplied throughout shadow.
+
+The required 1.6 MiB request-scoped shadow-risk gate then exposed a new
+production defect. `curl` automatically sent `Expect: 100-continue`. vLLM
+completed the request and the client received final HTTP 200; vLLM success and
+all four completion-observer stages each increased by one. PIG nevertheless
+recorded the request in the `1xx` response-status class, increased
+`pig_predictive_tps_outcomes_total{result="rejected"}`, and did not add the
+completion's input-size or scheduler feedback. The shadow observation was
+created and terminated but not qualified. Router backpressure correctly
+remained inactive/unapplied and all live state returned to zero, so the target
+did not self-lock, but the observation/metrics disagreement violates the
+feedback contract and prevents mature learning for affected large requests.
+
+The root cause is `infra/http.StatusRecorder`: a backend provisional 100
+Continue forwarded by `ReverseProxy` was stored as the request's final status;
+the later final 200 was ignored. This also explains the exact live discrepancy
+between successful client/vLLM behavior and PIG metrics. v0.10.6 is therefore
+not eligible for Router-disabled enforce or Router enablement. The target
+remains Router-disabled in v0.10.6 shadow while the repair is built and tested.
+
+#### v0.10.7 interim-response repair plan — active
+
+v0.10.7 will keep forwarding informational 100-199 responses to the client but
+exclude them from final status and first-final-response accounting. HTTP 101
+remains final because it switches protocols. The first non-informational
+status, or the implicit 200 created by a body/flush, remains authoritative.
+This is a narrow transport-accounting fix: it does not change admission policy,
+the approximate estimator, TTFT observation-only semantics, Router source,
+vLLM source, cache behavior, or model independence.
+
+The mandatory evidence sequence is:
+
+1. run a test-only patch against the v0.10.6 release baseline and prove that a
+   recorder receiving `100`, `103`, then `200` incorrectly returns `100`;
+2. apply the narrow recorder fix and prove the same focused test green, plus
+   preserve 101 as a final status;
+3. add a proxy/predictive integration gate proving a final 200 after backend
+   informational response increments the 2xx class and completion/input-size
+   feedback exactly once rather than the 1xx/rejected path;
+4. rerun formatting, vet, all tests, targeted and full race, build,
+   deterministic simulations, goodput, both-order benchmarks, builder-local
+   image and production image contract on the remote builder only;
+5. repeat the three implementation reviews for causality/correctness,
+   lifecycle/SOLID/efficiency, and evidence/release scope;
+6. unify runtime, OCI, and current documentation identity as v0.10.7, rerun the
+   exact versioned full matrix, commit/push/tag, publish, independently pull by
+   digest, and prove binary equivalence;
+7. regenerate rollback and shadow candidates from fresh live truth, repeat all
+   Router-disabled shadow gates including an explicit
+   `Expect: 100-continue` large request, then repeat Router-disabled enforce
+   publication/renewal/recovery gates;
+8. only after every gate passes may `use1-cb` alone be enabled and begin a new
+   30-minute real-traffic observation window.
+
+Any mismatch among client status, vLLM success, PIG response class, predictive
+terminal cause, feedback counters, log state, Router-consumed capacity, or
+terminal-zero state stops the release and restarts the repair loop.
+
+#### v0.10.7 interim-response implementation and pre-version evidence
+
+The implementation is deliberately transport-local. `StatusRecorder` forwards
+informational `100`-`199` responses but does not retain them as final status or
+first-final-response time; `101 Switching Protocols` remains final. The first
+later non-informational status, or implicit `200` from body/flush, remains the
+single terminal status consumed by proxy accounting and predictive feedback.
+No admission constraint, estimator, learner, Router capacity rule, model
+identity, cache behavior, TTFT policy, Router source, or vLLM source changed.
+
+The first remote r1 attempt proved the recorder red but its integration fixture
+was missing the `io` import, so it is retained only as invalid harness evidence.
+Clean r2 then reproduced both intended v0.10.6 failures: the recorder returned
+`100` after `100 -> 103 -> 200`, and the complete proxy path recorded one
+rejected TPS outcome for a client/backend-successful informational response.
+Its archive SHA-256 is
+`d381177f23d22b1eb056774d1ae42030ef7ebc331ed5b06a7bc521fef2d5a527`.
+The same r2 green phase stopped at formatting and is not green evidence.
+
+Focused r3 applied only the narrow recorder fix after reproducing both reds in
+the same reconstruction. Formatting, the recorder/proxy focused tests, focused
+race, affected package tests, and vet all exited zero. Its archive SHA-256 is
+`fca7c802a986ec89992968e54dc30f1fd030a9884596fadfc3c5c707d634c427`;
+all files listed by the internal `SHA256SUMS` were independently verified.
+
+The full pre-version r4 reconstructed the v0.10.6 release baseline
+`b62e56db2829b7b6a9602225f1ec95c07f1feb126e57e47cf656e30aeff7e445`
+with source patch
+`f26a793ca1772699dd727c4d466f8adcf3f871d5a21f8978a235ac265691aaf9`
+inside the immutable Go 1.24.5 toolchain
+`docker.io/library/golang:1.24.5-bookworm@sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40`.
+Reconstruction, gofmt, source contract, vet, all tests, targeted race, full
+race, build, deterministic KV/performance, verbose and JSON goodput, both
+candidate/baseline benchmark orders, builder-local image build, production
+image contract, and image inspection all exited zero. The downloaded evidence
+archive SHA-256 is
+`b14e6eb08b795734c0760cdeab3efd00b5a4b152172602ee278906211c0f3b92`;
+21 status files were zero and all 47 internally hashed files matched.
+
+This pre-version candidate intentionally still reported runtime/OCI `0.10.6`.
+Its builder-local image was
+`sha256:5acc92ea471c15ca124f8e6b0f9688e0c8ff05bce973b1ed70169b59e9438e0c`.
+Estimator performance remained bounded at 64 KiB p95 `1.906 us`, 2 MiB p99
+`118.512 us`, and predictive decision p99 `1.982 us`. The aggregate deterministic
+goodput comparison remained predictive `44,704` completion tokens with zero
+TPS, TPOT, KV-hard, preemption-proxy, false-accept, or reservation-leak events,
+versus KV-only `37,536` with 32 TPS, 32 TPOT, one KV-hard, one
+preemption-proxy, and 16 false-accept events. Four TTFT violations remained
+diagnostic-only; predictive had seven false denies.
+
+Three post-r4 reviews were completed and revised as follows:
+
+1. Causality and correctness confirmed that provisional responses cannot
+   determine final status, terminal cause, status class, or learning. The tests
+   were strengthened to prove provisional responses do not establish
+   first-final-response timing. The final success must produce exactly one TPS
+   outcome: `missing`, not `rejected`, because this non-stream fixture exposes
+   no backend timing or semantic TTFT from which a TPS target could be derived.
+   It must also produce exactly one safely rejected input-size ratio outcome;
+   no target quality is fabricated from absent timing or an extreme compressed
+   whitespace ratio.
+2. Lifecycle, SOLID, and efficiency review found the responsibility remains in
+   the HTTP recorder, preserves the `101` boundary, introduces only a constant
+   branch on response headers, and adds no model/cache/tokenizer/Router
+   coupling. The full race result was clean.
+3. Evidence and release review accepted r2 only as red, r3 as focused green,
+   and r4 as a pre-version full matrix. Because the strengthened tests and
+   version identity postdate r4, no r4 result is inherited as final v0.10.7
+   evidence. A fresh exact versioned full matrix is mandatory.
+
+Runtime, OCI, README/Compose example, advanced configuration, and current
+observability identity are now unified at v0.10.7. Historical v0.10.6 evidence
+above remains unchanged. No source push, tag, registry image, new Compose,
+deployment, enforce request, Router mutation, or Router enablement has occurred
+at this point.
+
+#### v0.10.7 exact versioned r5/r6 matrix evidence
+
+The first r5 invocation stopped before reconstruction because the host runner's
+expected inner-runner hash omitted one hexadecimal `b`; the printed strings
+looked similar, but byte/length audit showed 63 expected characters versus the
+64-character SHA-256. The corrected host runner then started a fresh r5 run.
+Reconstruction, source contract, gofmt, and vet passed, but full tests correctly
+failed the newly strengthened informational-response assertion. The fixture has
+no backend ITL/generation time and no semantic TTFT, so the implementation
+truthfully produced one TPS `missing` outcome rather than the test's incorrect
+requirement for a backend/local learned target. It still produced zero TPS
+`rejected` outcomes and one safely rejected input-size ratio outcome. The r5
+failure archive is retained at SHA-256
+`0707a76b96ed68098da955a5a961ae55a73f53922597bd77b42bac84cf53c416`;
+it is not green evidence.
+
+The assertion and the preceding review wording were corrected without changing
+runtime source: the explicit contract is TPS backend/local `0/0`, missing `1`,
+rejected `0`, input-size accepted/rejected `0/1`, final status `200`, response
+classes `1xx/2xx = 0/1`, and completion observer `1/1/1/1`. This avoids both
+misclassifying a successful response and fabricating a TPS learning target.
+
+Fresh versioned r6 used:
+
+```text
+v0.10.6 base archive:
+b62e56db2829b7b6a9602225f1ec95c07f1feb126e57e47cf656e30aeff7e445
+
+exact v0.10.7 source patch:
+08e3d5bdb47fb8ec899518bf5b97d6e1598be0832faa9a11968a9070498bc751
+
+inner runner:
+0c29db4014199bbba1e298dc110886cf5ee3a28e67e76cad23f4977c0db84197
+
+host runner:
+b0990f207e9549e0e386d3351993d7756be76b62a3bcdebbfc03f8f9ca758607
+```
+
+All 21 status files were zero: reconstruction/apply, gofmt, the
+model-agnostic/no-cache/TTFT-off plus exact-version source contract, vet, all
+tests, targeted race, full race, build, deterministic KV/performance, verbose
+and JSON goodput, both-order candidate/baseline benchmarks, builder-local image
+build, production image contract, and image inspection. The independently
+downloaded evidence archive SHA-256 is
+`fd4326e8267a71c4693186b3aecbaf294ea6a0f5b6ef90653f0e9b1690960857`;
+all 47 internal `SHA256SUMS` entries matched.
+
+The builder-local versioned image is
+`sha256:6f996145efe76a2c299f960eb619831f7fc89d9fa24240e03333d71639894674`
+with OCI label `0.10.7`; its extracted binary SHA-256 is
+`7dcac5a23c309851d35c2dd1900028e28718c7068e6f5a443f7ca7955cdba911`.
+The production image contract reported `version=0.10.7`. Performance was 64 KiB
+estimator p95 `1.912 us`, 2 MiB estimator p99 `129.267 us`, and predictive
+decision p99 `1.231 us`. Candidate and baseline both-order benchmarks retained
+the same allocation counts and overlapping timing noise; the recorder fix adds
+no admission hot-path work.
+
+Deterministic goodput remained predictive `44,704`, current-policy `39,840`,
+and KV-only `37,536` completion tokens. Predictive had zero TPS, TPOT, KV-hard,
+preemption-proxy, false-accept, or reservation-leak events and seven false
+denies. The four TTFT violations were observation-only diagnostics and did not
+alter admission. This is exact source and builder-local image evidence only;
+registry publication, digest pull, binary equivalence, live deployment, and
+Router behavior remain unverified at this point.

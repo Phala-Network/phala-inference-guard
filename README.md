@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.10.6 model-agnostic predictive admission
+### v0.10.7 model-agnostic predictive admission
 
-PIG v0.10.6 can estimate request size locally and predict the post-admit
+PIG v0.10.7 can estimate request size locally and predict the post-admit
 KV/TPS/TPOT/preemption state before forwarding to a vLLM upstream. TTFT is
 still measured and learned for diagnosis, but it is observation-only and can
 never reject a request:
@@ -180,7 +180,7 @@ payload-free observation record so qualified completion feedback improves only
 later predictions. `enforce` rejects a non-fit or unknown decision before
 upstream forwarding with the normal OpenAI-compatible PIG 429 response.
 Predictive `shadow` and `enforce` require `DYNAMIC_TTFT_ENABLED=false`; this is
-also the v0.10.6 default. Legacy dynamic TTFT limiting remains available only
+also the v0.10.7 default. Legacy dynamic TTFT limiting remains available only
 as an explicit opt-in while predictive admission is `off`.
 
 This path is model-family neutral: it has no model tokenizer, chat template,
@@ -217,6 +217,12 @@ Request-specific oversized/malformed/unknown failures do not clamp the whole
 node. Bounded activation/renewal logs, durable lease metrics, completion-observer
 stage counters, and the periodic `predictive={...}` status suffix expose the
 protection without request content or credentials.
+
+Backend informational HTTP responses such as `100 Continue` and `103 Early
+Hints` are forwarded but remain provisional. Only the final response status
+(with `101 Switching Protocols` as the protocol-switch exception) drives
+status-class metrics, completion qualification, and feedback learning. This
+keeps successful large requests from being misclassified as `1xx` failures.
 
 Use `shadow` first. Promote the same immutable image to `enforce` only after the
 documented builder, simulation, latency, lifecycle, low-flow recovery, and live
@@ -256,7 +262,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.6
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.7
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

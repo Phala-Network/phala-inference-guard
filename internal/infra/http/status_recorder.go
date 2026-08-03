@@ -21,6 +21,14 @@ func NewStatusRecorder(w http.ResponseWriter) *StatusRecorder {
 }
 
 func (r *StatusRecorder) markHeader(status int) {
+	// Informational responses are provisional. A backend can emit 100 Continue
+	// or 103 Early Hints before its final response, and ReverseProxy forwards
+	// each of those through this recorder. Keep forwarding them to the client,
+	// but do not let them become the request's final status or first-response
+	// timestamp. Status 101 is final because it switches protocols.
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		return
+	}
 	if r.status == 0 {
 		r.status = status
 	}

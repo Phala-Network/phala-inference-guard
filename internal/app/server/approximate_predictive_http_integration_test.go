@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -595,6 +596,63 @@ func TestApproximatePredictiveHTTPLargeBodyShadowRequestRiskCompletesInputFeedba
 	}
 }
 
+func TestApproximatePredictiveHTTPInformationalResponseUsesFinalStatusAndFeedback(t *testing.T) {
+	var backendCalls atomic.Int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalls.Add(1)
+		w.WriteHeader(http.StatusContinue)
+		_, _ = io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(approximateHTTPVLLMCompletionUsageResponse))
+	}))
+	defer backend.Close()
+
+	adapter := newApproximateHTTPShadowRequestRiskAdapter(t)
+	srv := newApproximateHTTPTestServerWithMode(t, backend.URL, adapter, "shadow")
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close predictive shadow server: %v", err)
+		}
+	}()
+
+	body := `{"model":"google/gemma-4-31B-it","prompt":"Return exactly OK.","max_tokens":8,"temperature":0}` + strings.Repeat(" ", 1_600_000)
+	request := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Expect", "100-continue")
+	writer := &informationalPredictiveResponseWriter{header: make(http.Header)}
+
+	srv.ServeHTTP(writer, request)
+
+	if writer.finalStatus != http.StatusOK || backendCalls.Load() != 1 {
+		t.Fatalf("informational response final/backend = %d/%d, want 200/1", writer.finalStatus, backendCalls.Load())
+	}
+	if len(writer.informational) != 1 || writer.informational[0] != http.StatusContinue {
+		t.Fatalf("forwarded informational responses = %v, want [100]", writer.informational)
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.Attempts.Risks != 1 || telemetry.Attempts.Fits != 0 ||
+		telemetry.TPSOutcomes.Backend != 0 || telemetry.TPSOutcomes.Local != 0 ||
+		telemetry.TPSOutcomes.Missing != 1 || telemetry.TPSOutcomes.Rejected != 0 {
+		t.Fatalf("informational response predictive telemetry = %+v", telemetry)
+	}
+	if telemetry.ShadowObservations.Active != 0 || telemetry.ShadowObservations.Created != 1 || telemetry.ShadowObservations.Terminated != 1 {
+		t.Fatalf("informational response shadow lifecycle = %+v", telemetry.ShadowObservations)
+	}
+	size := adapter.calibrator.Snapshot(time.Now())
+	if size.SamplesAccepted != 0 || size.SamplesRejected != 1 {
+		t.Fatalf("informational response input feedback = accepted %d rejected %d, want one safely rejected ratio outcome", size.SamplesAccepted, size.SamplesRejected)
+	}
+	lane := srv.globalLn.Snapshot()
+	if lane.StatusClasses[1] != 0 || lane.StatusClasses[2] != 1 {
+		t.Fatalf("informational response status classes = %v, want only one 2xx", lane.StatusClasses)
+	}
+	if attached, claimed, usage, terminal := srv.predictiveCompletionObserver.attached.Load(), srv.predictiveCompletionObserver.claimed.Load(), srv.predictiveCompletionObserver.usage.Load(), srv.predictiveCompletionObserver.terminal.Load(); attached != 1 || claimed != 1 || usage != 1 || terminal != 1 {
+		t.Fatalf("informational response completion observer stages = %d/%d/%d/%d, want 1/1/1/1", attached, claimed, usage, terminal)
+	}
+}
+
 func TestApproximatePredictiveHTTPQualifiedTPSHeadroomAdmitsNextConcurrency(t *testing.T) {
 	fourthEntered := make(chan struct{})
 	releaseFourth := make(chan struct{})
@@ -895,4 +953,30 @@ func (*errorPredictiveResponseWriter) WriteHeader(int) {}
 func (w *errorPredictiveResponseWriter) Write([]byte) (int, error) {
 	w.wrote.Store(true)
 	return 0, w.err
+}
+
+type informationalPredictiveResponseWriter struct {
+	header        http.Header
+	finalStatus   int
+	informational []int
+	body          strings.Builder
+}
+
+func (w *informationalPredictiveResponseWriter) Header() http.Header { return w.header }
+
+func (w *informationalPredictiveResponseWriter) WriteHeader(status int) {
+	if status >= 100 && status < 200 && status != http.StatusSwitchingProtocols {
+		w.informational = append(w.informational, status)
+		return
+	}
+	if w.finalStatus == 0 {
+		w.finalStatus = status
+	}
+}
+
+func (w *informationalPredictiveResponseWriter) Write(body []byte) (int, error) {
+	if w.finalStatus == 0 {
+		w.finalStatus = http.StatusOK
+	}
+	return w.body.Write(body)
 }
