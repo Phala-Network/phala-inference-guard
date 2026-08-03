@@ -23,18 +23,20 @@ type predictiveRouterCapacityProjection struct {
 }
 
 type predictiveRouterCapacityEvent struct {
-	Activation           uint64
-	Scope                string
-	Reason               string
-	Source               string
-	Samples              int
-	PredictiveRunning    int
-	RawRunning           int
-	EffectiveRunning     int
-	RawGlobalLimit       int
-	EffectiveGlobalLimit int
-	ActivatedAt          time.Time
-	Until                time.Time
+	Activation                             uint64
+	Scope                                  string
+	Reason                                 string
+	Source                                 string
+	Samples                                int
+	AggregateCompletionTPSEstimate         float64
+	PreviousAggregateCompletionTPSEstimate float64
+	PredictiveRunning                      int
+	RawRunning                             int
+	EffectiveRunning                       int
+	RawGlobalLimit                         int
+	EffectiveGlobalLimit                   int
+	ActivatedAt                            time.Time
+	Until                                  time.Time
 }
 
 type predictiveRouterCapacityLogState struct {
@@ -144,18 +146,20 @@ func (s *predictiveRouterCapacityLogState) Claim(
 			continue
 		}
 		return &predictiveRouterCapacityEvent{
-			Activation:           activation,
-			Scope:                input.RouterBackpressure.Scope,
-			Reason:               input.RouterBackpressure.Reason,
-			Source:               input.RouterBackpressure.Source,
-			Samples:              input.RouterBackpressure.Samples,
-			PredictiveRunning:    capacity.PredictiveRunning,
-			RawRunning:           capacity.RawRunning,
-			EffectiveRunning:     capacity.EffectiveRunning,
-			RawGlobalLimit:       capacity.RawGlobalLimit,
-			EffectiveGlobalLimit: capacity.EffectiveGlobalLimit,
-			ActivatedAt:          input.RouterBackpressure.ActivatedAt,
-			Until:                input.RouterBackpressure.Until,
+			Activation:                             activation,
+			Scope:                                  input.RouterBackpressure.Scope,
+			Reason:                                 input.RouterBackpressure.Reason,
+			Source:                                 input.RouterBackpressure.Source,
+			Samples:                                input.RouterBackpressure.Samples,
+			AggregateCompletionTPSEstimate:         input.RouterBackpressure.AggregateCompletionTPSEstimate,
+			PreviousAggregateCompletionTPSEstimate: input.RouterBackpressure.PreviousAggregateCompletionTPSEstimate,
+			PredictiveRunning:                      capacity.PredictiveRunning,
+			RawRunning:                             capacity.RawRunning,
+			EffectiveRunning:                       capacity.EffectiveRunning,
+			RawGlobalLimit:                         capacity.RawGlobalLimit,
+			EffectiveGlobalLimit:                   capacity.EffectiveGlobalLimit,
+			ActivatedAt:                            input.RouterBackpressure.ActivatedAt,
+			Until:                                  input.RouterBackpressure.Until,
 		}
 	}
 }
@@ -170,12 +174,14 @@ func predictiveRouterCapacityLogLine(event predictiveRouterCapacityEvent) string
 		source = "unknown"
 	}
 	return fmt.Sprintf(
-		"predictive_router_backpressure event=router_capacity_applied mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d predictive_running=%d raw_running=%d effective_running=%d raw_global_limit=%d effective_global_limit=%d activated_at=%s until=%s",
+		"predictive_router_backpressure event=router_capacity_applied mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d aggregate_completion_tps_estimate=%.6f previous_aggregate_completion_tps_estimate=%.6f predictive_running=%d raw_running=%d effective_running=%d raw_global_limit=%d effective_global_limit=%d activated_at=%s until=%s",
 		event.Activation,
 		event.Scope,
 		reason,
 		source,
 		event.Samples,
+		event.AggregateCompletionTPSEstimate,
+		event.PreviousAggregateCompletionTPSEstimate,
 		event.PredictiveRunning,
 		event.RawRunning,
 		event.EffectiveRunning,

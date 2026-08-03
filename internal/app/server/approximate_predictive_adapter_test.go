@@ -1019,6 +1019,61 @@ func TestApproximatePredictiveAdapterLearnsOnlyAfterTerminalReleaseForNextReques
 	}
 }
 
+func TestApproximatePredictiveAdapterUsesHintAsNextRequestSizeReference(t *testing.T) {
+	now := time.Unix(55_000, 0)
+	calibrator := newApproximateAdapterTestCalibrator(t, 2)
+	coordinator := newRecordingUpperBoundCoordinator()
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "enforce", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new hinted approximate adapter: %v", err)
+	}
+
+	trainingInput := approximateAdapterTestInput()
+	trainingInput.Cost.EstimatedInputLow = 50
+	trainingInput.Cost.EstimatedInputHigh = 400
+	trainingInput.Cost.ApproximateInputTokens = 100
+	trainingInput.Cost.ApproximateInputTokensKnown = true
+	for index := 0; index < 2; index++ {
+		requestID := fmt.Sprintf("hint-train-%d", index)
+		reservation := adapter.DecideAndReserve(context.Background(), requestID, trainingInput)
+		if reservation == nil || !reservation.MarkForwarded() || !observePredictiveCompletion(reservation, predictiveCompletionObservation{
+			PromptTokens: 100, CompletionTokens: 5, ElapsedSinceRequest: 100 * time.Millisecond, BackendMeanITL: 10 * time.Millisecond,
+		}) || !reservation.Terminate(runtimepredictive.TerminalCompleted) {
+			t.Fatalf("hint training request %d did not complete", index)
+		}
+		now = now.Add(time.Second)
+	}
+
+	small := trainingInput
+	small.Cost.ApproximateInputTokens = 50
+	smallReservation := adapter.DecideAndReserve(context.Background(), "hint-small", small)
+	if smallReservation == nil {
+		t.Fatal("hinted small request was not reserved")
+	}
+	large := trainingInput
+	large.Cost.ApproximateInputTokens = 200
+	largeReservation := adapter.DecideAndReserve(context.Background(), "hint-large", large)
+	if largeReservation == nil {
+		t.Fatal("hinted large request was not reserved")
+	}
+
+	proposals := coordinator.Proposals()
+	if len(proposals) != 4 || proposals[0].InputTokensUpper != 400 || proposals[1].InputTokensUpper != 400 {
+		t.Fatalf("hint feedback changed its producing requests: %+v", proposals)
+	}
+	if proposals[2].InputTokensUpper < 50 || proposals[2].InputTokensUpper >= 100 || proposals[3].InputTokensUpper <= 200 || proposals[3].InputTokensUpper >= 400 {
+		t.Fatalf("same raw interval did not use hint to separate later request sizes: small=%+v large=%+v", proposals[2], proposals[3])
+	}
+	if snapshot := calibrator.Snapshot(now); snapshot.HintSamplesStored != 2 || !snapshot.LastHintUsed || snapshot.LastHint != 200 {
+		t.Fatalf("hint path telemetry = %+v", snapshot)
+	}
+	if !smallReservation.Terminate(runtimepredictive.TerminalExpired) || !largeReservation.Terminate(runtimepredictive.TerminalExpired) {
+		t.Fatal("hinted reservations did not release")
+	}
+}
+
 func TestApproximatePredictiveAdapterMissingPromptUsageDoesNotPoisonColdProgress(t *testing.T) {
 	now := time.Unix(60_000, 0)
 	calibrator := newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1)

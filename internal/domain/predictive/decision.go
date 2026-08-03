@@ -25,6 +25,8 @@ func Evaluate(input EvaluationInput) Decision {
 		decision.Reason = ReasonPreemptionAtRisk
 	case input.Confidence < cfg.MinimumConfidence:
 		decision.Reason = ReasonPredictorProfileUnknown
+	case input.Scheduler.ThroughputFrontierReached:
+		decision.Reason = ReasonThroughputFrontier
 	}
 	return decision
 }

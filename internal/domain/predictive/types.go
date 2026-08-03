@@ -42,13 +42,16 @@ type RequestCost struct {
 }
 
 type SchedulerEstimate struct {
-	ExistingUserTPSLower         float64
-	ExistingUserTPSNotApplicable bool
-	NewUserTPSLower              float64
-	TTFTUpper                    time.Duration
-	TPOTUpper                    time.Duration
-	WorkspaceRiskUpper           float64
-	PreemptionRiskUpper          float64
+	ExistingUserTPSLower                   float64
+	ExistingUserTPSNotApplicable           bool
+	NewUserTPSLower                        float64
+	AggregateCompletionTPSEstimate         float64
+	PreviousAggregateCompletionTPSEstimate float64
+	ThroughputFrontierReached              bool
+	TTFTUpper                              time.Duration
+	TPOTUpper                              time.Duration
+	WorkspaceRiskUpper                     float64
+	PreemptionRiskUpper                    float64
 }
 
 type Constraints struct {
@@ -70,6 +73,7 @@ const (
 	ReasonExistingTPSAtRisk       Reason = "existing_tps_at_risk"
 	ReasonNewTPSAtRisk            Reason = "new_tps_at_risk"
 	ReasonTPOTAtRisk              Reason = "tpot_at_risk"
+	ReasonThroughputFrontier      Reason = "throughput_frontier_reached"
 	ReasonWorkspaceAtRisk         Reason = "workspace_at_risk"
 	ReasonPreemptionAtRisk        Reason = "preemption_at_risk"
 	ReasonTokenizerProfileUnknown Reason = "tokenizer_profile_unknown"

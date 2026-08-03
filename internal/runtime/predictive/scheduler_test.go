@@ -125,7 +125,7 @@ func TestAdversePostPrefillTPSSurvivesSmallerApproximateRequestEstimate(t *testi
 	queryCost.UncachedPrefillUpper = 54
 	queryCost.ActiveContextTokensUpper = 118
 	prediction := scheduler.Predict(now.Add(10*time.Second), queryState, queryCost)
-	if prediction.Source != PredictionSourceCalibrated || prediction.Samples != config.MinimumSamples || prediction.Estimate.NewUserTPSLower >= 25 {
+	if prediction.Source != PredictionSourceCalibrated || prediction.Samples != 1 || prediction.Estimate.NewUserTPSLower >= 25 {
 		t.Fatalf("smaller approximate estimate erased adverse decode capacity: %+v", prediction)
 	}
 }
@@ -202,6 +202,160 @@ func TestExistingPrefillZeroTPSImmediatelyTightensNextCompatiblePrediction(t *te
 	}
 }
 
+func TestExistingPrefillAdverseOverrideRecoversFromNewerMatureHealthyEvidence(t *testing.T) {
+	now := time.Unix(3_810, 0)
+	profile := testLearnedProfile()
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaxAge = time.Hour
+	config.MinimumTPSMultiplier = 0.10
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{
+		DecodeSequences: 1, ActiveContextTokens: 10_000, PhysicalKVUpper: 12_000, ActiveKVUpper: 12_000,
+	}
+	cost := learnedTestCost()
+	features := scheduler.Predict(now, state, cost).Features
+	observe := func(started time.Time, tps float64) {
+		t.Helper()
+		if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+			Identity:                scheduler.Identity(),
+			StartedAt:               started,
+			ObservedAt:              started.Add(500 * time.Millisecond),
+			Features:                features,
+			ExistingDecodeSequences: 1,
+			PendingPrefillSequences: 1,
+			PendingPrefillTokens:    cost.UncachedPrefillUpper,
+			ExistingUserTPS:         tps,
+		}); err != nil {
+			t.Fatalf("observe existing-prefill TPS %.3f: %v", tps, err)
+		}
+	}
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		observe(now.Add(time.Duration(index)*time.Second), 240)
+	}
+	healthy := scheduler.Predict(now.Add(4*time.Second), state, cost)
+	if healthy.Source != PredictionSourceCalibrated || healthy.Estimate.ExistingUserTPSLower <= healthy.Prior.ExistingUserTPSLower {
+		t.Fatalf("mature healthy evidence did not create headroom: %+v", healthy)
+	}
+
+	observe(now.Add(5*time.Second), 5.000989)
+	retreated := scheduler.Predict(now.Add(6*time.Second), state, cost)
+	if retreated.Source != PredictionSourceCalibrated || retreated.Estimate.ExistingUserTPSLower >= retreated.Prior.ExistingUserTPSLower {
+		t.Fatalf("fresh adverse evidence did not immediately retreat: %+v", retreated)
+	}
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		observe(now.Add(20*time.Second+time.Duration(index)*time.Second), 240)
+	}
+	recovered := scheduler.Predict(now.Add(24*time.Second), state, cost)
+	if recovered.Source != PredictionSourceCalibrated || recovered.Estimate.ExistingUserTPSLower <= recovered.Prior.ExistingUserTPSLower {
+		t.Fatalf("one old adverse sample remained sticky after newer mature healthy evidence: %+v", recovered)
+	}
+}
+
+func TestExistingPrefillAdverseRecoveryRequiresNewerMatureHealthyEvidence(t *testing.T) {
+	now := time.Unix(3_820, 0)
+	profile := testLearnedProfile()
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.AdverseEvidenceMaxAge = 5 * time.Second
+	config.MaximumTPSMultiplier = 8
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1, ActiveContextTokens: 10_000, PhysicalKVUpper: 12_000, ActiveKVUpper: 12_000}
+	cost := learnedTestCost()
+	features := scheduler.Predict(now, state, cost).Features
+	observe := func(at time.Time, tps float64) {
+		t.Helper()
+		if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+			Identity: scheduler.Identity(), StartedAt: at, ObservedAt: at.Add(time.Millisecond), Features: features,
+			ExistingDecodeSequences: 1, PendingPrefillSequences: 1, PendingPrefillTokens: cost.UncachedPrefillUpper,
+			ExistingUserTPS: tps,
+		}); err != nil {
+			t.Fatalf("observe TPS %.3f: %v", tps, err)
+		}
+	}
+	for index := 0; index < config.MinimumSamples; index++ {
+		observe(now.Add(time.Duration(index)*time.Second), 240)
+	}
+	observe(now.Add(4*time.Second), 5)
+	for index := 0; index < config.MinimumSamples-1; index++ {
+		observe(now.Add(time.Duration(10+index)*time.Second), 240)
+	}
+	immature := scheduler.Predict(now.Add(12*time.Second), state, cost)
+	if immature.Estimate.ExistingUserTPSLower > immature.Prior.ExistingUserTPSLower {
+		t.Fatalf("fewer than the minimum newer samples restored headroom: %+v", immature)
+	}
+	observe(now.Add(12*time.Second), 240)
+	recovered := scheduler.Predict(now.Add(13*time.Second), state, cost)
+	if recovered.Source != PredictionSourceCalibrated || recovered.Estimate.ExistingUserTPSLower <= recovered.Prior.ExistingUserTPSLower {
+		t.Fatalf("mature newer evidence did not restore headroom: %+v", recovered)
+	}
+}
+
+func TestRepeatedAdverseExistingPrefillEvidenceRefreshesBoundedRetreat(t *testing.T) {
+	now := time.Unix(3_823, 0)
+	profile := testLearnedProfile()
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.AdverseEvidenceMaxAge = 5 * time.Second
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1, ActiveContextTokens: 10_000, PhysicalKVUpper: 12_000, ActiveKVUpper: 12_000}
+	cost := learnedTestCost()
+	features := scheduler.Predict(now, state, cost).Features
+	observeAdverse := func(at time.Time) {
+		t.Helper()
+		if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+			Identity: scheduler.Identity(), StartedAt: at, ObservedAt: at.Add(time.Millisecond), Features: features,
+			ExistingDecodeSequences: 1, PendingPrefillSequences: 1, PendingPrefillTokens: cost.UncachedPrefillUpper,
+			ExistingUserTPS: 5,
+		}); err != nil {
+			t.Fatalf("observe adverse TPS: %v", err)
+		}
+	}
+	observeAdverse(now)
+	observeAdverse(now.Add(4 * time.Second))
+	retreated := scheduler.Predict(now.Add(8*time.Second), state, cost)
+	if retreated.Source != PredictionSourceCalibrated || retreated.Estimate.ExistingUserTPSLower >= retreated.Prior.ExistingUserTPSLower {
+		t.Fatalf("repeated adverse evidence did not refresh retreat: %+v", retreated)
+	}
+	after := scheduler.Predict(now.Add(10*time.Second), state, cost)
+	if after.Estimate.ExistingUserTPSLower > after.Prior.ExistingUserTPSLower {
+		t.Fatalf("cooldown expiry without newer mature evidence fabricated headroom: %+v", after)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.AdverseEvidenceEvents != 2 {
+		t.Fatalf("adverse evidence accounting = %+v", snapshot)
+	}
+}
+
+func TestSingleQualifiedAdverseNewTPSAndTPOTImmediatelyRetreat(t *testing.T) {
+	now := time.Unix(3_824, 0)
+	config := testResidualConfig()
+	config.AdverseEvidenceMaxAge = 5 * time.Second
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), config)
+	state := learnedTestState()
+	cost := learnedTestCost()
+	prediction := scheduler.Predict(now, state, cost)
+	if err := scheduler.Observe(prediction, SchedulerOutcome{
+		Identity: prediction.Identity, ObservedAt: now.Add(time.Second), Attributed: true,
+		UserTPS: prediction.Prior.NewUserTPSLower / 2, UserTPSValid: true,
+		TPOT: prediction.Prior.TPOTUpper * 2, TPOTValid: true,
+	}); err != nil {
+		t.Fatalf("observe adverse new-user QoS outcome: %v", err)
+	}
+	retreated := scheduler.Predict(now.Add(2*time.Second), state, cost)
+	if retreated.Source != PredictionSourceCalibrated || retreated.Samples != 1 ||
+		retreated.Estimate.NewUserTPSLower >= retreated.Prior.NewUserTPSLower ||
+		retreated.Estimate.TPOTUpper <= retreated.Prior.TPOTUpper {
+		t.Fatalf("single qualified adverse TPS/TPOT outcome did not immediately retreat: %+v", retreated)
+	}
+	after := scheduler.Predict(now.Add(7*time.Second), state, cost)
+	if after.Estimate.NewUserTPSLower > after.Prior.NewUserTPSLower || after.Estimate.TPOTUpper < after.Prior.TPOTUpper {
+		t.Fatalf("adverse expiry without mature newer evidence fabricated optimism: %+v", after)
+	}
+}
+
 func TestStaticTPSProtectsOnlyExistingSequencesThatCompletedPrefill(t *testing.T) {
 	now := time.Unix(3_825, 0)
 	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
@@ -262,7 +416,7 @@ func TestExistingPrefillOptimisticRelaxationRequiresMinimumSamples(t *testing.T)
 	}
 }
 
-func TestOptimisticExistingPrefillResidualCannotIncreaseDecodeConcurrency(t *testing.T) {
+func TestMatureOptimisticEvidenceExploresExactlyOneDecodeBucket(t *testing.T) {
 	now := time.Unix(3_875, 0)
 	profile := testLearnedProfile()
 	profile.BaseCompletionTPS = 20
@@ -283,9 +437,446 @@ func TestOptimisticExistingPrefillResidualCannotIncreaseDecodeConcurrency(t *tes
 		}
 	}
 
-	higherConcurrency := scheduler.Predict(now.Add(10*time.Second), domain.VirtualState{DecodeSequences: 2}, cost)
-	if higherConcurrency.Estimate.ExistingUserTPSLower != higherConcurrency.Prior.ExistingUserTPSLower {
-		t.Fatalf("lower-concurrency optimistic evidence leaked into higher concurrency: %+v", higherConcurrency)
+	oneBucketHigher := scheduler.Predict(now.Add(10*time.Second), domain.VirtualState{DecodeSequences: 2}, cost)
+	if oneBucketHigher.Source != PredictionSourceCalibrated || oneBucketHigher.Estimate.ExistingUserTPSLower <= oneBucketHigher.Prior.ExistingUserTPSLower {
+		t.Fatalf("mature optimistic evidence did not explore exactly one decode bucket: %+v", oneBucketHigher)
+	}
+	twoBucketsHigher := scheduler.Predict(now.Add(10*time.Second), domain.VirtualState{DecodeSequences: 3}, cost)
+	if twoBucketsHigher.Estimate.ExistingUserTPSLower != twoBucketsHigher.Prior.ExistingUserTPSLower {
+		t.Fatalf("mature optimistic evidence skipped two decode buckets: %+v", twoBucketsHigher)
+	}
+}
+
+func TestLoadPressureTemporarilyBlocksButDoesNotEraseMatureExplorationEvidence(t *testing.T) {
+	now := time.Unix(3_878, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	config.AdverseEvidenceMaxAge = 5 * time.Second
+	scheduler := mustLearnedScheduler(t, profile, config)
+	cost := learnedTestCost()
+	sampleState := domain.VirtualState{DecodeSequences: 1}
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), sampleState, cost)
+		if err := scheduler.Observe(prediction, SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: now.Add(time.Duration(index)*time.Second + time.Millisecond), Attributed: true,
+			ExistingUserTPS: prediction.Prior.ExistingUserTPSLower * 4, ExistingUserTPSValid: true,
+		}); err != nil {
+			t.Fatalf("observe exploration sample %d: %v", index, err)
+		}
+	}
+	if !scheduler.ObserveLoadPressure(now.Add(4*time.Second), LoadPressureWaiting) {
+		t.Fatal("waiting pressure was not recorded")
+	}
+	blocked := scheduler.Predict(now.Add(5*time.Second), domain.VirtualState{DecodeSequences: 2}, cost)
+	if blocked.Exploratory || blocked.Source != PredictionSourceCalibrated || !blocked.Estimate.ThroughputFrontierReached {
+		t.Fatalf("waiting cooldown did not block exploration: %+v", blocked)
+	}
+	after := scheduler.Predict(now.Add(10*time.Second), domain.VirtualState{DecodeSequences: 2}, cost)
+	if !after.Exploratory || after.Source != PredictionSourceCalibrated || after.Estimate.ThroughputFrontierReached {
+		t.Fatalf("cooldown erased rather than temporarily blocked mature evidence: %+v", after)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.WaitingPressureEvents != 1 || snapshot.ExploratoryPredictions != 1 {
+		t.Fatalf("load-pressure/exploration telemetry = %+v", snapshot)
+	}
+}
+
+func TestLoadPressureCensorsOutcomeWhosePredictionDidNotIncludeIt(t *testing.T) {
+	now := time.Unix(3_879, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	prediction := scheduler.Predict(now, learnedTestState(), learnedTestCost())
+	if !scheduler.ObserveLoadPressure(now.Add(time.Second), LoadPressureWaiting) {
+		t.Fatal("waiting pressure was not recorded")
+	}
+	outcome := healthyLearnedOutcome(prediction, now.Add(2*time.Second))
+	if err := scheduler.Observe(prediction, outcome); err == nil {
+		t.Fatal("outcome spanning a load-pressure event was accepted")
+	}
+	snapshot := scheduler.Snapshot()
+	if snapshot.SamplesAccepted != 0 || snapshot.SamplesRejected != 1 || snapshot.LastLoadPressureAt != now.Add(time.Second) {
+		t.Fatalf("pressure-censored learning accounting = %+v", snapshot)
+	}
+}
+
+func TestYellowBandClassifiesButDoesNotBlockOneStepExploration(t *testing.T) {
+	now := time.Unix(3_880, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 20
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = time.Second / 20
+	config.ExplorationUserTPSTarget = 30
+	config.ExplorationTPOTSLO = time.Second / 30
+	scheduler := mustLearnedScheduler(t, profile, config)
+	cost := learnedTestCost()
+	sampleState := domain.VirtualState{DecodeSequences: 1}
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), sampleState, cost)
+		if err := scheduler.Observe(prediction, SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: now.Add(time.Duration(index)*time.Second + time.Millisecond), Attributed: true,
+			ExistingUserTPS: prediction.Prior.ExistingUserTPSLower * 4, ExistingUserTPSValid: true,
+			UserTPS: prediction.Prior.NewUserTPSLower * 4, UserTPSValid: true,
+			TPOT: prediction.Prior.TPOTUpper / 2, TPOTValid: true,
+		}); err != nil {
+			t.Fatalf("observe target-band sample %d: %v", index, err)
+		}
+	}
+	exploratory := scheduler.Predict(now.Add(10*time.Second), domain.VirtualState{DecodeSequences: 2}, cost)
+	if !exploratory.Exploratory || exploratory.Source != PredictionSourceCalibrated || exploratory.Estimate.ThroughputFrontierReached {
+		t.Fatalf("yellow target became a hidden hard exploration gate: %+v", exploratory)
+	}
+}
+
+func TestPerRequestTPSDoesNotFabricateAggregateThroughput(t *testing.T) {
+	now := time.Unix(3_884, 0)
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), testResidualConfig())
+	cost := learnedTestCost()
+	state := domain.VirtualState{DecodeSequences: 1}
+	for index := 0; index < scheduler.config.MinimumSamples; index++ {
+		at := now.Add(time.Duration(index) * time.Second)
+		prediction := scheduler.Predict(at, state, cost)
+		if err := scheduler.Observe(prediction, SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: at.Add(time.Millisecond), Attributed: true,
+			ExistingUserTPS: 5, ExistingUserTPSValid: true,
+			UserTPS: 200, UserTPSValid: true,
+			TPOT: time.Second / 200, TPOTValid: true,
+		}); err != nil {
+			t.Fatalf("observe unequal per-request TPS %d: %v", index, err)
+		}
+	}
+	prediction := scheduler.Predict(now.Add(10*time.Second), state, cost)
+	if prediction.Estimate.AggregateCompletionTPSEstimate != 0 ||
+		prediction.Estimate.PreviousAggregateCompletionTPSEstimate != 0 ||
+		prediction.Estimate.ThroughputFrontierReached {
+		t.Fatalf("joining/existing TPS were misrepresented as a simultaneous aggregate window: %+v", prediction)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.AggregateThroughputSamples != 0 || snapshot.AggregateThroughputCells != 0 {
+		t.Fatalf("per-request outcome mutated the aggregate curve: %+v", snapshot)
+	}
+}
+
+func TestAggregateThroughputCurveIsBoundedExpiresAndInvalidates(t *testing.T) {
+	now := time.Unix(3_884, 500)
+	config := testResidualConfig()
+	config.MinimumSamples = 2
+	config.MaximumSamplesPerCell = 3
+	config.MaximumCells = 2
+	config.MaxAge = 5 * time.Second
+	config.AdverseEvidenceMaxAge = time.Second
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), config)
+	for concurrency := 1; concurrency <= 3; concurrency++ {
+		for sample := 0; sample < config.MinimumSamples; sample++ {
+			observedAt := now.Add(time.Duration(concurrency+sample) * time.Millisecond)
+			if err := scheduler.ObserveAggregateThroughput(AggregateThroughputOutcome{
+				Identity: scheduler.Identity(), StartedAt: observedAt.Add(-time.Millisecond), ObservedAt: observedAt,
+				DecodeSequences: concurrency, AggregateCompletionTPS: float64(concurrency) * 50,
+			}); err != nil {
+				t.Fatalf("observe aggregate bucket %d sample %d: %v", concurrency, sample, err)
+			}
+		}
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.AggregateThroughputSamples != 6 || snapshot.AggregateThroughputCells != 2 {
+		t.Fatalf("aggregate curve exceeded its configured bounds: %+v", snapshot)
+	}
+	fresh := scheduler.Predict(now.Add(time.Second), domain.VirtualState{DecodeSequences: 2}, learnedTestCost())
+	if fresh.Estimate.AggregateCompletionTPSEstimate != 150 || fresh.Estimate.PreviousAggregateCompletionTPSEstimate != 100 || fresh.Estimate.ThroughputFrontierReached {
+		t.Fatalf("fresh aggregate curve did not compare adjacent buckets: %+v", fresh)
+	}
+	stale := scheduler.Predict(now.Add(10*time.Second), domain.VirtualState{DecodeSequences: 2}, learnedTestCost())
+	if stale.Estimate.AggregateCompletionTPSEstimate != 0 || stale.Estimate.PreviousAggregateCompletionTPSEstimate != 0 || stale.Estimate.ThroughputFrontierReached {
+		t.Fatalf("expired aggregate curve retained admission authority: %+v", stale)
+	}
+	scheduler.InvalidateLearning()
+	if snapshot := scheduler.Snapshot(); snapshot.AggregateThroughputCells != 0 {
+		t.Fatalf("learning invalidation retained aggregate cells: %+v", snapshot)
+	}
+	if err := scheduler.ObserveAggregateThroughput(AggregateThroughputOutcome{
+		Identity: scheduler.Identity(), StartedAt: now, ObservedAt: now.Add(time.Second), DecodeSequences: 1,
+	}); err == nil {
+		t.Fatal("zero-progress aggregate outcome was accepted")
+	}
+}
+
+func TestAggregateThroughputMedianIgnoresOneLowOutlierThenClosesOnRepeatedEvidence(t *testing.T) {
+	now := time.Unix(3_884, 750)
+	config := testResidualConfig()
+	config.MinimumSamples = 3
+	config.MaximumSamplesPerCell = 8
+	config.MaxAge = time.Minute
+	scheduler := mustLearnedScheduler(t, testLearnedProfile(), config)
+	observeAggregate := func(concurrency int, offset time.Duration, tps float64) {
+		t.Helper()
+		observedAt := now.Add(offset)
+		if err := scheduler.ObserveAggregateThroughput(AggregateThroughputOutcome{
+			Identity: scheduler.Identity(), StartedAt: observedAt.Add(-time.Millisecond), ObservedAt: observedAt,
+			DecodeSequences: concurrency, AggregateCompletionTPS: tps,
+		}); err != nil {
+			t.Fatalf("observe aggregate concurrency=%d tps=%.3f: %v", concurrency, tps, err)
+		}
+	}
+
+	for index := 0; index < config.MinimumSamples; index++ {
+		observeAggregate(1, time.Duration(index+1)*time.Millisecond, 300)
+	}
+	observeAggregate(2, 4*time.Millisecond, 100)
+	if snapshot := scheduler.Snapshot(); snapshot.AdverseEvidenceEvents != 0 || !snapshot.ExplorationBlockedUntil.IsZero() {
+		t.Fatalf("one low aggregate sample entered the hard per-user adverse path: %+v", snapshot)
+	}
+	observeAggregate(2, 5*time.Millisecond, 310)
+	observeAggregate(2, 6*time.Millisecond, 320)
+
+	oneOutlier := scheduler.Predict(now.Add(time.Second), domain.VirtualState{DecodeSequences: 1}, learnedTestCost())
+	if oneOutlier.Estimate.AggregateCompletionTPSEstimate != 310 ||
+		oneOutlier.Estimate.PreviousAggregateCompletionTPSEstimate != 300 ||
+		oneOutlier.Estimate.ThroughputFrontierReached {
+		t.Fatalf("one low aggregate outlier closed a beneficial frontier: %+v", oneOutlier)
+	}
+
+	observeAggregate(2, 7*time.Millisecond, 100)
+	repeatedLow := scheduler.Predict(now.Add(2*time.Second), domain.VirtualState{DecodeSequences: 1}, learnedTestCost())
+	if repeatedLow.Estimate.AggregateCompletionTPSEstimate != 100 ||
+		repeatedLow.Estimate.PreviousAggregateCompletionTPSEstimate != 300 ||
+		!repeatedLow.Estimate.ThroughputFrontierReached {
+		t.Fatalf("repeated low aggregate evidence did not close an unproductive frontier: %+v", repeatedLow)
+	}
+}
+
+func TestAggregateThroughputFrontierUsesSmallGainDeadband(t *testing.T) {
+	for name, test := range map[string]struct {
+		currentTPS float64
+		wantStop   bool
+	}{
+		"sub_one_percent_is_throughput_equivalent": {currentTPS: 302, wantStop: true},
+		"gain_above_one_percent_remains_useful":    {currentTPS: 304, wantStop: false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			now := time.Unix(3_884, 900)
+			config := testResidualConfig()
+			config.MinimumSamples = 3
+			config.MaxAge = time.Minute
+			scheduler := mustLearnedScheduler(t, testLearnedProfile(), config)
+			for index := 0; index < config.MinimumSamples; index++ {
+				for concurrency, tps := range map[int]float64{1: 300, 2: test.currentTPS} {
+					observedAt := now.Add(time.Duration(index*2+concurrency) * time.Millisecond)
+					if err := scheduler.ObserveAggregateThroughput(AggregateThroughputOutcome{
+						Identity: scheduler.Identity(), StartedAt: observedAt.Add(-time.Millisecond), ObservedAt: observedAt,
+						DecodeSequences: concurrency, AggregateCompletionTPS: tps,
+					}); err != nil {
+						t.Fatalf("observe aggregate concurrency=%d sample=%d: %v", concurrency, index, err)
+					}
+				}
+			}
+
+			prediction := scheduler.Predict(now.Add(time.Second), domain.VirtualState{DecodeSequences: 1}, learnedTestCost())
+			if prediction.Estimate.AggregateCompletionTPSEstimate != test.currentTPS ||
+				prediction.Estimate.PreviousAggregateCompletionTPSEstimate != 300 ||
+				prediction.Estimate.ThroughputFrontierReached != test.wantStop {
+				t.Fatalf("aggregate deadband prediction = %+v, want stop=%t", prediction, test.wantStop)
+			}
+		})
+	}
+}
+
+func TestExploratorySoftTPSMissMaturesWithoutHardRetreat(t *testing.T) {
+	now := time.Unix(3_885, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 40
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	config.AdverseEvidenceMaxAge = 5 * time.Second
+	config.HardUserTPSTarget = 15
+	config.HardTPOTSLO = time.Second / 15
+	config.ExplorationUserTPSTarget = 25
+	config.ExplorationTPOTSLO = time.Second / 25
+	scheduler := mustLearnedScheduler(t, profile, config)
+	cost := learnedTestCost()
+	idle := domain.VirtualState{}
+	for index := 0; index < config.MinimumSamples; index++ {
+		observedAt := now.Add(time.Duration(index)*time.Second + time.Millisecond)
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), idle, cost)
+		if err := scheduler.Observe(prediction, SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: observedAt, Attributed: true,
+			UserTPS: 40, UserTPSValid: true,
+			TPOT: time.Second / 40, TPOTValid: true,
+		}); err != nil {
+			t.Fatalf("prime safe frontier sample %d: %v", index, err)
+		}
+		if err := scheduler.ObserveAggregateThroughput(AggregateThroughputOutcome{
+			Identity: prediction.Identity, StartedAt: observedAt.Add(-time.Second), ObservedAt: observedAt,
+			DecodeSequences: 1, AggregateCompletionTPS: 40,
+		}); err != nil {
+			t.Fatalf("prime aggregate frontier sample %d: %v", index, err)
+		}
+	}
+
+	softState := domain.VirtualState{DecodeSequences: 1}
+	for index := 0; index < config.MinimumSamples; index++ {
+		probeAt := now.Add(4*time.Second + time.Duration(index)*time.Second)
+		probe := scheduler.Predict(probeAt, softState, cost)
+		if probe.Estimate.ThroughputFrontierReached || probe.Estimate.NewUserTPSLower < config.HardUserTPSTarget {
+			t.Fatalf("yellow band blocked a red-safe soft probe %d: %+v", index, probe)
+		}
+		if err := scheduler.Observe(probe, SchedulerOutcome{
+			Identity: probe.Identity, ObservedAt: probeAt.Add(time.Millisecond), Attributed: true,
+			UserTPS: 22, UserTPSValid: true,
+			TPOT: time.Second / 22, TPOTValid: true,
+		}); err != nil {
+			t.Fatalf("observe soft-band probe %d: %v", index, err)
+		}
+		if err := scheduler.ObserveAggregateThroughput(AggregateThroughputOutcome{
+			Identity: probe.Identity, StartedAt: probeAt, ObservedAt: probeAt.Add(time.Second),
+			DecodeSequences: 2, AggregateCompletionTPS: 44,
+		}); err != nil {
+			t.Fatalf("observe beneficial aggregate sample %d: %v", index, err)
+		}
+		if snapshot := scheduler.Snapshot(); snapshot.AdverseEvidenceEvents != 0 || !snapshot.ExplorationBlockedUntil.IsZero() ||
+			snapshot.SoftExistingTPSMisses != 0 || snapshot.SoftNewTPSMisses != uint64(index+1) ||
+			snapshot.SoftTPOTMisses != uint64(index+1) {
+			t.Fatalf("soft yellow miss entered hard-adverse state: %+v", snapshot)
+		}
+	}
+
+	learnedAt := now.Add(10 * time.Second)
+	learned := scheduler.Predict(learnedAt, softState, cost)
+	if learned.Exploratory || learned.Source != PredictionSourceCalibrated ||
+		learned.Estimate.NewUserTPSLower < config.HardUserTPSTarget ||
+		learned.Estimate.NewUserTPSLower >= config.ExplorationUserTPSTarget ||
+		learned.Estimate.ThroughputFrontierReached ||
+		learned.Estimate.AggregateCompletionTPSEstimate != 44 ||
+		learned.Estimate.PreviousAggregateCompletionTPSEstimate != 40 {
+		t.Fatalf("soft misses did not mature into a bounded above-red forecast: %+v", learned)
+	}
+	constraints := testLearnedConstraints()
+	constraints.UserTPSTarget = config.HardUserTPSTarget
+	constraints.TPOTSLO = config.HardTPOTSLO
+	manager := NewManager("test-profile", softState, constraints, scheduler)
+	if result := manager.DecideAndReserve(learnedAt, "soft-band-fit", cost); result.Reason != domain.ReasonFit {
+		t.Fatalf("mature soft-band throughput was over-protected: %+v", result)
+	}
+	if !manager.Terminate("soft-band-fit", TerminalClientCancelled) {
+		t.Fatal("soft-band fit reservation did not terminate")
+	}
+}
+
+func TestMatureSoftTPSMissRetreatsWhenAggregateThroughputFalls(t *testing.T) {
+	now := time.Unix(3_886, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 40
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	config.HardUserTPSTarget = 15
+	config.HardTPOTSLO = time.Second / 15
+	config.ExplorationUserTPSTarget = 25
+	config.ExplorationTPOTSLO = time.Second / 25
+	scheduler := mustLearnedScheduler(t, profile, config)
+	cost := learnedTestCost()
+	for index := 0; index < config.MinimumSamples; index++ {
+		observedAt := now.Add(time.Duration(index)*time.Second + time.Millisecond)
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), domain.VirtualState{}, cost)
+		if err := scheduler.Observe(prediction, SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: observedAt, Attributed: true,
+			UserTPS: 50, UserTPSValid: true,
+			TPOT: time.Second / 50, TPOTValid: true,
+		}); err != nil {
+			t.Fatalf("prime high-throughput lower bucket %d: %v", index, err)
+		}
+		if err := scheduler.ObserveAggregateThroughput(AggregateThroughputOutcome{
+			Identity: prediction.Identity, StartedAt: observedAt.Add(-time.Second), ObservedAt: observedAt,
+			DecodeSequences: 1, AggregateCompletionTPS: 50,
+		}); err != nil {
+			t.Fatalf("prime lower aggregate bucket %d: %v", index, err)
+		}
+	}
+
+	softState := domain.VirtualState{DecodeSequences: 1}
+	for index := 0; index < config.MinimumSamples; index++ {
+		probeAt := now.Add(4*time.Second + time.Duration(index)*time.Second)
+		probe := scheduler.Predict(probeAt, softState, cost)
+		if !probe.Exploratory {
+			t.Fatalf("soft aggregate probe %d was not exploratory: %+v", index, probe)
+		}
+		if err := scheduler.Observe(probe, SchedulerOutcome{
+			Identity: probe.Identity, ObservedAt: probeAt.Add(time.Millisecond), Attributed: true,
+			UserTPS: 22, UserTPSValid: true,
+			TPOT: time.Second / 22, TPOTValid: true,
+		}); err != nil {
+			t.Fatalf("observe aggregate-regressing soft sample %d: %v", index, err)
+		}
+		if err := scheduler.ObserveAggregateThroughput(AggregateThroughputOutcome{
+			Identity: probe.Identity, StartedAt: probeAt, ObservedAt: probeAt.Add(time.Second),
+			DecodeSequences: 2, AggregateCompletionTPS: 44,
+		}); err != nil {
+			t.Fatalf("observe regressing aggregate sample %d: %v", index, err)
+		}
+	}
+
+	learnedAt := now.Add(10 * time.Second)
+	learned := scheduler.Predict(learnedAt, softState, cost)
+	if !learned.Estimate.ThroughputFrontierReached ||
+		learned.Estimate.AggregateCompletionTPSEstimate != 44 ||
+		learned.Estimate.PreviousAggregateCompletionTPSEstimate != 50 {
+		t.Fatalf("aggregate throughput regression did not close the mature frontier: %+v", learned)
+	}
+	constraints := testLearnedConstraints()
+	constraints.UserTPSTarget = config.HardUserTPSTarget
+	constraints.TPOTSLO = config.HardTPOTSLO
+	manager := NewManager("test-profile", softState, constraints, scheduler)
+	if result := manager.DecideAndReserve(learnedAt, "soft-throughput-regression", cost); result.Reason != domain.ReasonThroughputFrontier {
+		t.Fatalf("aggregate-regressing soft band was admitted: %+v", result)
+	}
+}
+
+func TestExploratoryHardTPSViolationImmediatelyBlocksFurtherExploration(t *testing.T) {
+	now := time.Unix(3_887, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 40
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 8
+	config.AdverseEvidenceMaxAge = 5 * time.Second
+	config.HardUserTPSTarget = 15
+	config.HardTPOTSLO = time.Second / 15
+	config.ExplorationUserTPSTarget = 25
+	config.ExplorationTPOTSLO = time.Second / 25
+	scheduler := mustLearnedScheduler(t, profile, config)
+	cost := learnedTestCost()
+	idle := domain.VirtualState{}
+	for index := 0; index < config.MinimumSamples; index++ {
+		prediction := scheduler.Predict(now.Add(time.Duration(index)*time.Second), idle, cost)
+		if err := scheduler.Observe(prediction, SchedulerOutcome{
+			Identity: prediction.Identity, ObservedAt: now.Add(time.Duration(index)*time.Second + time.Millisecond), Attributed: true,
+			UserTPS: 50, UserTPSValid: true,
+			TPOT: time.Second / 50, TPOTValid: true,
+		}); err != nil {
+			t.Fatalf("prime hard-frontier sample %d: %v", index, err)
+		}
+	}
+
+	probeAt := now.Add(4 * time.Second)
+	probe := scheduler.Predict(probeAt, domain.VirtualState{DecodeSequences: 1}, cost)
+	if !probe.Exploratory {
+		t.Fatalf("safe mature evidence did not open a hard-knee probe: %+v", probe)
+	}
+	unsafeAt := probeAt.Add(time.Millisecond)
+	if err := scheduler.Observe(probe, SchedulerOutcome{
+		Identity: probe.Identity, ObservedAt: unsafeAt, Attributed: true,
+		UserTPS: 10, UserTPSValid: true,
+		TPOT: time.Second / 10, TPOTValid: true,
+	}); err != nil {
+		t.Fatalf("observe hard-band unsafe probe: %v", err)
+	}
+	if snapshot := scheduler.Snapshot(); !snapshot.ExplorationBlockedUntil.After(unsafeAt) || snapshot.AdverseEvidenceEvents != 1 ||
+		snapshot.SoftNewTPSMisses != 0 || snapshot.SoftTPOTMisses != 0 {
+		t.Fatalf("hard-band violation did not start bounded retreat: %+v", snapshot)
+	}
+	next := scheduler.Predict(unsafeAt.Add(time.Millisecond), domain.VirtualState{DecodeSequences: 1}, cost)
+	if next.Exploratory || next.Estimate.NewUserTPSLower >= config.HardUserTPSTarget {
+		t.Fatalf("hard-band violation did not tighten the next forecast: probe=%+v next=%+v", probe, next)
 	}
 }
 
@@ -731,33 +1322,33 @@ func TestFreshCompatibleResidualRatiosSelectsMatureLevelPerDimensionInOnePass(t 
 				DecodeSequences: 3,
 			},
 			TTFTRatio: 3 + float64(index),
-			TPOTRatio: 4 + float64(index),
+			TPOTRatio: 0.4 + float64(index)*0.1,
 			TTFTValid: true,
 			TPOTValid: true,
 		})
 	}
 
-	got := freshCompatibleResidualRatios(samples, now, time.Minute, SchedulerFeatures{DecodeSequences: 2}, 3)
-	if len(got.UserTPS) != 3 || got.UserTPS[0] != 2 {
-		t.Fatalf("TPS ratios = %v, want mature decode-sequence level 4", got.UserTPS)
+	got := freshCompatibleResidualRatios(samples, now, time.Minute, 10*time.Second, SchedulerFeatures{DecodeSequences: 2}, 3, 1)
+	if len(got.UserTPS.Standard) != 3 || got.UserTPS.Standard[0] != 2 {
+		t.Fatalf("TPS ratios = %v, want mature decode-sequence level 4", got.UserTPS.Standard)
 	}
 	if len(got.TTFT) != 3 || got.TTFT[0] != 3 {
 		t.Fatalf("TTFT ratios = %v, want mature decode-sequence level 3", got.TTFT)
 	}
-	if len(got.TPOT) != 3 || got.TPOT[0] != 4 {
-		t.Fatalf("TPOT ratios = %v, want mature decode-sequence level 3", got.TPOT)
+	if len(got.TPOT.Standard) != 3 || got.TPOT.Standard[0] != 0.4 {
+		t.Fatalf("TPOT ratios = %v, want mature decode-sequence level 3", got.TPOT.Standard)
 	}
 }
 
 func TestGlobalFallbackScanIsNotTriggeredOnlyForObservationalTTFT(t *testing.T) {
 	mature := make([]float64, 3)
-	if requiresGlobalResidualFallback(residualRatios{UserTPS: mature, TPOT: mature}, 3, false) {
+	if requiresGlobalResidualFallback(residualRatios{UserTPS: residualDimension{Standard: mature}, TPOT: residualDimension{Standard: mature}}, 3, false) {
 		t.Fatal("mature protected dimensions scanned global history only for TTFT")
 	}
-	if !requiresGlobalResidualFallback(residualRatios{UserTPS: mature[:2], TPOT: mature}, 3, false) {
+	if !requiresGlobalResidualFallback(residualRatios{UserTPS: residualDimension{Standard: mature[:2]}, TPOT: residualDimension{Standard: mature}}, 3, false) {
 		t.Fatal("immature TPS did not request global fallback")
 	}
-	if !requiresGlobalResidualFallback(residualRatios{UserTPS: mature, TPOT: mature[:2]}, 3, false) {
+	if !requiresGlobalResidualFallback(residualRatios{UserTPS: residualDimension{Standard: mature}, TPOT: residualDimension{Standard: mature[:2]}}, 3, false) {
 		t.Fatal("immature TPOT did not request global fallback")
 	}
 }

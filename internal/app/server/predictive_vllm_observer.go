@@ -19,19 +19,21 @@ type predictiveVLLMObserverConfig struct {
 	ModelIdentitySHA256 string
 	// ServedModel is accepted only for compatibility with tests and is hashed
 	// during construction. The observer never retains the raw model name.
-	ServedModel            string
-	MaximumKVTokens        int64
-	BlockSize              int
-	PollInterval           time.Duration
-	MaximumAge             time.Duration
-	RequestTimeout         time.Duration
-	PreemptionCooldown     time.Duration
-	Coordinator            predictiveSampleCoordinator
-	ExistingPrefillLearner predictiveExistingPrefillLearner
-	ShadowPendingPrefills  predictiveShadowPendingPrefillSnapshotter
-	LearningInvalidators   []predictiveLearningInvalidator
-	Initial                predictiveVLLMStartup
-	Now                    func() time.Time
+	ServedModel                string
+	MaximumKVTokens            int64
+	BlockSize                  int
+	PollInterval               time.Duration
+	MaximumAge                 time.Duration
+	RequestTimeout             time.Duration
+	PreemptionCooldown         time.Duration
+	Coordinator                predictiveSampleCoordinator
+	ExistingPrefillLearner     predictiveExistingPrefillLearner
+	AggregateThroughputLearner predictiveAggregateThroughputLearner
+	LoadPressureObserver       predictiveLoadPressureObserver
+	ShadowPendingPrefills      predictiveShadowPendingPrefillSnapshotter
+	LearningInvalidators       []predictiveLearningInvalidator
+	Initial                    predictiveVLLMStartup
+	Now                        func() time.Time
 }
 
 type predictiveSampleCoordinator interface {
@@ -49,6 +51,15 @@ type predictiveExistingPrefillLearner interface {
 	ObserveExistingPrefill(runtimepredictive.ExistingPrefillOutcome) error
 }
 
+type predictiveAggregateThroughputLearner interface {
+	Identity() runtimepredictive.ModelIdentity
+	ObserveAggregateThroughput(runtimepredictive.AggregateThroughputOutcome) error
+}
+
+type predictiveLoadPressureObserver interface {
+	ObserveLoadPressure(time.Time, runtimepredictive.LoadPressureKind) bool
+}
+
 type predictiveExistingPrefillTelemetryProvider interface {
 	ExistingPrefillTelemetry() predictiveExistingPrefillObservationSnapshot
 }
@@ -62,35 +73,37 @@ type predictiveEpochInvalidator interface {
 }
 
 type predictiveVLLMObserver struct {
-	mu                     sync.Mutex
-	metricsURL             string
-	modelIdentitySHA256    string
-	maximumKVTokens        int64
-	blockSize              int
-	pollInterval           time.Duration
-	maximumAge             time.Duration
-	preemptionCooldown     time.Duration
-	coordinator            predictiveSampleCoordinator
-	coordinatorSnapshot    predictiveCoordinatorSnapshotter
-	existingPrefillLearner predictiveExistingPrefillLearner
-	shadowPendingPrefills  predictiveShadowPendingPrefillSnapshotter
-	learningInvalidators   []predictiveLearningInvalidator
-	now                    func() time.Time
-	client                 *http.Client
-	cancel                 context.CancelFunc
-	done                   chan struct{}
-	closeOnce              sync.Once
-	closed                 bool
-	lastSuccess            time.Time
-	lastPreemption         time.Time
-	lastWaiting            int
-	epochInvalidated       bool
-	preemptions            uint64
-	hasPreemptions         bool
-	generation             uint64
-	hasGeneration          bool
-	prefillWindow          *predictiveStablePrefillWindow
-	prefillStats           predictiveExistingPrefillObservationSnapshot
+	mu                         sync.Mutex
+	metricsURL                 string
+	modelIdentitySHA256        string
+	maximumKVTokens            int64
+	blockSize                  int
+	pollInterval               time.Duration
+	maximumAge                 time.Duration
+	preemptionCooldown         time.Duration
+	coordinator                predictiveSampleCoordinator
+	coordinatorSnapshot        predictiveCoordinatorSnapshotter
+	existingPrefillLearner     predictiveExistingPrefillLearner
+	aggregateThroughputLearner predictiveAggregateThroughputLearner
+	loadPressureObserver       predictiveLoadPressureObserver
+	shadowPendingPrefills      predictiveShadowPendingPrefillSnapshotter
+	learningInvalidators       []predictiveLearningInvalidator
+	now                        func() time.Time
+	client                     *http.Client
+	cancel                     context.CancelFunc
+	done                       chan struct{}
+	closeOnce                  sync.Once
+	closed                     bool
+	lastSuccess                time.Time
+	lastPreemption             time.Time
+	lastWaiting                int
+	epochInvalidated           bool
+	preemptions                uint64
+	hasPreemptions             bool
+	generation                 uint64
+	hasGeneration              bool
+	prefillWindow              *predictiveStablePrefillWindow
+	prefillStats               predictiveExistingPrefillObservationSnapshot
 }
 
 type predictiveStablePrefillWindow struct {
@@ -126,34 +139,46 @@ func newPredictiveVLLMObserver(config predictiveVLLMObserverConfig) (*predictive
 		return nil, fmt.Errorf("predictive vLLM observer configuration is invalid")
 	}
 	var coordinatorSnapshot predictiveCoordinatorSnapshotter
-	if config.ExistingPrefillLearner != nil {
+	if config.ExistingPrefillLearner != nil || config.AggregateThroughputLearner != nil {
 		var ok bool
 		coordinatorSnapshot, ok = config.Coordinator.(predictiveCoordinatorSnapshotter)
-		if !ok || config.ExistingPrefillLearner.Identity().Validate() != nil {
-			return nil, fmt.Errorf("predictive existing-prefill learner configuration is invalid")
+		if !ok {
+			return nil, fmt.Errorf("predictive stable-window learner configuration is invalid")
 		}
+	}
+	if config.ExistingPrefillLearner != nil && config.ExistingPrefillLearner.Identity().Validate() != nil {
+		return nil, fmt.Errorf("predictive existing-prefill learner configuration is invalid")
+	}
+	if config.AggregateThroughputLearner != nil && config.AggregateThroughputLearner.Identity().Validate() != nil {
+		return nil, fmt.Errorf("predictive aggregate-throughput learner configuration is invalid")
+	}
+	if config.ExistingPrefillLearner != nil && config.AggregateThroughputLearner != nil &&
+		config.ExistingPrefillLearner.Identity() != config.AggregateThroughputLearner.Identity() {
+		return nil, fmt.Errorf("predictive stable-window learner identities differ")
 	}
 	if config.Now == nil {
 		config.Now = time.Now
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	observer := &predictiveVLLMObserver{
-		metricsURL:             config.MetricsURL,
-		modelIdentitySHA256:    modelIdentitySHA256,
-		maximumKVTokens:        config.MaximumKVTokens,
-		blockSize:              config.BlockSize,
-		pollInterval:           config.PollInterval,
-		maximumAge:             config.MaximumAge,
-		preemptionCooldown:     config.PreemptionCooldown,
-		coordinator:            config.Coordinator,
-		coordinatorSnapshot:    coordinatorSnapshot,
-		existingPrefillLearner: config.ExistingPrefillLearner,
-		shadowPendingPrefills:  config.ShadowPendingPrefills,
-		learningInvalidators:   append([]predictiveLearningInvalidator(nil), config.LearningInvalidators...),
-		now:                    config.Now,
-		client:                 &http.Client{Timeout: config.RequestTimeout},
-		cancel:                 cancel,
-		done:                   make(chan struct{}),
+		metricsURL:                 config.MetricsURL,
+		modelIdentitySHA256:        modelIdentitySHA256,
+		maximumKVTokens:            config.MaximumKVTokens,
+		blockSize:                  config.BlockSize,
+		pollInterval:               config.PollInterval,
+		maximumAge:                 config.MaximumAge,
+		preemptionCooldown:         config.PreemptionCooldown,
+		coordinator:                config.Coordinator,
+		coordinatorSnapshot:        coordinatorSnapshot,
+		existingPrefillLearner:     config.ExistingPrefillLearner,
+		aggregateThroughputLearner: config.AggregateThroughputLearner,
+		loadPressureObserver:       config.LoadPressureObserver,
+		shadowPendingPrefills:      config.ShadowPendingPrefills,
+		learningInvalidators:       append([]predictiveLearningInvalidator(nil), config.LearningInvalidators...),
+		now:                        config.Now,
+		client:                     &http.Client{Timeout: config.RequestTimeout},
+		cancel:                     cancel,
+		done:                       make(chan struct{}),
 	}
 	if !config.Initial.ObservedAt.IsZero() {
 		if config.Initial.ModelIdentitySHA256 != modelIdentitySHA256 || config.Initial.CapacityTokens != config.MaximumKVTokens || config.Initial.BlockSize != config.BlockSize {
@@ -286,6 +311,10 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	o.mu.Unlock()
 	if preempted {
 		o.invalidateLearning()
+		observePredictiveLoadPressure(o.loadPressureObserver, now, runtimepredictive.LoadPressurePreemption)
+	}
+	if sample.Waiting > 0 {
+		observePredictiveLoadPressure(o.loadPressureObserver, now, runtimepredictive.LoadPressureWaiting)
 	}
 	err = o.coordinator.ReconcileSample(runtimepredictive.SampleWindow{
 		Observed: domainpredictive.VirtualState{
@@ -322,7 +351,8 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 		o.mu.Unlock()
 		return
 	}
-	outcome, candidate := o.qualifyStablePrefillOutcomeLocked(current, started, finished, shadowStarted.EventSequence, shadowFinished.EventSequence)
+	prefillOutcome, prefillCandidate := o.qualifyStablePrefillOutcomeLocked(current, started, finished, shadowStarted.EventSequence, shadowFinished.EventSequence)
+	aggregateOutcome, aggregateCandidate := o.qualifyStableAggregateThroughputOutcomeLocked(current, started, finished, shadowStarted.EventSequence, shadowFinished.EventSequence)
 	if sample.Waiting == 0 {
 		o.prefillWindow = &current
 	} else {
@@ -331,9 +361,24 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	o.lastSuccess = now
 	o.lastWaiting = sample.Waiting
 	o.mu.Unlock()
-	if candidate {
-		o.observeStablePrefillOutcome(outcome)
+	if prefillCandidate {
+		o.observeStablePrefillOutcome(prefillOutcome)
 	}
+	if aggregateCandidate {
+		o.observeStableAggregateThroughputOutcome(aggregateOutcome)
+	}
+}
+
+func observePredictiveLoadPressure(observer predictiveLoadPressureObserver, now time.Time, kind runtimepredictive.LoadPressureKind) (observed bool) {
+	if observer == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			observed = false
+		}
+	}()
+	return observer.ObserveLoadPressure(now, kind)
 }
 
 func (o *predictiveVLLMObserver) qualifyStablePrefillOutcomeLocked(current predictiveStablePrefillWindow, started, finished, shadowStarted, shadowFinished uint64) (runtimepredictive.ExistingPrefillOutcome, bool) {
@@ -392,6 +437,40 @@ func (o *predictiveVLLMObserver) observeStablePrefillOutcome(outcome runtimepred
 	o.prefillStats.Accepted++
 	o.prefillStats.LastExistingUserTPS = outcome.ExistingUserTPS
 	o.prefillStats.LastExistingUserTPSValid = true
+}
+
+func (o *predictiveVLLMObserver) qualifyStableAggregateThroughputOutcomeLocked(current predictiveStablePrefillWindow, started, finished, shadowStarted, shadowFinished uint64) (runtimepredictive.AggregateThroughputOutcome, bool) {
+	previous := o.prefillWindow
+	if previous == nil || o.aggregateThroughputLearner == nil || o.coordinatorSnapshot == nil {
+		return runtimepredictive.AggregateThroughputOutcome{}, false
+	}
+	elapsed := current.ObservedAt.Sub(previous.ObservedAt)
+	previousPending := observedPredictivePendingPrefills(previous.Manager, previous.ShadowPending)
+	currentPending := observedPredictivePendingPrefills(current.Manager, current.ShadowPending)
+	qualified := elapsed > 0 && elapsed <= o.maximumAge &&
+		previous.EventSequence == started && started == finished && current.Manager.EventSequence == finished &&
+		previous.ShadowPending.EventSequence == shadowStarted && shadowStarted == shadowFinished && current.ShadowPending.EventSequence == shadowFinished &&
+		previous.Preemptions == current.Preemptions && previous.Generation < current.Generation &&
+		previous.Waiting == 0 && current.Waiting == 0 && previous.Running > 0 && previous.Running == current.Running &&
+		previousPending.Count == 0 && currentPending.Count == 0
+	if !qualified {
+		return runtimepredictive.AggregateThroughputOutcome{}, false
+	}
+	completionTPS := float64(current.Generation-previous.Generation) / elapsed.Seconds()
+	if completionTPS <= 0 {
+		return runtimepredictive.AggregateThroughputOutcome{}, false
+	}
+	return runtimepredictive.AggregateThroughputOutcome{
+		Identity:               o.aggregateThroughputLearner.Identity(),
+		StartedAt:              previous.ObservedAt,
+		ObservedAt:             current.ObservedAt,
+		DecodeSequences:        previous.Running,
+		AggregateCompletionTPS: completionTPS,
+	}, true
+}
+
+func (o *predictiveVLLMObserver) observeStableAggregateThroughputOutcome(outcome runtimepredictive.AggregateThroughputOutcome) {
+	_ = o.aggregateThroughputLearner.ObserveAggregateThroughput(outcome)
 }
 
 func (o *predictiveVLLMObserver) censorStablePrefillWindow() {

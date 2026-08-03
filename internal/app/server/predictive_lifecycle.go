@@ -62,9 +62,12 @@ type predictiveAttemptSnapshot struct {
 	Fits              uint64
 	Risks             uint64
 	Unknown           uint64
+	ExploratoryFits   uint64
+	ExploratoryRisks  uint64
 	LastReason        domainpredictive.Reason
 	LastSource        runtimepredictive.PredictionSource
 	LastSamples       int
+	LastExploratory   bool
 	LastRejectReason  domainpredictive.Reason
 	LastRejectSource  runtimepredictive.PredictionSource
 	LastRejectScope   predictiveProtectionScope

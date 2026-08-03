@@ -30,6 +30,8 @@ func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 	cost.MessageCount = features.MessageCount
 	cost.ToolCount = features.ToolCount
 	cost.ModalityCount = features.ModalityCount
+	cost.ApproximateInputTokens = features.ApproximateInputTokens
+	cost.ApproximateInputTokensKnown = features.ApproximateInputTokensKnown && features.ApproximateInputTokens > 0
 
 	textLow := ceilDiv(cost.TextBytes, cfg.MaxBytesPerToken)
 	textHigh := ceilDiv(cost.TextBytes, cfg.MinBytesPerToken)
@@ -65,15 +67,18 @@ func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 }
 
 type jsonFeatures struct {
-	StringValueBytes int
-	ToolSchemaBytes  int
-	MessageCount     int
-	ToolCount        int
-	ModalityCount    int
+	StringValueBytes            int
+	ToolSchemaBytes             int
+	MessageCount                int
+	ToolCount                   int
+	ModalityCount               int
+	ApproximateInputTokens      int64
+	ApproximateInputSampleBytes int
+	ApproximateInputTokensKnown bool
 }
 
 func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
-	features := jsonFeatures{}
+	features := jsonFeatures{ApproximateInputTokensKnown: true}
 	start := skipJSONSpace(body, 0)
 	if start >= len(body) || body[start] != '{' {
 		return features, false
@@ -98,6 +103,15 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 			next := skipJSONSpace(body, closing+1)
 			if next >= len(body) || body[next] != ':' {
 				features.StringValueBytes += len(raw)
+				remainingBudget := approximateLexicalRequestBudget - features.ApproximateInputSampleBytes
+				if hint, sampled, known := approximateJSONStringTokensWithBudget(raw, remainingBudget); known {
+					features.ApproximateInputSampleBytes += sampled
+					if !addApproximateInputTokens(&features.ApproximateInputTokens, hint) {
+						features.ApproximateInputTokensKnown = false
+					}
+				} else {
+					features.ApproximateInputTokensKnown = false
+				}
 				if modalityMarker(raw) {
 					features.ModalityCount++
 				}
@@ -138,6 +152,9 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 				return features, false
 			}
 		}
+	}
+	if !addApproximateInputTokens(&features.ApproximateInputTokens, int64(features.MessageCount)*4) {
+		features.ApproximateInputTokensKnown = false
 	}
 	return features, depth == 0
 }

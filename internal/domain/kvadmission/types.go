@@ -22,19 +22,28 @@ func ParseBackendKind(value string) BackendKind {
 }
 
 type Cost struct {
-	Supported           bool
-	UnsupportedReason   string
-	BodyBytes           int
-	TextBytes           int
-	ToolSchemaBytes     int
-	MessageCount        int
-	ToolCount           int
-	ModalityCount       int
-	MaxOutputTokens     int
-	HasMaxOutputTokens  bool
-	EstimatedInputLow   int64
-	EstimatedInputHigh  int64
-	BoundedDecodeTokens int64
+	Supported                   bool
+	UnsupportedReason           string
+	BodyBytes                   int
+	TextBytes                   int
+	ToolSchemaBytes             int
+	MessageCount                int
+	ToolCount                   int
+	ModalityCount               int
+	MaxOutputTokens             int
+	HasMaxOutputTokens          bool
+	EstimatedInputLow           int64
+	EstimatedInputHigh          int64
+	ApproximateInputTokens      int64
+	ApproximateInputTokensKnown bool
+	BoundedDecodeTokens         int64
+}
+
+// ApproximateInputTokenHint returns a model-neutral lexical-size hint. The
+// value is optional evidence for a later combined forecast; it is neither an
+// exact tokenizer result nor an admission decision.
+func (c Cost) ApproximateInputTokenHint() (int64, bool) {
+	return c.ApproximateInputTokens, c.ApproximateInputTokensKnown && c.ApproximateInputTokens > 0
 }
 
 func (c Cost) ProjectedHigh() int64 {

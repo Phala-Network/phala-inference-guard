@@ -211,7 +211,8 @@ func (s *approximatePredictiveShadow) Decide(ctx context.Context, requestID stri
 		return s.rejectionDecision(predictiveProtectionScopeAvailability, domainpredictive.ReasonPredictorProfileUnknown, runtimepredictive.PredictionSourceUnavailable, 0)
 	}
 	s.setAvailabilityProtection(decisionTime, false)
-	size := s.calibrator.Estimate(decisionTime, class, input.Cost.EstimatedInputLow, input.Cost.EstimatedInputHigh)
+	hint, hintKnown := input.Cost.ApproximateInputTokenHint()
+	size := s.calibrator.EstimateWithHint(decisionTime, class, input.Cost.EstimatedInputLow, input.Cost.EstimatedInputHigh, hint, hintKnown)
 	if !size.Known {
 		s.recordUnknown(domainpredictive.ReasonRequestSizeUnknown)
 		return s.rejectionDecision(predictiveProtectionScopeRequest, domainpredictive.ReasonRequestSizeUnknown, "", 0)
@@ -585,7 +586,7 @@ func (r *approximatePredictiveReservation) Terminate(cause runtimepredictive.Ter
 			}
 		}
 		if sizeOutcome != nil {
-			_ = r.owner.calibrator.Observe(*sizeOutcome)
+			_ = r.owner.calibrator.ObserveWithHint(*sizeOutcome, r.sizeEstimate.ApproximateTokenHint, r.sizeEstimate.HintKnown)
 		}
 		return true
 	}
@@ -624,7 +625,7 @@ func (r *approximatePredictiveReservation) Terminate(cause runtimepredictive.Ter
 			}
 		}
 		if sizeOutcome != nil {
-			_ = r.owner.calibrator.Observe(*sizeOutcome)
+			_ = r.owner.calibrator.ObserveWithHint(*sizeOutcome, r.sizeEstimate.ApproximateTokenHint, r.sizeEstimate.HintKnown)
 		}
 		return true
 	}
@@ -643,7 +644,7 @@ func (r *approximatePredictiveReservation) Terminate(cause runtimepredictive.Ter
 	r.owner.mu.Unlock()
 
 	if sizeOutcome != nil {
-		_ = r.owner.calibrator.Observe(*sizeOutcome)
+		_ = r.owner.calibrator.ObserveWithHint(*sizeOutcome, r.sizeEstimate.ApproximateTokenHint, r.sizeEstimate.HintKnown)
 	}
 	return true
 }
@@ -742,6 +743,7 @@ func (s *approximatePredictiveShadow) recordUnknown(reason domainpredictive.Reas
 	s.attempts.LastReason = reason
 	s.attempts.LastSource = ""
 	s.attempts.LastSamples = 0
+	s.attempts.LastExploratory = false
 	var rejectEvent *predictiveRequestRejectEvent
 	if s.mode == "enforce" {
 		now := s.now()
@@ -764,6 +766,7 @@ func (s *approximatePredictiveShadow) recordAvailabilityUnknown(now time.Time) {
 	s.attempts.LastReason = domainpredictive.ReasonPredictorProfileUnknown
 	s.attempts.LastSource = runtimepredictive.PredictionSourceUnavailable
 	s.attempts.LastSamples = 0
+	s.attempts.LastExploratory = false
 	var event *predictiveRouterBackpressureEvent
 	if s.mode == "enforce" {
 		s.recordLastRejectLocked(now, domainpredictive.ReasonPredictorProfileUnknown, runtimepredictive.PredictionSourceUnavailable, 0, predictiveProtectionScopeAvailability)
@@ -799,8 +802,12 @@ func (s *approximatePredictiveShadow) recordResultLocked(result runtimepredictiv
 	s.attempts.LastReason = result.Decision.Reason
 	s.attempts.LastSource = result.Prediction.Source
 	s.attempts.LastSamples = result.Prediction.Samples
+	s.attempts.LastExploratory = result.Prediction.Exploratory
 	if result.Reserved {
 		s.attempts.Fits++
+		if result.Prediction.Exploratory {
+			s.attempts.ExploratoryFits++
+		}
 		return nil, nil, ""
 	}
 	switch result.Decision.Reason {
@@ -810,6 +817,9 @@ func (s *approximatePredictiveShadow) recordResultLocked(result runtimepredictiv
 		s.attempts.Unknown++
 	default:
 		s.attempts.Risks++
+	}
+	if result.Prediction.Exploratory {
+		s.attempts.ExploratoryRisks++
 	}
 	if s.mode != "enforce" {
 		return nil, nil, predictiveProtectionScopeForResult(result, s.backpressurePolicy)

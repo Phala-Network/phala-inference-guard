@@ -326,6 +326,7 @@ func TestEveryLoadDependentQoSReasonActivatesRouterBackpressure(t *testing.T) {
 		domainpredictive.ReasonExistingTPSAtRisk,
 		domainpredictive.ReasonNewTPSAtRisk,
 		domainpredictive.ReasonTPOTAtRisk,
+		domainpredictive.ReasonThroughputFrontier,
 		domainpredictive.ReasonWorkspaceAtRisk,
 		domainpredictive.ReasonPreemptionAtRisk,
 	} {
@@ -541,6 +542,7 @@ func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) 
 		CompletionObserverAttached: 4, CompletionObserverClaimed: 3, CompletionObserverUsage: 2, CompletionObserverTerminal: 3,
 		RouterBackpressure: metrics.PredictiveRouterBackpressureInput{
 			Active: true, Applied: true, Scope: "load", Reason: "existing_tps_at_risk",
+			AggregateCompletionTPSEstimate: 154, PreviousAggregateCompletionTPSEstimate: 300,
 			Activation: 2, Extensions: 5, RenewalLogs: 2, RenewalsSuppressed: 3,
 			LatestRejectAt: time.Unix(84_000, 0), Until: time.Unix(84_005, 0),
 			RawRunning: 1, EffectiveRunning: 1, RawGlobalLimit: 50, EffectiveGlobalLimit: 1,
@@ -548,7 +550,7 @@ func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) 
 	})
 	for _, want := range []string{
 		"predictive={mode=enforce", "attempts=12", "risk=8", "last=existing_tps_at_risk/calibrated/6",
-		"last_reject=none/unknown/none/0", "reservations=1", "virtual_decode=3", "pending_prefill=0/0", "deferred=2", "completion_observer=4/3/2/3", "router_bp=1/1/load/existing_tps_at_risk", "effective=1/1", "raw=1/50",
+		"last_reject=none/unknown/none/0", "reservations=1", "virtual_decode=3", "pending_prefill=0/0", "deferred=2", "completion_observer=4/3/2/3", "router_bp=1/1/load/existing_tps_at_risk", "throughput=154.00/300.00", "effective=1/1", "raw=1/50",
 		"router_lease=2/5/2/3/1970-01-01T23:20:00Z/1970-01-01T23:20:05Z",
 	} {
 		if !strings.Contains(line, want) {

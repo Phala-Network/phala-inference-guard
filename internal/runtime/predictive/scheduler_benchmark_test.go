@@ -6,6 +6,7 @@ import (
 )
 
 var learnedSchedulerBenchmarkPrediction SchedulerPrediction
+var learnedSchedulerBenchmarkObservationError error
 
 func BenchmarkLearnedSchedulerPredictCalibratedTPSAndLatency(b *testing.B) {
 	scheduler, err := NewLearnedScheduler(testLearnedProfile(), testResidualConfig())
@@ -76,5 +77,60 @@ func BenchmarkLearnedSchedulerPredictGlobalFallbackBounded(b *testing.B) {
 				learnedSchedulerBenchmarkPrediction = scheduler.Predict(now, state, cost)
 			}
 		})
+	}
+}
+
+func BenchmarkLearnedSchedulerPredictAggregateFrontier(b *testing.B) {
+	for _, benchmark := range []struct {
+		name      string
+		withCurve bool
+	}{
+		{name: "baseline_without_curve", withCurve: false},
+		{name: "candidate_with_curve", withCurve: true},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			scheduler, err := NewLearnedScheduler(testLearnedProfile(), testResidualConfig())
+			if err != nil {
+				b.Fatalf("new learned scheduler: %v", err)
+			}
+			now := time.Unix(82_000, 0)
+			state := learnedTestState()
+			cost := learnedTestCost()
+			if benchmark.withCurve {
+				features := schedulerFeatures(state, cost)
+				currentBucket := bucketInt(features.DecodeSequences, scheduler.config.DecodeSequenceBucket)
+				for bucket, estimate := range map[int]float64{currentBucket - 1: 300, currentBucket: 320} {
+					scheduler.aggregateThroughputCells[bucket] = &aggregateThroughputCell{
+						Estimate: estimate, SampleCount: scheduler.config.MinimumSamples,
+						ValidUntil: now.Add(time.Minute), Ready: true,
+					}
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				learnedSchedulerBenchmarkPrediction = scheduler.Predict(now, state, cost)
+			}
+		})
+	}
+}
+
+func BenchmarkLearnedSchedulerObserveAggregateThroughput(b *testing.B) {
+	scheduler, err := NewLearnedScheduler(testLearnedProfile(), testResidualConfig())
+	if err != nil {
+		b.Fatalf("new learned scheduler: %v", err)
+	}
+	now := time.Unix(83_000, 0)
+	outcome := AggregateThroughputOutcome{
+		Identity: scheduler.Identity(), StartedAt: now.Add(-time.Second), ObservedAt: now,
+		DecodeSequences: 4, AggregateCompletionTPS: 320,
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		learnedSchedulerBenchmarkObservationError = scheduler.ObserveAggregateThroughput(outcome)
+	}
+	if learnedSchedulerBenchmarkObservationError != nil {
+		b.Fatalf("observe aggregate throughput: %v", learnedSchedulerBenchmarkObservationError)
 	}
 }

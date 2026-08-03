@@ -641,8 +641,8 @@ func TestApproximatePredictiveHTTPInformationalResponseUsesFinalStatusAndFeedbac
 		t.Fatalf("informational response shadow lifecycle = %+v", telemetry.ShadowObservations)
 	}
 	size := adapter.calibrator.Snapshot(time.Now())
-	if size.SamplesAccepted != 0 || size.SamplesRejected != 1 {
-		t.Fatalf("informational response input feedback = accepted %d rejected %d, want one safely rejected ratio outcome", size.SamplesAccepted, size.SamplesRejected)
+	if size.SamplesAccepted != 1 || size.SamplesRejected != 0 || size.SamplesStored != 1 || size.HintSamplesStored != 1 {
+		t.Fatalf("informational response input feedback = %+v, want one qualified lexical-hint outcome", size)
 	}
 	lane := srv.globalLn.Snapshot()
 	if lane.StatusClasses[1] != 0 || lane.StatusClasses[2] != 1 {

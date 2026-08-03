@@ -33,6 +33,25 @@ type learningInvalidationCoordinator struct {
 	count    int
 }
 
+type recordingLoadPressureObserver struct {
+	observer          *predictiveVLLMObserver
+	kinds             []runtimepredictive.LoadPressureKind
+	calledWhileLocked bool
+}
+
+func (o *recordingLoadPressureObserver) ObserveLoadPressure(_ time.Time, kind runtimepredictive.LoadPressureKind) bool {
+	if o == nil || o.observer == nil {
+		return false
+	}
+	if !o.observer.mu.TryLock() {
+		o.calledWhileLocked = true
+	} else {
+		o.observer.mu.Unlock()
+	}
+	o.kinds = append(o.kinds, kind)
+	return true
+}
+
 type stablePrefillTestCoordinator struct {
 	mu            sync.Mutex
 	sequence      uint64
@@ -44,6 +63,12 @@ type stablePrefillTestCoordinator struct {
 type recordingExistingPrefillLearner struct {
 	mu       sync.Mutex
 	outcomes []runtimepredictive.ExistingPrefillOutcome
+	err      error
+}
+
+type recordingAggregateThroughputLearner struct {
+	mu       sync.Mutex
+	outcomes []runtimepredictive.AggregateThroughputOutcome
 	err      error
 }
 
@@ -62,6 +87,23 @@ func (l *recordingExistingPrefillLearner) Outcomes() []runtimepredictive.Existin
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return append([]runtimepredictive.ExistingPrefillOutcome(nil), l.outcomes...)
+}
+
+func (*recordingAggregateThroughputLearner) Identity() runtimepredictive.ModelIdentity {
+	return adapterTestIdentity()
+}
+
+func (l *recordingAggregateThroughputLearner) ObserveAggregateThroughput(outcome runtimepredictive.AggregateThroughputOutcome) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.outcomes = append(l.outcomes, outcome)
+	return l.err
+}
+
+func (l *recordingAggregateThroughputLearner) Outcomes() []runtimepredictive.AggregateThroughputOutcome {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]runtimepredictive.AggregateThroughputOutcome(nil), l.outcomes...)
 }
 
 func (c *stablePrefillTestCoordinator) StartSampleWindow() uint64 {
@@ -381,6 +423,32 @@ func TestPredictiveVLLMObserverPreemptionIncrementStartsCooldown(t *testing.T) {
 	}
 	if !observer.Healthy(clock.Now().Add(observer.preemptionCooldown)) {
 		t.Fatal("observer did not recover at the exact cooldown boundary")
+	}
+}
+
+func TestPredictiveVLLMObserverPublishesWaitingAndPreemptionPressureOutsideObserverLock(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(7_100, 0)}
+	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 0)
+	fixture := &observerMetricsFixture{body: observerMetrics(1_000, 0.10, 1, 0, 4, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+	pressure := &recordingLoadPressureObserver{observer: observer}
+	observer.loadPressureObserver = pressure
+	observer.poll(context.Background())
+
+	clock.Advance(time.Second)
+	fixture.Set(observerMetrics(1_000, 0.11, 1, 1, 4, true))
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	fixture.Set(observerMetrics(1_000, 0.12, 1, 0, 5, true))
+	observer.poll(context.Background())
+
+	if pressure.calledWhileLocked {
+		t.Fatal("observer called scheduler pressure feedback while holding its mutex")
+	}
+	if len(pressure.kinds) != 2 || pressure.kinds[0] != runtimepredictive.LoadPressureWaiting || pressure.kinds[1] != runtimepredictive.LoadPressurePreemption {
+		t.Fatalf("load pressure events = %v, want waiting then preemption", pressure.kinds)
 	}
 }
 
@@ -1091,6 +1159,7 @@ func TestPredictiveVLLMObserverCensorsAmbiguousPrefillWindows(t *testing.T) {
 		secondPreemption  uint64
 		secondWaiting     int
 		wantCensored      uint64
+		wantAggregate     int
 	}{
 		{name: "event_sequence_changed", initialRunning: 2, secondRunning: 2, initialPending: 1, secondPending: 1, initialTokens: 100, secondTokens: 100, initialSequence: 3, secondSequence: 4, initialGeneration: 100, secondGeneration: 110, wantCensored: 1},
 		{name: "pending_count_changed", initialRunning: 3, secondRunning: 3, initialPending: 1, secondPending: 2, initialTokens: 100, secondTokens: 200, initialGeneration: 100, secondGeneration: 110, wantCensored: 1},
@@ -1100,7 +1169,8 @@ func TestPredictiveVLLMObserverCensorsAmbiguousPrefillWindows(t *testing.T) {
 		{name: "waiting", initialRunning: 2, secondRunning: 2, initialPending: 1, secondPending: 1, initialTokens: 100, secondTokens: 100, initialGeneration: 100, secondGeneration: 110, secondWaiting: 1, wantCensored: 1},
 		{name: "running_changed", initialRunning: 2, secondRunning: 3, initialPending: 1, secondPending: 1, initialTokens: 100, secondTokens: 100, initialGeneration: 100, secondGeneration: 110, wantCensored: 1},
 		{name: "no_existing_decoder", initialRunning: 1, secondRunning: 1, initialPending: 1, secondPending: 1, initialTokens: 100, secondTokens: 100, initialGeneration: 100, secondGeneration: 110, wantCensored: 1},
-		{name: "no_pending_prefill", initialRunning: 1, secondRunning: 1, initialPending: 0, secondPending: 0, initialTokens: 0, secondTokens: 0, initialGeneration: 100, secondGeneration: 110, wantCensored: 0},
+		{name: "no_generation_progress", initialRunning: 1, secondRunning: 1, initialPending: 0, secondPending: 0, initialTokens: 0, secondTokens: 0, initialGeneration: 100, secondGeneration: 100, wantCensored: 0},
+		{name: "no_pending_prefill", initialRunning: 1, secondRunning: 1, initialPending: 0, secondPending: 0, initialTokens: 0, secondTokens: 0, initialGeneration: 100, secondGeneration: 110, wantCensored: 0, wantAggregate: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			clock := &adapterTestClock{now: time.Unix(91_000, 0)}
@@ -1110,9 +1180,11 @@ func TestPredictiveVLLMObserverCensorsAmbiguousPrefillWindows(t *testing.T) {
 			coordinator := &stablePrefillTestCoordinator{}
 			coordinator.Set(test.initialSequence, test.initialPending, test.initialTokens)
 			learner := &recordingExistingPrefillLearner{}
+			aggregateLearner := &recordingAggregateThroughputLearner{}
 			observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
 			observer.coordinatorSnapshot = coordinator
 			observer.existingPrefillLearner = learner
+			observer.aggregateThroughputLearner = aggregateLearner
 			observer.poll(context.Background())
 
 			clock.Advance(time.Second)
@@ -1126,6 +1198,14 @@ func TestPredictiveVLLMObserverCensorsAmbiguousPrefillWindows(t *testing.T) {
 			stats := observer.ExistingPrefillTelemetry()
 			if stats.Accepted != 0 || stats.Censored != test.wantCensored {
 				t.Fatalf("ambiguous prefill telemetry = %+v, want censored=%d", stats, test.wantCensored)
+			}
+			aggregateOutcomes := aggregateLearner.Outcomes()
+			if len(aggregateOutcomes) != test.wantAggregate {
+				t.Fatalf("stable aggregate outcomes = %+v, want %d", aggregateOutcomes, test.wantAggregate)
+			}
+			if test.wantAggregate == 1 &&
+				(aggregateOutcomes[0].DecodeSequences != test.initialRunning || aggregateOutcomes[0].AggregateCompletionTPS != 10) {
+				t.Fatalf("stable aggregate outcome = %+v", aggregateOutcomes[0])
 			}
 		})
 	}

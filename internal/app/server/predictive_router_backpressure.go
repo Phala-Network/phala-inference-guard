@@ -22,20 +22,23 @@ const (
 )
 
 type predictiveRouterBackpressureEvent struct {
-	Kind            predictiveRouterBackpressureEventKind
-	Activation      uint64
-	Scope           predictiveProtectionScope
-	Reason          domainpredictive.Reason
-	Source          runtimepredictive.PredictionSource
-	Samples         int
-	VirtualDecode   int
-	VirtualActiveKV int64
-	Hold            time.Duration
-	ActivatedAt     time.Time
-	RejectedAt      time.Time
-	Until           time.Time
-	Extensions      uint64
-	Suppressed      uint64
+	Kind                 predictiveRouterBackpressureEventKind
+	Activation           uint64
+	Scope                predictiveProtectionScope
+	Reason               domainpredictive.Reason
+	Source               runtimepredictive.PredictionSource
+	Samples              int
+	Exploratory          bool
+	AggregateTPS         float64
+	PreviousAggregateTPS float64
+	VirtualDecode        int
+	VirtualActiveKV      int64
+	Hold                 time.Duration
+	ActivatedAt          time.Time
+	RejectedAt           time.Time
+	Until                time.Time
+	Extensions           uint64
+	Suppressed           uint64
 }
 
 type predictiveRouterBackpressurePolicy struct {
@@ -44,13 +47,16 @@ type predictiveRouterBackpressurePolicy struct {
 }
 
 type predictiveRequestRejectEvent struct {
-	Phase      string
-	Reason     domainpredictive.Reason
-	Source     runtimepredictive.PredictionSource
-	Samples    int
-	Scope      predictiveProtectionScope
-	RejectedAt time.Time
-	Suppressed uint64
+	Phase                string
+	Reason               domainpredictive.Reason
+	Source               runtimepredictive.PredictionSource
+	Samples              int
+	Exploratory          bool
+	AggregateTPS         float64
+	PreviousAggregateTPS float64
+	Scope                predictiveProtectionScope
+	RejectedAt           time.Time
+	Suppressed           uint64
 }
 
 type predictiveRequestRejectLogState struct {
@@ -64,27 +70,33 @@ type predictiveRequestRejectLogBucket struct {
 }
 
 type predictiveRouterBackpressureSnapshot struct {
-	Active             bool
-	Activation         uint64
-	Scope              predictiveProtectionScope
-	Reason             domainpredictive.Reason
-	Source             runtimepredictive.PredictionSource
-	Samples            int
-	ActivatedAt        time.Time
-	Until              time.Time
-	Hold               time.Duration
-	MinimumRunning     int
-	Activations        uint64
-	Extensions         uint64
-	LatestRejectAt     time.Time
-	RenewalLogs        uint64
-	RenewalsSuppressed uint64
+	Active               bool
+	Activation           uint64
+	Scope                predictiveProtectionScope
+	Reason               domainpredictive.Reason
+	Source               runtimepredictive.PredictionSource
+	Samples              int
+	Exploratory          bool
+	AggregateTPS         float64
+	PreviousAggregateTPS float64
+	ActivatedAt          time.Time
+	Until                time.Time
+	Hold                 time.Duration
+	MinimumRunning       int
+	Activations          uint64
+	Extensions           uint64
+	LatestRejectAt       time.Time
+	RenewalLogs          uint64
+	RenewalsSuppressed   uint64
 }
 
 type predictiveRouterBackpressureState struct {
 	reason                 domainpredictive.Reason
 	source                 runtimepredictive.PredictionSource
 	samples                int
+	exploratory            bool
+	aggregateTPS           float64
+	previousAggregateTPS   float64
 	virtualDecode          int
 	virtualActiveKV        int64
 	activatedAt            time.Time
@@ -143,20 +155,23 @@ func (s *predictiveRouterBackpressureState) Observe(
 			return nil
 		}
 		event := &predictiveRouterBackpressureEvent{
-			Kind:            predictiveRouterBackpressureRenewed,
-			Activation:      s.activation,
-			Scope:           predictiveProtectionScopeLoad,
-			Reason:          result.Decision.Reason,
-			Source:          result.Prediction.Source,
-			Samples:         result.Prediction.Samples,
-			VirtualDecode:   result.Prediction.Features.ExistingDecodeSequences,
-			VirtualActiveKV: result.Prediction.Features.ExistingActiveKVUpper,
-			Hold:            hold,
-			ActivatedAt:     s.activatedAt,
-			RejectedAt:      s.latestRejectAt,
-			Until:           s.until,
-			Extensions:      s.extensions,
-			Suppressed:      s.renewalsPendingLog,
+			Kind:                 predictiveRouterBackpressureRenewed,
+			Activation:           s.activation,
+			Scope:                predictiveProtectionScopeLoad,
+			Reason:               result.Decision.Reason,
+			Source:               result.Prediction.Source,
+			Samples:              result.Prediction.Samples,
+			Exploratory:          result.Prediction.Exploratory,
+			AggregateTPS:         result.Prediction.Estimate.AggregateCompletionTPSEstimate,
+			PreviousAggregateTPS: result.Prediction.Estimate.PreviousAggregateCompletionTPSEstimate,
+			VirtualDecode:        result.Prediction.Features.ExistingDecodeSequences,
+			VirtualActiveKV:      result.Prediction.Features.ExistingActiveKVUpper,
+			Hold:                 hold,
+			ActivatedAt:          s.activatedAt,
+			RejectedAt:           s.latestRejectAt,
+			Until:                s.until,
+			Extensions:           s.extensions,
+			Suppressed:           s.renewalsPendingLog,
 		}
 		s.lastRenewalLoggedAt = now
 		s.renewalsPendingLog = 0
@@ -169,6 +184,9 @@ func (s *predictiveRouterBackpressureState) Observe(
 	s.reason = result.Decision.Reason
 	s.source = result.Prediction.Source
 	s.samples = result.Prediction.Samples
+	s.exploratory = result.Prediction.Exploratory
+	s.aggregateTPS = result.Prediction.Estimate.AggregateCompletionTPSEstimate
+	s.previousAggregateTPS = result.Prediction.Estimate.PreviousAggregateCompletionTPSEstimate
 	s.virtualDecode = result.Prediction.Features.ExistingDecodeSequences
 	s.virtualActiveKV = result.Prediction.Features.ExistingActiveKVUpper
 	s.until = now.Add(hold)
@@ -177,18 +195,21 @@ func (s *predictiveRouterBackpressureState) Observe(
 	s.lastRenewalLoggedAt = time.Time{}
 	s.renewalsPendingLog = 0
 	return &predictiveRouterBackpressureEvent{
-		Kind:            predictiveRouterBackpressureActivated,
-		Activation:      s.activation,
-		Scope:           predictiveProtectionScopeLoad,
-		Reason:          s.reason,
-		Source:          s.source,
-		Samples:         s.samples,
-		VirtualDecode:   s.virtualDecode,
-		VirtualActiveKV: s.virtualActiveKV,
-		Hold:            hold,
-		ActivatedAt:     now,
-		RejectedAt:      now,
-		Until:           s.until,
+		Kind:                 predictiveRouterBackpressureActivated,
+		Activation:           s.activation,
+		Scope:                predictiveProtectionScopeLoad,
+		Reason:               s.reason,
+		Source:               s.source,
+		Samples:              s.samples,
+		Exploratory:          s.exploratory,
+		AggregateTPS:         s.aggregateTPS,
+		PreviousAggregateTPS: s.previousAggregateTPS,
+		VirtualDecode:        s.virtualDecode,
+		VirtualActiveKV:      s.virtualActiveKV,
+		Hold:                 hold,
+		ActivatedAt:          now,
+		RejectedAt:           now,
+		Until:                s.until,
 	}
 }
 
@@ -209,17 +230,20 @@ func (s *predictiveRouterBackpressureState) SetAvailability(now time.Time, unava
 			s.lastRenewalLoggedAt = time.Time{}
 			s.renewalsPendingLog = 0
 			return &predictiveRouterBackpressureEvent{
-				Kind:            predictiveRouterBackpressureActivated,
-				Activation:      s.activation,
-				Scope:           predictiveProtectionScopeLoad,
-				Reason:          s.reason,
-				Source:          s.source,
-				Samples:         s.samples,
-				VirtualDecode:   s.virtualDecode,
-				VirtualActiveKV: s.virtualActiveKV,
-				Hold:            s.hold,
-				ActivatedAt:     now,
-				Until:           s.until,
+				Kind:                 predictiveRouterBackpressureActivated,
+				Activation:           s.activation,
+				Scope:                predictiveProtectionScopeLoad,
+				Reason:               s.reason,
+				Source:               s.source,
+				Samples:              s.samples,
+				Exploratory:          s.exploratory,
+				AggregateTPS:         s.aggregateTPS,
+				PreviousAggregateTPS: s.previousAggregateTPS,
+				VirtualDecode:        s.virtualDecode,
+				VirtualActiveKV:      s.virtualActiveKV,
+				Hold:                 s.hold,
+				ActivatedAt:          now,
+				Until:                s.until,
 			}
 		}
 		return nil
@@ -278,6 +302,9 @@ func (s predictiveRouterBackpressureState) Snapshot(now time.Time) predictiveRou
 		snapshot.Reason = s.reason
 		snapshot.Source = s.source
 		snapshot.Samples = s.samples
+		snapshot.Exploratory = s.exploratory
+		snapshot.AggregateTPS = s.aggregateTPS
+		snapshot.PreviousAggregateTPS = s.previousAggregateTPS
 	}
 	if !active {
 		snapshot.Activation = 0
@@ -302,6 +329,7 @@ func predictiveReasonCreatesRouterBackpressure(result runtimepredictive.CountAdm
 	case domainpredictive.ReasonExistingTPSAtRisk,
 		domainpredictive.ReasonNewTPSAtRisk,
 		domainpredictive.ReasonTPOTAtRisk,
+		domainpredictive.ReasonThroughputFrontier,
 		domainpredictive.ReasonWorkspaceAtRisk,
 		domainpredictive.ReasonPreemptionAtRisk:
 		return true
@@ -341,13 +369,16 @@ func (s *predictiveRequestRejectLogState) ObservePhase(now time.Time, hold time.
 		return nil
 	}
 	event := &predictiveRequestRejectEvent{
-		Phase:      phase,
-		Reason:     result.Decision.Reason,
-		Source:     result.Prediction.Source,
-		Samples:    result.Prediction.Samples,
-		Scope:      predictiveProtectionScopeRequest,
-		RejectedAt: now,
-		Suppressed: bucket.suppressed,
+		Phase:                phase,
+		Reason:               result.Decision.Reason,
+		Source:               result.Prediction.Source,
+		Samples:              result.Prediction.Samples,
+		Exploratory:          result.Prediction.Exploratory,
+		AggregateTPS:         result.Prediction.Estimate.AggregateCompletionTPSEstimate,
+		PreviousAggregateTPS: result.Prediction.Estimate.PreviousAggregateCompletionTPSEstimate,
+		Scope:                predictiveProtectionScopeRequest,
+		RejectedAt:           now,
+		Suppressed:           bucket.suppressed,
 	}
 	bucket.lastLoggedAt = now
 	bucket.lastReason = result.Decision.Reason
@@ -380,12 +411,15 @@ func predictiveRequestRejectLogLine(event predictiveRequestRejectEvent) string {
 		source = runtimepredictive.PredictionSourceStatic
 	}
 	return fmt.Sprintf(
-		"predictive_admission event=request_rejected mode=enforce phase=%s scope=%s reason=%s source=%s samples=%d suppressed=%d rejected_at=%s",
+		"predictive_admission event=request_rejected mode=enforce phase=%s scope=%s reason=%s source=%s samples=%d exploratory=%t aggregate_completion_tps_estimate=%.6f previous_aggregate_completion_tps_estimate=%.6f suppressed=%d rejected_at=%s",
 		phase,
 		event.Scope,
 		event.Reason,
 		source,
 		event.Samples,
+		event.Exploratory,
+		event.AggregateTPS,
+		event.PreviousAggregateTPS,
 		event.Suppressed,
 		event.RejectedAt.UTC().Format(time.RFC3339Nano),
 	)
@@ -416,12 +450,15 @@ func (s *proxyServer) logPredictiveFailureReject(phase string) {
 func predictiveRouterBackpressureLogLine(event predictiveRouterBackpressureEvent) string {
 	if event.Kind == predictiveRouterBackpressureRenewed {
 		return fmt.Sprintf(
-			"predictive_router_backpressure event=renewed mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d virtual_decode=%d virtual_active_kv=%d extensions=%d suppressed=%d latest_reject_at=%s until=%s",
+			"predictive_router_backpressure event=renewed mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d exploratory=%t aggregate_completion_tps_estimate=%.6f previous_aggregate_completion_tps_estimate=%.6f virtual_decode=%d virtual_active_kv=%d extensions=%d suppressed=%d latest_reject_at=%s until=%s",
 			event.Activation,
 			event.Scope,
 			event.Reason,
 			event.Source,
 			event.Samples,
+			event.Exploratory,
+			event.AggregateTPS,
+			event.PreviousAggregateTPS,
 			event.VirtualDecode,
 			event.VirtualActiveKV,
 			event.Extensions,
@@ -431,12 +468,15 @@ func predictiveRouterBackpressureLogLine(event predictiveRouterBackpressureEvent
 		)
 	}
 	return fmt.Sprintf(
-		"predictive_router_backpressure event=activated mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d virtual_decode=%d virtual_active_kv=%d hold=%s activated_at=%s until=%s",
+		"predictive_router_backpressure event=activated mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d exploratory=%t aggregate_completion_tps_estimate=%.6f previous_aggregate_completion_tps_estimate=%.6f virtual_decode=%d virtual_active_kv=%d hold=%s activated_at=%s until=%s",
 		event.Activation,
 		event.Scope,
 		event.Reason,
 		event.Source,
 		event.Samples,
+		event.Exploratory,
+		event.AggregateTPS,
+		event.PreviousAggregateTPS,
 		event.VirtualDecode,
 		event.VirtualActiveKV,
 		event.Hold,

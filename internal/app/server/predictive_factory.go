@@ -12,8 +12,8 @@ import (
 const (
 	predictiveApproximateManifestID       = "model-agnostic-json-v1"
 	predictiveApproximateProfileID        = "model-agnostic-qos-v2"
-	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v3"
-	predictiveApproximateEstimatorVersion = "json-cost-v1"
+	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v5"
+	predictiveApproximateEstimatorVersion = "json-cost-lexical-hint-v2"
 	predictiveColdParallelUsers           = 2
 	predictivePrefillHeadroomSafetyShares = 4
 )
@@ -47,6 +47,10 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	tpotSLO, err := predictiveTPOTTarget(targetTPS)
 	if err != nil {
 		return nil, err
+	}
+	explorationTPOTSLO, err := predictiveTPOTTarget(cfg.DynamicUserTPSYellow)
+	if err != nil {
+		return nil, fmt.Errorf("construct predictive exploration TPOT target: %w", err)
 	}
 	backendEpoch := fmt.Sprintf("vllm-%s-%d-%d", startup.ModelIdentitySHA256[:16], startup.CapacityTokens, startup.BlockSize)
 	identity := runtimepredictive.ModelIdentity{
@@ -90,6 +94,11 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		ContextTokenBucket:       featureTokenBucket,
 		PrefillTokenBucket:       featureTokenBucket,
 		KVTokenBucket:            featureTokenBucket,
+		AdverseEvidenceMaxAge:    cfg.KVAdmissionPolicy.MaxMetricsAge,
+		HardUserTPSTarget:        targetTPS,
+		HardTPOTSLO:              tpotSLO,
+		ExplorationUserTPSTarget: cfg.DynamicUserTPSYellow,
+		ExplorationTPOTSLO:       explorationTPOTSLO,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct model-neutral predictive scheduler: %w", err)
@@ -139,19 +148,21 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	}
 	shadowPendingPrefills := newPredictiveShadowPendingPrefillStore(cfg.PredictiveShadowObservationLimit)
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
-		MetricsURL:             metricsURL,
-		ModelIdentitySHA256:    startup.ModelIdentitySHA256,
-		MaximumKVTokens:        startup.CapacityTokens,
-		BlockSize:              startup.BlockSize,
-		PollInterval:           cfg.DynamicPollInterval,
-		MaximumAge:             cfg.KVAdmissionPolicy.MaxMetricsAge,
-		RequestTimeout:         cfg.PredictiveMetricsRequestTimeout,
-		PreemptionCooldown:     cfg.KVAdmissionPolicy.PreemptionCooldown,
-		Coordinator:            coordinator,
-		ExistingPrefillLearner: scheduler,
-		ShadowPendingPrefills:  shadowPendingPrefills,
-		LearningInvalidators:   []predictiveLearningInvalidator{calibrator},
-		Initial:                startup,
+		MetricsURL:                 metricsURL,
+		ModelIdentitySHA256:        startup.ModelIdentitySHA256,
+		MaximumKVTokens:            startup.CapacityTokens,
+		BlockSize:                  startup.BlockSize,
+		PollInterval:               cfg.DynamicPollInterval,
+		MaximumAge:                 cfg.KVAdmissionPolicy.MaxMetricsAge,
+		RequestTimeout:             cfg.PredictiveMetricsRequestTimeout,
+		PreemptionCooldown:         cfg.KVAdmissionPolicy.PreemptionCooldown,
+		Coordinator:                coordinator,
+		ExistingPrefillLearner:     scheduler,
+		AggregateThroughputLearner: scheduler,
+		LoadPressureObserver:       scheduler,
+		ShadowPendingPrefills:      shadowPendingPrefills,
+		LearningInvalidators:       []predictiveLearningInvalidator{calibrator},
+		Initial:                    startup,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct predictive vLLM observer: %w", err)

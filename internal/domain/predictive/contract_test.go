@@ -82,6 +82,28 @@ func TestEvaluateKeepsTTFTObservationalInsteadOfRejecting(t *testing.T) {
 	}
 }
 
+func TestEvaluateStopsAtMatureThroughputFrontierAfterHardBoundsPass(t *testing.T) {
+	decision := Evaluate(EvaluationInput{
+		Scheduler: SchedulerEstimate{
+			ExistingUserTPSLower:                   22,
+			NewUserTPSLower:                        22,
+			AggregateCompletionTPSEstimate:         154,
+			PreviousAggregateCompletionTPSEstimate: 300,
+			ThroughputFrontierReached:              true,
+			TTFTUpper:                              time.Second,
+			TPOTUpper:                              time.Second / 22,
+		},
+		Constraints: Constraints{
+			UserTPSTarget: 15, TPOTSLO: time.Second / 15,
+			WorkspaceRiskBudget: 1, PreemptionRiskBudget: 1, MinimumConfidence: 0.9,
+		},
+		Confidence: 1,
+	})
+	if decision.Reason != ReasonThroughputFrontier {
+		t.Fatalf("mature aggregate throughput regression reason = %s, want %s", decision.Reason, ReasonThroughputFrontier)
+	}
+}
+
 func TestEvaluateTreatsZeroRiskBudgetAsZeroTolerance(t *testing.T) {
 	for name, test := range map[string]struct {
 		estimate SchedulerEstimate

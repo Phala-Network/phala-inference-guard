@@ -2,17 +2,20 @@
 
 Status: active plan. The v0.9.4 Gemma4-exact deployment path is superseded and must not be deployed.
 
-Last updated: 2026-08-02 (Asia/Shanghai).
+Last updated: 2026-08-03 (Asia/Shanghai).
 
 ## 1. Authoritative objective
 
 PIG predicts before a request enters the upstream. Feedback only improves later
-predictions. Per-user TPS is the primary service objective; TPOT, KV capacity,
-workspace safety, and preemption remain joint protection constraints. TTFT is
-measurement, learning, diagnostics, and offline-comparison data only: it never
-rejects, activates Router backpressure, or changes Router capacity. Subject to
-the protected constraints, PIG should progressively increase SLO-compliant
-total throughput.
+predictions. The primary optimization objective is total useful throughput with
+a bounded QoS loss budget, not zero TPS variation. The red per-user TPS floor,
+reciprocal hard TPOT bound, KV capacity, workspace safety, and preemption remain
+hard protection constraints. Yellow TPS and reciprocal yellow TPOT are soft
+learning/exploration targets: attributed misses are allowed so the learner can
+discover more throughput, while a mature higher-concurrency bucket that provides
+no aggregate-throughput gain must reduce similar admissions. TTFT is measurement,
+learning, diagnostics, and offline-comparison data only: it never rejects,
+activates Router backpressure, or changes Router capacity.
 
 Input size is deliberately approximate and model-agnostic:
 
@@ -22,6 +25,22 @@ Input size is deliberately approximate and model-agnostic:
 - estimate cheaply, then calibrate with qualified `usage.prompt_tokens`;
 - accept imperfect cold-start estimates and become more accurate with samples;
 - keep prediction, learning, and reservation state bounded and race-safe.
+
+The tokenizer is an auxiliary sensor, not an admission controller or a source
+of capacity truth. Its only purpose is to provide a cheap approximate
+`input-size hint`. PIG combines that hint with the existing bounded byte/JSON
+interval, request class and decode horizon, observed backend state, unabsorbed
+reservations, and learned TPS/TPOT behavior. No tokenizer result may by itself
+admit, reject, publish Router backpressure, reduce effective node capacity, or
+lock a node. A missing, unsupported, saturated, or failed tokenizer hint falls
+back to the existing bounded estimator; it does not introduce a new failure
+mode. Qualified backend `usage.prompt_tokens` calibrates only future hints and
+never retroactively changes the producing request.
+
+The combined forecast may still reject a request when the conservative
+post-admit KV or QoS counterfactual violates a current hard constraint. That is
+a resource/QoS prediction using one approximate demand feature, not a
+tokenizer-only verdict.
 
 PIG does not route and this version does not inspect prefix-cache/cache hits.
 
@@ -44,7 +63,7 @@ The following artifacts exist but are not deployment evidence:
 
 Do not overwrite/delete that tag; keep it as an unused historical candidate.
 
-## 3. Reuse the existing fast estimator
+## 3. Reuse the existing fast estimator and add only an auxiliary hint
 
 `internal/domain/kvadmission.EstimateJSON` already performs a model-agnostic,
 bounded JSON scan. It estimates an interval from string bytes, tool/function and
@@ -57,11 +76,35 @@ classifier already buffers the bounded body and extracts output-token fields; do
 not add another body copy. Fuse the current field and feature scans only if remote
 builder benchmarks prove the second linear scan material.
 
+`EstimateJSON` remains the always-available fallback and conservative interval.
+v0.10.8 adds one lightweight approximate lexical-token hint from the same
+already-buffered body. It samples at most 256 string bytes per request and 64
+bytes per string across at most four positions, classifies only ASCII word,
+whitespace, punctuation, and UTF-8 leading-byte density, scales by string
+length, and adds bounded message overhead. It deliberately does not fully walk
+Unicode or decode JSON escapes. Once the sampling budget is exhausted, later
+strings use a constant-time four-byte fallback. It emits a count only: no token
+IDs, vocabulary, template, model identity, asset, native runtime, allocation,
+or network dependency. Overflow, missing hint evidence, or insufficient
+learning make only the hint unavailable and retain the existing byte/JSON
+fallback. The size calibrator learns the relationship between this hint and
+qualified actual prompt tokens while retaining the cold interval as the safe
+fallback. Do not replace the backend-reported KV capacity, current KV usage,
+reservation accounting, TPS/TPOT learner, or manager constraints with the hint.
+
+The vLLM Router tokenizer was inspected read-only at upstream commit
+`d60711dc72ab8f073e33f9a3d93ee81b97274c26` (2026-07-24). Its useful design
+ideas are a narrow shared interface and bounded timing/error metrics, but its
+HuggingFace/Tiktoken factories, model/file selection, Hub download, vocabularies,
+chat templates, token IDs, decode, and stop-sequence machinery are deliberately
+not imported. Those features are exact/model-bound serving functions rather
+than the cheap model-neutral reference required by PIG.
+
 ## 4. Real admission transaction
 
 ```text
 bounded request classification
-  -> model-agnostic input-size interval
+  -> model-agnostic byte/JSON interval plus optional approximate-token hint
   -> conservative learned size multiplier
   -> backend observation plus every unabsorbed reservation
   -> post-admit KV/TPS/TPOT forecast plus observational TTFT estimate
@@ -118,6 +161,22 @@ Rules:
     safe under the cold estimate. Zero, sparse, missing, rejected, or expired
     samples return to cold behavior; they never create an implicit admission
     cap, sticky zero, or a learner-dependent lockout.
+17. The tokenizer hint is optional evidence. Holding the request body, output
+    horizon, backend observation, reservations, and learned state fixed, hint
+    changes may refine the forecast; however, absence or failure of only the
+    hint must produce the estimator fallback rather than `unknown`, a tokenizer
+    error reject, or node-wide backpressure.
+18. A hint cannot bypass an ordinary KV, red-TPS, TPOT, workspace, preemption,
+    freshness, or lifecycle constraint. Conversely, a hint alone cannot create
+    a separate hard constraint. The manager evaluates only the combined
+    post-admit forecast and retains one atomic reservation transaction.
+19. QoS feedback is graded. A hard-band TPS/TPOT violation, waiting, or
+    preemption may cause an immediate bounded retreat. A yellow-only miss above
+    the red floor is a qualified learning sample, not an immediate hard adverse
+    override: a bounded number of similar requests may still run, then the
+    normal minimum sample count and conservative quantile progressively lower
+    that pressure cell's forecast. Time, sparse traffic, or one yellow miss may
+    not publish node fullness or create a persistent lock.
 
 Use one generic calibrator per PIG/backend epoch and request class for the first
 implementation. This supports any model deployed behind a PIG without source or
@@ -157,7 +216,7 @@ work that never reached the backend. Cap exhaustion fails observation closed
 without changing shadow client behavior, and shutdown drops every remaining
 observation record without pretending to release KV.
 
-## 7. TPS-first prediction
+## 7. Throughput-first graded-QoS prediction
 
 For every candidate:
 
@@ -165,16 +224,22 @@ For every candidate:
 2. predict existing users' post-admit TPS;
 3. predict the candidate user's TPS;
 4. predict TPOT upper bounds and an observational TTFT estimate;
-5. risk/reject on KV, workspace, preemption cooldown, TPS, or TPOT violation,
-   never TTFT;
+5. risk/reject on KV, workspace, preemption cooldown, red TPS, or reciprocal
+   red TPOT violation, never TTFT; yellow-only forecast/outcome bands guide
+   bounded exploration and later learning instead of becoming immediate hard
+   rejects;
 6. otherwise reserve future demand atomically.
 
-The objective is SLO-compliant goodput, not raw admitted requests. Cold QoS uses
-explicit conservative defaults and exposes `source=cold`; learned values become
-active only after the minimum qualified sample count. The coordinator continues
-admitting cold-safe work until an explicit, current KV, workspace, TPS, TPOT,
-preemption, freshness, or lifecycle constraint binds. A learned state or TTFT
-observation is not by itself a reason to stop intake.
+The primary objective is useful completion-token throughput under hard resource
+and red-band QoS constraints, not raw admitted requests and not zero yellow-band
+variation. A request that completes above the red floor but below yellow can
+still contribute useful throughput; the miss is counted and used to make later
+shape-compatible predictions less optimistic. Cold QoS uses explicit
+conservative defaults and exposes `source=cold`; learned values become active
+only after the minimum qualified sample count. The coordinator continues
+admitting cold-safe work until an explicit, current KV, workspace, red TPS/red
+TPOT, preemption, freshness, or lifecycle constraint binds. A learned state,
+yellow-only miss, or TTFT observation is not by itself a reason to stop intake.
 
 ## 8. Configuration simplification
 
@@ -183,10 +248,11 @@ template paths/hashes, model-family renderer version, native tokenizer ABI, and
 exact token-ID oracles.
 
 Keep only mode, backend observer, metric freshness/timeouts, preemption cooldown,
-protected KV budget, decode bounds, TPS/TTFT/TPOT targets, estimator settings,
-and calibrator age/sample/memory bounds. Observe vLLM KV capacity/block size from
-metrics instead of duplicating an exact model profile. Capacity/epoch drift must
-still reset reservations and learning safely.
+protected KV budget, decode bounds, red/yellow TPS/TPOT targets, observational
+TTFT settings, estimator settings, and calibrator age/sample/memory bounds.
+Observe vLLM KV capacity/block size from metrics instead of duplicating an exact
+model profile. Capacity/epoch drift must still reset reservations and learning
+safely.
 
 The vLLM implementation performs a bounded startup probe before constructing the
 coordinator. It derives the protected token budget by aligning the configured
@@ -260,6 +326,13 @@ Estimator/calibrator:
   maturity, expiry, missing stream usage, or an anomalous sample cannot produce
   self-lock, false-lock, sticky zero, or poison the next request;
 - epoch/version invalidation, concurrency, sample limits, and memory bounds hold.
+- with all other inputs fixed, a useful approximate-token hint changes only the
+  combined input-size feature/forecast; disabling, failing, or corrupting only
+  that hint returns to the byte/JSON fallback without a reject, sticky zero, or
+  Router backpressure;
+- tokenizer hint underestimation is corrected only for later requests by
+  qualified `usage.prompt_tokens`; the producing request's immutable estimate
+  and reservation never change.
 
 Admission/lifecycle:
 
@@ -301,23 +374,35 @@ Exact-tokenizer parity is explicitly not a release gate for this design.
 
 Deterministic acceptance thresholds:
 
-- KV-hard, preemption-proxy, TPS, TTFT, and TPOT violations: zero;
+- KV-hard, workspace, reservation, lifecycle, and unexplained or repeated hard
+  red-TPS/red-TPOT violations: zero; one previously unknown hard knee may expose
+  exactly one qualified frontier probe, after which the next compatible
+  prediction must retreat and no higher bucket may run;
+- TTFT has no violation threshold because it is observation-only; changing only
+  TTFT must never change admission, exploration, Router protection, or effective
+  capacity;
+- yellow-only TPS/TPOT misses may be non-zero, but must be counted with fixed
+  labels and must mature through the normal bounded sample/quantile path without
+  immediate hard retreat or node-wide protection;
 - false accepts, false locks, self-locks, sticky-zero episodes, reservation
   leaks, and double releases: zero;
 - every safe low-flow, recovery, and post-drain workload keeps making progress
   until a named current constraint binds;
-- mature approximate predictor aggregate SLO-compliant goodput is not below the
-  current threshold baseline and improves at least one mixed pressure workload;
-- compare completed tokens and requests that satisfy per-user TPS, TTFT, TPOT,
-  KV, and preemption objectives; rejected, failed, or SLO-violating work does not
-  count as throughput improvement;
+- mature approximate predictor aggregate hard-band-compliant completion-token
+  goodput is not below the current threshold baseline and improves at least one
+  mixed pressure workload;
+- compare completed tokens and requests that satisfy red TPS/red TPOT, KV,
+  workspace, and preemption constraints. Yellow-only misses are reported
+  separately and remain eligible useful throughput; rejected, failed, or
+  repeated hard-band-violating work does not count as throughput improvement;
 - any percentage improvement is reported from raw simulation output and never
   presented as live GPU throughput.
 
 ## 12. Three review passes
 
 1. Model and causality: no family dependency; feedback changes only later
-   predictions; TPS-first logic is prospective, not retrospective throttling.
+   predictions; throughput-first graded-QoS logic is prospective, not
+   retrospective throttling.
 2. Safety and lifecycle: uncertainty, bounds, atomicity, every terminal path,
    resets, races, and memory limits.
 3. Evidence and release: red/green validity, builder reproducibility, latency,
@@ -5059,39 +5144,49 @@ tests; they are not yet accepted as additional live root causes.
 
 ##### v0.10.8 product and algorithm contract
 
-Version v0.10.8 must remain model-agnostic and tokenizer-first. Prediction,
-decision, and reservation occur before forwarding to vLLM. Feedback changes
-only later decisions. The approximate estimator remains simple and bounded;
-there are no model-specific assets, exact-tokenizer requirement, cache-aware or
-cache-hit algorithm, routing responsibility, Router source change, vLLM source
-change, or TTFT admission protection.
+Version v0.10.8 must remain model-agnostic and tokenizer-assisted, not
+tokenizer-controlled. Prediction, decision, and reservation occur before
+forwarding to vLLM. Feedback changes only later decisions. The lightweight
+lexical tokenizer contributes only an approximate input-size hint to the
+combined forecast. It is not KV-capacity truth, cannot independently admit or
+reject, and its absence or failure falls back to the existing bounded JSON/byte
+estimate. Before qualified hint samples mature, it cannot shrink the cold input
+upper. The approximate estimator remains simple and bounded; there are no
+model-specific assets, exact-tokenizer requirement, cache-aware or cache-hit
+algorithm, routing responsibility, Router source change, vLLM source change,
+or TTFT admission protection.
 
-The correction is a bounded safe-frontier learner, not a lower TPS threshold
-and not an unconditional concurrency increase:
+The correction is a bounded throughput-first, graded-QoS frontier learner, not
+a lower TPS threshold and not an unconditional concurrency increase:
 
 1. Keep the red TPS value as the hard service floor. Use the yellow TPS value
-   as the normal target band: increase only while qualified lower-bound TPS and
-   upper-bound TPOT have explicit margin above/below that band. A mixed
-   aggregate mean is not itself a per-user guarantee. Pass the yellow target
-   and its reciprocal TPOT target explicitly into scheduler configuration for
-   exploratory qualification; do not infer them from a residual ratio or
-   replace the manager's existing red hard constraint.
-2. A newly qualified adverse TPS/TPOT outcome immediately lowers or freezes the
-   learned frontier and starts a bounded cooldown. Waiting, any preemption,
-   observer/epoch incoherence, workspace risk, or hard KV risk immediately
-   blocks exploration and uses the existing conservative protection path. A
-   waiting observation also records a fixed-cardinality load-pressure event so
-   a newly healthy scrape cannot instantly reuse the old optimistic frontier;
-   preemption continues to invalidate learning and also starts the cooldown.
-   Availability loss blocks admission from current health but never creates or
-   clears throughput evidence.
+   only to classify and count soft QoS loss; it is not a prerequisite for a
+   one-step probe. An outcome between red and yellow is an allowed learning
+   sample rather than an immediate hard failure. Whether a mature below-yellow
+   bucket may lead to one more probe depends on conservative aggregate
+   completion throughput, not on yellow margin alone. A mixed aggregate value
+   is not itself a per-user guarantee. Pass both red and yellow TPS targets and
+   their reciprocal TPOT bounds explicitly into scheduler configuration; do not
+   infer absolute bands from a residual ratio or replace the manager's existing
+   red hard constraint.
+2. A newly qualified hard-band TPS/TPOT outcome below red/above reciprocal red
+   immediately lowers or freezes the learned frontier and starts a bounded
+   cooldown. Waiting, any preemption, observer/epoch incoherence, workspace
+   risk, or hard KV risk also blocks exploration and uses the existing
+   conservative protection path. A waiting observation records a
+   fixed-cardinality load-pressure event so a newly healthy scrape cannot
+   instantly reuse the old optimistic frontier; preemption continues to
+   invalidate learning and also starts the cooldown. A yellow-only miss does
+   none of these things. Availability loss blocks admission from current health
+   but never creates or clears throughput evidence.
 3. Replace the indefinite minimum-adverse latch with a separate, short adverse
    evidence horizon derived from the observer maximum-metrics-age contract,
    strictly shorter than the generic learning age. Do not add a second
    user-facing timer knob unless builder evidence proves it necessary. One
-   adverse sample may trigger immediate retreat, but it
+   qualified hard adverse sample may trigger immediate retreat, but it
    cannot remain the sole controlling statistic for the generic 1,800-second
-   learning age. Repeated qualified adverse outcomes refresh the short horizon;
+   learning age. Repeated qualified hard adverse outcomes refresh the short
+   horizon;
    after it expires, recovery still requires the normal minimum number of
    newer, qualified, compatible healthy outcomes. Censored, unattributed,
    stale, request-unknown, and TTFT-only outcomes neither raise nor clear the
@@ -5104,9 +5199,8 @@ and not an unconditional concurrency increase:
    capacity.
 5. An exploratory prediction is eligible only when observer and coordinator
    samples are coherent, waiting is zero, the preemption cooldown is clear,
-   compatible evidence has reached the minimum sample count, every protected
-   forecast used for extrapolation remains on the safe side of the explicit
-   yellow-TPS/reciprocal-TPOT band, and the ordinary counterfactual hard bounds for physical KV,
+   compatible evidence has reached the minimum sample count, and the ordinary
+   counterfactual hard bounds for red TPS/TPOT, physical KV,
    active KV, workspace, preemption, confidence, request size, and lifecycle
    all pass. The normal evaluator must still produce `fit`; exploration never
    overrides a reject. Unknown, availability, oversized-request, or
@@ -5117,13 +5211,17 @@ and not an unconditional concurrency increase:
    same evidence to skip a second level. The exploratory bit is retained in the
    immutable prediction/reservation for fixed-cardinality telemetry and outcome
    qualification; it is not a second lease or independently mutable permit.
-7. A qualified, uncensored safe outcome at the exploratory bucket becomes
-   ordinary residual evidence at that bucket. Only the normal minimum sample
-   count can make it mature enough for another one-step extrapolation. An
-   adverse result enters the short adverse horizon and retreats/frees the next
-   decision immediately. A censored outcome supplies no promotion or adverse
-   evidence; normal terminal handling still releases the reservation exactly
-   once.
+7. A qualified, uncensored outcome at the exploratory bucket becomes ordinary
+   bounded residual evidence at that bucket. Only the normal minimum sample
+   count can make it mature. A mature bucket above red may qualify exactly one
+   further probe even when it is below yellow, but only when a separately
+   qualified conservative aggregate-completion-throughput window shows that the
+   higher concurrency improved total throughput over the preceding mature
+   bucket. If total throughput did not improve, the learned frontier remains at
+   the preceding bucket. A hard-band result enters the short adverse horizon and
+   retreats the next comparable prediction immediately; a yellow-only result
+   does not. A censored outcome supplies no promotion or adverse evidence;
+   normal terminal handling still releases the reservation exactly once.
 8. Add no new request-keyed map or parallel capacity controller. Reuse the
    existing fixed `MaximumCells`, per-cell sample bound, global sample bound,
    backend-epoch identity, maximum age, invalidation, and eviction semantics.
@@ -5161,23 +5259,69 @@ the scheduler cannot cross the rejected next bucket despite sustained margin.
 The red is invalid if it fails only because of a fixture, identity, timestamp,
 or missing dependency.
 
+Focused red r1 was reproduced on the remote builder against exact tag
+`v0.10.7`, commit `c1ff24e03024a31bce1df309ace483ec663042ff`, using the
+immutable Go 1.24.5 toolchain named below. The baseline archive SHA-256 was
+`7386d3fb799edc4d37e639afffb7afc7d19ba3b46dd1825b725a8d16964090c8`,
+and the test-only patch SHA-256 was
+`bf138a019b13773618d645a082d1db779cfaa5ac0226eb84cbe7df09dc11aead`.
+Reconstruction, patch application, and gofmt validation passed. The selected Go
+test command failed for both intended product reasons: the old adverse sample
+still forced an existing-user TPS lower bound of 7.2 after newer mature healthy
+evidence, and mature optimistic evidence at decode bucket 2 produced a static,
+unchanged prediction at bucket 3. The harness rejected any unexpected pass and
+required both exact failure markers before recording red success.
+
+Downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/red-r1/evidence.tar`, SHA-256
+`2ff7d88c840da940177df94627fa7541b317e3f4dc1fa7f0ffd487c7eb7d91b7`.
+Its `reconstruct`, `test-apply`, `gofmt`, red-validation, runner, and overall
+status are successful. This is focused behavioral red only; no candidate source
+change, green test, race, full matrix, image, deployment, or live validation is
+implied.
+
+The later tokenizer-reference correction has an independent focused red against
+the executable r6 throughput-learning candidate reconstructed from HEAD
+`98437fd...` plus candidate patch SHA-256
+`dd6aef85a505b7ba441a83b4d541f27fa00986dee37d0e9e6b6c16c7b9b261d4`.
+The test-only LF patch SHA-256 is
+`e52f04ba31304378b233b46f93b7f2ac4b30d2407ea356dc0a284d1a9c2f0777`.
+Remote r3 applied both patches and passed gofmt; the selected tests failed only
+with the required markers that equal-byte ASCII/CJK shapes had no optional hint
+provider and the calibrator had no optional-hint/next-request learning
+interface. Evidence is
+`tmp/pig-v0108-use1-cb-20260803/hint-red-r3/evidence.tar`, SHA-256
+`9048b15d3e457a1e86c22875388f5bb612b4798e1bd5bbce21409c11bf04a5f6`.
+The two preceding harness attempts are invalid evidence: r1 lacked a host
+`base64` executable and r2 retained CRLF in patch paths. Neither reached a Go
+product test, and neither is counted as behavioral red.
+
 The v0.10.8 candidate must then pass all of the following:
 
-1. In a deterministic backend whose safe capacity maintains at least 40 TPS
-   through decode concurrency 8, cold admission remains conservative, then
-   bounded probes reach at least decode 7 and at least 80% of the oracle's
-   SLO-compliant output-token goodput. v0.10.7 and v0.10.8 use the same fixed
-   workload and both execution orders; the candidate must improve compliant
-   output-token goodput by at least 30% without a red-TPS, TPOT, waiting,
-   preemption, KV, workspace, lifecycle, or publication violation.
-2. In a backend whose capacity knee is decode 6, the candidate may expose at
-   most one decode bucket beyond the highest mature safe evidence, must retreat
-   no later than the first qualified unsafe result, and must not extrapolate a
-   second bucket until the normal minimum sample count matures at the first.
-   Repeated adverse outcomes prevent recovery; three or more qualified newer
-   healthy outcomes may resume only one-step extrapolation after cooldown.
-3. A single zero/near-zero generation-counter interval causes an immediate
-   bounded retreat but not a 30-minute sticky minimum. Metric scrape timing,
+1. In a deterministic backend whose safe capacity maintains 50 TPS through
+   decode concurrency 8, cold admission remains conservative, then bounded
+   probes reach decode 8 and at least 80% of the oracle's hard-band-compliant
+   output-token goodput. The candidate must improve completion-token goodput by
+   at least 30% over a clearly labelled no-exploration ablation baseline without
+   a red-TPS/red-TPOT, waiting, preemption, KV, workspace, lifecycle, or
+   publication violation. This ablation is not labelled exact v0.10.7 evidence;
+   exact v0.10.7/candidate comparisons remain a separate builder gate and run in
+   both orders on the same fixed workload.
+2. Test harmful, beneficial, and hard knees beyond a mature safe decode-6
+   frontier. At 22 TPS/user with red/yellow 15/25, decode 7 aggregate throughput
+   is `154`, below decode 6 aggregate `300`; the candidate may collect the normal
+   minimum of three qualified samples, must then retreat to decode 6, count the
+   yellow misses, and never try decode 8. At 44 TPS/user with red/yellow 15/45,
+   decode 7 aggregate `308` is above decode 6 aggregate `300`; the candidate must
+   retain decode 7 and may continue one bucket at a time while conservative
+   aggregate throughput keeps rising, even though per-user TPS is below yellow.
+   At a hard decode-7 knee of 10 TPS, it may expose decode 7 exactly once, must
+   retreat on the next comparable prediction, and must never try decode 8.
+   Repeated hard adverse outcomes prevent recovery; newer compatible healthy
+   evidence may resume only bounded one-step extrapolation after cooldown.
+3. A single qualified zero/near-zero generation-counter interval below the red
+   floor causes an immediate bounded retreat but not a 30-minute sticky minimum;
+   a yellow-only result never enters that hard path. Metric scrape timing,
    counter lag/reset, empty decode, prefill-only windows, and censored or
    unattributed outcomes cannot falsely promote or permanently suppress the
    frontier.
@@ -5271,10 +5415,11 @@ window and can affect only a subsequent call to `Predict`.
 
 Completed 2026-08-03 and revised the contract before executable changes. The
 review found that “healthy evidence” was underspecified: a residual ratio above
-one does not prove the user's absolute TPS band, and a red-floor fit is not
-enough margin for deliberate exploration. Scheduler configuration must
-therefore receive the yellow TPS target and reciprocal TPOT target explicitly;
-ordinary admission continues to use the red floor in Manager. TTFT is absent
+one does not prove the user's absolute TPS band. Scheduler configuration must
+therefore receive the yellow TPS target and reciprocal TPOT target explicitly
+for soft-loss classification, while ordinary admission continues to use the red
+floor in Manager. A later correction removes yellow margin as an exploration
+prerequisite and requires aggregate-throughput benefit instead. TTFT is absent
 from both conditions.
 
 The review also found a recovery race after backend waiting. Current health
@@ -5326,3 +5471,732 @@ can reach the strict 30-minute canary, and any failure changes only
 `use1-cb.enabled` back to false. The current user contract and this later plan
 section supersede older goal wording that mentioned TTFT protection: TTFT is
 observation-only throughout v0.10.8.
+
+##### v0.10.8 plan correction — throughput-first graded QoS
+
+Added after the 2026-08-03 strict absolute-yellow focused green. The user
+clarified that PIG may accept some temporary per-user TPS reduction when that is
+needed to discover materially higher total throughput. Learning should make
+unproductive reductions less frequent over time without turning every yellow
+miss into a long protection interval. This correction supersedes earlier text
+that treated the first absolute yellow miss as hard adverse evidence.
+
+The active policy is:
+
+1. The manager's configured red TPS floor and reciprocal red TPOT bound remain
+   the ordinary pre-forward hard QoS gate. Predicted red-band violations,
+   physical/active KV overflow, workspace/preemption risk, unavailable or stale
+   state, and lifecycle failure remain normal rejects. Exploration never
+   overrides them.
+2. Yellow TPS and reciprocal yellow TPOT are soft exploration objectives. One
+   attributed outcome between red and yellow does not enter the single-sample
+   hard-adverse channel, erase the mature lower frontier, publish Router load
+   protection, require a full healthy generation before progress resumes, or by
+   itself stop the next one-step throughput probe.
+3. A yellow-only miss is retained in the same bounded residual cell as ordinary
+   evidence. Until the normal minimum sample count is reached, one-step atomic
+   exploration may expose another comparable request; it still cannot skip a
+   decode bucket or stack another unforecast bucket while a probe reservation
+   is live. Once the sample minimum matures, the existing conservative quantile
+   lowers the corresponding TPS/TPOT forecast. If that mature forecast remains
+   above red, the learned concurrency may continue and may probe one more bucket
+   when conservative aggregate completion throughput improved; if aggregate
+   throughput did not improve, it retreats to the preceding mature bucket. If
+   the forecast falls below red, normal admission protection applies.
+4. A qualified outcome below red, above reciprocal red TPOT, or associated with
+   waiting/preemption remains hard adverse evidence. It causes immediate bounded
+   retreat and prevents old optimistic evidence from automatically returning.
+   Recovery requires newer compatible evidence; idle/cold-safe progress and
+   terminal release remain available so the mechanism cannot self-lock.
+5. Repeated healthy evidence can gradually replace old soft misses through the
+   bounded window, age, and quantile. No separate PID, token bucket, request map,
+   or model-specific controller is added in v0.10.8. A more explicit QoS-loss
+   budget is considered only if deterministic and live evidence shows the simple
+   bounded-sample rule cannot balance throughput and QoS.
+6. The approximate tokenizer remains only an optional input-size feature. It
+   helps residual cells distinguish small and large prompt pressure, but has no
+   hard/soft QoS thresholds, cooldown, publication state, or independent admit
+   decision.
+
+Replace the earlier zero-TPS-violation acceptance wording with graded evidence:
+
+- repeated or unexplained hard red-TPS/red-TPOT violations, and all KV,
+  workspace, preemption, reservation, self-lock, sticky-zero,
+  false-publication, and lifecycle violations must be zero. A deterministic
+  previously unknown hard knee may expose exactly one qualified frontier probe;
+  the next comparable prediction must retreat and no higher bucket may run;
+- yellow-only misses may be non-zero, but the report must count them by fixed
+  category, show that comparable misses reduce later exposure when the higher
+  bucket provides no aggregate-throughput gain, preserve a below-yellow bucket
+  when it does provide a gain, and prove no second unverified bucket is skipped;
+- candidate SLO-compliant completion-token goodput must remain no worse than the
+  current baseline overall and must materially improve at least one constrained
+  mixed workload; raw admits, GPU utilization, or throughput bought through
+  repeated red violations do not count;
+- compare both a soft knee (between red and yellow) and a hard knee (below red).
+  The soft knee may settle at the higher-throughput below-yellow level when it
+  stays above red; the hard knee must retreat after the first qualified result;
+- sparse/low-flow, no natural probe opportunity, expiry, cancellation, waiting,
+  preemption, reset, and hint failure must all retain cold-safe progress without
+  node-wide false protection.
+
+The already downloaded strict-yellow focused green at candidate patch
+`bd52dce4a41bc809397d4f53818f1e7a7740e0ee1c987aef1cf5b7d0340946b3`
+and evidence SHA-256
+`17d79b787edc3878d4afdc5bd4b169bce655f84e430514c4fecfb4a3106e868c`
+proves that the old strict behavior was executable, race-clean in the focused
+packages, and not a harness failure. It is now a superseded comparison artifact,
+not final v0.10.8 green. No image, deployment, Router change, or live traffic was
+performed from it.
+
+##### v0.10.8 second correction — aggregate benefit, not strict TPS-first
+
+Added after R10 was executed on the remote builder and after the user clarified
+that total throughput is the primary objective. Limited per-user TPS reduction
+is acceptable above the red floor. Learning must make a reduction less likely
+when it buys no total throughput, but it must not turn yellow into a hidden hard
+limit that holds GPU utilization below the useful frontier. This section
+supersedes every earlier sentence that requires a yellow-band forecast before a
+one-step probe or that stops solely because a mature prediction is below yellow.
+
+The throughput and QoS signals remain deliberately separate:
+
+1. Qualified completion outcomes provide the joining request's TPS/TPOT and
+   observational TTFT. They train per-user QoS for later predictions. The real
+   HTTP completion producer normally does not contain a simultaneous
+   `ExistingUserTPS`, so R10's requirement for joining and existing TPS in one
+   `SchedulerOutcome` would make aggregate-frontier learning unreachable in the
+   real path.
+2. Do not replace that missing value with `joining UserTPS * admission-time
+   concurrency`. Other users can complete during a long response, workloads are
+   unequal, and a fast joining request can otherwise certify an optimistic total
+   throughput that never existed. Do not splice the separate existing-prefill
+   outcome into the completion outcome; the windows and causal targets differ.
+3. Aggregate completion throughput comes from the vLLM generation-token counter
+   already fetched by the asynchronous observer. A sample is qualified only
+   across a bounded stable window with positive generation progress, identical
+   positive running concurrency at both ends, zero waiting, no preemption or
+   counter reset, no Manager or shadow lifecycle event during the interval, and
+   no pending prefill at either end. The sample contains only backend identity,
+   start/end time, decode-concurrency bucket, and aggregate completion TPS.
+4. The scheduler owns a separately bounded, anonymous concurrency curve using
+   the existing minimum-sample, maximum-age, per-cell sample, and maximum-cell
+   limits. Aggregate throughput is an objective estimate, not a per-user QoS
+   lower bound, so observation computes an independent lower median instead of
+   reusing the residual calibrator's p10 setting. Pre-forward prediction performs
+   only O(1) current/previous-bucket lookups. Restart, epoch reset, preemption
+   invalidation, age expiry, and bounded eviction remove its authority.
+5. The current bucket reaches a throughput frontier only after both current and
+   immediately preceding buckets are mature and the current robust aggregate
+   TPS estimate is no greater than the previous estimate. Lack of aggregate
+   evidence never fabricates a reject. Red TPS/TPOT, waiting, preemption, KV,
+   workspace, confidence, availability, and lifecycle gates remain independent
+   and higher priority.
+6. Yellow outcomes are counted QoS debt. They are not free: deterministic and
+   live reports must show their frequency, duration, aggregate throughput gain,
+   red-band distance, and whether exposure declines at an unproductive bucket.
+   No yellow-only miss activates Router protection. A mature
+   no-throughput-gain frontier may publish the existing load-dependent capacity
+   contract because the node is then at its learned useful concurrency.
+
+R10 patch SHA-256
+`0562ff2ccbfb287e6d81d4d83ec5ce46231668f26e008e9bafac7e05c590f15a`
+was not green. Remote evidence archive SHA-256
+`30020682fbedf7e189e9fb96f09d3a4b8af4d814f142ce23f8c078e32d3d5c4c`
+recorded focused/default/race failures plus gofmt differences. The first product
+failure was strict-yellow logic returning `throughput_frontier_reached` at
+decode 2 before any probe; the beneficial-soft simulation consequently matured
+only decode 1. The format failure is separate. R10 is retained as red design
+evidence, not source green, release evidence, an image, or deployment authority.
+
+The corrected deterministic matrix is:
+
+- safe: 50 TPS/user through decode 8, reaching aggregate 400;
+- harmful soft: 50 TPS/user through 6 then 22 at 7, collecting three soft
+  samples and retreating from aggregate 154 to the mature aggregate 300 bucket;
+- beneficial soft: 50 through 6, then below-yellow TPS that still raises
+  aggregate throughput across one or more buckets; retain every beneficial
+  bucket and stop only at the first mature bucket whose aggregate no longer
+  improves;
+- hard: 50 through 6 then 10 at 7, allowing at most one qualified exposure and
+  immediately retreating without trying 8;
+- producer causality: a real completion containing only joining TPS cannot
+  mature aggregate evidence; a separate stable generation-counter outcome can,
+  and feedback changes only the next prediction;
+- robustness: unequal users, fast joining/slow existing users, counter lag or
+  reset, no-generation windows, churn, pending prefill, waiting, preemption,
+  censored intervals, sparse traffic, expiry, cancellation, epoch invalidation,
+  hint failure, and low-flow recovery cannot promote a false frontier or create
+  a self-lock.
+
+Review pass 1, model and causality: the completion proxy was rejected because it
+is not produced with simultaneous existing-user TPS and multiplication would
+misattribute changing concurrency. The selected counter is the direct aggregate
+token producer already observed from vLLM, while tokenizer size, per-user QoS,
+and aggregate benefit remain independent inputs to one scheduler decision.
+
+Review pass 2, safety, lifecycle, efficiency, and SOLID: aggregate evidence is
+anonymous, bounded by existing configuration, invalidated with scheduler
+learning, and never stored per request. Stable-window qualification stays in the
+observer; curve ownership and prediction stay in Scheduler; Manager remains the
+only atomic check/reserve owner. Feedback-path quantiles preserve O(1)
+pre-forward lookup. Missing or stale curve evidence permits only the ordinary
+red/resource-safe one-step learning path and cannot independently claim either
+capacity or risk.
+
+Review pass 3, evidence and release: R9 proves only the prior graded-QoS slice
+and R10 is red; both are superseded for final algorithm claims. The corrected
+producer tests and four frontier simulations must pass focused and race gates on
+the remote builder before any full matrix. Every executable change invalidates
+earlier candidate hashes. No version commit, tag, push, image, CVM deployment,
+Router enable, or live-traffic window is allowed until the ordered gates in this
+plan are newly satisfied.
+
+##### v0.10.8 third correction — throughput objective with bounded QoS debt
+
+This latest correction makes the optimization order explicit. PIG maximizes
+useful aggregate completion-token throughput subject to hard resource/lifecycle
+safety and the red per-user TPS/reciprocal-red-TPOT floor. Among policies with
+similar useful throughput, it prefers the one with fewer and shorter yellow-band
+misses. It does not optimize for zero TPS variation, and it does not require a
+yellow-band prediction before a red-safe one-bucket probe. This section
+supersedes the older `TPS-first` wording in the persistent goal and all plan text
+that could make yellow a hidden admission threshold.
+
+The operational interpretation is deliberately simple:
+
+1. A limited, temporary TPS reduction above red is acceptable while acquiring
+   evidence. Yellow misses are fixed-cardinality QoS-debt observations used to
+   improve later predictions; they do not independently reject, start cooldown,
+   publish Router protection, reduce Router capacity, or erase mature evidence.
+2. If a mature higher-concurrency bucket increases aggregate completion TPS, it
+   remains useful even when its per-user TPS is below yellow, and one-step
+   exploration may continue. If the mature bucket provides no aggregate gain,
+   later comparable requests retreat to the immediately preceding higher-
+   throughput bucket. A hard red miss, waiting, or preemption still retreats on
+   the next comparable prediction without waiting for aggregate maturity.
+3. The aggregate curve uses the lower median (`q=0.50`) of fresh qualified
+   stable-window samples. With the default minimum of three samples,
+   `[100, 310, 320]` estimates `310`, so one non-zero scrape outlier cannot close
+   a `300`-TPS preceding frontier. A second low observation producing
+   `[100, 310, 320, 100]` estimates `100` under the existing lower-quantile
+   selector, so repeated low evidence closes it. The residual calibrator keeps
+   its configured p10 for conservative per-user QoS; the two statistics must not
+   be conflated.
+4. Code, logs, status, Router-capacity events, and fixed-cardinality metrics call
+   the aggregate values `estimate`, not `lower`. Missing, stale, reset, zero-
+   progress, churned, waiting, preemption-affected, lifecycle-overlapped, or
+   pending-prefill windows create no estimate and therefore no frontier reject.
+
+Review pass 1, objective and causality: multiplying one request's TPS by an
+admission-time concurrency remains rejected as a fabricated aggregate target.
+The vLLM generation-token counter is the direct aggregate producer; the
+approximate tokenizer hint, per-user QoS residuals, and aggregate curve remain
+separate evidence feeding one pre-forward decision. The aggregate statistic is
+therefore a robust throughput estimate rather than a safety lower bound.
+
+Review pass 2, safety, lifecycle, efficiency, and SOLID: the median changes only
+the bounded anonymous aggregate curve. It cannot weaken red/resource evaluation
+or create a second controller. Observation performs bounded sample selection;
+`Predict` retains O(1) adjacent-bucket lookup; Manager remains the only atomic
+check/reserve owner. A focused test must prove one low aggregate outlier neither
+closes the frontier nor enters hard adverse state, repeated low evidence does
+close it, and the existing single-sample hard per-user retreat still passes.
+
+Review pass 3, evidence and release boundary: R11 exposed the obsolete strict-
+yellow test and invalid ablation; R12 cleared all behavioral gates but retained
+one gofmt difference. R13 was the last exact focused and race green for its input
+patch. Its evidence archive was downloaded to
+`tmp/pig-v0108-use1-cb-20260803/frontier-r13/evidence.tar`; the local outer
+SHA-256 exactly matches the builder value
+`a8663e3aae89f3184788f6bbc78b17f655328892c9920b87731e0ab6f6cf6957`.
+R13 recorded safe aggregate `400`, harmful-soft retreat `154 -> 300`,
+beneficial-soft progression through aggregate `308` and `320`, and exactly one
+hard-knee exposure. The later median and public-name changes are executable, so
+R13 is superseded stage evidence, not current source green. A fresh exact R14 or
+later focused/race run is mandatory before the low-flow/full-builder matrix.
+There is still no v0.10.8 commit, tag, push, image, deployment, Router change, or
+new live-traffic authorization implied by these source edits.
+
+R14 used tracked patch SHA-256
+`29c47a56512bfa13f606a4c3d4bb155d4a3b56283d8be5521e6e03ed39cc1873`,
+the unchanged hint/simulation patches recorded above, and focused runner
+SHA-256
+`d55405720ce4246eea816b2ed08e94e4853e0957d72d42f4a320a01f959a8885`.
+The remote and local inputs matched. Its downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/frontier-r14/evidence.tar`, SHA-256
+`7268cc010ae1b98140e63c18357ab7823841ea6f246f49b3bbbc75f796852f92`.
+Observer and frontier simulation gates passed; scheduler, combined focused, and
+race gates failed on the new median test. The failure was a test-state error,
+not accepted product red: `Predict` adds the joining request to virtual state,
+so `state.DecodeSequences=2` queried prospective bucket 3 while the fixture had
+populated only buckets 1 and 2. Correcting the state to 1 queries prospective
+bucket 2 as intended. R14 also recorded six gofmt-only alignment hunks, which
+were copied exactly from remote evidence. Any corrected source requires a fresh
+R15 or later run; R14 is not green evidence.
+
+R15 used corrected tracked patch SHA-256
+`188b096e1dbb550d081d90339b6fd81995dc62c559f3533d105e9259b1de48b3`.
+Its downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/frontier-r15/evidence.tar`, SHA-256
+`83132e0f9ad08b831fb92235954ad953d2a10764a78f038f60c35c293b41c6f7`.
+Scheduler, observer, all four frontier simulations, combined focused packages,
+and race tests passed. The safe/harmful-soft/beneficial-soft/hard results were
+respectively `400`, `154 -> 300`, progression through `308` and `320`, and one
+hard exposure. Overall remained non-zero only because one manually copied gofmt
+alignment contained a single extra space in `PreemptionRiskUpper`. That exact
+remote formatting correction is executable-tree neutral but changes the patch;
+therefore R15 remains stage evidence and a full exact R16 rerun is required.
+
+R16 is the exact focused green for executable tracked patch SHA-256
+`f698b3586d7c98c3ee301f8afd50d8bf6afc62885f936295b77f560b3a80e930`,
+hint patch SHA-256
+`28f443e91fc8970874842a037c032d8cf2ad964562291266b03fed0c201988ff`,
+simulation patch SHA-256
+`ac3da115aebce6182cff426450582c243c289cbe6424cf9564def848f43f08c3`,
+and focused runner SHA-256
+`d55405720ce4246eea816b2ed08e94e4853e0957d72d42f4a320a01f959a8885`.
+The downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/frontier-r16/evidence.tar`, SHA-256
+`b6eafc10ae905833fe5c7144e3a9ab7bd3b0237500eda591f5051423155a876a`.
+All statuses are zero: gofmt, scheduler, observer, four frontier simulations,
+combined focused packages, race, and overall. Deterministic results are safe
+aggregate `400` versus ablation `100` and oracle `400`; harmful-soft mature 6,
+attempted 7, aggregate `154 -> 300`, three soft outcomes and no decode-8
+attempt; beneficial-soft mature 8, attempted 9, retained aggregate `308` then
+`320`, stopped at `297`; hard mature 6, attempted 7, exactly one hard outcome
+and no decode-8 attempt. This focused evidence authorizes only the next
+low-flow/full-builder/benchmark/review gates. It is not a full matrix, version,
+commit, push, image, deployment, Router change, or live validation.
+
+After adding benchmark-only coverage for the lexical hint, aggregate observation,
+and aggregate-frontier prediction lookup, R17 used tracked patch SHA-256
+`faba24ae297b1bdf9096dbe9a5050dbf077c44b4e1db4b886b6bfef1388bd748`.
+Its downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/frontier-r17/evidence.tar`, SHA-256
+`5ed523b9f7fc9b4c6632221e505a948944125586da48d954d4fe7076f7ffd1f4`.
+All R16 focused, simulation, race, and formatting statuses remained zero. R17
+proves the added benchmark source compiles with the candidate; it did not execute
+the benchmarks and therefore supplies no timing claim. The complete matrix must
+run the exact-v0.10.7 predictor and estimator comparisons in both orders plus
+the new candidate-only aggregate and lexical-hint measurements.
+
+##### v0.10.8 fourth correction — bounded lexical sampling after full-r1
+
+Full-r1 reconstructed candidate tracked patch SHA-256
+`d3b0c7b909fdf3cfb9a6c2eb3e64ee0ffe97e53632fa4caf4d90bca6a5376390`
+and exact v0.10.7 archive SHA-256
+`087cad84f637444cb93ae684a90b7d2df62bd55de412760ef4c8898d9c4afcac`
+on the fixed builder. Inner/outer runner SHA-256 values were
+`ed558847337a1ebb8714903798807220c819e4684c1ffd09bc30f21d999b659e`
+and
+`5f98a685a366f0854e4e272cbfe535d489de1d052392f0c5c7e0a392d5ea7520`.
+The downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/full-r1/evidence.tar`, SHA-256
+`b956952633436ad483c0954acde1015ce3b1de46c31ec28bfba06f48458e33a2`;
+its outer and every internal checksum were independently verified.
+
+All executable statuses were zero: low-flow/self-lock boundaries, gofmt, vet,
+build, all Go tests, all-race, deterministic goodput/frontier tests, both-order
+candidate/exact-v0.10.7 goodput, predictor and estimator benchmarks, aggregate
+lookup/observation, and lexical-hint benchmark. Candidate deterministic
+completion-token goodput was `44704` with zero protected violations, false
+accepts, or leaks; the older acceptance workload produced the same result on
+exact v0.10.7, while the new frontier simulations separately proved safe `400`,
+harmful-soft `154 -> 300`, beneficial-soft `308 -> 320`, and one hard exposure.
+
+Full-r1 is nevertheless a performance red, not final green. Median exact-
+v0.10.7 versus candidate predictor time was approximately `931.6 -> 1661 ns/op`
+in candidate-first order and `934.1 -> 1657 ns/op` in reverse order. Candidate
+allocation improved from `152 B, 2 allocs` to `128 B, 1 alloc`, and the isolated
+aggregate lookup itself was only `447.4 -> 459.0 ns/op` and `449.5 -> 459.4
+ns/op` with zero allocations, a 2-3% increment. The additional predictor time
+therefore belongs to the broader graded-QoS/adverse recovery semantics, not the
+O(1) aggregate lookup.
+
+The first lexical implementation was too exact for its product role. It scanned
+every string byte and decoded Unicode/escapes even though the result is only a
+rough feature. At 64 KiB, exact-v0.10.7 estimator medians were about `1.877 us`
+and `1.874 us`, while the candidate was about `128.225 us` and `125.410 us`;
+the direct lexical pass was about `138.055 us`. Those absolute times are small
+relative to inference, but the linear second pass contradicts the requested
+simple, extremely cheap hint and the predeclared performance gate.
+
+The corrected hint uses fixed-budget stratified sampling instead:
+
+1. sample at most 256 string bytes for the whole request and at most 64 bytes
+   from any one string, across up to four positions;
+2. estimate only rough ASCII-word, whitespace, punctuation, and UTF-8 leading-
+   byte density, then scale by string length; do not fully decode Unicode or
+   escapes and do not allocate;
+3. after the request budget is exhausted, use the constant-time four-byte
+   fallback for later strings; JSON structure scanning and the existing raw
+   conservative interval remain unchanged;
+4. keep equal-byte ASCII/CJK separation, overflow/failure fallback, next-request-
+   only calibration, bounded state, and no independent admission authority.
+
+The earlier blanket 10% comparison is refined rather than silently waived.
+The isolated new admission lookup must remain within 10% of the same-candidate
+no-curve path with identical allocations. The full graded-QoS predictor must
+remain below 2 microseconds median on this builder and use no more allocations
+than exact v0.10.7. The bounded lexical pass must remain below 1 microsecond at
+1 KiB, 64 KiB, and 2 MiB with zero allocations; its cost should be approximately
+size-independent. The complete JSON estimator must add no more than 1
+microsecond median over exact v0.10.7 at those sizes and retain zero allocations.
+These are builder CPU gates only, not service latency or GPU-throughput claims.
+Any executable correction requires fresh focused/race and full-matrix evidence.
+
+##### v0.10.8 fifth correction — throughput priority reaffirmed and R18 disposition
+
+The latest user contract reaffirms rather than reverses the third correction:
+PIG must not over-enforce the nominal TPS target. Limited, temporary per-user
+TPS reduction above the red floor is an acceptable exploration cost when it can
+raise useful aggregate completion throughput. Learning should reduce the
+frequency and duration of yellow-band debt at mature, unproductive concurrency,
+but must retain a mature below-yellow bucket when that bucket improves aggregate
+throughput. The optimization order is therefore:
+
+1. preserve hard KV/workspace/lifecycle/preemption safety and the red TPS/TPOT
+   floor;
+2. maximize useful aggregate completion-token throughput;
+3. among throughput-equivalent choices, prefer fewer and shorter yellow TPS/TPOT
+   misses.
+
+This is not a strict `TPS-first` controller, and yellow is not a hidden hard
+threshold. A yellow-only observation still cannot reject, start cooldown,
+invalidate mature evidence, or publish Router protection. Repeated mature
+evidence that a bucket adds no aggregate throughput closes that frontier;
+beneficial evidence keeps it open. The deterministic harmful-soft and
+beneficial-soft cases remain mandatory because together they prove both sides of
+this tradeoff and guard against over-protection.
+
+R18 used tracked patch SHA-256
+`30f75c77cc9cb3afada82f6d4f9e2e3c477a6cdcfaff3501c2c67bf6b58775c1`,
+hint patch SHA-256
+`c696409a05f4a0517c5739fcf90434231b744405ddc38c32cd43e289cc9050ee`,
+the unchanged simulation patch SHA-256
+`ac3da115aebce6182cff426450582c243c289cbe6424cf9564def848f43f08c3`,
+and focused runner SHA-256
+`d55405720ce4246eea816b2ed08e94e4853e0957d72d42f4a320a01f959a8885`.
+Its downloaded archive is
+`tmp/pig-v0108-use1-cb-20260803/frontier-r18/evidence.tar`, SHA-256
+`f2628da2b8a16032b464856ebbfd0a39ab6da886ffe02b2e28b6c48f0eeef635`;
+the archive and internal checksum manifest were verified. Scheduler, observer,
+and frontier simulation gates passed. Combined focused and race gates failed on
+one stale expectation in
+`TestApproximatePredictiveHTTPInformationalResponseUsesFinalStatusAndFeedback`;
+R18 also recorded one formatting-only constant alignment difference. R18 is red
+stage evidence, not current source green.
+
+The failed fixture contains 94 bytes of valid JSON followed by 1,600,000 JSON
+whitespace bytes. The unchanged raw whole-body high is therefore 800,047 tokens,
+so backend `usage.prompt_tokens=4` cannot qualify the raw channel. The bounded
+lexical hint excludes trailing JSON whitespace and returns 14 tokens: nine for
+the model string and five for the prompt string. Its qualified ratio is
+`4/14 = 0.2857`, inside the configured `[0.25, 8]` band. Accepting this hint
+sample is the intended correction of an overly conservative byte estimate and
+matches the existing requirement that a safely high raw fallback must not block
+hint learning. The corrected tests must assert one accepted/stored hint sample,
+the unchanged final-status and lifecycle behavior, and the exact raw/hint
+fixture boundary. A fresh exact R19 focused/race run is required; no R18 result
+authorizes a full matrix, release, image, deployment, or Router change.
+
+R19 used corrected tracked patch SHA-256
+`b2d86838171ac40c465678add0fb645b2c1e6c875a8b21494197631597e5cb2c`,
+hint patch SHA-256
+`f389e6cc9b373f316e3cfed7a3b829904ed86d60af79498a271d307f65b79bae`,
+the unchanged simulation patch SHA-256
+`ac3da115aebce6182cff426450582c243c289cbe6424cf9564def848f43f08c3`,
+inner runner SHA-256
+`d55405720ce4246eea816b2ed08e94e4853e0957d72d42f4a320a01f959a8885`,
+and outer runner SHA-256
+`14a44b8e81900b36584824cd9dc53ca8aa261479f9a05467da856102add685d3`.
+The downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/frontier-r19/evidence.tar`, SHA-256
+`b63939611abf7ac35ed343fde6dcd9ec96816abadbc18561743f447344881899`;
+the outer archive, internal checksum manifest, input hashes, and every zero
+status were independently verified. Formatting, scheduler, observer, all four
+frontier simulations, combined focused packages, and race tests passed.
+Deterministic results remained safe aggregate `400` versus ablation `100` and
+oracle `400`; harmful-soft matured decode 6, attempted decode 7, retreated from
+aggregate `154` to `300`, counted three soft outcomes, and never attempted
+decode 8; beneficial-soft matured decode 8, attempted decode 9, retained
+aggregate `308` and `320`, and stopped at `297`; hard matured decode 6,
+attempted decode 7 exactly once, and never attempted decode 8. This exact
+focused green authorizes only the fresh full builder and performance matrix. It
+is not a versioned build, release, image, deployment, Router change, or live
+validation.
+
+Full-r2 reconstructed the current candidate from tracked patch SHA-256
+`e384ff45521d93f72e827162632b15eec73abb7fd5232d7b086987abc0fede62`,
+hint patch SHA-256
+`f389e6cc9b373f316e3cfed7a3b829904ed86d60af79498a271d307f65b79bae`,
+simulation patch SHA-256
+`ac3da115aebce6182cff426450582c243c289cbe6424cf9564def848f43f08c3`,
+and exact v0.10.7 archive SHA-256
+`087cad84f637444cb93ae684a90b7d2df62bd55de412760ef4c8898d9c4afcac`.
+Inner and outer runner SHA-256 values were
+`8f867537f3c783e0b502c67ca0f4bf765631fd82783472bcdb2e1501c92461fd`
+and
+`af5b5b91c9e3320c68c3c337ba49c2feff7764fc9b504a0cb700b823baeed653`.
+The downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/full-r2/evidence.tar`, SHA-256
+`dd8cecffe7ab216820bf325d9c0e1f6567a6cc2b10dcf4fadc963be6da48d7a1`;
+the archive, internal checksum manifest, input hashes, and every status were
+verified. Low-flow/self-lock boundaries, formatting, vet, build, all tests, all
+race tests, deterministic goodput/frontier simulations, both-order baseline
+comparisons, and every benchmark command returned zero. Candidate deterministic
+completion-token goodput was `44,704` with zero protected TPS/TPOT/KV,
+preemption-proxy, false-accept, or reservation-leak violations. Frontier results
+matched R19.
+
+Every requested benchmark regex produced exactly five samples per binary,
+order, and size. Median results were:
+
+- full predictor candidate `1.665/1.661 us` versus exact v0.10.7
+  `0.9361/0.9417 us`; candidate used `128 B, 1 alloc` versus `152 B, 2 allocs`
+  and stayed below the absolute 2-microsecond gate in both orders;
+- aggregate current/previous lookup candidate `458.7/464.3 ns` versus the
+  same-candidate no-curve path `446.3/447.0 ns`, an increase of approximately
+  `2.8%/3.9%`, with zero allocations; aggregate observation was `440.4 ns`,
+  zero allocations;
+- direct bounded lexical hint was `102.8 ns` at 1 KiB, `102.5 ns` at 64 KiB,
+  and `100.7 ns` at 2 MiB, always zero allocations;
+- complete estimator additive medians at 1 KiB were `104.7/107.2 ns` and at
+  64 KiB were `103/118 ns`, always zero allocations.
+
+The initial 2 MiB complete-estimator comparison conflicted across order:
+candidate-first reported `64.908 us` candidate versus `61.766 us` baseline,
+while reverse order reported `63.370 us` candidate versus `63.750 us`
+baseline. Full-r2 is therefore functional green but cannot alone establish the
+2 MiB additive performance gate. It does not permit selecting only the
+favorable order.
+
+A dedicated paired run precompiled both test binaries, pinned one container to
+CPU 0 (`cpuset_effective=0`), warmed both binaries, and alternated candidate-
+first and v0.10.7-first for eight 3-second rounds. Its inner and outer runner
+SHA-256 values were
+`43dbbd5acaaa2d018bfa32ce7e77d071f4682e5f87a02259077c54f2310693ef`
+and
+`246c277a273a74aecfe8828a09bcf4896acc5023ef85903691c83201c21e6a72`.
+The downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/full-r2/paired-2m-r1/evidence.tar`, SHA-256
+`f8b870fdf28b33c9818ca9f20c15269124bfcbb58a17e7d366e20724aed22e29`;
+its archive, internal checksum manifest, exact full-r2 source inputs, binary
+hashes, and zero status were verified. Across all eight balanced samples,
+candidate median was `63.815 us` and exact v0.10.7 median was `64.146 us`, an
+additive `-0.331 us`; both remained zero-allocation. This balanced evidence
+resolves the contradictory unpinned full-r2 order as CPU/order noise and passes
+the 2 MiB additive gate without changing or waiving the threshold. Full-r2 plus
+the paired supplement authorize the three recorded source/evidence review
+passes, not versioning, push, image, deployment, Router change, or live traffic.
+
+##### v0.10.8 sixth correction — material-throughput deadband from review pass 1
+
+Review pass 1 found one mismatch between the stated objective and the executable
+frontier. The plan says that throughput-equivalent policies should prefer fewer
+and shorter yellow-band misses, but the implementation considered every
+positive floating-point aggregate difference useful. Ordinary scrape and CPU
+measurement noise could therefore preserve a higher-concurrency bucket with
+material QoS debt for a reported gain such as 0.1%, preventing learning from
+reducing the very yellow exposure it records.
+
+Keep the correction fixed, relative, and small: a mature current bucket must
+exceed the immediately preceding bucket's robust aggregate completion-TPS
+estimate by more than 1% to justify another probe. A gain of 1% or less is
+treated as throughput-equivalent and closes the frontier in favor of the lower-
+concurrency, lower-QoS-debt bucket. This is not a yellow TPS threshold and does
+not alter red TPS/TPOT, KV, workspace, waiting, preemption, confidence,
+availability, or lifecycle constraints. It also does not require an absolute
+TPS value and remains model-neutral.
+
+The deadband is intentionally below the deterministic beneficial-soft margins:
+`308/300 - 1 = 2.67%` and `320/308 - 1 = 3.90%` remain useful and continue,
+whereas a `302/300 - 1 = 0.67%` gain stops and a `304/300 - 1 = 1.33%` gain
+continues. Focused tests must prove both boundary sides plus all existing safe,
+harmful-soft, beneficial-soft, hard, low-flow, and Router-publication behavior.
+Because this changes pre-forward admission semantics, the predictor identity
+advances from `adaptive-tps-kv-v4` to `adaptive-tps-kv-v5`, preventing old
+learned cells from being treated as the new policy. All prior executable hashes
+remain valuable stage evidence but are superseded for final source green. A
+fresh R20 or later focused/race run and a fresh complete builder/performance
+matrix are mandatory before versioning or release work.
+
+R20 used tracked patch SHA-256
+`dd8c460a6f5b9fc992f5ad3214eb1ba3bfa6fe2b90de64a99142ed66c113c0cb`,
+the unchanged hint and simulation patches, inner runner SHA-256
+`2b05998a2f2bc1375a8c956f194786d8c2115ccdbe1046b109f10b47efbde07d`,
+and outer runner SHA-256
+`f9cb23996fd96d9652c08f7a91d5fab588ac0ee9f03d26b7e9ecca4fcf891427`.
+Its downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/frontier-r20/evidence.tar`, SHA-256
+`640d5658c85f469533a53e6369092f0b90ae2f32609b5c324df5a78f5c44d030`.
+The new sub-1% stop and above-1% continue test, all earlier scheduler and
+observer cases, all four deterministic frontier simulations, combined focused
+packages, and race tests passed. Overall remained non-zero only because the
+four constants required gofmt alignment; R20 is red stage evidence, not current
+source green. The exact formatter output is copied into source, so a fresh R21
+or later focused/race run is required.
+
+R21 is the exact focused green for tracked patch SHA-256
+`0e1a2dd0a1be5af5dc27bebc7a7c9f28fca7a43870c72bcecd3a7b404f85e12a`,
+the unchanged hint and simulation patches, inner runner SHA-256
+`2b05998a2f2bc1375a8c956f194786d8c2115ccdbe1046b109f10b47efbde07d`,
+and outer runner SHA-256
+`62505c62efcda8906604c660ee7d4da5bc57847e8b5e5ea1c8c7e6c27e91bb46`.
+Its downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/frontier-r21/evidence.tar`, SHA-256
+`e6a47fe1bed037155aa08e6b3b0b5e8c3b39547a9f4a2926612f430581881b8c`.
+Formatting, the explicit deadband test, scheduler and observer focused tests,
+all four deterministic frontier simulations, combined focused packages, race,
+and overall all returned zero. Safe aggregate stayed `400`; harmful-soft stayed
+`154 -> 300`; beneficial-soft retained `308` and `320`; hard still exposed
+decode 7 exactly once and never attempted 8. R21 authorizes only a fresh full
+matrix for the v5 predictor tree, not versioning, release, image, deployment,
+Router change, or live traffic.
+
+Full-r3 is the complete pre-version builder green for the v5 predictor tree. It
+used tracked patch SHA-256
+`16c83c395800443bf28ce6fa61d44d1079c17945f71261693b28c96136dec634`,
+the unchanged hint and simulation patches, exact v0.10.7 archive SHA-256
+`087cad84f637444cb93ae684a90b7d2df62bd55de412760ef4c8898d9c4afcac`,
+inner runner SHA-256
+`68a2eb48f7201b86187e22de18e4f89c7210889462b3d9eeaddfe3c6dba73871`,
+and outer runner SHA-256
+`2b51cab7d636ce8961bff53d4934fa25ea77c5be61c3a33bc66a4b6f9cfa1ae5`.
+The downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/full-r3/evidence.tar`, SHA-256
+`08e8f70148fc67f54be24cb327797e968b60af94b7e92e510f93ea5ed4b8bb6c`;
+the archive, internal checksum manifest, inputs, and every status were verified.
+Low-flow/self-lock and deadband boundaries, formatting, vet, build, all tests,
+all race tests, deterministic goodput/frontier simulations, both-order baseline
+comparisons, and every benchmark command returned zero.
+
+Every expected benchmark group contained exactly five samples. Candidate
+predictor medians were `1.683/1.700 us`, `128 B, 1 alloc`, versus exact v0.10.7
+`0.9340/0.9341 us`, `152 B, 2 allocs`. Aggregate lookup medians were
+`460.3/467.7 ns` versus same-candidate no-curve `451.9/453.3 ns`, approximately
+`1.9%/3.2%` overhead with zero allocations; aggregate observation was
+`445.8 ns`, zero allocations. Direct lexical hint medians were `104.0 ns` at
+1 KiB, `102.2 ns` at 64 KiB, and `100.5 ns` at 2 MiB, all zero-allocation.
+Complete-estimator additive medians were `103.6/103.2 ns` at 1 KiB,
+`96/88 ns` at 64 KiB, and `462/241 ns` at 2 MiB, all zero-allocation and below
+the 1-microsecond gate in both orders. Deterministic completion-token goodput was
+`44,704` with zero protected TPS/TPOT/KV, preemption-proxy, false-accept, or
+reservation-leak violations. Safe, harmful-soft, beneficial-soft, and hard
+frontier outputs remained `400`, `154 -> 300`, retained `308/320`, and exactly
+one hard-knee exposure respectively.
+
+Final review pass 1, model and causality: the first audit found that an exact
+`current <= previous` comparison did not implement the promised preference for
+lower QoS debt at throughput-equivalent buckets. The fixed 1% relative deadband
+and predictor identity v5 correct that gap. R21 and full-r3 prove both deadband
+sides while retaining beneficial yellow-band throughput. Input hint, per-user
+red/soft QoS evidence, and direct aggregate generation-token evidence remain
+independent; all decisions and reservations still occur before forward, and
+feedback affects only later requests.
+
+Final review pass 2, safety, lifecycle, efficiency, and SOLID: no further
+executable defect was found. `Manager` remains the single atomic
+check/predict/reserve and lifecycle-reconciliation owner. The JSON estimator and
+fixed-budget lexical sensor, input-size calibrator, vLLM stable-window producer,
+learned scheduler, HTTP adapter, and Router/log/metrics publishers have separate
+narrow responsibilities. All maps, sample slices, observations, deferred
+outcomes, retired reservations, and metric labels are bounded. Epoch/reset,
+preemption, waiting, stale/fetch failure, cancellation, disconnect, completion-
+before-poll, early resource release, and shutdown paths preserve conservative
+fallback and release semantics. Prediction keeps O(1) adjacent aggregate
+lookups, the hint and aggregate paths allocate zero in their isolated hot-path
+benchmarks, and full race tests are green. TTFT is observation-only; no cache,
+model asset, routing, Router source, or vLLM source behavior was introduced.
+
+Final review pass 3, evidence and release boundary: R21 is exact focused/race
+green and full-r3 is exact complete builder/performance green for its hashes.
+Red R18 and R20, performance-red full-r1, pre-deadband full-r2, and all older
+hashes are retained without being mislabelled as current release evidence. The
+runtime version, OCI label, and current README still identify v0.10.7, so this
+is not yet a v0.10.8 versioned build. The next permitted actions are to unify
+those identities as v0.10.8 and rerun an exact clean builder version gate. No
+commit, tag, push, image, registry digest, Compose integration, CVM deployment,
+Router change, or live-traffic validation exists yet for v0.10.8.
+
+##### v0.10.8 seventh correction — exact version gate and final throughput-first interpretation
+
+The latest user clarification confirms the fifth and sixth corrections. The
+controller is not required to hold every user at the nominal yellow TPS target.
+It may accept a bounded, temporary yellow-band TPS/TPOT debt when the mature
+higher-concurrency bucket increases useful aggregate completion throughput. The
+learner should progressively avoid repeated debt only when that concurrency is
+unproductive; it must not learn a hidden yellow admission threshold or trade
+away measurable throughput merely to make the yellow counter zero. The active
+optimization order remains hard resource and red QoS safety, useful aggregate
+completion-token throughput, then lower yellow debt among throughput-equivalent
+choices. This clarification requires no executable change after the v5 1%
+measurement-noise deadband because the harmful-soft and beneficial-soft tests
+already prove both sides of the required tradeoff.
+
+Full-r4 is the exact versioned remote-builder green for the v0.10.8 executable
+tree. It reconstructed the candidate from base archive SHA-256
+`07ea9c43f132f134497bd0ecc279a4eb32a01b3576d80d7e6641fcb23b387dde`,
+tracked patch SHA-256
+`e2350aa57c0ee76e7cef60f0514c52c003bfcbf70e66e0e067695b117c552113`,
+unchanged hint patch SHA-256
+`f389e6cc9b373f316e3cfed7a3b829904ed86d60af79498a271d307f65b79bae`,
+unchanged simulation patch SHA-256
+`ac3da115aebce6182cff426450582c243c289cbe6424cf9564def848f43f08c3`,
+and exact v0.10.7 archive SHA-256
+`087cad84f637444cb93ae684a90b7d2df62bd55de412760ef4c8898d9c4afcac`.
+The full-matrix inner, version-contract inner, and outer runner SHA-256 values
+were respectively
+`68a2eb48f7201b86187e22de18e4f89c7210889462b3d9eeaddfe3c6dba73871`,
+`4b1df26add9600254ae2f14d846a6fdb986369b33bd52fbc50368a90c87fbdf8`,
+and
+`43b4b2ebc049751deefe3e1718d72d55bdf12fc45f48a67933572611eeb61760`.
+The pinned Go image digest remained
+`sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40`
+with actual builder image ID
+`sha256:f14dd5573539be535f8d24abe277d750b937d584b6850ed0aed839bc737747f5`.
+
+The downloaded evidence is
+`tmp/pig-v0108-use1-cb-20260803/full-r4/evidence.tar`, SHA-256
+`9387fd94dc86d981cf5a65968de547258ecd0de07cee91a280a665c1d7a1283b`.
+The local copy matches the remote hash; all 60 internal manifest entries were
+independently verified, and all 28 status files are zero. Formatting, vet,
+build, all tests, all race tests, low-flow/self-lock/deadband boundaries,
+deterministic goodput/frontier tests, both-order v0.10.7 comparisons, and every
+benchmark command passed. The compiled binary SHA-256 was
+`94b85099a8d78f4535c38fb03af3ed7d66bc14c8724c14386e1cfbe3b4629ed6`;
+its actual startup line identified `PIG-v0.10.8`. The source contract also
+proved runtime constant `PIG-v0.10.8`, OCI version label `0.10.8`, current
+README image tag `v0.10.8`, and current advanced/observability documentation,
+with no non-historical `0.10.7` in those release-identity files.
+
+Every expected benchmark group again contained exactly five samples. Candidate
+predictor medians were `1.731/1.705 us`, `128 B, 1 alloc`, versus exact v0.10.7
+`0.9331/0.9332 us`, `152 B, 2 allocs`. Aggregate frontier lookup medians were
+`460.9/461.5 ns` versus same-candidate no-curve `450.7/446.6 ns`, approximately
+`2.26%/3.34%` overhead with zero allocations; aggregate observation was
+`445.0 ns`, zero allocations. Direct lexical hint medians were `104.9 ns` at
+1 KiB, `103.5 ns` at 64 KiB, and `100.0 ns` at 2 MiB, all zero-allocation.
+Complete-estimator additive medians were `104.3/104.6 ns` at 1 KiB,
+`109/98 ns` at 64 KiB, and `698/-2510 ns` at 2 MiB, all zero-allocation and
+below the 1-microsecond additive gate in both orders.
+
+Deterministic predictive completion-token goodput remained `44,704` versus the
+current threshold controller's `39,840` (`+12.21%`), with zero protected
+violations across 21 scenarios. Safe frontier aggregate remained `400` versus
+ablation `100`; harmful soft debt matured at decode 6, probed 7, and returned to
+aggregate `300`; beneficial soft debt matured at decode 8, probed 9, and
+retained aggregate `308 -> 320`; the hard knee exposed decode 7 exactly once
+and never attempted 8. This is builder/simulation evidence, not a claim about
+production GPU throughput or live per-user QoS.
+
+This plan-only evidence record is the sole source change after full-r4 and does
+not alter the executable tree, Dockerfile, current release-identity docs, tests,
+or image output. Full-r4 therefore permits a final staged-path audit, one
+v0.10.8 source commit, annotated tag, and push only to `pig-origin`. It does not
+yet prove a builder-local image, published registry image, Compose integration,
+CVM deployment, live readiness, Router enablement, or a 30-minute canary. Those
+layers remain separate gates, and `use1-cb` must stay Router-disabled until the
+published immutable image passes fresh shadow and Router-disabled enforce
+validation.

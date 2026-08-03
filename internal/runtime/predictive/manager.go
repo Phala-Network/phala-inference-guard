@@ -757,7 +757,14 @@ func validRequestCost(cost domain.RequestCost) bool {
 
 func validSchedulerPrediction(prediction SchedulerPrediction) bool {
 	estimate := prediction.Estimate
-	return nonNegativeFinite(estimate.ExistingUserTPSLower) && nonNegativeFinite(estimate.NewUserTPSLower) && estimate.TTFTUpper > 0 && estimate.TPOTUpper > 0 && nonNegativeFinite(estimate.WorkspaceRiskUpper) && nonNegativeFinite(estimate.PreemptionRiskUpper) && positiveFinite(prediction.Confidence) && prediction.Confidence <= 1
+	return nonNegativeFinite(estimate.ExistingUserTPSLower) &&
+		nonNegativeFinite(estimate.NewUserTPSLower) &&
+		nonNegativeFinite(estimate.AggregateCompletionTPSEstimate) &&
+		nonNegativeFinite(estimate.PreviousAggregateCompletionTPSEstimate) &&
+		estimate.TTFTUpper > 0 && estimate.TPOTUpper > 0 &&
+		nonNegativeFinite(estimate.WorkspaceRiskUpper) &&
+		nonNegativeFinite(estimate.PreemptionRiskUpper) &&
+		positiveFinite(prediction.Confidence) && prediction.Confidence <= 1
 }
 
 func minimumConfidence(left, right float64) float64 {

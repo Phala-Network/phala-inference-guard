@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.10.7 model-agnostic predictive admission
+### v0.10.8 model-agnostic predictive admission
 
-PIG v0.10.7 can estimate request size locally and predict the post-admit
+PIG v0.10.8 can estimate request size locally and predict the post-admit
 KV/TPS/TPOT/preemption state before forwarding to a vLLM upstream. TTFT is
 still measured and learned for diagnosis, but it is observation-only and can
 never reject a request:
@@ -180,19 +180,24 @@ payload-free observation record so qualified completion feedback improves only
 later predictions. `enforce` rejects a non-fit or unknown decision before
 upstream forwarding with the normal OpenAI-compatible PIG 429 response.
 Predictive `shadow` and `enforce` require `DYNAMIC_TTFT_ENABLED=false`; this is
-also the v0.10.7 default. Legacy dynamic TTFT limiting remains available only
+also the v0.10.8 default. Legacy dynamic TTFT limiting remains available only
 as an explicit opt-in while predictive admission is `off`.
 
-This path is model-family neutral: it has no model tokenizer, chat template,
-model-family branch, native FFI, tokenizer asset, or hot-path tokenizer RPC.
-The bounded O(body bytes) JSON scanner estimates a conservative interval and a
-bounded online calibrator learns from `usage.prompt_tokens`. Scheduler feedback
-for TPS and latency also affects only future predictions. Existing in-flight
-reservations remain immutable until a valid upstream terminal signal releases
-their GPU/KV/TPS accounting. Only bounded numeric outcome state may then wait
-for the final handler result; successful qualified outcomes train later
-predictions, while failure, cancellation, timeout, disconnect, or shutdown is
-censored or dropped without learned headroom.
+This path is model-family neutral: it has no exact model tokenizer, chat
+template, model-family branch, native FFI, tokenizer asset, or hot-path
+tokenizer RPC. The bounded O(body bytes) JSON scanner retains its conservative
+interval and adds a fixed-budget, allocation-free lexical input-size hint. A
+bounded online calibrator learns both references from `usage.prompt_tokens`.
+Red TPS/TPOT and resource bounds remain hard; yellow TPS/TPOT is counted soft
+QoS debt. Stable vLLM generation-token windows learn an aggregate-throughput
+curve, continue only for more than 1% mature gain, and otherwise prefer the
+previous lower-debt concurrency bucket. Scheduler feedback affects only future
+predictions. Existing in-flight reservations remain immutable until a valid
+upstream terminal signal releases their GPU/KV/TPS accounting. Only bounded
+numeric outcome state may then wait for the final handler result; successful
+qualified outcomes train later predictions, while failure, cancellation,
+timeout, disconnect, or shutdown is censored or dropped without learned
+headroom.
 
 The predictor discovers vLLM's served-model identity, KV block size, and maximum
 KV token capacity from startup metrics, then watches freshness, waiting work,
@@ -262,7 +267,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.7
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.8
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

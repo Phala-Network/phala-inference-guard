@@ -58,16 +58,20 @@ func (c InputSizeCalibratorConfig) Validate() error {
 }
 
 type InputSizeEstimate struct {
-	EstimatorVersion   string
-	Class              RequestClass
-	EstimatedAt        time.Time
-	RawInputTokensLow  int64
-	RawInputTokensHigh int64
-	InputTokensUpper   int64
-	Known              bool
-	Source             InputSizeSource
-	Samples            int
-	Confidence         float64
+	EstimatorVersion     string
+	Class                RequestClass
+	EstimatedAt          time.Time
+	RawInputTokensLow    int64
+	RawInputTokensHigh   int64
+	ApproximateTokenHint int64
+	InputTokensUpper     int64
+	Known                bool
+	HintKnown            bool
+	HintUsed             bool
+	Source               InputSizeSource
+	Samples              int
+	HintSamples          int
+	Confidence           float64
 }
 
 type InputSizeOutcome struct {
@@ -81,37 +85,58 @@ type InputSizeOutcome struct {
 }
 
 type InputSizeCalibratorSnapshot struct {
-	SamplesAccepted  uint64
-	SamplesRejected  uint64
-	Invalidations    uint64
-	SamplesStored    int
-	Classes          int
-	EstimatesCold    uint64
-	EstimatesLearned uint64
-	LastSource       InputSizeSource
-	LastSamples      int
-	LastRawHigh      int64
-	LastUpper        int64
+	SamplesAccepted       uint64
+	SamplesRejected       uint64
+	Invalidations         uint64
+	SamplesStored         int
+	Classes               int
+	EstimatesCold         uint64
+	EstimatesLearned      uint64
+	HintSamplesStored     int
+	HintInvalidations     uint64
+	HintEstimatesUsed     uint64
+	HintEstimatesFallback uint64
+	HintEstimatesMissing  uint64
+	LastSource            InputSizeSource
+	LastSamples           int
+	LastRawHigh           int64
+	LastUpper             int64
+	LastHint              int64
+	LastHintSamples       int
+	LastHintKnown         bool
+	LastHintUsed          bool
 }
 
 type inputSizeRatioSample struct {
-	Ratio      float64
+	RawRatio   float64
+	RawKnown   bool
+	HintRatio  float64
+	HintKnown  bool
 	ObservedAt time.Time
 }
 
 type InputSizeCalibrator struct {
-	mu               sync.Mutex
-	config           InputSizeCalibratorConfig
-	samples          map[RequestClass][]inputSizeRatioSample
-	samplesAccepted  uint64
-	samplesRejected  uint64
-	invalidations    uint64
-	estimatesCold    atomic.Uint64
-	estimatesLearned atomic.Uint64
-	lastSource       atomic.Uint32
-	lastSamples      atomic.Int64
-	lastRawHigh      atomic.Int64
-	lastUpper        atomic.Int64
+	mu                sync.Mutex
+	config            InputSizeCalibratorConfig
+	samples           map[RequestClass][]inputSizeRatioSample
+	ratioScratch      []float64
+	samplesAccepted   uint64
+	samplesRejected   uint64
+	invalidations     uint64
+	hintInvalidations uint64
+	estimatesCold     atomic.Uint64
+	estimatesLearned  atomic.Uint64
+	hintUsed          atomic.Uint64
+	hintFallback      atomic.Uint64
+	hintMissing       atomic.Uint64
+	lastSource        atomic.Uint32
+	lastSamples       atomic.Int64
+	lastRawHigh       atomic.Int64
+	lastUpper         atomic.Int64
+	lastHint          atomic.Int64
+	lastHintSamples   atomic.Int64
+	lastHintKnown     atomic.Bool
+	lastHintUsed      atomic.Bool
 }
 
 func NewInputSizeCalibrator(config InputSizeCalibratorConfig) (*InputSizeCalibrator, error) {
@@ -125,11 +150,28 @@ func NewInputSizeCalibrator(config InputSizeCalibratorConfig) (*InputSizeCalibra
 }
 
 func (c *InputSizeCalibrator) Estimate(now time.Time, class RequestClass, rawLow, rawHigh int64) InputSizeEstimate {
+	return c.estimate(now, class, rawLow, rawHigh, 0, false)
+}
+
+// EstimateWithHint optionally uses a model-neutral lexical reference after it
+// has enough qualified samples. A missing or invalid hint is byte-for-byte the
+// same estimate contract as Estimate and can never create an unknown result.
+func (c *InputSizeCalibrator) EstimateWithHint(now time.Time, class RequestClass, rawLow, rawHigh, hint int64, hintKnown bool) InputSizeEstimate {
+	hintKnown = hintKnown && hint > 0
+	if !hintKnown {
+		hint = 0
+	}
+	return c.estimate(now, class, rawLow, rawHigh, hint, hintKnown)
+}
+
+func (c *InputSizeCalibrator) estimate(now time.Time, class RequestClass, rawLow, rawHigh, hint int64, hintKnown bool) InputSizeEstimate {
 	estimate := InputSizeEstimate{
-		Class:              class,
-		EstimatedAt:        now,
-		RawInputTokensLow:  rawLow,
-		RawInputTokensHigh: rawHigh,
+		Class:                class,
+		EstimatedAt:          now,
+		RawInputTokensLow:    rawLow,
+		RawInputTokensHigh:   rawHigh,
+		ApproximateTokenHint: hint,
+		HintKnown:            hintKnown,
 	}
 	if c == nil || now.IsZero() || !supportedRequestClass(class) || rawLow <= 0 || rawHigh < rawLow {
 		return estimate
@@ -142,34 +184,71 @@ func (c *InputSizeCalibrator) Estimate(now time.Time, class RequestClass, rawLow
 
 	c.mu.Lock()
 	samples := c.freshSamplesLocked(now, class)
-	if len(samples) < c.config.MinimumSamples {
+	rawSamples := 0
+	hintSamples := 0
+	for _, sample := range samples {
+		if sample.RawKnown {
+			rawSamples++
+		}
+		if sample.HintKnown {
+			hintSamples++
+		}
+	}
+	estimate.HintSamples = hintSamples
+	useHint := hintKnown && hintSamples >= c.config.MinimumSamples
+	selectedSamples := rawSamples
+	if useHint {
+		selectedSamples = hintSamples
+	}
+	if selectedSamples < c.config.MinimumSamples {
 		c.mu.Unlock()
 		c.recordEstimate(estimate)
 		return estimate
 	}
-	ratios := make([]float64, len(samples))
-	for index, sample := range samples {
-		ratios[index] = sample.Ratio
+	// The calibrator serializes sample access already. Reuse one bounded scratch
+	// slice while holding that lock so mature hot-path estimates do not allocate
+	// a fresh ratio slice for every request.
+	ratios := c.ratioScratch[:0]
+	for _, sample := range samples {
+		if useHint && sample.HintKnown {
+			ratios = append(ratios, sample.HintRatio)
+		} else if !useHint && sample.RawKnown {
+			ratios = append(ratios, sample.RawRatio)
+		}
 	}
+	multiplier := quantileInPlace(ratios, c.config.UpperQuantile) * c.config.SafetyMargin
+	sampleCount := len(ratios)
+	c.ratioScratch = ratios
 	c.mu.Unlock()
 
-	multiplier := quantileInPlace(ratios, c.config.UpperQuantile) * c.config.SafetyMargin
 	if multiplier < c.config.MinimumMultiplier {
 		multiplier = c.config.MinimumMultiplier
 	}
-	upper := scaleTokensCeiling(rawHigh, multiplier)
+	reference := rawHigh
+	if useHint {
+		reference = hint
+	}
+	upper := scaleTokensCeiling(reference, multiplier)
 	if upper < rawLow {
 		upper = rawLow
 	}
 	estimate.InputTokensUpper = upper
 	estimate.Source = InputSizeSourceLearned
-	estimate.Samples = len(ratios)
+	estimate.Samples = sampleCount
+	estimate.HintUsed = useHint
 	estimate.Confidence = c.config.LearnedConfidence
 	c.recordEstimate(estimate)
 	return estimate
 }
 
 func (c *InputSizeCalibrator) Observe(outcome InputSizeOutcome) error {
+	return c.ObserveWithHint(outcome, 0, false)
+}
+
+// ObserveWithHint qualifies the optional hint independently of the existing
+// raw interval. A bad hint is discarded without rejecting a usable raw sample;
+// a missing hint preserves the original Observe behavior.
+func (c *InputSizeCalibrator) ObserveWithHint(outcome InputSizeOutcome, hint int64, hintKnown bool) error {
 	if c == nil {
 		return fmt.Errorf("input-size calibrator is nil")
 	}
@@ -188,25 +267,48 @@ func (c *InputSizeCalibrator) Observe(outcome InputSizeOutcome) error {
 	if outcome.ObservedAt.IsZero() || outcome.RawInputTokensHigh <= 0 || outcome.ActualPromptTokens <= 0 {
 		return c.reject(fmt.Errorf("input-size outcome is invalid"))
 	}
-	ratio := float64(outcome.ActualPromptTokens) / float64(outcome.RawInputTokensHigh)
-	if !positiveFinite(ratio) {
+	rawRatio := float64(outcome.ActualPromptTokens) / float64(outcome.RawInputTokensHigh)
+	if !positiveFinite(rawRatio) {
 		return c.reject(fmt.Errorf("input-size outcome ratio is invalid"))
 	}
-	if ratio < c.config.MinimumMultiplier {
-		return c.reject(fmt.Errorf("input-size outcome ratio %.6g is below configured bounds", ratio))
-	}
-	if ratio > c.config.MaximumMultiplier {
+	if rawRatio > c.config.MaximumMultiplier {
 		c.mu.Lock()
 		delete(c.samples, outcome.Class)
 		c.samplesRejected++
 		c.invalidations++
 		c.mu.Unlock()
-		return fmt.Errorf("input-size outcome ratio %.6g is outside configured bounds", ratio)
+		return fmt.Errorf("input-size outcome ratio %.6g is outside configured bounds", rawRatio)
+	}
+	rawKnown := rawRatio >= c.config.MinimumMultiplier
+	hintKnown = hintKnown && hint > 0
+	var hintRatio float64
+	qualifiedHint := false
+	invalidateHint := false
+	if hintKnown {
+		hintRatio = float64(outcome.ActualPromptTokens) / float64(hint)
+		qualifiedHint = positiveFinite(hintRatio) && hintRatio >= c.config.MinimumMultiplier && hintRatio <= c.config.MaximumMultiplier
+		invalidateHint = positiveFinite(hintRatio) && hintRatio > c.config.MaximumMultiplier
+	}
+	if !rawKnown && !qualifiedHint {
+		if invalidateHint {
+			c.mu.Lock()
+			c.invalidateHintLearningLocked(outcome.Class)
+			c.hintInvalidations++
+			c.mu.Unlock()
+		}
+		return c.reject(fmt.Errorf("input-size outcome ratio %.6g is below configured bounds", rawRatio))
 	}
 
 	c.mu.Lock()
+	if invalidateHint {
+		c.invalidateHintLearningLocked(outcome.Class)
+		c.hintInvalidations++
+	}
 	samples := append(c.samples[outcome.Class], inputSizeRatioSample{
-		Ratio:      ratio,
+		RawRatio:   rawRatio,
+		RawKnown:   rawKnown,
+		HintRatio:  hintRatio,
+		HintKnown:  qualifiedHint,
 		ObservedAt: outcome.ObservedAt,
 	})
 	if excess := len(samples) - c.config.MaximumSamplesPerClass; excess > 0 {
@@ -241,21 +343,36 @@ func (c *InputSizeCalibrator) Snapshot(now time.Time) InputSizeCalibratorSnapsho
 		}
 	}
 	stored := 0
+	hintStored := 0
 	for _, samples := range c.samples {
 		stored += len(samples)
+		for _, sample := range samples {
+			if sample.HintKnown {
+				hintStored++
+			}
+		}
 	}
 	return InputSizeCalibratorSnapshot{
-		SamplesAccepted:  c.samplesAccepted,
-		SamplesRejected:  c.samplesRejected,
-		Invalidations:    c.invalidations,
-		SamplesStored:    stored,
-		Classes:          len(c.samples),
-		EstimatesCold:    c.estimatesCold.Load(),
-		EstimatesLearned: c.estimatesLearned.Load(),
-		LastSource:       inputSizeSourceFromCode(c.lastSource.Load()),
-		LastSamples:      int(c.lastSamples.Load()),
-		LastRawHigh:      c.lastRawHigh.Load(),
-		LastUpper:        c.lastUpper.Load(),
+		SamplesAccepted:       c.samplesAccepted,
+		SamplesRejected:       c.samplesRejected,
+		Invalidations:         c.invalidations,
+		SamplesStored:         stored,
+		Classes:               len(c.samples),
+		EstimatesCold:         c.estimatesCold.Load(),
+		EstimatesLearned:      c.estimatesLearned.Load(),
+		HintSamplesStored:     hintStored,
+		HintInvalidations:     c.hintInvalidations,
+		HintEstimatesUsed:     c.hintUsed.Load(),
+		HintEstimatesFallback: c.hintFallback.Load(),
+		HintEstimatesMissing:  c.hintMissing.Load(),
+		LastSource:            inputSizeSourceFromCode(c.lastSource.Load()),
+		LastSamples:           int(c.lastSamples.Load()),
+		LastRawHigh:           c.lastRawHigh.Load(),
+		LastUpper:             c.lastUpper.Load(),
+		LastHint:              c.lastHint.Load(),
+		LastHintSamples:       int(c.lastHintSamples.Load()),
+		LastHintKnown:         c.lastHintKnown.Load(),
+		LastHintUsed:          c.lastHintUsed.Load(),
 	}
 }
 
@@ -276,6 +393,17 @@ func (c *InputSizeCalibrator) recordEstimate(estimate InputSizeEstimate) {
 	c.lastSamples.Store(int64(estimate.Samples))
 	c.lastRawHigh.Store(estimate.RawInputTokensHigh)
 	c.lastUpper.Store(estimate.InputTokensUpper)
+	c.lastHint.Store(estimate.ApproximateTokenHint)
+	c.lastHintSamples.Store(int64(estimate.HintSamples))
+	c.lastHintKnown.Store(estimate.HintKnown)
+	c.lastHintUsed.Store(estimate.HintUsed)
+	if !estimate.HintKnown {
+		c.hintMissing.Add(1)
+	} else if estimate.HintUsed {
+		c.hintUsed.Add(1)
+	} else {
+		c.hintFallback.Add(1)
+	}
 }
 
 func inputSizeSourceFromCode(code uint32) InputSizeSource {
@@ -305,6 +433,23 @@ func (c *InputSizeCalibrator) freshSamplesLocked(now time.Time, class RequestCla
 	}
 	c.samples[class] = kept
 	return kept
+}
+
+func (c *InputSizeCalibrator) invalidateHintLearningLocked(class RequestClass) {
+	samples := c.samples[class]
+	kept := samples[:0]
+	for _, sample := range samples {
+		sample.HintRatio = 0
+		sample.HintKnown = false
+		if sample.RawKnown {
+			kept = append(kept, sample)
+		}
+	}
+	if len(kept) == 0 {
+		delete(c.samples, class)
+		return
+	}
+	c.samples[class] = kept
 }
 
 func (c *InputSizeCalibrator) reject(err error) error {
