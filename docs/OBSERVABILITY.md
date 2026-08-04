@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.10.9 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 deferred=0 prefill_learning=0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
+pig_status v=PIG-v0.10.10 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 deferred=0 prefill_learning=0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
 ```
 
 The status line has three required parts:
@@ -144,9 +144,12 @@ For production operation, watch these first:
   `pig_predictive_router_backpressure_renewal_logs_total` /
   `pig_predictive_router_backpressure_renewal_logs_suppressed_total` prove that
   sustained 429 protection is renewing even when log output is rate-limited.
-  `active=1,applied=0` is
-  the intentional idle escape hatch: the bounded state remains observable, but
-  no Router capacity clamp is exported without live load.
+  During an active load-scope lease, `active=1,applied=1` remains mandatory
+  even when raw and predictive running briefly reach zero. In that instant PIG
+  publishes minimum effective running and limit values of one. Exact expiry
+  removes the sentinel and restores raw capacity immediately; a persistent
+  `active=1,applied=0`, sticky post-expiry clamp, or idle rejection loop is a
+  defect rather than an escape hatch.
 - `pig_predictive_admission_virtual_decode_sequences` is the predictive
   coordinator's current virtual upper decode count. It includes the latest
   predictive backend observation plus still-unabsorbed reservations.
@@ -194,10 +197,21 @@ For production operation, watch these first:
   learning. TTFT is diagnosis-only and cannot reject; TPS and TPOT remain
   admission inputs. Invalidation after backend identity or capacity drift must
   discard incompatible learning before intake recovers on a new coherent epoch.
-- `pig_predictive_tps_outcomes_total{result="backend|local|missing|rejected"}`:
-  distinguishes backend-timing targets, qualified local timing fallbacks,
-  missing targets, and structurally rejected targets. Do not treat all terminal
-  requests as valid TPS training data.
+- `pig_predictive_learning_hard_adverse_total{dimension="existing_tps|new_tps|tpot"}`:
+  separates qualified hard-red evidence by protected dimension. It must not
+  increase for censored local wall-clock outcomes. A corroborated joining
+  request under real concurrent work may tighten the next pre-forward decision;
+  a standalone idle adverse request must not create an idle self-lock.
+- `pig_predictive_tps_outcomes_total{result="backend_qualified|local_corroborated|local_censored|missing|rejected"}`:
+  distinguishes structurally qualified backend timing, local direction checks
+  corroborated by a stable overlapping vLLM generation window, censored local
+  wall-clock outcomes, missing targets, and structurally rejected targets. Do
+  not treat all terminal requests as valid TPS training data.
+- `pig_predictive_qualified_user_tps_count`, `_sum`, and `_bucket`, together
+  with `pig_predictive_qualified_tpot_seconds_count`, `_sum`, and `_bucket`,
+  expose bounded aggregate distributions for qualified training values without
+  request, user, model, or payload labels. For corroborated local outcomes the
+  values come from the backend generation window, not downstream wall time.
 - `pig_predictive_completion_observer_events_total{event="attached|claimed|usage|terminal"}`:
   locates a missing completion-feedback stage without request identifiers or
   payload labels. For ordinary successful predictive forwards, the four

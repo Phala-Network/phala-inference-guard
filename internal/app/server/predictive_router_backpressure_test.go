@@ -417,9 +417,10 @@ func TestPredictiveRouterCapacityClampsOnlyEnforceWithActiveLoad(t *testing.T) {
 		t.Fatalf("predictive load did not close the Router visibility gap while dynamic metrics lagged: %+v", laggingDynamic)
 	}
 
-	idle := predictiveRouterCapacity("enforce", active, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
-	if idle.BackpressureApplied || idle.EffectiveGlobalLimit != 50 {
-		t.Fatalf("idle backpressure self-locked capacity: %+v", idle)
+	active.MinimumRunning = 1
+	idleDuringLease := predictiveRouterCapacity("enforce", active, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
+	if !idleDuringLease.BackpressureApplied || idleDuringLease.PredictiveRunning != 1 || idleDuringLease.EffectiveRunning != 1 || idleDuringLease.EffectiveGlobalLimit != 1 {
+		t.Fatalf("active load lease did not preserve Router-visible fullness through an idle scrape: %+v", idleDuringLease)
 	}
 	shadow := predictiveRouterCapacity("shadow", active, 2, snapshot)
 	if shadow.BackpressureApplied || shadow.EffectiveRunning != 1 || shadow.EffectiveGlobalLimit != 50 {
@@ -438,6 +439,39 @@ func TestPredictiveRouterCapacityClampsOnlyEnforceWithActiveLoad(t *testing.T) {
 	}, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
 	if !availability.BackpressureApplied || availability.PredictiveRunning != 1 || availability.EffectiveRunning != 1 || availability.EffectiveGlobalLimit != 1 {
 		t.Fatalf("availability protection did not publish a Router-blocking sentinel: %+v", availability)
+	}
+}
+
+func TestPredictiveRouterBackpressureLoadLeasePublishesFiniteIdleSentinel(t *testing.T) {
+	now := time.Unix(82_500, 0)
+	var state predictiveRouterBackpressureState
+	result := runtimepredictive.CountAdmissionResult{
+		Decision: domainpredictive.Decision{Reason: domainpredictive.ReasonNewTPSAtRisk},
+		Prediction: runtimepredictive.SchedulerPrediction{
+			Source: runtimepredictive.PredictionSourceCalibrated,
+			Features: runtimepredictive.SchedulerFeatures{
+				ExistingDecodeSequences: 1,
+			},
+		},
+	}
+	if event := state.Observe(now, 2*time.Second, result, predictiveRouterBackpressurePolicy{}); event == nil {
+		t.Fatal("load reject did not create a protection lease")
+	}
+	active := state.Snapshot(now.Add(time.Second))
+	if !active.Active || active.Scope != predictiveProtectionScopeLoad || active.MinimumRunning != 1 {
+		t.Fatalf("active load lease snapshot did not publish a minimum running sentinel: %+v", active)
+	}
+	capacity := predictiveRouterCapacity("enforce", active, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
+	if !capacity.BackpressureApplied || capacity.EffectiveRunning != 1 || capacity.EffectiveGlobalLimit != 1 {
+		t.Fatalf("idle scrape punched through the finite load lease: %+v", capacity)
+	}
+	expired := state.Snapshot(now.Add(2 * time.Second))
+	if expired.Active || expired.MinimumRunning != 0 {
+		t.Fatalf("expired load lease retained its sentinel: %+v", expired)
+	}
+	restored := predictiveRouterCapacity("enforce", expired, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
+	if restored.BackpressureApplied || restored.EffectiveRunning != 0 || restored.EffectiveGlobalLimit != 50 {
+		t.Fatalf("expired load lease self-locked Router capacity: %+v", restored)
 	}
 }
 

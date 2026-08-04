@@ -10,6 +10,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
+	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
 
 type predictiveShadowInput struct {
@@ -85,6 +86,8 @@ type predictiveAdmissionTelemetrySnapshot struct {
 	InputSize             runtimepredictive.InputSizeCalibratorSnapshot
 	PredictionDuration    *durationHistogram
 	TPSOutcomes           predictiveTPSOutcomeSnapshot
+	QualifiedUserTPS      telemetry.HistogramSample
+	QualifiedTPOT         telemetry.HistogramSample
 	ShadowObservations    predictiveShadowObservationSnapshot
 	ShadowPendingPrefills predictiveShadowPendingPrefillSnapshot
 	DeferredOutcomes      predictiveDeferredOutcomeSnapshot
@@ -101,10 +104,11 @@ type predictiveExistingPrefillObservationSnapshot struct {
 }
 
 type predictiveTPSOutcomeSnapshot struct {
-	Backend  uint64
-	Local    uint64
-	Missing  uint64
-	Rejected uint64
+	Backend       uint64
+	Local         uint64
+	LocalCensored uint64
+	Missing       uint64
+	Rejected      uint64
 }
 
 type predictiveShadowObservationSnapshot struct {
@@ -132,6 +136,7 @@ type predictiveSemanticTTFTObserver interface {
 type predictiveCompletionObservation struct {
 	PromptTokens          int64
 	CompletionTokens      int64
+	ObservedAt            time.Time
 	ElapsedSinceRequest   time.Duration
 	BackendMeanITL        time.Duration
 	BackendGenerationTime time.Duration

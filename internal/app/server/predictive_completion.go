@@ -82,6 +82,7 @@ func (o *predictiveResponseObserver) observeUsage(usage openai.CompletionUsage) 
 	observePredictiveCompletion(o.reservation, predictiveCompletionObservation{
 		PromptTokens:          usage.PromptTokens,
 		CompletionTokens:      usage.CompletionTokens,
+		ObservedAt:            usage.ObservedAt,
 		ElapsedSinceRequest:   elapsed,
 		BackendMeanITL:        usage.MeanITL,
 		BackendGenerationTime: usage.GenerationTime,

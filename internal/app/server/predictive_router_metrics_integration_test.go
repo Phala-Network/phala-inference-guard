@@ -528,7 +528,7 @@ func TestRequestScopedRejectDoesNotSuppressIdleRouterCapacity(t *testing.T) {
 	}
 }
 
-func TestLoadProtectionStopsApplyingImmediatelyAfterCurrentLoadDrains(t *testing.T) {
+func TestLoadProtectionRemainsRouterVisibleUntilFiniteLeaseExpiresAfterDrain(t *testing.T) {
 	started := time.Unix(121_500, 0)
 	now := started
 	coordinator := newRecordingUpperBoundCoordinator()
@@ -566,16 +566,16 @@ func TestLoadProtectionStopsApplyingImmediatelyAfterCurrentLoadDrains(t *testing
 	srv.writePredictiveAndDynamicMetrics(&out)
 	for _, want := range []string{
 		"pig_predictive_router_backpressure_active 1",
-		"pig_predictive_router_backpressure_applied 0",
-		"pig_dynamic_observed_running 0",
-		"pig_dynamic_global_limit 50",
+		"pig_predictive_router_backpressure_applied 1",
+		"pig_dynamic_observed_running 1",
+		"pig_dynamic_global_limit 1",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("drained load projection missing %q:\n%s", want, out.String())
 		}
 	}
-	if router := parseRouterConsumedCapacity(t, out.String()); router.fullness() != 0 {
-		t.Fatalf("drained load remained Router-locked: %+v", router)
+	if router := parseRouterConsumedCapacity(t, out.String()); router.fullness() != 1 {
+		t.Fatalf("idle scrape punched through the active finite load lease: %+v", router)
 	}
 
 	now = started.Add(1600*time.Millisecond + 2*time.Second + time.Nanosecond)

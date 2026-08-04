@@ -104,6 +104,8 @@ type predictiveVLLMObserver struct {
 	hasGeneration              bool
 	prefillWindow              *predictiveStablePrefillWindow
 	prefillStats               predictiveExistingPrefillObservationSnapshot
+	completionQoSWindow        *predictiveStablePrefillWindow
+	completionQoS              predictiveCompletionQoSEvidence
 }
 
 type predictiveStablePrefillWindow struct {
@@ -241,6 +243,33 @@ func (o *predictiveVLLMObserver) ExistingPrefillTelemetry() predictiveExistingPr
 	return o.prefillStats
 }
 
+func (o *predictiveVLLMObserver) CompletionQoSEvidence(now, requestStarted, requestObservedAt time.Time) (predictiveCompletionQoSEvidence, bool) {
+	if o == nil || now.IsZero() || requestStarted.IsZero() || requestObservedAt.IsZero() || !requestObservedAt.After(requestStarted) {
+		return predictiveCompletionQoSEvidence{}, false
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed || o.epochInvalidated || o.lastWaiting > 0 || o.completionQoS.ObservedAt.IsZero() {
+		return predictiveCompletionQoSEvidence{}, false
+	}
+	age := now.Sub(o.completionQoS.ObservedAt)
+	if age < 0 || age > o.maximumAge {
+		return predictiveCompletionQoSEvidence{}, false
+	}
+	if !o.lastPreemption.IsZero() {
+		preemptionAge := now.Sub(o.lastPreemption)
+		if preemptionAge < 0 || preemptionAge < o.preemptionCooldown {
+			return predictiveCompletionQoSEvidence{}, false
+		}
+	}
+	// Require a real overlap with the request. A fresh window that completed
+	// entirely before this request cannot qualify its downstream wall clock.
+	if !o.completionQoS.ObservedAt.After(requestStarted) || !requestObservedAt.After(o.completionQoS.StartedAt) {
+		return predictiveCompletionQoSEvidence{}, false
+	}
+	return o.completionQoS, true
+}
+
 func (o *predictiveVLLMObserver) run(ctx context.Context) {
 	defer close(o.done)
 	o.poll(ctx)
@@ -353,10 +382,26 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	}
 	prefillOutcome, prefillCandidate := o.qualifyStablePrefillOutcomeLocked(current, started, finished, shadowStarted.EventSequence, shadowFinished.EventSequence)
 	aggregateOutcome, aggregateCandidate := o.qualifyStableAggregateThroughputOutcomeLocked(current, started, finished, shadowStarted.EventSequence, shadowFinished.EventSequence)
+	completionQoS, completionQoSValid := o.qualifyCompletionQoSEvidenceLocked(current)
 	if sample.Waiting == 0 {
 		o.prefillWindow = &current
 	} else {
 		o.prefillWindow = nil
+	}
+	if preempted || sample.Waiting > 0 {
+		o.completionQoSWindow = nil
+		o.completionQoS = predictiveCompletionQoSEvidence{}
+	} else {
+		o.completionQoSWindow = &current
+		if completionQoSValid {
+			o.completionQoS = completionQoS
+		} else {
+			// Evidence is valid only for the immediately preceding stable
+			// interval. Retaining an older still-fresh value here would let a
+			// running-set transition or a no-progress interval qualify a later
+			// request that merely overlaps that older window.
+			o.completionQoS = predictiveCompletionQoSEvidence{}
+		}
 	}
 	o.lastSuccess = now
 	o.lastWaiting = sample.Waiting
@@ -367,6 +412,38 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	if aggregateCandidate {
 		o.observeStableAggregateThroughputOutcome(aggregateOutcome)
 	}
+}
+
+func (o *predictiveVLLMObserver) qualifyCompletionQoSEvidenceLocked(current predictiveStablePrefillWindow) (predictiveCompletionQoSEvidence, bool) {
+	previous := o.completionQoSWindow
+	if previous == nil {
+		return predictiveCompletionQoSEvidence{}, false
+	}
+	elapsed := current.ObservedAt.Sub(previous.ObservedAt)
+	qualified := elapsed > 0 && elapsed <= o.maximumAge &&
+		previous.Preemptions == current.Preemptions && previous.Generation < current.Generation &&
+		previous.Waiting == 0 && current.Waiting == 0 &&
+		previous.Running > 0 && previous.Running == current.Running
+	if !qualified {
+		return predictiveCompletionQoSEvidence{}, false
+	}
+	aggregateTPS := float64(current.Generation-previous.Generation) / elapsed.Seconds()
+	perDecodeTPS := aggregateTPS / float64(previous.Running)
+	if aggregateTPS <= 0 || perDecodeTPS <= 0 {
+		return predictiveCompletionQoSEvidence{}, false
+	}
+	tpot := time.Duration(float64(time.Second) / perDecodeTPS)
+	if tpot <= 0 {
+		return predictiveCompletionQoSEvidence{}, false
+	}
+	return predictiveCompletionQoSEvidence{
+		StartedAt:              previous.ObservedAt,
+		ObservedAt:             current.ObservedAt,
+		AggregateCompletionTPS: aggregateTPS,
+		DecodeSequences:        previous.Running,
+		PerDecodeTPS:           perDecodeTPS,
+		TPOT:                   tpot,
+	}, true
 }
 
 func observePredictiveLoadPressure(observer predictiveLoadPressureObserver, now time.Time, kind runtimepredictive.LoadPressureKind) (observed bool) {
@@ -487,6 +564,8 @@ func (o *predictiveVLLMObserver) censorStablePrefillWindowLocked() {
 		o.prefillStats.Censored++
 	}
 	o.prefillWindow = nil
+	o.completionQoSWindow = nil
+	o.completionQoS = predictiveCompletionQoSEvidence{}
 }
 
 func snapshotPredictiveShadowPendingPrefills(provider predictiveShadowPendingPrefillSnapshotter) predictiveShadowPendingPrefillSnapshot {

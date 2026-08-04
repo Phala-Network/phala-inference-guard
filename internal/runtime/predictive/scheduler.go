@@ -252,6 +252,9 @@ type LearnedSchedulerSnapshot struct {
 	ExplorationBlockedUntil    time.Time
 	LastLoadPressureAt         time.Time
 	AdverseEvidenceEvents      uint64
+	HardExistingTPSAdverse     uint64
+	HardNewTPSAdverse          uint64
+	HardTPOTAdverse            uint64
 	SoftExistingTPSMisses      uint64
 	SoftNewTPSMisses           uint64
 	SoftTPOTMisses             uint64
@@ -340,6 +343,9 @@ type LearnedScheduler struct {
 	explorationBlockedUntil         time.Time
 	lastLoadPressureAt              time.Time
 	adverseEvidenceEvents           uint64
+	hardExistingTPSAdverse          uint64
+	hardNewTPSAdverse               uint64
+	hardTPOTAdverse                 uint64
 	softExistingTPSMisses           uint64
 	softNewTPSMisses                uint64
 	softTPOTMisses                  uint64
@@ -615,6 +621,15 @@ func (s *LearnedScheduler) Observe(prediction SchedulerPrediction, outcome Sched
 	if recordAdverseEvidenceLocked(s, sample) {
 		s.adverseEvidenceEvents++
 	}
+	if sample.ExistingUserTPSValid && sample.ExistingUserTPSAdverse {
+		s.hardExistingTPSAdverse++
+	}
+	if sample.UserTPSValid && sample.UserTPSAdverse {
+		s.hardNewTPSAdverse++
+	}
+	if sample.TPOTValid && sample.TPOTAdverse {
+		s.hardTPOTAdverse++
+	}
 	if softTPSMiss(sample.ExistingUserTPSValid, sample.ExistingUserTPSAdverse, outcome.ExistingUserTPS, s.config.ExplorationUserTPSTarget) {
 		s.softExistingTPSMisses++
 	}
@@ -882,6 +897,9 @@ func (s *LearnedScheduler) Snapshot() LearnedSchedulerSnapshot {
 		ExplorationBlockedUntil:    s.explorationBlockedUntil,
 		LastLoadPressureAt:         s.lastLoadPressureAt,
 		AdverseEvidenceEvents:      s.adverseEvidenceEvents,
+		HardExistingTPSAdverse:     s.hardExistingTPSAdverse,
+		HardNewTPSAdverse:          s.hardNewTPSAdverse,
+		HardTPOTAdverse:            s.hardTPOTAdverse,
 		SoftExistingTPSMisses:      s.softExistingTPSMisses,
 		SoftNewTPSMisses:           s.softNewTPSMisses,
 		SoftTPOTMisses:             s.softTPOTMisses,

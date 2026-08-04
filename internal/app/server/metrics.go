@@ -117,6 +117,9 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.LearningExplorationBlockedUntil = snapshot.Learning.ExplorationBlockedUntil
 	input.LearningLastLoadPressureAt = snapshot.Learning.LastLoadPressureAt
 	input.LearningAdverseEvidenceEvents = snapshot.Learning.AdverseEvidenceEvents
+	input.LearningHardExistingTPSAdverse = snapshot.Learning.HardExistingTPSAdverse
+	input.LearningHardNewTPSAdverse = snapshot.Learning.HardNewTPSAdverse
+	input.LearningHardTPOTAdverse = snapshot.Learning.HardTPOTAdverse
 	input.LearningSoftExistingTPSMisses = snapshot.Learning.SoftExistingTPSMisses
 	input.LearningSoftNewTPSMisses = snapshot.Learning.SoftNewTPSMisses
 	input.LearningSoftTPOTMisses = snapshot.Learning.SoftTPOTMisses
@@ -146,8 +149,11 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.InputSizeLastHintUsed = snapshot.InputSize.LastHintUsed
 	input.TPSBackend = snapshot.TPSOutcomes.Backend
 	input.TPSLocal = snapshot.TPSOutcomes.Local
+	input.TPSLocalCensored = snapshot.TPSOutcomes.LocalCensored
 	input.TPSMissing = snapshot.TPSOutcomes.Missing
 	input.TPSRejected = snapshot.TPSOutcomes.Rejected
+	input.QualifiedUserTPS = snapshot.QualifiedUserTPS
+	input.QualifiedTPOT = snapshot.QualifiedTPOT
 	input.ShadowObservations = metrics.PredictiveShadowObservationInput{
 		Active:     snapshot.ShadowObservations.Active,
 		Created:    snapshot.ShadowObservations.Created,

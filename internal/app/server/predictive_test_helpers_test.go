@@ -28,6 +28,22 @@ func (c *adapterTestClock) Advance(elapsed time.Duration) {
 
 func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64) *runtimepredictive.CountCoordinator {
 	t.Helper()
+	coordinator, _ := newAdapterTestCoordinatorAndSchedulerWithTPSTarget(t, userTPSTarget)
+	return coordinator
+}
+
+func newAdapterTestCoordinatorAndSchedulerWithTPSTarget(t *testing.T, userTPSTarget float64) (*runtimepredictive.CountCoordinator, *runtimepredictive.LearnedScheduler) {
+	t.Helper()
+	return newAdapterTestCoordinatorAndSchedulerWithQoSTargets(t, userTPSTarget, 0, 0)
+}
+
+func newAdapterTestCoordinatorAndSchedulerWithHardQoSTargets(t *testing.T, userTPSTarget float64, tpotSLO time.Duration) (*runtimepredictive.CountCoordinator, *runtimepredictive.LearnedScheduler) {
+	t.Helper()
+	return newAdapterTestCoordinatorAndSchedulerWithQoSTargets(t, userTPSTarget, userTPSTarget, tpotSLO)
+}
+
+func newAdapterTestCoordinatorAndSchedulerWithQoSTargets(t *testing.T, userTPSTarget, hardUserTPSTarget float64, hardTPOTSLO time.Duration) (*runtimepredictive.CountCoordinator, *runtimepredictive.LearnedScheduler) {
+	t.Helper()
 	identity := adapterTestIdentity()
 	scheduler, err := runtimepredictive.NewLearnedScheduler(runtimepredictive.StaticSchedulerProfile{
 		Identity:                      identity,
@@ -57,6 +73,8 @@ func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64)
 		ContextTokenBucket:       1,
 		PrefillTokenBucket:       1,
 		KVTokenBucket:            1,
+		HardUserTPSTarget:        hardUserTPSTarget,
+		HardTPOTSLO:              hardTPOTSLO,
 	})
 	if err != nil {
 		t.Fatalf("new learned scheduler: %v", err)
@@ -83,7 +101,7 @@ func newAdapterTestCoordinatorWithTPSTarget(t *testing.T, userTPSTarget float64)
 	if err != nil {
 		t.Fatalf("new coordinator: %v", err)
 	}
-	return coordinator
+	return coordinator, scheduler
 }
 
 func adapterTestIdentity() runtimepredictive.ModelIdentity {

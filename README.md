@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.10.9 model-agnostic predictive admission
+### v0.10.10 model-agnostic predictive admission
 
-PIG v0.10.9 can estimate request size locally and predict the post-admit
+PIG v0.10.10 can estimate request size locally and predict the post-admit
 KV/TPS/TPOT/preemption state before forwarding to a vLLM upstream. TTFT is
 still measured and learned for diagnosis, but it is observation-only and can
 never reject a request:
@@ -180,7 +180,7 @@ payload-free observation record so qualified completion feedback improves only
 later predictions. `enforce` rejects a non-fit or unknown decision before
 upstream forwarding with the normal OpenAI-compatible PIG 429 response.
 Predictive `shadow` and `enforce` require `DYNAMIC_TTFT_ENABLED=false`; this is
-also the v0.10.9 default. Legacy dynamic TTFT limiting remains available only
+also the v0.10.10 default. Legacy dynamic TTFT limiting remains available only
 as an explicit opt-in while predictive admission is `off`.
 
 This path is model-family neutral: it has no exact model tokenizer, chat
@@ -202,6 +202,17 @@ qualified outcomes train later predictions, while failure, cancellation,
 timeout, disconnect, or shutdown is censored or dropped without learned
 headroom.
 
+Backend-provided response mean-ITL or generation duration is qualified QoS
+feedback after structural validation. When stock vLLM does not return those
+fields, PIG uses local semantic timing only to check the red/safe direction and
+requires a fresh, stable, overlapping vLLM generation-token window to agree.
+The backend window supplies the training magnitude; a disagreement, missing or
+stale window, waiting work, preemption, counter reset, or unstable running set
+censors TPS/TPOT learning without discarding otherwise valid input-size
+feedback. Genuine qualified red evidence still makes only a later pre-forward
+prediction retreat. A single adverse idle request cannot lock later idle
+admission; calibrated hard retreat applies when there is real concurrent work.
+
 The predictor discovers vLLM's served-model identity, KV block size, and maximum
 KV token capacity from startup metrics, then watches freshness, waiting work,
 preemptions, running sequences, KV use, and generation timing. It does not
@@ -213,16 +224,18 @@ activation from the latest reject, so sustained protection cannot expose an
 unprotected capacity gap between Router scrapes. The existing
 `pig_dynamic_observed_running` and `pig_dynamic_global_limit` fields carry the
 effective values consumed by the current Router; `*_raw` metrics preserve the
-backend observation and dynamic limit. The clamp applies only while the
-predictive coordinator's current virtual upper state still contains decode
-work. That state combines its latest backend observation with unabsorbed
-reservations, so it closes a dynamic-poll visibility gap without retaining the
-rejected request as artificial load. The default publication hold is five
-seconds, independently configurable as `PREDICTIVE_ROUTER_BACKPRESSURE_HOLD`
-within `2s..30s`. The clamp is removed immediately when reconciled virtual and
-current load reach idle, then the lease expires without requiring new traffic.
+backend observation and dynamic limit. For the complete bounded lifetime of an
+active load-scope lease, PIG publishes a minimum effective running count and
+limit of one even if observed and predictive running briefly reach zero between
+scrapes. This prevents an idle instant from exposing unprotected Router
+capacity. The rejected request is not retained as artificial KV or concurrency,
+and the finite sentinel disappears at exact lease expiry, when raw capacity is
+restored immediately without a restart or new traffic. The default publication
+hold is five seconds, independently configurable as
+`PREDICTIVE_ROUTER_BACKPRESSURE_HOLD` within `2s..30s`.
 Request-specific oversized/malformed/unknown failures do not clamp the whole
-node. Bounded activation/renewal logs, durable lease metrics, completion-observer
+node, and expiry must not leave a low-flow, drain, or self-lock state. Bounded
+activation/renewal logs, durable lease metrics, completion-observer
 stage counters, and the periodic `predictive={...}` status suffix expose the
 protection without request content or credentials.
 
@@ -270,7 +283,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.9
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.10
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

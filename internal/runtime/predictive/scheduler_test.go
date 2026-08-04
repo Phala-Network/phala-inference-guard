@@ -350,6 +350,10 @@ func TestSingleQualifiedAdverseNewTPSAndTPOTImmediatelyRetreat(t *testing.T) {
 		retreated.Estimate.TPOTUpper <= retreated.Prior.TPOTUpper {
 		t.Fatalf("single qualified adverse TPS/TPOT outcome did not immediately retreat: %+v", retreated)
 	}
+	if snapshot := scheduler.Snapshot(); snapshot.AdverseEvidenceEvents != 1 ||
+		snapshot.HardExistingTPSAdverse != 0 || snapshot.HardNewTPSAdverse != 1 || snapshot.HardTPOTAdverse != 1 {
+		t.Fatalf("hard adverse dimension accounting = %+v", snapshot)
+	}
 	after := scheduler.Predict(now.Add(7*time.Second), state, cost)
 	if after.Estimate.NewUserTPSLower > after.Prior.NewUserTPSLower || after.Estimate.TPOTUpper < after.Prior.TPOTUpper {
 		t.Fatalf("adverse expiry without mature newer evidence fabricated optimism: %+v", after)

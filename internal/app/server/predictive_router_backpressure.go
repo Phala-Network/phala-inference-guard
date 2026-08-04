@@ -305,6 +305,10 @@ func (s predictiveRouterBackpressureState) Snapshot(now time.Time) predictiveRou
 		snapshot.Exploratory = s.exploratory
 		snapshot.AggregateTPS = s.aggregateTPS
 		snapshot.PreviousAggregateTPS = s.previousAggregateTPS
+		// Keep a finite active load lease visible to Router even if observed and
+		// predictive running briefly reach zero between scrapes. Expiry below
+		// clears this sentinel immediately, so it cannot create a drain self-lock.
+		snapshot.MinimumRunning = 1
 	}
 	if !active {
 		snapshot.Activation = 0

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/observability/histogram"
+	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
 
 func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
@@ -50,6 +51,9 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		LearningExplorationBlockedUntil:         time.Unix(110, 0),
 		LearningLastLoadPressureAt:              time.Unix(107, 0),
 		LearningAdverseEvidenceEvents:           2,
+		LearningHardExistingTPSAdverse:          3,
+		LearningHardNewTPSAdverse:               4,
+		LearningHardTPOTAdverse:                 5,
 		LearningSoftExistingTPSMisses:           6,
 		LearningSoftNewTPSMisses:                7,
 		LearningSoftTPOTMisses:                  8,
@@ -79,8 +83,15 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		InputSizeLastHintUsed:                   true,
 		TPSBackend:                              6,
 		TPSLocal:                                7,
+		TPSLocalCensored:                        10,
 		TPSMissing:                              8,
 		TPSRejected:                             9,
+		QualifiedUserTPS: telemetry.HistogramSample{Count: 2, Sum: 70, Buckets: []telemetry.HistogramBucketSample{
+			{UpperBound: 20, Count: 1}, {UpperBound: 80, Count: 2},
+		}},
+		QualifiedTPOT: telemetry.HistogramSample{Count: 2, Sum: 0.07, Buckets: []telemetry.HistogramBucketSample{
+			{UpperBound: 0.025, Count: 1}, {UpperBound: 0.05, Count: 2},
+		}},
 		ShadowObservations: PredictiveShadowObservationInput{
 			Active: 2, Created: 10, Terminated: 7, Qualified: 5, Censored: 2, Dropped: 1,
 		},
@@ -160,6 +171,9 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		"pig_predictive_learning_exploration_blocked_until_seconds 110.000000",
 		"pig_predictive_learning_last_load_pressure_at_seconds 107.000000",
 		"pig_predictive_learning_adverse_evidence_events_total 2",
+		`pig_predictive_learning_hard_adverse_total{dimension="existing_tps"} 3`,
+		`pig_predictive_learning_hard_adverse_total{dimension="new_tps"} 4`,
+		`pig_predictive_learning_hard_adverse_total{dimension="tpot"} 5`,
 		`pig_predictive_learning_soft_qos_misses_total{dimension="existing_tps"} 6`,
 		`pig_predictive_learning_soft_qos_misses_total{dimension="new_tps"} 7`,
 		`pig_predictive_learning_soft_qos_misses_total{dimension="tpot"} 8`,
@@ -180,10 +194,19 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		`pig_predictive_input_size_estimates_total{source="learned"} 4`,
 		`pig_predictive_input_size_last_estimate_info{source="learned"} 1`,
 		"pig_predictive_input_size_last_upper_tokens 72",
-		`pig_predictive_tps_outcomes_total{result="backend"} 6`,
-		`pig_predictive_tps_outcomes_total{result="local"} 7`,
+		`pig_predictive_tps_outcomes_total{result="backend_qualified"} 6`,
+		`pig_predictive_tps_outcomes_total{result="local_corroborated"} 7`,
+		`pig_predictive_tps_outcomes_total{result="local_censored"} 10`,
 		`pig_predictive_tps_outcomes_total{result="missing"} 8`,
 		`pig_predictive_tps_outcomes_total{result="rejected"} 9`,
+		"pig_predictive_qualified_user_tps_count 2",
+		"pig_predictive_qualified_user_tps_sum 70.000000",
+		`pig_predictive_qualified_user_tps_bucket{le="20"} 1`,
+		`pig_predictive_qualified_user_tps_bucket{le="80"} 2`,
+		"pig_predictive_qualified_tpot_seconds_count 2",
+		"pig_predictive_qualified_tpot_seconds_sum 0.070000",
+		`pig_predictive_qualified_tpot_seconds_bucket{le="0.025"} 1`,
+		`pig_predictive_qualified_tpot_seconds_bucket{le="0.05"} 2`,
 		`pig_predictive_completion_observer_events_total{event="attached"} 4`,
 		`pig_predictive_completion_observer_events_total{event="claimed"} 3`,
 		`pig_predictive_completion_observer_events_total{event="usage"} 2`,

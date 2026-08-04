@@ -477,7 +477,7 @@ labels through `pig_dynamic_capacity_projected_limit` and
 : Default: `16`. Minimum running load before severe pressure is treated as
   representative for learning.
 
-## PREDICTIVE ADMISSION (v0.10.9)
+## PREDICTIVE ADMISSION (v0.10.10)
 
 Predictive admission is a pre-forward guard for one configured vLLM upstream.
 It uses a bounded model-family-neutral JSON size interval, a fixed-budget
@@ -502,6 +502,14 @@ result learns once from a qualified success or censors/drops failure,
 cancellation, timeout, disconnect, and shutdown. Restart starts cold rather
 than loading learned state from disk.
 
+Backend response mean-ITL or generation duration is qualified after structural
+validation. Otherwise, local semantic timing supplies only a red/safe
+direction check and must agree with a fresh, stable, overlapping vLLM
+generation-token window. The backend window, not downstream wall time, supplies
+the learned TPS/TPOT magnitude. Missing, stale, waiting, preempted,
+non-monotonic, non-overlapping, or running-transition windows censor QoS
+learning while independently valid input-size feedback remains eligible.
+
 `PREDICTIVE_ADMISSION_MODE`
 : Default: `off`. Supported values are `off`, `shadow`, and `enforce`. `shadow`
   never changes client-visible admission or response. A predicted-risk request
@@ -517,16 +525,18 @@ a bounded Router backpressure lease. A KV reject is considered load-dependent
 only when existing virtual work is present and that request's own validated KV
 cost fits the empty-node hard budget; a standalone oversized request remains a
 local reject. Every load-dependent reject atomically renews `until` to at least
-`latest_reject + hold` without changing the activation identity. While the
-lease is active and the predictive coordinator's current virtual upper state
-contains decode work, PIG exports effective `pig_dynamic_observed_running` and
-clamps the Router-consumed `pig_dynamic_global_limit` to that count, so the
-current Router observes at least 100% fullness. The virtual state combines the
-latest predictive backend observation with unabsorbed reservations and
-therefore remains usable when the separate dynamic snapshot is one poll behind.
-It is reconciled rather than latched from the rejected request, so current and
-predicted idle remove the effective clamp immediately. With no later reject,
-the lease expires from the final reject without a restart or new traffic.
+`latest_reject + hold` without changing the activation identity. For the
+complete bounded lifetime of an active load-scope lease, PIG exports effective
+`pig_dynamic_observed_running` and clamps the Router-consumed
+`pig_dynamic_global_limit` so Router observes at least 100% fullness. The
+virtual state combines the latest predictive backend observation with
+unabsorbed reservations and therefore remains usable when the separate dynamic
+snapshot is one poll behind. If both values momentarily reach zero before
+expiry, a minimum effective running count and limit of one keep the lease
+visible; the rejected request is not retained as artificial KV or concurrency.
+With no later reject, exact lease expiry removes the sentinel and restores raw
+capacity immediately without a restart or new traffic. Expiry must not leave a
+low-flow, drain, sticky, or self-lock state.
 Explicit `*_raw` metrics retain the unmodified backend/dynamic values. A single
 oversized, malformed, unknown, or duplicate request does not create global
 backpressure. `off` and `shadow` never change Router-consumed capacity.

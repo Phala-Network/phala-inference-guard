@@ -3,9 +3,11 @@ package metrics
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/observability/histogram"
+	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 	"github.com/Phala-Network/phala-inference-guard/internal/support/num"
 )
 
@@ -54,6 +56,9 @@ type PredictiveAdmissionInput struct {
 	LearningExplorationBlockedUntil         time.Time
 	LearningLastLoadPressureAt              time.Time
 	LearningAdverseEvidenceEvents           uint64
+	LearningHardExistingTPSAdverse          uint64
+	LearningHardNewTPSAdverse               uint64
+	LearningHardTPOTAdverse                 uint64
 	LearningSoftExistingTPSMisses           uint64
 	LearningSoftNewTPSMisses                uint64
 	LearningSoftTPOTMisses                  uint64
@@ -83,8 +88,11 @@ type PredictiveAdmissionInput struct {
 	InputSizeLastHintUsed                   bool
 	TPSBackend                              uint64
 	TPSLocal                                uint64
+	TPSLocalCensored                        uint64
 	TPSMissing                              uint64
 	TPSRejected                             uint64
+	QualifiedUserTPS                        telemetry.HistogramSample
+	QualifiedTPOT                           telemetry.HistogramSample
 	ShadowObservations                      PredictiveShadowObservationInput
 	DeferredOutcomes                        PredictiveDeferredOutcomeInput
 	ExistingPrefill                         PredictiveExistingPrefillInput
@@ -248,6 +256,9 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_learning_exploration_blocked_until_seconds %.6f\n", predictiveMetricUnixSeconds(input.LearningExplorationBlockedUntil))
 	fmt.Fprintf(w, "pig_predictive_learning_last_load_pressure_at_seconds %.6f\n", predictiveMetricUnixSeconds(input.LearningLastLoadPressureAt))
 	fmt.Fprintf(w, "pig_predictive_learning_adverse_evidence_events_total %d\n", input.LearningAdverseEvidenceEvents)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_total{dimension=%q} %d\n", "existing_tps", input.LearningHardExistingTPSAdverse)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_total{dimension=%q} %d\n", "new_tps", input.LearningHardNewTPSAdverse)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_total{dimension=%q} %d\n", "tpot", input.LearningHardTPOTAdverse)
 	fmt.Fprintf(w, "pig_predictive_learning_soft_qos_misses_total{dimension=%q} %d\n", "existing_tps", input.LearningSoftExistingTPSMisses)
 	fmt.Fprintf(w, "pig_predictive_learning_soft_qos_misses_total{dimension=%q} %d\n", "new_tps", input.LearningSoftNewTPSMisses)
 	fmt.Fprintf(w, "pig_predictive_learning_soft_qos_misses_total{dimension=%q} %d\n", "tpot", input.LearningSoftTPOTMisses)
@@ -275,10 +286,13 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_input_size_last_hint_samples %d\n", input.InputSizeLastHintSamples)
 	fmt.Fprintf(w, "pig_predictive_input_size_last_hint_known %d\n", num.BoolAsInt(input.InputSizeLastHintKnown))
 	fmt.Fprintf(w, "pig_predictive_input_size_last_hint_used %d\n", num.BoolAsInt(input.InputSizeLastHintUsed))
-	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "backend", input.TPSBackend)
-	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "local", input.TPSLocal)
+	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "backend_qualified", input.TPSBackend)
+	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "local_corroborated", input.TPSLocal)
+	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "local_censored", input.TPSLocalCensored)
 	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "missing", input.TPSMissing)
 	fmt.Fprintf(w, "pig_predictive_tps_outcomes_total{result=%q} %d\n", "rejected", input.TPSRejected)
+	writePredictiveHistogramSample(w, "pig_predictive_qualified_user_tps", input.QualifiedUserTPS)
+	writePredictiveHistogramSample(w, "pig_predictive_qualified_tpot_seconds", input.QualifiedTPOT)
 	fmt.Fprintf(w, "pig_predictive_completion_observer_events_total{event=%q} %d\n", "attached", input.CompletionObserverAttached)
 	fmt.Fprintf(w, "pig_predictive_completion_observer_events_total{event=%q} %d\n", "claimed", input.CompletionObserverClaimed)
 	fmt.Fprintf(w, "pig_predictive_completion_observer_events_total{event=%q} %d\n", "usage", input.CompletionObserverUsage)
@@ -326,4 +340,13 @@ func writePredictiveDurationHistogram(w io.Writer, name string, value *histogram
 	}
 	empty := histogram.NewPredictiveDurationHistogram()
 	histogram.WriteDurationHistogram(w, name, &empty)
+}
+
+func writePredictiveHistogramSample(w io.Writer, name string, sample telemetry.HistogramSample) {
+	fmt.Fprintf(w, "%s_count %d\n", name, sample.Count)
+	fmt.Fprintf(w, "%s_sum %.6f\n", name, sample.Sum)
+	for _, bucket := range sample.Buckets {
+		fmt.Fprintf(w, "%s_bucket{le=%q} %d\n", name, strconv.FormatFloat(bucket.UpperBound, 'f', -1, 64), bucket.Count)
+	}
+	fmt.Fprintf(w, "%s_bucket{le=%q} %d\n", name, "+Inf", sample.Count)
 }

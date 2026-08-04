@@ -37,6 +37,17 @@ type blockingUpperBoundCoordinator struct {
 	release chan struct{}
 }
 
+type staticCompletionQoSUpstream struct {
+	evidence predictiveCompletionQoSEvidence
+	valid    bool
+}
+
+func (s staticCompletionQoSUpstream) Healthy(time.Time) bool { return true }
+func (s staticCompletionQoSUpstream) Close() error           { return nil }
+func (s staticCompletionQoSUpstream) CompletionQoSEvidence(_, _, _ time.Time) (predictiveCompletionQoSEvidence, bool) {
+	return s.evidence, s.valid
+}
+
 func newRecordingUpperBoundCoordinator() *recordingUpperBoundCoordinator {
 	return &recordingUpperBoundCoordinator{
 		recordProposals: true,
@@ -445,6 +456,213 @@ func (c *recordingUpperBoundCoordinator) Proposals() []runtimepredictive.UpperBo
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]runtimepredictive.UpperBoundAdmissionProposal(nil), c.proposals...)
+}
+
+func TestLocalWallClockTimingAloneCannotQualifyTPSOrTPOTLearning(t *testing.T) {
+	now := time.Unix(44_875, 0)
+	coordinator := newRecordingUpperBoundCoordinator()
+	coordinator.reject = true
+	coordinator.rejectReason = domainpredictive.ReasonNewTPSAtRisk
+	coordinator.virtual = domainpredictive.VirtualState{DecodeSequences: 1, ActiveKVUpper: 256}
+	calibrator := newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1)
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator: calibrator, Coordinator: coordinator, Mode: "shadow", Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("new local-timing adapter: %v", err)
+	}
+	observation := adapter.DecideAndReserve(context.Background(), "slow-downstream-local-timing", approximateAdapterTestInput())
+	if observation == nil || !observation.MarkForwarded() || !observation.MarkPrefillComplete() ||
+		!observePredictiveSemanticTTFT(observation, 20*time.Millisecond) {
+		t.Fatal("local-timing observation did not reach forwarded decode state")
+	}
+	if !observePredictiveCompletion(observation, predictiveCompletionObservation{
+		PromptTokens: 80, CompletionTokens: 5, ElapsedSinceRequest: 2 * time.Second,
+	}) || !observation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("local-timing observation did not complete")
+	}
+	coordinator.mu.Lock()
+	outcomes := append([]runtimepredictive.SchedulerOutcome(nil), coordinator.outcomes...)
+	coordinator.mu.Unlock()
+	if len(outcomes) != 1 {
+		t.Fatalf("local-timing observation outcomes = %d, want TTFT-only outcome", len(outcomes))
+	}
+	if outcomes[0].UserTPSValid || outcomes[0].TPOTValid {
+		t.Fatalf("uncorroborated downstream wall time qualified as backend QoS evidence: %+v", outcomes[0])
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.TPSOutcomes.Local != 0 {
+		t.Fatalf("uncorroborated downstream wall time was counted as a local TPS target: %+v", telemetry.TPSOutcomes)
+	}
+	if telemetry.TPSOutcomes.LocalCensored != 1 {
+		t.Fatalf("uncorroborated local QoS outcome was not explicitly censored: %+v", telemetry.TPSOutcomes)
+	}
+	if telemetry.QualifiedUserTPS.Count != 0 || telemetry.QualifiedTPOT.Count != 0 {
+		t.Fatalf("censored local QoS polluted qualified histograms: tps=%+v tpot=%+v", telemetry.QualifiedUserTPS, telemetry.QualifiedTPOT)
+	}
+	if snapshot := calibrator.Snapshot(now); snapshot.SamplesAccepted != 1 {
+		t.Fatalf("QoS censoring also discarded independent input-size feedback: %+v", snapshot)
+	}
+}
+
+func TestLocalRedTimingIsCensoredWhenFreshBackendWindowIsSafe(t *testing.T) {
+	now := time.Unix(44_900, 0)
+	coordinator := newRecordingUpperBoundCoordinator()
+	coordinator.reject = true
+	coordinator.virtual = domainpredictive.VirtualState{DecodeSequences: 1, ActiveKVUpper: 256}
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:  newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1),
+		Coordinator: coordinator, Mode: "shadow", Now: func() time.Time { return now },
+		HardUserTPSTarget: 20, HardTPOTSLO: 50 * time.Millisecond,
+		Upstream: staticCompletionQoSUpstream{valid: true, evidence: predictiveCompletionQoSEvidence{
+			StartedAt: now.Add(-time.Second), ObservedAt: now,
+			AggregateCompletionTPS: 100, DecodeSequences: 1, PerDecodeTPS: 100, TPOT: 10 * time.Millisecond,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new safe-backend adapter: %v", err)
+	}
+	observation := adapter.DecideAndReserve(context.Background(), "slow-client-safe-backend", approximateAdapterTestInput())
+	if observation == nil || !observation.MarkForwarded() || !observation.MarkPrefillComplete() ||
+		!observePredictiveSemanticTTFT(observation, 20*time.Millisecond) ||
+		!observePredictiveCompletion(observation, predictiveCompletionObservation{
+			PromptTokens: 80, CompletionTokens: 5, ObservedAt: now, ElapsedSinceRequest: 2 * time.Second,
+		}) || !observation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("safe-backend local-red observation did not complete")
+	}
+	coordinator.mu.Lock()
+	outcomes := append([]runtimepredictive.SchedulerOutcome(nil), coordinator.outcomes...)
+	coordinator.mu.Unlock()
+	if len(outcomes) != 1 || outcomes[0].UserTPSValid || outcomes[0].TPOTValid {
+		t.Fatalf("safe backend did not censor client-inflated local red timing: %+v", outcomes)
+	}
+	if telemetry := adapter.PredictiveAdmissionTelemetry().TPSOutcomes; telemetry.Local != 0 || telemetry.LocalCensored != 1 {
+		t.Fatalf("safe-backend local-red telemetry = %+v", telemetry)
+	}
+}
+
+func TestLocalRedTimingQualifiesWhenFreshBackendWindowIsAlsoRed(t *testing.T) {
+	now := time.Unix(44_925, 0)
+	coordinator := newRecordingUpperBoundCoordinator()
+	coordinator.reject = true
+	coordinator.virtual = domainpredictive.VirtualState{DecodeSequences: 1, ActiveKVUpper: 256}
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:  newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1),
+		Coordinator: coordinator, Mode: "shadow", Now: func() time.Time { return now },
+		HardUserTPSTarget: 20, HardTPOTSLO: 50 * time.Millisecond,
+		Upstream: staticCompletionQoSUpstream{valid: true, evidence: predictiveCompletionQoSEvidence{
+			StartedAt: now.Add(-time.Second), ObservedAt: now,
+			AggregateCompletionTPS: 18, DecodeSequences: 1, PerDecodeTPS: 18, TPOT: time.Second / 18,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new red-backend adapter: %v", err)
+	}
+	observation := adapter.DecideAndReserve(context.Background(), "slow-client-red-backend", approximateAdapterTestInput())
+	if observation == nil || !observation.MarkForwarded() || !observation.MarkPrefillComplete() ||
+		!observePredictiveSemanticTTFT(observation, 20*time.Millisecond) ||
+		!observePredictiveCompletion(observation, predictiveCompletionObservation{
+			PromptTokens: 80, CompletionTokens: 5, ObservedAt: now, ElapsedSinceRequest: 2 * time.Second,
+		}) || !observation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("red-backend local-red observation did not complete")
+	}
+	coordinator.mu.Lock()
+	outcomes := append([]runtimepredictive.SchedulerOutcome(nil), coordinator.outcomes...)
+	coordinator.mu.Unlock()
+	if len(outcomes) != 1 || !outcomes[0].UserTPSValid || !outcomes[0].TPOTValid {
+		t.Fatalf("corroborated backend red evidence was not qualified: %+v", outcomes)
+	}
+	if outcomes[0].UserTPS != 18 || outcomes[0].TPOT != time.Second/18 {
+		t.Fatalf("downstream wall time, rather than backend magnitude, trained the QoS residual: %+v", outcomes[0])
+	}
+	if telemetry := adapter.PredictiveAdmissionTelemetry().TPSOutcomes; telemetry.Local != 1 || telemetry.LocalCensored != 0 {
+		t.Fatalf("red-backend local-red telemetry = %+v", telemetry)
+	}
+}
+
+func TestBackendResponseTimingRemainsQualifiedWithoutMetricsCorroboration(t *testing.T) {
+	now := time.Unix(44_950, 0)
+	coordinator := newRecordingUpperBoundCoordinator()
+	coordinator.reject = true
+	coordinator.virtual = domainpredictive.VirtualState{DecodeSequences: 1, ActiveKVUpper: 256}
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:  newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1),
+		Coordinator: coordinator, Mode: "shadow", Now: func() time.Time { return now },
+		HardUserTPSTarget: 20, HardTPOTSLO: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new response-backend adapter: %v", err)
+	}
+	observation := adapter.DecideAndReserve(context.Background(), "response-backend-red", approximateAdapterTestInput())
+	if observation == nil || !observation.MarkForwarded() ||
+		!observePredictiveCompletion(observation, predictiveCompletionObservation{
+			PromptTokens: 80, CompletionTokens: 5, ObservedAt: now, ElapsedSinceRequest: 2 * time.Second,
+			BackendMeanITL: 500 * time.Millisecond,
+		}) || !observation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatal("response-backend observation did not complete")
+	}
+	coordinator.mu.Lock()
+	outcomes := append([]runtimepredictive.SchedulerOutcome(nil), coordinator.outcomes...)
+	coordinator.mu.Unlock()
+	if len(outcomes) != 1 || !outcomes[0].UserTPSValid || !outcomes[0].TPOTValid {
+		t.Fatalf("response-provided backend QoS evidence was not qualified: %+v", outcomes)
+	}
+	if telemetry := adapter.PredictiveAdmissionTelemetry().TPSOutcomes; telemetry.Backend != 1 || telemetry.Local != 0 || telemetry.LocalCensored != 0 {
+		t.Fatalf("response-backend telemetry = %+v", telemetry)
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.QualifiedUserTPS.Count != 1 || telemetry.QualifiedTPOT.Count != 1 {
+		t.Fatalf("qualified response-backend QoS was not histogrammed: tps=%+v tpot=%+v", telemetry.QualifiedUserTPS, telemetry.QualifiedTPOT)
+	}
+}
+
+func TestCorroboratedBackendRedFeedbackRetreatsNextPreForwardDecision(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(44_975, 0)}
+	coordinator, learner := newAdapterTestCoordinatorAndSchedulerWithHardQoSTargets(t, 25, time.Second)
+	adapter, err := newApproximatePredictiveShadow(approximatePredictiveShadowConfig{
+		Calibrator:  newApproximateAdapterTestCalibratorWithConfidence(t, 1, 1, 1),
+		Coordinator: coordinator, Learner: learner, Mode: "enforce", Now: clock.Now,
+		HardUserTPSTarget: 25, HardTPOTSLO: time.Second,
+		Upstream: staticCompletionQoSUpstream{valid: true, evidence: predictiveCompletionQoSEvidence{
+			StartedAt: clock.Now().Add(-time.Second), ObservedAt: clock.Now(),
+			AggregateCompletionTPS: 10, DecodeSequences: 1, PerDecodeTPS: 10, TPOT: 100 * time.Millisecond,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("new real-learner adapter: %v", err)
+	}
+	existing := adapter.Decide(context.Background(), "corroborated-existing-decode", approximateAdapterTestInput())
+	if existing.Outcome != predictiveAdmissionOutcomeForward || existing.Reservation == nil ||
+		!existing.Reservation.MarkForwarded() || !existing.Reservation.MarkPrefillComplete() {
+		t.Fatalf("existing decode request did not reach the protected running state: %+v", existing)
+	}
+	sample := adapter.Decide(context.Background(), "corroborated-hard-red", approximateAdapterTestInput())
+	if sample.Outcome != predictiveAdmissionOutcomeForward || sample.Reservation == nil ||
+		!sample.Reservation.MarkForwarded() || !sample.Reservation.MarkPrefillComplete() ||
+		!observePredictiveSemanticTTFT(sample.Reservation, 20*time.Millisecond) ||
+		!observePredictiveCompletion(sample.Reservation, predictiveCompletionObservation{
+			PromptTokens: 80, CompletionTokens: 5, ObservedAt: clock.Now(), ElapsedSinceRequest: 520 * time.Millisecond,
+		}) || !sample.Reservation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatalf("corroborated hard-red request did not complete through the real lifecycle: %+v", sample)
+	}
+
+	snapshot := learner.Snapshot()
+	if snapshot.SamplesAccepted != 1 || snapshot.AdverseEvidenceEvents != 1 ||
+		snapshot.HardExistingTPSAdverse != 0 || snapshot.HardNewTPSAdverse != 1 || snapshot.HardTPOTAdverse != 0 {
+		t.Fatalf("corroborated hard-red dimensional learning = %+v", snapshot)
+	}
+	clock.Advance(time.Millisecond)
+	next := adapter.Decide(context.Background(), "after-corroborated-hard-red", approximateAdapterTestInput())
+	if next.Outcome != predictiveAdmissionOutcomeLoadProtection || next.Reservation != nil ||
+		next.Reason != domainpredictive.ReasonNewTPSAtRisk || next.Source != runtimepredictive.PredictionSourceCalibrated {
+		t.Fatalf("qualified feedback did not tighten the next pre-forward decision: %+v", next)
+	}
+	if !existing.Reservation.Terminate(runtimepredictive.TerminalClientCancelled) {
+		t.Fatal("existing decode reservation did not release after the pre-forward proof")
+	}
+	if manager := coordinator.Snapshot().Manager; manager.Reservations != 0 {
+		t.Fatalf("corroborated hard-red proof leaked reservations: %+v", manager)
+	}
 }
 
 func TestApproximatePredictiveShadowRiskFeedbackCanCorrectNextPredictionWithoutReservation(t *testing.T) {

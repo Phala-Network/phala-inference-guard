@@ -13,6 +13,19 @@ type predictiveUpstreamState interface {
 	Close() error
 }
 
+type predictiveCompletionQoSEvidenceProvider interface {
+	CompletionQoSEvidence(now, requestStarted, requestObservedAt time.Time) (predictiveCompletionQoSEvidence, bool)
+}
+
+type predictiveCompletionQoSEvidence struct {
+	StartedAt              time.Time
+	ObservedAt             time.Time
+	AggregateCompletionTPS float64
+	DecodeSequences        int
+	PerDecodeTPS           float64
+	TPOT                   time.Duration
+}
+
 type predictiveCoordinatorSnapshotter interface {
 	Snapshot() runtimepredictive.CountCoordinatorSnapshot
 }
@@ -80,7 +93,8 @@ type predictiveTPSTargetSource uint8
 const (
 	predictiveTPSTargetNone predictiveTPSTargetSource = iota
 	predictiveTPSTargetBackend
-	predictiveTPSTargetLocal
+	predictiveTPSTargetLocalCorroborated
+	predictiveTPSTargetLocalCensored
 )
 
 func validPredictiveCompletionObservation(observation predictiveCompletionObservation, decodeHorizonUpper int64) bool {

@@ -45,6 +45,8 @@ type approximatePredictiveShadowConfig struct {
 	DeferredOutcomeLimit   int
 	RouterBackpressureHold time.Duration
 	RouterBackpressure     predictiveRouterBackpressurePolicy
+	HardUserTPSTarget      float64
+	HardTPOTSLO            time.Duration
 	OnRouterBackpressure   func(predictiveRouterBackpressureEvent)
 	OnRequestReject        func(predictiveRequestRejectEvent)
 	ShadowPendingPrefills  *predictiveShadowPendingPrefillStore
@@ -73,10 +75,14 @@ type approximatePredictiveShadow struct {
 	deferredStats       predictiveDeferredOutcomeSnapshot
 	predictionDuration  durationHistogram
 	tpsOutcomes         predictiveTPSOutcomeSnapshot
+	qualifiedUserTPS    predictiveQoSHistogram
+	qualifiedTPOT       predictiveQoSHistogram
 	routerBackpressure  predictiveRouterBackpressureState
 	requestRejectLogs   predictiveRequestRejectLogState
 	backpressurePolicy  predictiveRouterBackpressurePolicy
 	backpressureHold    time.Duration
+	hardUserTPSTarget   float64
+	hardTPOTSLO         time.Duration
 	onBackpressure      func(predictiveRouterBackpressureEvent)
 	onRequestReject     func(predictiveRequestRejectEvent)
 	shadowPrefills      *predictiveShadowPendingPrefillStore
@@ -147,6 +153,11 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 	if config.Now == nil {
 		config.Now = time.Now
 	}
+	if config.HardUserTPSTarget < 0 || config.HardTPOTSLO < 0 ||
+		(config.HardUserTPSTarget == 0) != (config.HardTPOTSLO == 0) ||
+		math.IsNaN(config.HardUserTPSTarget) || math.IsInf(config.HardUserTPSTarget, 0) {
+		return nil, fmt.Errorf("predictive completion QoS targets are invalid")
+	}
 	if mode == "shadow" && config.ShadowPendingPrefills == nil {
 		config.ShadowPendingPrefills = newPredictiveShadowPendingPrefillStore(maximumObservations)
 	}
@@ -167,6 +178,8 @@ func newApproximatePredictiveShadow(config approximatePredictiveShadowConfig) (*
 		predictionDuration:  newPredictiveDurationHistogram(),
 		backpressurePolicy:  config.RouterBackpressure,
 		backpressureHold:    config.RouterBackpressureHold,
+		hardUserTPSTarget:   config.HardUserTPSTarget,
+		hardTPOTSLO:         config.HardTPOTSLO,
 		onBackpressure:      config.OnRouterBackpressure,
 		onRequestReject:     config.OnRequestReject,
 		shadowPrefills:      config.ShadowPendingPrefills,
@@ -320,6 +333,8 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 	availabilityEvent := s.routerBackpressure.SetAvailability(now, s.closed || availabilityUnavailable)
 	attempts := s.attempts
 	tpsOutcomes := s.tpsOutcomes
+	qualifiedUserTPSHistogram := s.qualifiedUserTPS
+	qualifiedTPOTHistogram := s.qualifiedTPOT
 	observationStats := s.observationStats
 	observationStats.Active = len(s.observations)
 	deferredStats := s.deferredStats
@@ -327,10 +342,14 @@ func (s *approximatePredictiveShadow) PredictiveAdmissionTelemetry() predictiveA
 	routerBackpressure := s.routerBackpressure.Snapshot(now)
 	s.mu.Unlock()
 	s.emitRouterBackpressure(availabilityEvent)
+	qualifiedUserTPS := qualifiedUserTPSHistogram.Snapshot(predictiveUserTPSBuckets)
+	qualifiedTPOT := qualifiedTPOTHistogram.Snapshot(predictiveTPOTBucketsSeconds)
 	telemetry := predictiveAdmissionTelemetrySnapshot{
 		Attempts:           attempts,
 		PredictionDuration: &s.predictionDuration,
 		TPSOutcomes:        tpsOutcomes,
+		QualifiedUserTPS:   qualifiedUserTPS,
+		QualifiedTPOT:      qualifiedTPOT,
 		ShadowObservations: observationStats,
 		DeferredOutcomes:   deferredStats,
 		RouterBackpressure: routerBackpressure,
@@ -541,7 +560,7 @@ func (r *approximatePredictiveReservation) Terminate(cause runtimepredictive.Ter
 			hasTarget = true
 		}
 		if r.forwarded {
-			r.recordTPSOutcomeLocked(source, tpsValid)
+			r.recordTPSOutcomeLocked(source, tpsValid, tps, tpot)
 		}
 		if hasTarget {
 			schedulerOutcome = &completed
@@ -698,7 +717,7 @@ func (r *approximatePredictiveReservation) qualifiedTPS() (float64, time.Duratio
 		source = predictiveTPSTargetBackend
 	} else if r.semanticTTFTValid && r.completion.ElapsedSinceRequest > r.semanticTTFT {
 		decodeDuration = r.completion.ElapsedSinceRequest - r.semanticTTFT
-		source = predictiveTPSTargetLocal
+		source = predictiveTPSTargetLocalCensored
 	}
 	if decodeDuration <= 0 {
 		return 0, 0, predictiveTPSTargetNone, false
@@ -711,19 +730,63 @@ func (r *approximatePredictiveReservation) qualifiedTPS() (float64, time.Duratio
 	if tpot <= 0 {
 		return 0, 0, predictiveTPSTargetNone, false
 	}
+	if source == predictiveTPSTargetLocalCensored {
+		corroboratedTPS, corroboratedTPOT, ok := r.corroboratedLocalQoS(tps, tpot)
+		if !ok {
+			return tps, tpot, source, false
+		}
+		tps = corroboratedTPS
+		tpot = corroboratedTPOT
+		source = predictiveTPSTargetLocalCorroborated
+	}
 	return tps, tpot, source, true
 }
 
-func (r *approximatePredictiveReservation) recordTPSOutcomeLocked(source predictiveTPSTargetSource, valid bool) {
+func (r *approximatePredictiveReservation) corroboratedLocalQoS(tps float64, tpot time.Duration) (float64, time.Duration, bool) {
+	if r == nil || r.owner == nil || r.completion.ObservedAt.IsZero() ||
+		r.owner.hardUserTPSTarget <= 0 || r.owner.hardTPOTSLO <= 0 {
+		return 0, 0, false
+	}
+	provider, ok := r.owner.upstream.(predictiveCompletionQoSEvidenceProvider)
+	if !ok {
+		return 0, 0, false
+	}
+	requestStarted := r.completion.ObservedAt.Add(-r.completion.ElapsedSinceRequest)
+	evidence, ok := provider.CompletionQoSEvidence(r.owner.now(), requestStarted, r.completion.ObservedAt)
+	if !ok || evidence.DecodeSequences <= 0 || !positiveFinitePredictiveQoS(evidence.AggregateCompletionTPS) ||
+		!positiveFinitePredictiveQoS(evidence.PerDecodeTPS) || evidence.TPOT <= 0 {
+		return 0, 0, false
+	}
+	localAdverse := tps < r.owner.hardUserTPSTarget || tpot > r.owner.hardTPOTSLO
+	backendAdverse := evidence.PerDecodeTPS < r.owner.hardUserTPSTarget || evidence.TPOT > r.owner.hardTPOTSLO
+	if localAdverse != backendAdverse {
+		return 0, 0, false
+	}
+	// The local clock is only the direction check. The stable backend window is
+	// the qualified magnitude, so downstream copy stalls cannot exaggerate the
+	// residual even when both signals happen to cross the red boundary.
+	return evidence.PerDecodeTPS, evidence.TPOT, true
+}
+
+func positiveFinitePredictiveQoS(value float64) bool {
+	return value > 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
+}
+
+func (r *approximatePredictiveReservation) recordTPSOutcomeLocked(source predictiveTPSTargetSource, valid bool, tps float64, tpot time.Duration) {
 	if valid {
+		observePredictiveQualifiedQoS(&r.owner.qualifiedUserTPS, &r.owner.qualifiedTPOT, tps, tpot)
 		switch source {
 		case predictiveTPSTargetBackend:
 			r.owner.tpsOutcomes.Backend++
-		case predictiveTPSTargetLocal:
+		case predictiveTPSTargetLocalCorroborated:
 			r.owner.tpsOutcomes.Local++
 		default:
 			r.owner.tpsOutcomes.Rejected++
 		}
+		return
+	}
+	if source == predictiveTPSTargetLocalCensored {
+		r.owner.tpsOutcomes.LocalCensored++
 		return
 	}
 	if r.completionObserved && !r.completionStructurallyValid {

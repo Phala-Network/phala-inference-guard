@@ -12,7 +12,7 @@ import (
 const (
 	predictiveApproximateManifestID       = "model-agnostic-json-v1"
 	predictiveApproximateProfileID        = "model-agnostic-qos-v2"
-	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v6"
+	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v7"
 	predictiveApproximateEstimatorVersion = "json-cost-lexical-hint-v2"
 	predictiveColdParallelUsers           = 2
 	predictivePrefillHeadroomSafetyShares = 4
@@ -173,6 +173,8 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		Learner:                scheduler,
 		Upstream:               observer,
 		Mode:                   cfg.PredictiveAdmissionMode,
+		HardUserTPSTarget:      targetTPS,
+		HardTPOTSLO:            tpotSLO,
 		ShadowObservationLimit: cfg.PredictiveShadowObservationLimit,
 		ShadowPendingPrefills:  shadowPendingPrefills,
 		RouterBackpressureHold: cfg.PredictiveRouterBackpressureHold,

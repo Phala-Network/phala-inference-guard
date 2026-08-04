@@ -377,6 +377,82 @@ func TestPredictiveVLLMObserverFreshnessRejectsFutureAndStaleClocks(t *testing.T
 	}
 }
 
+func TestPredictiveVLLMObserverQualifiesOnlyFreshOverlappingStableCompletionQoS(t *testing.T) {
+	now := time.Unix(5_500, 0)
+	observer := &predictiveVLLMObserver{
+		maximumAge: 2 * time.Second, preemptionCooldown: time.Second,
+		completionQoSWindow: &predictiveStablePrefillWindow{
+			ObservedAt: now.Add(-time.Second), Generation: 100, Preemptions: 3, Running: 2,
+		},
+	}
+	evidence, ok := observer.qualifyCompletionQoSEvidenceLocked(predictiveStablePrefillWindow{
+		ObservedAt: now, Generation: 180, Preemptions: 3, Running: 2,
+	})
+	if !ok || evidence.AggregateCompletionTPS != 80 || evidence.PerDecodeTPS != 40 || evidence.TPOT != 25*time.Millisecond {
+		t.Fatalf("stable completion QoS evidence = %+v/%t", evidence, ok)
+	}
+	observer.completionQoS = evidence
+	observer.lastSuccess = now
+	got, ok := observer.CompletionQoSEvidence(now, now.Add(-1500*time.Millisecond), now)
+	if !ok || got != evidence {
+		t.Fatalf("fresh overlapping completion QoS evidence = %+v/%t", got, ok)
+	}
+	if _, ok := observer.CompletionQoSEvidence(now, now.Add(time.Millisecond), now.Add(time.Second)); ok {
+		t.Fatal("backend window entirely before the request qualified local QoS")
+	}
+	if _, ok := observer.CompletionQoSEvidence(now.Add(3*time.Second), now.Add(-time.Second), now); ok {
+		t.Fatal("stale backend completion QoS qualified local timing")
+	}
+	observer.lastWaiting = 1
+	if _, ok := observer.CompletionQoSEvidence(now, now.Add(-time.Second), now); ok {
+		t.Fatal("backend completion QoS with current waiting qualified local timing")
+	}
+}
+
+func TestPredictiveVLLMObserverInvalidStableWindowClearsPriorCompletionQoS(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(5_600, 0)}
+	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 0)
+	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+
+	observer.poll(context.Background())
+	requestStarted := clock.Now().Add(-time.Second)
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 180, true))
+	observer.poll(context.Background())
+	if _, ok := observer.CompletionQoSEvidence(clock.Now(), requestStarted, clock.Now()); !ok {
+		t.Fatal("stable generation window did not publish completion QoS evidence")
+	}
+
+	// A running-set change makes the next interval unattributable. The prior
+	// evidence must not remain reusable merely because it is still fresh and
+	// overlaps a long request.
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 1, 0, 0, 200, true))
+	observer.poll(context.Background())
+	if _, ok := observer.CompletionQoSEvidence(clock.Now(), requestStarted, clock.Now()); ok {
+		t.Fatal("invalid running-transition window retained prior completion QoS evidence")
+	}
+
+	// The changed running set is now only a baseline. A subsequent stable
+	// interval can qualify fresh evidence again.
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 1, 0, 0, 240, true))
+	observer.poll(context.Background())
+	if evidence, ok := observer.CompletionQoSEvidence(clock.Now(), clock.Now().Add(-time.Second), clock.Now()); !ok || evidence.DecodeSequences != 1 {
+		t.Fatalf("fresh stable window did not recover completion QoS evidence: %+v/%t", evidence, ok)
+	}
+
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 1, 0, 0, 240, true))
+	observer.poll(context.Background())
+	if _, ok := observer.CompletionQoSEvidence(clock.Now(), clock.Now().Add(-2*time.Second), clock.Now()); ok {
+		t.Fatal("no-generation-progress window retained prior completion QoS evidence")
+	}
+}
+
 func TestPredictiveVLLMObserverCounterResetInvalidatesOldFreshState(t *testing.T) {
 	clock := &adapterTestClock{now: time.Unix(6_000, 0)}
 	coordinator := newAdapterTestCoordinatorWithTPSTarget(t, 0)
