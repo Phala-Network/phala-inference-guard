@@ -7254,3 +7254,57 @@ builder matrix, and the builder-local image layer. It does not yet prove a
 commit, pushed branch/tag, registry image, Compose deployment, live readiness,
 Router enablement, or production success. Those remain ordered gates; v0.10.9
 and its immutable tag/image must not move.
+
+##### v0.10.10 source release and immutable registry evidence — complete 2026-08-04
+
+The reviewed executable source and release identities are:
+
+```text
+branch:        codex/pig-v0.10.0-model-agnostic
+commit:        a24345e22628d5444314207b3cdba2ec4bf9cf6b
+annotated tag: v0.10.10
+tag object:    75485799b5f79433969aa5df3b2cc1df300c5569
+```
+
+The branch and annotated tag were pushed only to the authoritative PIG remote
+`pig-origin=https://github.com/Phala-Network/phala-inference-guard.git`.
+Remote tag dereference resolves exactly to release commit
+`a24345e22628d5444314207b3cdba2ec4bf9cf6b`. The unrelated `origin` remote was
+not used, and the v0.10.9 tag was not moved.
+
+The tag-triggered GitHub `Publish Image` workflow run `30945299654` completed
+successfully for the exact release commit at
+<https://github.com/Phala-Network/phala-inference-guard/actions/runs/30945299654>.
+The repository workflow supplied its own bounded GHCR package credential,
+validated the v0.10.10 production image contract, built, and pushed. The
+builder's absent local GHCR credential was therefore not bypassed or copied
+from another system and was not needed for the auditable release path.
+
+An independent public registry pull on the approved builder resolved:
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:1f5d469103fa081a5e8a53dbfac15cfaac1666f9655198f4da8064c028085b8b
+```
+
+The pulled linux/amd64 image ID is
+`sha256:d7777f156760843c4ac8d90e8382309db2435db793a2c9717ce4d276285279ee`,
+its size is 29,463,663 bytes, its OCI version is `0.10.10`, its entrypoint is
+`/phala-inference-guard`, and the production image contract passed. Its
+extracted binary SHA-256 is
+`0ed1dd512f3356c5f9f900662751d06fb9e7ea163766fc132276cb842681c1f8`,
+byte-identical by both SHA-256 and `cmp` to the exact r12 builder-local tested
+binary. A temporary registry-image runtime remained running for the bounded
+startup check, emitted `PIG-v0.10.10`, and was removed. The different registry
+and builder-local image IDs reflect independent BuildKit layer metadata, not a
+binary or contract difference; deployment must use the immutable registry
+digest above.
+
+Registry verification evidence is
+`../tmp/pig-v01010-builder-20260804/registry-r1.tar.gz`, SHA-256
+`f0092d5c05ed7000ee855a4cf90015bd83e848a7e2620b1cb677f1874f87100e`.
+Its internal checksum manifest passes after download. This completes source,
+tag, workflow publication, immutable digest, independent pull, production
+contract, startup identity, and binary-equivalence layers only. It does not
+prove Compose integration, CVM deployment, endpoint readiness, Router-disabled
+shadow/enforce behavior, Router consumption, Router enablement, or production
+traffic. `use1-cb` must remain disabled until all ordered live gates pass.
