@@ -1232,6 +1232,124 @@ func TestLearnedSchedulerUsesQualifiedGlobalHeadroomToProgressBeyondColdConcurre
 	}
 }
 
+func TestLearnedSchedulerExploresSameShapeAfterProgressiveDecodePressureGrowth(t *testing.T) {
+	now := time.Unix(9_125, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 50
+	profile.PrefillTPSPenaltyPerKToken = 0
+	profile.BaseTPOT = 10 * time.Millisecond
+	profile.TPOTPerExistingDecodeSequence = 5 * time.Millisecond
+	config := testResidualConfig()
+	config.MaximumTPSMultiplier = 16
+	config.MinimumLatencyMultiplier = 0.10
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	config.ExplorationUserTPSTarget = 25
+	config.ExplorationTPOTSLO = 40 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+
+	cost := domain.RequestCost{
+		ManifestID:                   "test-profile",
+		InputTokens:                  39,
+		RequestComplexityTokensUpper: 137,
+		KV:                           domain.KVIncrement{PhysicalKVUpper: 4_144, ActiveKVUpper: 4_144},
+		FutureKV:                     domain.KVIncrement{PhysicalKVUpper: 4_096, ActiveKVUpper: 4_096},
+		UncachedPrefillUpper:         39,
+		DecodeHorizonUpper:           4_096,
+		DecodeSequencesUpper:         1,
+		ActiveContextTokensUpper:     4_135,
+		FutureContextTokensUpper:     4_096,
+		Confidence:                   0.99,
+	}
+	sampleState := domain.VirtualState{
+		PhysicalKVUpper:       1_623,
+		ActiveKVUpper:         1_623,
+		DecodeSequences:       1,
+		ActiveContextTokens:   1_632,
+		UncachedPrefillTokens: 0,
+	}
+	var finalSample SchedulerPrediction
+	for index := 0; index < config.MinimumSamples; index++ {
+		predictedAt := now.Add(time.Duration(index) * time.Second)
+		finalSample = scheduler.Predict(predictedAt, sampleState, cost)
+		if finalSample.Features.DecodeSequences != 2 || finalSample.Features.ActiveContextTokens != 5_767 || finalSample.Features.ActiveKVUpper != 5_767 {
+			t.Fatalf("sample feature fixture drifted: %+v", finalSample.Features)
+		}
+		if err := scheduler.Observe(finalSample, SchedulerOutcome{
+			Identity:     finalSample.Identity,
+			ObservedAt:   predictedAt.Add(500 * time.Millisecond),
+			Attributed:   true,
+			UserTPS:      240,
+			UserTPSValid: true,
+			TPOT:         time.Second / 240,
+			TPOTValid:    true,
+		}); err != nil {
+			t.Fatalf("observe healthy decode-two sample %d: %v", index, err)
+		}
+	}
+
+	progressiveState := domain.VirtualState{
+		PhysicalKVUpper:       12_685,
+		ActiveKVUpper:         12_685,
+		DecodeSequences:       2,
+		ActiveContextTokens:   12_694,
+		UncachedPrefillTokens: 0,
+	}
+	queryAt := now.Add(10 * time.Second)
+	query := scheduler.Predict(queryAt, progressiveState, cost)
+	if query.Features.DecodeSequences != 3 || query.Features.ActiveContextTokens != 16_829 || query.Features.ActiveKVUpper != 16_829 {
+		t.Fatalf("progressive query fixture drifted: %+v", query.Features)
+	}
+	if decodePressureAtLeast(finalSample.Features, query.Features) {
+		t.Fatalf("fixture did not reproduce progressive pressure growth: sample=%+v query=%+v", finalSample.Features, query.Features)
+	}
+	if query.Source != PredictionSourceCalibrated || !query.Exploratory || query.Samples < config.MinimumSamples || query.Estimate.NewUserTPSLower < config.HardUserTPSTarget {
+		t.Fatalf("mature same-shape evidence did not open the next decode bucket after progressive growth: %+v", query)
+	}
+
+	largerComplexity := cost
+	largerComplexity.RequestComplexityTokensUpper++
+	largerHorizon := cost
+	largerHorizon.KV = domain.KVIncrement{PhysicalKVUpper: 8_240, ActiveKVUpper: 8_240}
+	largerHorizon.FutureKV = domain.KVIncrement{PhysicalKVUpper: 8_192, ActiveKVUpper: 8_192}
+	largerHorizon.DecodeHorizonUpper = 8_192
+	largerHorizon.ActiveContextTokensUpper = 8_231
+	largerHorizon.FutureContextTokensUpper = 8_192
+	for _, test := range []struct {
+		name string
+		cost domain.RequestCost
+	}{
+		{name: "request_complexity", cost: largerComplexity},
+		{name: "decode_horizon", cost: largerHorizon},
+	} {
+		prediction := scheduler.Predict(queryAt, progressiveState, test.cost)
+		if prediction.Exploratory || prediction.Estimate.NewUserTPSLower >= config.HardUserTPSTarget {
+			t.Fatalf("smaller request evidence transferred to larger %s shape: %+v", test.name, prediction)
+		}
+	}
+
+	constraints := domain.Constraints{
+		PhysicalKVHard:       1_000_000,
+		ActiveKVHard:         1_000_000,
+		UserTPSTarget:        config.HardUserTPSTarget,
+		TPOTSLO:              config.HardTPOTSLO,
+		WorkspaceRiskBudget:  profile.WorkspaceRiskUpper,
+		PreemptionRiskBudget: profile.PreemptionRiskUpper,
+		MinimumConfidence:    0.95,
+	}
+	manager := NewManager("test-profile", progressiveState, constraints, scheduler)
+	attempt := manager.decideAndReserve(queryAt, "same-shape-progressive", cost)
+	if attempt.Decision.Reason != domain.ReasonFit || attempt.Prediction.Source != PredictionSourceCalibrated || !attempt.Prediction.Exploratory {
+		t.Fatalf("same-shape progressive request was not an exploratory fit: %+v", attempt)
+	}
+	if !manager.Terminate("same-shape-progressive", TerminalClientCancelled) {
+		t.Fatal("same-shape progressive reservation did not terminate")
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 {
+		t.Fatalf("same-shape progressive test leaked reservation: %+v", snapshot)
+	}
+}
+
 func TestLearnedSchedulerDominantShapeDoesNotEraseMatureMinorityFallback(t *testing.T) {
 	now := time.Unix(9_250, 0)
 	profile := testLearnedProfile()

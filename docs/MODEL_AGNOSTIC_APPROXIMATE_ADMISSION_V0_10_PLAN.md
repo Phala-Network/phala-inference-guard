@@ -6243,3 +6243,396 @@ deployment, live readiness, Router enablement, real GPU traffic, or a 30-minute
 canary. The next permitted action is a fresh read-only snapshot of the sole
 authorized CVM and Router state, followed only by an exact Router-disabled
 shadow candidate with byte-exact rollback.
+
+##### v0.10.8 Router-disabled live learning recovery — algorithm red
+
+The immutable v0.10.8 image was deployed only to the authorized CVM
+`a0f0bfb3-e46f-4b22-814e-24872f251193` while Router upstream `use1-cb`
+remained disabled. Shadow protocol, low-flow/self-lock, interim-response,
+Router-disabled enforce request-scope, load-scope publication, metrics/log
+agreement, recovery, and terminal-state gates completed before the learning
+recovery probe. This did not authorize Router enablement.
+
+The retained live runner is
+`../tmp/pig-v0108-use1-cb-live-20260803/run-enforce-learning-recovery-v0108.ps1`,
+SHA-256
+`e58dc6874fa0c285e00e262eaaa55d98c138260093d7b9b80f976bd687153c5b`.
+Its retained evidence is intentionally outside the nested repository under
+`../tmp/pig-v0108-use1-cb-live-20260803/`.
+
+Run r22 is a harness red and supplies no product conclusion. The original
+prompt completed after only about 38 output tokens, so the sampler never
+observed the required sustained `decode_running=2` condition and the third
+request was not sent. It ended without cleanup errors, temporary paths,
+preemption, or sticky state. The prompt was corrected before the next run.
+
+Run r23 is a valid algorithm red. Its retained
+`enforce-learning-recovery-r23/learning-recovery-failure.json` and Prometheus
+snapshots establish:
+
+- the two cold controlled requests both returned HTTP 200 with 31 prompt and
+  4096 completion tokens, complete SSE termination, approximately 490
+  aggregate generation tokens/s, waiting zero, and preemption zero;
+- the cold third request was rejected pre-forward with HTTP 429 and
+  `new_tps_at_risk/static/load`, zero samples, Router protection active/applied,
+  predictive/effective running two, and effective global limit two;
+- after natural completion plus one further two-request training round,
+  accepted, new-decode, and global residual samples each reached three,
+  aggregate samples reached 39, aggregate cells reached two, and neither
+  yellow TPS nor yellow TPOT debt was recorded;
+- the approximate input learner was mature and stable: raw cold high 137
+  tokens, lexical hint 36, learned upper 39, and backend actual prompt 31;
+- with two matching requests running again, aggregate generation throughput
+  was approximately 469--480 tokens/s, waiting remained zero, preemption
+  remained zero, and vLLM KV usage was approximately 2.16%;
+- despite that mature and healthy evidence, the same third request was again
+  rejected pre-forward with HTTP 429 and
+  `new_tps_at_risk/calibrated/load`, three samples, and exploratory false;
+- both producing requests then terminated naturally. Accepted/global samples
+  subsequently reached four and reservations, deferred outcomes, running,
+  waiting, and Router protection returned to zero without cleanup errors or
+  temporary paths.
+
+The result proves that feedback reached the learner and changed the next
+prediction from static to calibrated. It does not prove that learning failed
+to collect samples. Instead, the mature prediction was still prevented from
+forming the one-step exploratory fit needed to test decode concurrency three.
+The v0.10.8 release is therefore not eligible for Router enablement or a
+30-minute canary.
+
+##### v0.10.9 active correction — request-shape-safe progressive-decode exploration
+
+Source inspection identifies the causal mismatch in
+`internal/runtime/predictive/scheduler.go`. Joining-user TPS and TPOT
+one-bucket exploration currently requires
+`decodePressureAtLeast(sample, query)`. Residual samples retain their immutable
+admission-time aggregate context/KV features. Before a later joining request,
+the already-running requests have generated more tokens, so current observed
+active context and KV legitimately exceed the earlier admission-time values
+even when:
+
+- the joining request has the same raw request-complexity upper and decode
+  horizon;
+- the earlier decode bucket completed at high per-user and aggregate
+  throughput;
+- current KV is far below the hard limit;
+- waiting, preemption, adverse evidence, and cooldown are all absent.
+
+Requiring the older admission-time aggregate pressure to dominate that later
+progressive-decode observation rejects the only mature optimistic transfer.
+The query then retains the cold `base_completion_tps / 3` joining-user prior
+and fails the hard red TPS floor even though the live two-user state has orders
+of magnitude more measured headroom.
+
+v0.10.9 will make the smallest coherent correction:
+
+1. Change only joining-user TPS and TPOT *exactly-one-next-decode-bucket*
+   optimistic exploration. Preserve strict pressure dominance for ordinary
+   same/conservative residual reuse and for existing-user prefill protection.
+2. For this one-step exploration, require the completed sample's immutable
+   request shape to dominate the query request shape using both
+   `RequestComplexityTokensUpper` and `DecodeHorizonUpper`. A larger input
+   complexity or longer requested decode horizon must never reuse optimistic
+   evidence from a smaller request.
+3. Do not require the sample's admission-time aggregate active context/KV to
+   dominate current progressive aggregate context/KV for this narrow transfer.
+   Hard post-admit physical KV, active KV, workspace, lifecycle, confidence,
+   red TPS, red TPOT, and preemption constraints remain in the atomic manager
+   decision.
+4. Preserve minimum samples, exact one-bucket progression, age and backend
+   identity, bounded residual multipliers, adverse-evidence invalidation,
+   waiting/preemption cooldown, aggregate-throughput frontier, 1% throughput
+   deadband, and bounded learner cardinality.
+5. Preserve the throughput-first contract: yellow TPS/TPOT debt alone neither
+   rejects nor publishes Router protection; red TPS/TPOT and hard resource risk
+   still reject before forward; TTFT remains observation-only; cache-aware
+   admission and routing remain out of PIG scope.
+6. Bump the predictor identity from `adaptive-tps-kv-v5` to
+   `adaptive-tps-kv-v6` so no v0.10.8 residual can cross the semantic change.
+   Manage the release version as v0.10.9 only after the complete source and
+   evidence gates pass.
+
+The required test-first acceptance sequence is:
+
+1. Add a focused behavioral test that records at least three healthy matching
+   samples at post-admit decode concurrency two, with high joining-user TPS and
+   healthy TPOT.
+2. Query concurrency three with the same request shape after existing requests
+   have progressively increased current active context and KV above the
+   samples' admission-time normalized pressure, while KV remains far below
+   hard capacity and waiting/preemption are zero.
+3. Prove exact v0.10.8 fails the intended assertion as
+   non-exploratory `new_tps_at_risk`, not because of compilation, fixtures,
+   configuration, or runner failure.
+4. After the correction, require `calibrated`, `exploratory`, and `fit` for the
+   same-shape one-step query.
+5. Require both a larger `RequestComplexityTokensUpper` and a larger
+   `DecodeHorizonUpper` to remain ineligible for that optimistic transfer.
+6. Retain and rerun the hard-adverse test proving exactly one hard-knee
+   exposure immediately blocks subsequent exploration, plus waiting,
+   preemption, stale sample, identity, cardinality, race, reservation, and
+   terminal lifecycle gates.
+7. Run focused, race, deterministic simulation, both-order benchmark, and full
+   clean-builder matrices only on the fixed remote Linux builder. Local Windows
+   execution remains source inspection/editing and evidence review only.
+8. Complete the three recorded review passes. Only then create/push the
+   v0.10.9 source release and immutable image to `pig-origin`; never push the
+   unrelated `origin` remote.
+9. Re-run Router-disabled shadow and enforce protocol, low-flow/self-lock,
+   learning, same-shape expansion, larger-shape protection, hard adverse,
+   request/load-scope publication, log/metrics agreement, recovery, and
+   terminal-zero gates on the sole authorized CVM.
+10. Enable Router upstream `use1-cb` only after all preceding gates pass, then
+    observe it continuously for 30 minutes against the old `use1-4c` baseline.
+    Compare useful aggregate completion-token throughput, per-user TPS/TPOT
+    distribution and yellow debt, KV/GPU utilization, running/waiting,
+    preemption, reject/protection events, and log/metrics consistency. Any
+    material safety, QoS, self-lock, or overprotection regression requires
+    disabling only `use1-cb`, retaining evidence, and returning to this source
+    loop.
+
+##### v0.10.9 test-first and clean-builder evidence
+
+The exact behavioral-red source archive is SHA-256
+`ac596780bc4583f49fa7a591d8c2ba7aaf9e6e111691c47db4120e91f62ed55e`.
+On exact v0.10.8, the new progressive-decode test compiled and the source had
+an empty `gofmt` diff, but the intended assertion failed with a static,
+zero-sample, non-exploratory prediction. Its joining-user TPS lower bound was
+approximately 16.67 tokens/s against the 20 tokens/s hard floor. This is the
+required product-behavior red rather than a runner, dependency, formatting, or
+configuration failure.
+
+The smallest production correction replaces aggregate
+`decodePressureAtLeast` only for joining-user TPS/TPOT optimistic transfer to
+exactly one higher decode bucket. The replacement requires the completed
+sample to dominate both immutable joining-request dimensions:
+`RequestComplexityTokensUpper` and `DecodeHorizonUpper`. Existing-user prefill
+transfer, ordinary residual reuse, physical and active KV, workspace,
+preemption, hard TPS/TPOT, aggregate frontier, adverse evidence, cooldown,
+atomic reservation, and lifecycle checks are unchanged. Predictor identity is
+isolated as `adaptive-tps-kv-v6`.
+
+The focused green proves all of the following in one deterministic fixture:
+
+- three healthy samples at post-admit decode concurrency two are sufficient to
+  produce a calibrated, exploratory concurrency-three prediction for the same
+  request shape despite legitimate progressive growth of current context and
+  KV;
+- the manager returns `fit` and atomically reserves the request;
+- a request with either a larger complexity upper or a larger decode horizon
+  cannot reuse the smaller optimistic evidence;
+- explicit terminal cancellation releases the successful reservation and the
+  manager snapshot returns to zero reservations;
+- the runtime factory identity equals the v6 constant.
+
+An initial green archive,
+`bc65969e0fbc92dd24bad1c70d19cc0c1f953776f50711a9be92ed305572ba73`,
+passed the predictive, server, simulation, and predictive race packages. It is
+not the final candidate because the later review added explicit v6 factory
+identity and terminal-release assertions. A subsequent full-r2 archive,
+`7bf1db00f76d4b7b9b271a4ef364292308d9d78e57b69acc009f05e83c677670`,
+failed `go vet` on a test-only suspect-OR expression comparing the predictor
+version to two expected values. Splitting that expression into two independent
+assertions corrected the test without changing production behavior.
+
+Full-r3 source
+`fe33a1f767774332eab8c9098d977fff1209eb50846753c494eba8adbcafac12`
+then passed the complete matrix. The second safety/lifecycle review still found
+that the new test did not explicitly release its successful manager
+reservation and that the two larger-shape cases could be clearer in fixed
+table order. Those test-only weaknesses were corrected before final evidence,
+so full-r3 is retained evidence but is not inherited as the final source
+candidate.
+
+The final pre-release full-r4 source archive is SHA-256
+`9c34feae485310c810bdff312f78c6359a972cfca1b4fb8b488af569be2bc954`.
+It was tested only on builder `vllm-v024-patch-builder-use1` using the fixed Go
+image
+`docker.io/library/golang:1.24.5-bookworm@sha256:ef8c5c733079ac219c77edab604c425d748c740d8699530ea6aced9de79aea40`,
+image ID
+`sha256:f14dd5573539be535f8d24abe277d750b937d584b6850ed0aed839bc737747f5`.
+The exact baseline is the v0.10.8 archive
+`fea7ed29163cfb4fd4190f3b089edaea73aa28692dc6b760123fb46d9d291229`;
+the fixed matrix runner is
+`68a2eb48f7201b86187e22de18e4f89c7210889462b3d9eeaddfe3c6dba73871`.
+
+Focused full-r4 tests passed for the progressive-decode and model-neutral
+factory identity fixtures. The complete matrix then produced status zero for
+every independent gate: `gofmt`, boundary matrix, `go vet`, build, all tests,
+all race tests, deterministic goodput/frontier, both-order candidate/baseline
+goodput, both-order predictor and estimator benchmarks, both-order aggregate
+lookup, aggregate observation, lexical hint, overall, and wrapper. The
+downloaded evidence archive is
+`tmp/v0109-progressive-full-r4/evidence.tar`, SHA-256
+`dc0247b58131ea9a35aed215b8ae6e3dd3b6b633715ac72b02ba40cd23da400b`.
+Its internal `SHA256SUMS` independently verifies with zero mismatches, and its
+`gofmt.diff` is empty.
+
+Against the exact v0.10.8 baseline, both execution orders reproduce:
+
+- completion-token goodput `44,704 -> 45,216`, approximately `+1.15%`;
+- SLO-compliant completions `51 -> 53`;
+- false denies `7 -> 3`;
+- zero existing/new TPS violations, TPOT violations, KV hard violations,
+  preemption proxy events, false accepts, and reservation leaks.
+
+The only changed deterministic scenario is
+`same_poll_short_burst_near_kv`, whose predictive goodput increases from 512
+to 1,024 while protected violations remain zero. Frontier simulations still
+reach safe decode eight at 400 completion tokens/s versus the 100 tokens/s
+ablation; retreat from the harmful soft knee after probing seven; retain the
+beneficial soft knee through mature decode eight while probing nine; and expose
+the hard knee at decode seven exactly once without attempting eight.
+
+The calibrated predictor medians are 1,690 ns versus 1,686 ns in order one and
+1,698 ns versus 1,705 ns in order two, with 128 bytes and one allocation. Both
+remain below the 2 microsecond gate and show no material release regression.
+Aggregate-frontier lookup medians are 462.3 ns versus 448.4 ns (`+3.10%`) and
+464.6 ns versus 450.4 ns (`+3.15%`), both below the 10% gate and both with zero
+allocations. Aggregate observation has a 448.3 ns median and zero allocations.
+The fixed-budget lexical hint medians are 102.2 ns for 1 KiB, 102.1 ns for
+64 KiB, and 100.7 ns for 2 MiB, all with zero allocations.
+
+One performance-evidence nuance must remain visible. In the complete matrix,
+the unchanged 2 MiB estimator was 1.189 microseconds faster than baseline in
+the first order but 1.253 microseconds slower in the second, narrowly crossing
+the earlier per-order 1 microsecond additive heuristic. A predeclared
+candidate/baseline/baseline/candidate confirmation with ten 3-second samples
+per phase measured approximately `+0.474` and `+1.267` microseconds in the two
+orders. The original and confirmation results are both retained; no favorable
+rerun replaces them. The confirmation archive is
+`tmp/v0109-progressive-full-r4/estimator-confirm-r1.tar`, SHA-256
+`cf923fafafa713b14e593ef6df7da85a64e7a7be25a65c6cad9f01a3ae4e16e9`,
+and its internal checksums verify with zero mismatches.
+
+This is not accepted as evidence of a v0.10.9 estimator regression: recursive
+diff proves the candidate and baseline `internal/domain/kvadmission` trees are
+byte-identical, and `go.mod` and `go.sum` hashes are also identical. The package
+imports only the standard library, so the measured direction and size cannot
+be caused by this source change. For an unchanged package, byte identity is the
+causal regression gate; absolute estimator latency and allocation remain
+reported, while the separately changed predictor and newly consumed lexical
+hint retain their explicit hot-path gates. This avoids both a false release
+block from sequential builder drift and the invalid practice of rerunning until
+a favorable sample appears.
+
+##### v0.10.9 three-pass review conclusion before release identity
+
+Review pass one, model and causality, found the original aggregate-pressure
+comparison invalid only for the one-step joining-request exploration transfer.
+The final correction is request-shape bounded, changes a pre-forward decision,
+and is proven against exact v0.10.8 behavioral red evidence. It does not add
+cache-aware admission, model-specific assets, routing behavior, or TTFT
+protection. No further model/causality issue remains in the full-r4 source.
+
+Review pass two, safety and lifecycle, added the explicit terminal release and
+zero-reservation assertion and converted the larger-shape negatives to a fixed
+table. Full race, atomic burst, cancellation, completion-before-poll,
+disconnect, epoch invalidation, waiting/preemption recovery, hard adverse,
+bounded learner, and terminal gates all pass. Hard KV and red QoS checks remain
+outside and after the narrow optimistic-transfer compatibility test. No
+further safety/lifecycle issue remains in the full-r4 source.
+
+Review pass three, evidence and release, independently verified the source,
+baseline, runner, Go image, downloaded evidence, internal checksums, every
+status, goodput counters, protected-violation counters, and benchmark medians.
+It retained and explained the unchanged-estimator timing variance rather than
+discarding it. The evidence supports promotion from complete clean-builder
+matrix to release-version preparation. It does not yet prove a v0.10.9 commit,
+tag, pushed source, image, registry artifact, deployment, live readiness,
+Router enablement, or 30-minute production canary. Those remain separate gates.
+
+##### v0.10.9 exact versioned r5 matrix and builder-local image
+
+After the pre-release reviews passed, the current release identities were
+unified as:
+
+- runtime `PIG-v0.10.9`;
+- OCI label `0.10.9`;
+- predictor `adaptive-tps-kv-v6`;
+- README image tag `v0.10.9`;
+- current Advanced and Observability references `v0.10.9`.
+
+No non-historical v0.10.8 identity remains in those current files. The exact
+versioned tracked-source archive is
+`tmp/v0109-progressive-versioned-r5-source.tar`, SHA-256
+`5712ef99baba2758e8f12cd12143a8c8366fea766a1c450b47cdd0a8e2c019c7`.
+All 272 tracked paths were compared with the archive. There were no missing
+paths. The sole raw-byte difference was the unmodified `LICENSE` worktree CRLF
+versus Git-archive LF representation; both canonicalize to Git blob
+`e62ec04cdeece724caeeeeaeb6ae1f6af1bb6b9a`. Every changed file matched exactly.
+The builder upload independently reproduced the archive SHA-256.
+
+Because the runtime constant changes the binary, no pre-version executable
+evidence was inherited as the final release matrix. The exact r5 archive reran
+the complete fixed matrix against the same exact v0.10.8 baseline and fixed Go
+image. Source-version contract, `gofmt`, boundary matrix, `go vet`, build, all
+tests, all race tests, deterministic goodput/frontier, every both-order
+comparison, overall, and wrapper each returned status zero. The downloaded
+evidence is `tmp/v0109-progressive-versioned-r5/evidence.tar`, SHA-256
+`c5bbe57589c69c7c6227aa6f0c556925f281bd7603178fa680d2fb22dbaaabe1`.
+Its internal checksums verify with zero mismatches and `gofmt.diff` is empty.
+
+The final versioned matrix exactly reproduces the pre-version behavior result:
+completion-token goodput `44,704 -> 45,216`, SLO-compliant completions
+`51 -> 53`, false denies `7 -> 3`, and zero existing/new TPS, TPOT, KV-hard,
+preemption-proxy, false-accept, and reservation-leak violations in both orders.
+The safe, harmful-soft, beneficial-soft, and hard-knee frontier results are
+unchanged.
+
+Final versioned predictor medians are 1,700 ns versus 1,694 ns and 1,698 ns
+versus 1,676 ns, with 128 bytes and one allocation. Aggregate lookup is
+467.8 ns versus 449.7 ns (`+4.03%`) and 460.9 ns versus 449.4 ns (`+2.56%`),
+with zero allocations. Aggregate observation is 450 ns with zero allocations.
+Lexical hint medians are 104.7 ns, 102.5 ns, and 100.8 ns for 1 KiB, 64 KiB,
+and 2 MiB, all with zero allocations. The unchanged 2 MiB estimator again
+shows sequential noise: `+2.018` microseconds in the first order and `+0.397`
+microseconds in the second. This remains retained under the byte-identity
+causality analysis above rather than being hidden or used as evidence of a
+changed estimator.
+
+The exact r5 source then built builder-local image
+`pig-v0109-versioned-r5:local` with:
+
+- image ID
+  `sha256:98cc4762e72b44aacc1f796590bc41503105e2841710cf83fbdc4e808b0ed588`;
+- Linux amd64 size 29,447,023 bytes;
+- OCI version `0.10.9`;
+- entrypoint `/phala-inference-guard`;
+- extracted binary SHA-256
+  `57dc7cb7496c26c4805d8d21d0cff3fe2efe22a5451dd7e177efeea4b5c80a9e`.
+
+The repository production image contract returned:
+
+```text
+PIG_PRODUCTION_IMAGE_CONTRACT_OK image=pig-v0109-versioned-r5:local version=0.10.9
+```
+
+The first outer image runner stopped after the successful build, successful
+production contract, and successful binary extraction because the builder
+container lacks the optional `file` command. This harness-only failure is
+retained as status 127; startup had not yet been attempted. The resumed runner
+used available `readelf`, returned status zero, started the same immutable image,
+verified it remained running, captured both `PIG-v0.10.9` startup and
+`pig_status v=PIG-v0.10.9`, and removed the temporary container. Build,
+production contract, readelf, startup version, and resumed overall are all
+zero.
+
+The uncompressed builder evidence tar is SHA-256
+`db97ad2ef08d82f72427536429b0aefd099bc69a9ff483f79af612f149b06be4`.
+The first SCP transfer was interrupted by the gateway after 1,802,240 bytes and
+is retained locally only as `image-evidence.scp-partial-r1.tar`, never as valid
+evidence. The same immutable tar was gzip-compressed on the builder and
+downloaded as
+`tmp/v0109-progressive-versioned-r5/image-evidence.tar.gz`, SHA-256
+`b2d87e419a4617d85214527b4c70bd7c5110d490f2e1be9566642b5379fa9f0b`.
+Its internal `SHA256SUMS` verifies with zero mismatches, including the extracted
+binary.
+
+This completes the exact versioned complete-builder and builder-local image
+layers. This evidence record itself is documentation-only and does not change
+`Dockerfile`, `go.mod`, `go.sum`, `cmd`, or `internal`. A final source-identity
+gate must prove those executable and image inputs byte-identical to r5 before
+commit and tag. Registry publication, immutable registry pull, Compose, CVM,
+Router, and live traffic remain unproven and unauthorized by builder-local
+success alone.

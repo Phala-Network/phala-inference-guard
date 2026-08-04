@@ -1210,12 +1210,25 @@ func existingTPSExplorationCompatible(sample, query SchedulerFeatures, ratio flo
 
 func tpsExplorationCompatible(sample, query SchedulerFeatures, ratio float64, decodeBucket int) bool {
 	return ratio >= 1 && exactlyOneDecodeBucketHigher(sample, query, decodeBucket) &&
-		decodePressureAtLeast(sample, query)
+		joiningRequestShapeAtLeast(sample, query)
 }
 
 func tpotExplorationCompatible(sample, query SchedulerFeatures, ratio float64, decodeBucket int) bool {
 	return ratio <= 1 && exactlyOneDecodeBucketHigher(sample, query, decodeBucket) &&
-		decodePressureAtLeast(sample, query)
+		joiningRequestShapeAtLeast(sample, query)
+}
+
+func joiningRequestShapeAtLeast(sample, query SchedulerFeatures) bool {
+	// A completed lower-concurrency request is the stable evidence for probing
+	// exactly one higher decode bucket. Existing requests can legitimately grow
+	// their current context and KV between that admission-time sample and the
+	// next join, so aggregate progressive pressure is not comparable here. Keep
+	// the transfer conservative in the dimensions owned by the joining request:
+	// optimistic evidence from a smaller input or output horizon never applies
+	// to a larger request. The manager still evaluates hard post-admit KV,
+	// workspace, preemption, TPS, and TPOT constraints atomically.
+	return sample.RequestComplexityTokensUpper >= query.RequestComplexityTokensUpper &&
+		sample.DecodeHorizonUpper >= query.DecodeHorizonUpper
 }
 
 func exactlyOneDecodeBucketHigher(sample, query SchedulerFeatures, decodeBucket int) bool {

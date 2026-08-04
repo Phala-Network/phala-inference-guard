@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.10.8 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 deferred=0 prefill_learning=0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
+pig_status v=PIG-v0.10.9 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 deferred=0 prefill_learning=0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
 ```
 
 The status line has three required parts:

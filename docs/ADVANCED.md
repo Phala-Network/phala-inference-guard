@@ -477,7 +477,7 @@ labels through `pig_dynamic_capacity_projected_limit` and
 : Default: `16`. Minimum running load before severe pressure is treated as
   representative for learning.
 
-## PREDICTIVE ADMISSION (v0.10.8)
+## PREDICTIVE ADMISSION (v0.10.9)
 
 Predictive admission is a pre-forward guard for one configured vLLM upstream.
 It uses a bounded model-family-neutral JSON size interval, a fixed-budget
@@ -489,7 +489,9 @@ retained only when stable vLLM generation-token evidence improves aggregate
 throughput by more than 1%. TTFT prediction and feedback remain available as
 observation-only telemetry; TTFT never causes an admission reject. PIG does not
 tokenize with model assets, inspect prefix-cache hits, route between backends,
-or change vLLM.
+or change vLLM. Mature healthy evidence may probe exactly one higher decode
+bucket after progressive context growth only when it dominates the joining
+request's input-complexity upper and decode horizon.
 
 Feedback is qualified and causal: it can update only a later prediction. A
 reservation keeps the exact estimate and forecast used for its decision. A
