@@ -38,6 +38,7 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		ShadowPendingPrefills:                   1,
 		ShadowPendingPrefillTokens:              200,
 		ShadowPendingPrefillAttributionValid:    true,
+		ShadowPendingPrefillAttributionState:    "aggregate",
 		RetiredReservations:                     3,
 		RetiredEvictions:                        1,
 		LearningAccepted:                        11,
@@ -151,6 +152,7 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		"pig_predictive_admission_shadow_pending_prefills 1",
 		"pig_predictive_admission_shadow_pending_prefill_tokens 200",
 		"pig_predictive_admission_shadow_pending_prefill_attribution_valid 1",
+		`pig_predictive_admission_shadow_pending_prefill_attribution_state_info{state="aggregate"} 1`,
 		"pig_predictive_admission_intake_open 1",
 		"pig_predictive_admission_retired_evictions_total 1",
 		"pig_predictive_router_backpressure_active 1",
@@ -269,11 +271,38 @@ func TestWritePredictiveAdmissionNormalizesDisabledModeAndNilHistograms(t *testi
 		`pig_predictive_admission_mode_info{mode="off"} 1`,
 		"pig_predictive_admission_enabled 0",
 		`pig_predictive_router_backpressure_state_info{scope="none",reason="none",source="unknown"} 1`,
+		`pig_predictive_admission_shadow_pending_prefill_attribution_state_info{state="empty"} 1`,
 		"pig_predictive_admission_prediction_duration_seconds_count 0",
 		"pig_predictive_admission_estimator_duration_seconds_count 0",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q\noutput:\n%s", want, got)
 		}
+	}
+}
+
+func TestWritePredictiveAdmissionBoundsUnknownShadowPrefillAttributionState(t *testing.T) {
+	var out bytes.Buffer
+	WritePredictiveAdmission(&out, PredictiveAdmissionInput{
+		ShadowPendingPrefills:                2,
+		ShadowPendingPrefillAttributionState: "request-derived-unbounded-value",
+	})
+	got := out.String()
+	if !strings.Contains(got, `pig_predictive_admission_shadow_pending_prefill_attribution_state_info{state="incompatible"} 1`) ||
+		strings.Contains(got, "request-derived-unbounded-value") {
+		t.Fatalf("unknown shadow attribution state was not normalized:\n%s", got)
+	}
+}
+
+func TestWritePredictiveAdmissionPreservesOnlyFixedShadowPrefillAttributionStates(t *testing.T) {
+	for _, state := range []string{"empty", "single", "aggregate", "incompatible"} {
+		t.Run(state, func(t *testing.T) {
+			var out bytes.Buffer
+			WritePredictiveAdmission(&out, PredictiveAdmissionInput{ShadowPendingPrefillAttributionState: state})
+			want := `pig_predictive_admission_shadow_pending_prefill_attribution_state_info{state="` + state + `"} 1`
+			if got := out.String(); !strings.Contains(got, want) {
+				t.Fatalf("fixed shadow attribution state missing %q:\n%s", want, got)
+			}
+		})
 	}
 }

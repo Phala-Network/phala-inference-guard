@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.10.11 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 deferred=0 prefill_learning=7/1/2/1.998/1/1 hard_origin=1/0/0/0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
+pig_status v=PIG-v0.10.13 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 shadow_prefill=0/0/0/empty deferred=0 prefill_learning=7/1/2/1.998/1/1 hard_origin=1/0/0/0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
 ```
 
 The status line has three required parts:
@@ -174,6 +174,17 @@ For production operation, watch these first:
   requests. They do not contribute virtual KV or concurrency and must converge
   to zero after terminal completion or shutdown. Growth in `dropped` means the
   configured observation cap was reached; it must not change shadow forwarding.
+- `pig_predictive_admission_shadow_pending_prefills`,
+  `pig_predictive_admission_shadow_pending_prefill_tokens`,
+  `pig_predictive_admission_shadow_pending_prefill_attribution_valid`, and
+  `pig_predictive_admission_shadow_pending_prefill_attribution_state_info` show
+  the current anonymous prefill pressure retained only for shadow learning.
+  The state label is fixed to `empty`, `single`, `aggregate`, or
+  `incompatible`. A compatible multi-request window must report
+  `aggregate` with valid `1`; different Manager bases, changed sequences,
+  malformed increments, or overflow must report `incompatible` with valid `0`.
+  These values do not create reservations and never authorize current-request
+  admission or Router capacity changes.
 - `pig_predictive_deferred_outcomes` and
   `pig_predictive_deferred_outcomes_total{result="released|terminated|qualified|censored|dropped"}`:
   show bounded numeric outcomes whose upstream GPU/KV/TPS accounting has

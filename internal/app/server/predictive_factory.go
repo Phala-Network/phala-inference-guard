@@ -12,7 +12,7 @@ import (
 const (
 	predictiveApproximateManifestID       = "model-agnostic-json-v1"
 	predictiveApproximateProfileID        = "model-agnostic-qos-v2"
-	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v9"
+	predictiveApproximatePredictorVersion = "adaptive-tps-kv-v10"
 	predictiveApproximateEstimatorVersion = "json-cost-lexical-hint-v2"
 	predictiveColdParallelUsers           = 2
 	predictivePrefillHeadroomSafetyShares = 4

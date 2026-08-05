@@ -81,8 +81,18 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 	if lastRejectScope == "" {
 		lastRejectScope = "none"
 	}
+	shadowPrefillState := input.ShadowPendingPrefillAttributionState
+	switch shadowPrefillState {
+	case "empty", "single", "aggregate", "incompatible":
+	default:
+		if input.ShadowPendingPrefills <= 0 {
+			shadowPrefillState = "empty"
+		} else {
+			shadowPrefillState = "incompatible"
+		}
+	}
 	return fmt.Sprintf(
-		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s/%d last_reject=%s/%s/%s/%d reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d deferred=%d prefill_learning=%d/%d/%d/%.3f/%d/%d prefill_deduplicated=%d hard_origin=%d/%d/%d/%d/%d/%d completion_observer=%d/%d/%d/%d router_bp=%d/%d/%s/%s throughput=%.2f/%.2f router_lease=%d/%d/%d/%d/%s/%s effective=%d/%d raw=%d/%d}",
+		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s/%d last_reject=%s/%s/%s/%d reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d shadow_prefill=%d/%d/%d/%s deferred=%d prefill_learning=%d/%d/%d/%.3f/%d/%d prefill_deduplicated=%d hard_origin=%d/%d/%d/%d/%d/%d completion_observer=%d/%d/%d/%d router_bp=%d/%d/%s/%s throughput=%.2f/%.2f router_lease=%d/%d/%d/%d/%s/%s effective=%d/%d raw=%d/%d}",
 		input.Mode,
 		input.Attempts,
 		input.Fits,
@@ -101,6 +111,10 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 		input.ForwardedPendingPrefills,
 		input.ForwardedPendingPrefillTokens,
 		boolInt(input.ForwardedPendingPrefillAttributionValid),
+		input.ShadowPendingPrefills,
+		input.ShadowPendingPrefillTokens,
+		boolInt(input.ShadowPendingPrefillAttributionValid),
+		shadowPrefillState,
 		input.DeferredOutcomes.Active,
 		input.ExistingPrefill.Accepted,
 		input.ExistingPrefill.Rejected,

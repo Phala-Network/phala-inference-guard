@@ -695,18 +695,24 @@ func observedPredictivePendingPrefills(manager runtimepredictive.Snapshot, shado
 		Tokens: addPredictivePendingPrefillTokens(manager.ForwardedPendingPrefillTokens, shadow.Tokens),
 	}
 	switch {
-	case manager.ForwardedPendingPrefills > 0 && shadow.Count == 0 && manager.ForwardedPendingPrefillFeaturesValid:
-		result.Features = manager.ForwardedPendingPrefillFeatures
-		result.FeaturesValid = true
-		result.Exploratory = manager.ForwardedPendingPrefillExploratory
-		result.Episode = predictivePrefillEpisodeIdentity{Origin: predictivePrefillEpisodeManager, Sequence: manager.ForwardedPendingPrefillSequence}
-	case manager.ForwardedPendingPrefills == 0 && shadow.Count == 1 && shadow.FeaturesValid:
+	case shadow.Count > 0 && shadow.FeaturesValid &&
+		shadow.DecisionManagerSequence == manager.EventSequence &&
+		shadow.Features.PendingPrefillSequences == result.Count &&
+		shadow.Features.UncachedPrefillTokens == result.Tokens:
+		// A compatible shadow feature vector is the latest counterfactual
+		// marginal request. It may already include Manager pending pressure and
+		// therefore owns mixed Manager-plus-shadow attribution as well.
 		result.Features = shadow.Features
 		result.FeaturesValid = true
 		result.FromShadow = true
 		result.DecisionManagerSequence = shadow.DecisionManagerSequence
 		result.Exploratory = shadow.Exploratory
 		result.Episode = predictivePrefillEpisodeIdentity{Origin: predictivePrefillEpisodeShadow, Sequence: shadow.EventSequence}
+	case manager.ForwardedPendingPrefills > 0 && shadow.Count == 0 && manager.ForwardedPendingPrefillFeaturesValid:
+		result.Features = manager.ForwardedPendingPrefillFeatures
+		result.FeaturesValid = true
+		result.Exploratory = manager.ForwardedPendingPrefillExploratory
+		result.Episode = predictivePrefillEpisodeIdentity{Origin: predictivePrefillEpisodeManager, Sequence: manager.ForwardedPendingPrefillSequence}
 	}
 	return result
 }

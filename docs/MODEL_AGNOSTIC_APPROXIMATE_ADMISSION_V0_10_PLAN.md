@@ -3532,149 +3532,6 @@ then repeat the applicable builder and image-contract gates before commit,
 push, annotated tag, immutable registry image, or any Router-disabled CVM
 deployment.
 
-No v0.10.5 commit, push, tag, registry publication, Compose change, deployment,
-Router mutation, production request, or 30-minute canary has occurred. TTFT
-remains measurement/learning/diagnosis only and must not become an admission or
-Router-capacity condition in any subsequent gate.
-
-#### v0.10.5 pre-version full matrix r31 — complete green
-
-r31 used baseline archive SHA-256
-`6ee67ee4d426a29893e9959c01065aae73bab2b76d9ce4b1f6852c0e42adf7a8`,
-overlay SHA-256
-`7a310f45e2c8a7a568abc9c1091f5d76536b63990bcb792f85fa7fc1a8d127eb`,
-inner-runner SHA-256
-`8b23c5766e252fc88009ae405c6c5b2133ce94035a890342f29996ba38e354f7`,
-and host-runner SHA-256
-`4bc3378346f31c9a25051e424b6b9482f92c0bc0fa7a18c1f18759a1eb74230a`.
-It ran inside the existing `pig-ubuntu-builder` environment with Go 1.24.5,
-linux/amd64, and `CGO_ENABLED=1`. Every status was zero for formatting, vet,
-all tests, targeted race, full race, build, deterministic KV simulation, KV
-performance, verbose goodput, JSON goodput, candidate benchmarks, fallback
-benchmark, v0.10.4 baseline benchmarks, source overall, builder-local image
-build, production image contract, image inspection, and final overall.
-
-The deterministic aggregate remained:
-
-```text
-current threshold completion-token goodput: 39840
-v0.9.0 KV-only completion-token goodput:    37536
-predictive completion-token goodput:        44704
-predictive improvement versus current:     +12.21%
-predictive SLO-compliant completions:       51
-predictive TPS violations:                  0
-predictive TPOT violations:                 0
-predictive KV-hard violations:              0
-predictive preemption-proxy events:         0
-predictive false accepts:                   0
-predictive false denies:                    7
-predictive reservation leaks:               0
-TTFT diagnostics only:                      4
-```
-
-The low-flow progress and drain-recovery scenarios remained green, and the
-repeated-prefix scenario again passed full cache-cold charging. Performance
-recorded 64-KiB estimator p95 `1.985 us`, 2-MiB estimator p99 `124.567 us`,
-and shadow decision p99 `6.955 us`. The unpublished builder-local image was
-`pig-v0105-matrix-r31:local`, image ID
-`sha256:6136d1024a79c34abd325f11276aa9931f81dfa76721a1b4b02030d4f23b875d`,
-with contract version `0.10.4`, entrypoint `/phala-inference-guard`, and
-`NVIDIA_VISIBLE_DEVICES=all`.
-
-The downloaded evidence archive SHA-256 is
-`f051cdcd36fdab00abda90949da473471f0f1fb13398ab744dcdf9000b584359`.
-Its internal SHA256SUMS passed on the builder and a local second verification.
-Material log SHA-256 values are:
-
-```text
-full-test.log             10fce57d8c92c5f58126d54e2e35d49953892a27116cf9b51806ccf7f28bc176
-targeted-race.log         18cdc9d7735f25de53babb428668472700ace2454c44bc3690dd60ecee7acee4
-full-race.log             61e091f0538153f09b2ae13d4e2afc8225bcab715853b9b38e389fe15eeee93b
-goodput-verbose.log       92c325cdc87373b2b4a978005a07bd6b211e4a619ec8bc70a0a4f291bc872337
-kv-performance.log       29af024bddb5c8bf72ea11a00725453a5786b264a27e73082b91503c14403879
-candidate-benchmarks.log ace8bc7a29c15a35918d89b1598b2b48884bb59d468b9ff46e3cc708cd7cd8b5
-baseline-benchmarks.log  d3da1c24c6550c9ebe2c04dc2a51a6d9dca5ac67b5ec9011673a7b04786c2ed5
-image-contract.log       4165703e25a5059114ebfde0ac5e667f3bfbdf19b355f4228e66830d4879ed03
-```
-
-r31 proves the complete pre-version source and image shape only. It did not
-publish an image or authorize deployment because the runtime and image label
-still identified v0.10.4.
-
-#### v0.10.5 version unification — active after r31
-
-The working tree now consistently identifies the candidate as v0.10.5 in the
-Docker OCI version label, runtime `PIG-v0.10.5` constant, README section and
-Compose example, advanced configuration heading, observability example, and
-goodput acceptance comment. A current-tree search found no non-historical
-v0.10.4 reference outside this audit plan. These changes affect executable and
-Docker inputs, so r31 cannot be reused as final versioned evidence.
-
-The next mandatory gate is a fresh exact versioned builder matrix and production
-image contract expecting `v0.10.5`. It must at minimum repeat formatting, vet,
-all tests, targeted and full race, build, deterministic simulations, candidate
-benchmarks, builder-local image build, image contract, and image inspection.
-Only after that exact archive is green may source be committed and pushed,
-annotated tag `v0.10.5` be created and pushed, and an immutable registry image
-be built/published and verified. No Compose, CVM, Router, or production-traffic
-action is authorized by r31 or the version-text update alone.
-
-#### v0.10.5 final versioned full matrix r32 — complete green
-
-r32 used baseline archive SHA-256
-`6ee67ee4d426a29893e9959c01065aae73bab2b76d9ce4b1f6852c0e42adf7a8`,
-versioned overlay SHA-256
-`8b1d660e5524b0e56fb245dd9bbd7e2c9139a0b1bf7db3a8a36aaaa8513a1b28`,
-inner-runner SHA-256
-`3a3b843e29fd6ccbfdfab1aae5d22e4b4d7eae67dd205944bafe07b5bd295bde`,
-and host-runner SHA-256
-`499ff938cb8d4c70d7fd5914abe92b1475cfef3477ab5202f8a7104a3b7b7ac3`.
-The environment remained Go 1.24.5, linux/amd64, `CGO_ENABLED=1` in the
-approved remote builder container.
-
-Every status was zero for formatting, vet, all tests, targeted race, full race,
-build, deterministic KV simulation, KV performance, verbose and JSON goodput,
-candidate benchmarks, candidate fallback benchmark, v0.10.4 baseline
-benchmarks, source overall, builder-local image build, the production image
-contract expecting `v0.10.5`, image inspection, and final overall. The
-deterministic goodput and safety result remained `44,704` predictive completion
-tokens versus `39,840` current (`+12.21%`), 51 SLO-compliant completions, zero
-TPS/TPOT/KV-hard/preemption-proxy violations, zero false accepts, seven false
-denies, and zero reservation leaks. TTFT remained four diagnostics and was not
-an admission constraint.
-
-The final versioned performance run recorded 64-KiB estimator p95 `2.922 us`,
-2-MiB estimator p99 `200.269 us`, and shadow decision p99 `2.607 us`; all are
-inside the unchanged acceptance thresholds. The builder-local image
-`pig-v0105-matrix-r32:local` has image ID
-`sha256:d881fd5d1339c4c2411ed438645cd0d7c14c46375ac24b244c510c7baa1d5760`,
-OCI version `0.10.5`, entrypoint `/phala-inference-guard`, and
-`NVIDIA_VISIBLE_DEVICES=all`. The contract output is exactly
-`PIG_PRODUCTION_IMAGE_CONTRACT_OK image=pig-v0105-matrix-r32:local
-version=0.10.5`.
-
-The downloaded r32 evidence archive SHA-256 is
-`654c4cfbe20295332522b601cee567679da300ed85cb4873253d7f3078dc3c81`.
-Its internal checksums passed on the builder and in a local second
-verification. Material log SHA-256 values are:
-
-```text
-full-test.log             f978f75e8802bbda35376bf8abced42bdddf64f7ecb3465a17895e2b8ab6241b
-targeted-race.log         551c615a5fed4f8ad32c4cb0e804ad1bcecc6c313fb435cfd90a8c1a2dde297f
-full-race.log             720ec3e351bc7b91ee44a8df26f9f46e31b459b059196a8c862c54ce8807e8df
-goodput-verbose.log       08b611bfb37e3cc47671eb0db6788dca6fefb952e47eb86bcecc0860f9101228
-kv-performance.log       4c5a74970f7236f43bcadca31374729b3fa7906861609e6a4d5d90ac71ab671f
-candidate-benchmarks.log b648b5ca67daccec52aab767a6c224d37092fbabbdbea0a035db85de1159a16c
-baseline-benchmarks.log  bc0b803140c6bd52b6b799dca77906b16522489cf1faecf968b6618a14efe435
-image-contract.log       40a2b196341f21c026de571e4f5d442ffc8d5278baddb924650bfc57be5f4827
-image-inspect.json       b31b05a043846daea2eae0c6db9d00b96321c906fa00bcc0251bd7010831076f
-```
-
-This section is a documentation-only evidence update after r32. The final
-commit gate must prove that every `cmd/`, `internal/`, `go.mod`, `go.sum`, and
-`Dockerfile` byte remains identical to the r32 reconstructed source. If that
-check passes, the r32 executable and image-contract evidence applies to the
-commit candidate; otherwise a new matrix is mandatory.
 
 #### v0.10.5 final review pass 1 — model and causality
 
@@ -9045,3 +8902,714 @@ later executable or release-identity edit may redefine that tagged source
 without a new versioned validation cycle. Post-tag live evidence may be
 appended only in a separate documentation commit that explicitly preserves the
 immutable tag boundary.
+
+##### v0.10.12 release, Router-disabled shadow, and aggregate-attribution blocker — 2026-08-05
+
+Release commit `25df6340a86848331ac3892991db708030cff199` and annotated
+tag `v0.10.12` were atomically pushed only to `pig-origin`. GitHub Actions run
+`30978775782` published and successfully verified the immutable production
+image:
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:ae2ecfb45f3b11ecc936f45aa6ec35a737172f5d62deeabb77850a801252e4ea
+image ID: sha256:ca59b24e35df21ffec5a18313ef6d4af207f707e79ca9a6176499bf8c1bf4e17
+binary SHA-256: 2e814532cd58cf5fbb8f573cb166275b8a7d4769cffedc5980a69afccac12604
+OCI version: 0.10.12
+```
+
+Only CVM `a0f0bfb3-e46f-4b22-814e-24872f251193` / `use1-cb` received that
+digest, in `PREDICTIVE_ADMISSION_MODE=shadow`. Router remained disabled for the
+target, its processed counter remained `1189`, running remained zero, and the
+enabled set remained exactly `use1-19`. Readiness, authenticated model/metrics/
+attestation endpoints, five protocol shapes, 20-request low-flow recovery, and
+100-request prediction/estimator latency gates passed. The 100-request live
+prediction histogram had mean `51.6 us`, 99/100 at or below `0.25 ms`, and
+100/100 at or below `1 ms`; estimator mean was `60.12 us`, with 100/100 at or
+below `0.25 ms`. These are PIG stages, not end-to-end GPU latency. TTFT remained
+disabled for protection, KV admission remained off, cache remained
+observation-only, preemptions stayed zero, and terminal accounting returned to
+zero.
+
+The required aggregate-prefill live gate did not pass. Three attempts are
+retained rather than hidden:
+
+1. `shadow-prefill-episode-r11` stopped before any large prefill because the
+   decode instruction ended early. It sent only the anchor, then proved
+   terminal zero, zero preemptions, zero Router activations, zero release
+   failures, and complete temporary-file cleanup. The harness was corrected to
+   use the already validated vLLM-only `ignore_eos` synthetic option with a
+   bounded 2,048-token anchor.
+2. `shadow-prefill-episode-r12` sent the anchor and two distinct approximately
+   79,837-token prefills. Their prefill windows did not overlap: shadow pending
+   count peaked at one. It therefore was not accepted as aggregate proof. The
+   episode produced one accepted existing-TPS observation and one hard adverse
+   sample, correctly attributed only to `exploratory`; non-exploratory hard
+   origin, preemptions, Router activations, release failures, and leaks remained
+   zero.
+3. `shadow-prefill-episode-r13` used two distinct cache-cold prefixes and
+   approximately doubled each prompt. For 13 consecutive retained samples it
+   exposed exactly the target physical episode: shadow pending prefills `2`,
+   aggregate approximate tokens `294819`, existing decode `1`, observed running
+   `3`, waiting `0`, and no preemption. However,
+   `pig_predictive_admission_shadow_pending_prefill_attribution_valid` remained
+   `0` throughout. Accepted and deduplicated outcomes did not increase while
+   censored outcomes increased by `50`. Final cleanup again proved terminal
+   zero, intake open, zero preemptions, zero Router activations, zero release
+   failures, target disabled, and Router processed unchanged at `1189`.
+
+The source audit found a real v0.10.12 coverage and implementation gap rather
+than a workload-timing issue. Manager snapshots select the latest marginal
+forwarded reservation and validate its post-admit aggregate features, so their
+multi-prefill path is attributable. Shadow load-risk decisions deliberately do
+not reserve Manager capacity. Their separate
+`predictiveShadowPendingPrefillStore` retains all anonymous observations but
+explicitly clears features whenever active count is not exactly one.
+`observedPredictivePendingPrefills` likewise accepts a shadow feature vector
+only for `shadow.Count == 1`. Consequently, compatible concurrent risk
+decisions are counted and token-accounted but can never train from their
+aggregate interference. The existing deterministic test named
+`multiple_shadow_prefills` codified censorship and therefore did not test the
+required live behavior.
+
+This blocker invalidates v0.10.12 enforce readiness. v0.10.12 must remain
+Router-disabled shadow; no enforce deployment, Router enablement, canary, or
+production-readiness claim is allowed. The next executable version is
+v0.10.13, and all v0.10.12 builder/image/live evidence is baseline or blocker
+evidence only.
+
+##### v0.10.13 compatible shadow-aggregate attribution repair plan — active 2026-08-05
+
+v0.10.13 will repair only anonymous compatible shadow-aggregate attribution;
+it will not add an exact/model tokenizer, cache admission, TTFT protection,
+Router policy, vLLM source changes, model-specific assets, a global threshold
+tightening, or request-cardinality telemetry. Prediction remains pre-forward;
+feedback remains future-only.
+
+The required design is:
+
+1. Give each bounded shadow-prefill store entry an internal monotonic sequence
+   assigned at `Begin`. It is store-local episode order, not a request ID and
+   never appears as a metric label or log field.
+2. Treat compatible shadow observations as counterfactual marginal admissions.
+   They must have the same Manager decision sequence and the same immutable
+   Manager-base feature vector. Every individual observation must be a valid
+   one-candidate transition from that base and its uncached-token increment
+   must exactly equal the observation token count.
+3. Select the most recently begun compatible observation as the marginal
+   request. Synthesize the feature vector it would have received if earlier
+   compatible shadow risks had been atomically reserved: add all earlier
+   per-request deltas to its `Existing*` pressure, add every request delta to
+   post-admit totals, retain only the marginal request's complexity, horizon,
+   and admission latency, and require overflow-safe exact arithmetic. A single
+   shadow request preserves its original existing-TPS provenance because its
+   immutable prediction already includes all Manager pressure. An aggregate of
+   more than one shadow request is a counterfactual feature reconstruction that
+   no request actually predicted, so it must be marked exploratory regardless
+   of the lower-pressure marginal request's provenance. Do not average request
+   features or guess across different bases.
+4. For mixed Manager-plus-shadow pressure, use the synthesized shadow marginal
+   vector only when its post-admit pending count and uncached tokens exactly
+   equal Manager pending plus shadow pending and its decision Manager sequence
+   still equals the current Manager event sequence. A Manager change,
+   incompatible base, invalid individual delta, overflow, missing identity, or
+   ambiguous materialization remains censored.
+5. Preserve single-shadow behavior byte-for-byte at the semantic level. Ending
+   any handle advances the episode, removes only that entry, and recomputes a
+   valid smaller aggregate when the survivors are compatible. Duplicate end,
+   cancellation, disconnect, error, timeout, close, and clear stay idempotent
+   and bounded.
+6. Expose a fixed-cardinality current attribution state such as
+   `empty|single|aggregate|incompatible` alongside the existing count/token/
+   valid metrics and include it in status logging. Metrics remain descriptive
+   only and never drive decisions.
+7. Keep `Begin` and `End` constant-time. Snapshot aggregation may scan only the
+   already bounded store (`maximumObservations`, default 256), must allocate no
+   traffic-sized state, must retain no payload/model/user/request identity, and
+   must be race-safe.
+
+Deterministic red/green coverage must include:
+
+- two compatible shadow risks with different token/KV/context increments,
+  proving deterministic latest-marginal synthesis, exact aggregate counts and
+  tokens, marginal request fields, and forced exploratory provenance for the
+  counterfactual aggregate while single-shadow provenance remains unchanged;
+- three compatible observations, end-latest/end-earlier permutations, clear,
+  duplicate end, capacity bound, event-sequence monotonicity, and integer
+  saturation/invalid-overflow behavior;
+- incompatible Manager sequence, base decode/prefill/token/KV/context fields,
+  malformed one-candidate deltas, and changed Manager state, all censored;
+- mixed Manager plus one/multiple shadow risks with exact aggregate match, plus
+  mismatch cases that remain censored;
+- one stable two-shadow episode producing exactly one accepted outcome and
+  later stable polls producing only `deduplicated`; two distinct episodes must
+  still produce two accepted outcomes;
+- future-only learning, exploratory/non-exploratory hard-origin parity,
+  low-pressure recovery, no false Router publication, and no admission/resource
+  accounting mutation from shadow observations;
+- cancellation/disconnect/timeout/semantic completion/release races under
+  `go test -race`, with terminal zero and no leaked handle;
+- fixed-series metrics and combined-metrics parity for every attribution state;
+- deterministic candidate-versus-v0.10.12 goodput/false-deny comparison proving
+  the repair does not obtain learning by tightening live admission;
+- tokenizer/estimator, predictor, admission lifecycle, observer, and store
+  benchmarks showing no material regression in the accepted envelopes.
+
+The fixed execution order is: add red tests against unmodified v0.10.12;
+implement the smallest compatible-aggregation component; run focused greens;
+review causality, lifecycle, concurrency, arithmetic, efficiency, SOLID, and
+telemetry; run the full independent remote-builder matrix; freeze exact source;
+perform three final reviews; commit and tag `v0.10.13`; publish and pull-verify a
+new immutable image; deploy only Router-disabled `use1-cb` shadow; repeat the
+r13 aggregate episode plus protocol, latency, low-flow, cancellation, logs, and
+terminal-zero gates; only then consider Router-disabled enforce. A fresh target
+preflight, target-only Router enable, and continuous 30-minute canary remain
+after every enforce gate. Any failure disables only `use1-cb` and returns to a
+new versioned repair cycle.
+
+##### v0.10.13 plan review pass 1 — causality and counterfactual identity, completed 2026-08-05
+
+The first review rejected a naive sum of active shadow observations. Such a sum
+could combine predictions made from different Manager states or attach the
+wrong request complexity to an aggregate adverse outcome. The plan now requires
+equal Manager sequence and exact base compatibility, reconstructs the
+counterfactual order using bounded store-local begin sequence, and preserves the
+latest request as the marginal feature owner. The review also rejected carrying
+that request's lower-pressure mature provenance into a feature vector it never
+predicted: every multi-shadow reconstruction is explicitly exploratory. Any
+other ambiguity is censored rather than guessed.
+
+##### v0.10.13 plan review pass 2 — lifecycle, efficiency, and SOLID, completed 2026-08-05
+
+The second review rejected adding shadow risks to Manager reservations merely
+to obtain attribution: that would mutate shadow accounting, change later
+decisions, and cease to be shadow. The store remains an observation-only owner;
+the observer remains the stable-window qualifier; the scheduler remains the
+learner; metrics remain output-only. Begin/end stay O(1), snapshot is O(N) over
+the existing fixed bound, and all lifecycle/race/overflow paths receive explicit
+tests. No request ID, payload, model asset, unbounded map, or tokenizer work is
+added.
+
+##### v0.10.13 plan review pass 3 — evidence and rollout boundary, completed 2026-08-05
+
+The third review rejected inheriting v0.10.12 readiness from passing Manager
+tests. The exact r11/r12/r13 failures and cleanup evidence are retained, and
+v0.10.12 is explicitly stopped before enforce. Every executable change requires
+a fresh builder, release, registry, shadow, enforce, and canary chain. The live
+red must be replayed with two concurrent compatible shadow risks and must show
+count at least two, valid attribution, exactly one accepted episode,
+deduplicated stable repeats, origin parity, terminal zero, no preemption, no
+Router activation, and unchanged target processed count before v0.10.13 may
+advance.
+
+##### v0.10.13 implementation and focused remote-builder proof — completed 2026-08-05
+
+The implementation keeps shadow risk observation-only and adds no admission or
+Router-capacity input. Each bounded store entry now has an internal begin
+sequence. A snapshot with multiple entries validates an exact one-candidate
+transition for every entry, requires equal Manager decision sequence and equal
+Manager-base decode/prefill/context/uncached/KV fields, chooses the latest begin
+as marginal owner, and reconstructs prior/post-admit pressure with checked
+integer arithmetic. Only the latest request's complexity, decode horizon, and
+local admission latency survive. Every multi-shadow reconstruction is forced
+exploratory. A single entry retains the exact pre-v0.10.13 pass-through
+semantics, including a legitimate cold Manager sequence of zero. Incompatible
+or overflowed aggregates retain count and saturating token accounting but
+expose no trainable feature vector.
+
+The store remains payload-free and bounded by the existing maximum (default
+256). `Begin` and `End` remain O(1); `Snapshot` is O(N) only across that fixed
+bound. Duplicate end and empty clear are idempotent. The practically
+unreachable shadow episode `uint64` exhaustion no longer wraps to a historical
+identity: the store permanently refuses new begins, censors any surviving
+entries, and still permits their terminal release to zero.
+
+The observer now accepts a shadow-owned feature vector for pure shadow or mixed
+Manager-plus-shadow pressure only when current Manager sequence, combined
+pending count, and combined uncached tokens exactly match the immutable
+counterfactual feature. Stable-window and episode checks remain unchanged, so
+feedback can affect only later predictions and repeat polls deduplicate. The
+same current-snapshot predicate feeds metrics/status: an internally compatible
+store becomes externally `incompatible` with valid zero after Manager sequence
+or aggregate count/token drift, rather than falsely reporting a trainable
+window. Fixed-cardinality state is exactly
+`empty|single|aggregate|incompatible`; unknown direct metric inputs normalize
+to `empty` only at zero count and otherwise to `incompatible`.
+
+Executable identity is now PIG `0.10.13` and predictor
+`adaptive-tps-kv-v10`. Estimator/tokenizer identity remains exactly
+`json-cost-lexical-hint-v2`; no exact tokenizer, model asset, cache admission,
+TTFT protection, Router policy, or backend source was added.
+
+The exact v0.10.12-tag red remains the already retained r2 proof. Focused green
+r1 used candidate archive SHA-256
+`384917419a83f73e357a6f376509f0158695ea4f22613c950c77ef0b8fff2bb4` and
+correctly stopped before compilation because remote `gofmt -d` found one
+mechanical composite-return indentation difference. No test result was
+inherited from r1. After that exact formatting correction, r2 archive
+`2ffef7eddb17c1ce77c999d520f98d4aa4f0b9dcbdaa1df300e96e5ebeca2f8e`
+passed formatting, focused server/metrics tests, and targeted race, but was
+superseded by the later current-Manager telemetry correction.
+
+The current focused candidate is r3 archive SHA-256
+`d3cddd6b5f499ab0b34397466276c4dea8d26004e021931008cb2c201f76b558`.
+The remote runner independently verified that archive before extraction and
+recorded its own SHA-256
+`af4e9a37632bef1a865b5ea0519a731556b86cf747b3be948c24e78c25149cb2`.
+On builder `cvm_3e2k83KX`, container `pig-v01011-builder`, all four focused
+statuses were zero:
+
+```text
+gofmt -d changed Go files: 0
+focused internal/app/server tests: 0
+focused internal/observability/metrics tests: 0
+targeted internal/app/server race: 0
+```
+
+The downloaded evidence archive SHA-256 is
+`3051e05d582f1e6a2e20e6c8aeb01d7ac02615a11f3ad76e46a498f49e3ad282`;
+all 12 internal manifest entries matched. The test logs reported server
+`0.017s`, metrics `0.004s`, and targeted race `1.033s`. This is focused source
+evidence only. Full builder, simulation, benchmark, build/image, registry,
+deployment, enforce, Router enablement, and 30-minute canary remain pending.
+
+##### v0.10.13 source review pass 1 — model, causality, and provenance, completed 2026-08-05
+
+The review corrected two draft false assumptions before accepting the focused
+candidate. Manager sequence zero is legitimate before the first Manager
+mutation and cannot invalidate compatible cold-start risks. Single-shadow
+pass-through also cannot inherit new aggregate-only structural validation.
+After focused r2, the review found that store compatibility alone was
+insufficient for public attribution telemetry: a later Manager mutation could
+be censored by the observer while metrics still said valid. r3 makes observer,
+metrics, and status require the same current Manager sequence and exact combined
+count/token materialization. Reconstruction remains feedback-only and forced
+exploratory, so no lower-pressure mature provenance is attached to a
+counterfactual prediction and no current admission changes.
+
+##### v0.10.13 source review pass 2 — lifecycle, arithmetic, efficiency, and SOLID, completed 2026-08-05
+
+The store remains the sole owner of anonymous shadow lifecycle, the observer
+remains the stable-window qualifier, the scheduler remains the future learner,
+and observability remains output-only. Deterministic coverage now includes two
+and three compatible entries, latest/earlier removal, exact survivor recovery,
+zero Manager sequence, mixed Manager plus one/multiple shadow, count/token/
+sequence mismatch, incompatible base fields, malformed deltas, int/int64
+overflow, capacity, clear, duplicate end, episode exhaustion, two distinct
+accepted episodes, stable deduplication, fixed metric states, and current
+Manager telemetry drift. Targeted race includes store lifecycle, aggregate
+observer learning, and adapter close/bound behavior. No request identity,
+payload, model label, unbounded state, or traffic-sized allocation was added.
+
+##### v0.10.13 source review pass 3 — evidence and release boundary, completed 2026-08-05
+
+The review retains r1 as formatting-only evidence, explicitly supersedes r2,
+and accepts only exact r3 focused evidence. The locally downloaded outer
+archive and every internal manifest entry were hash-verified; all status files
+were zero. No local Go command was run. The source is not yet a release
+candidate: full clean-builder tests, vet, broader race, deterministic
+simulation, baseline comparison, benchmarks/allocations, binary build, and
+production image contract must all run from a new archive that includes this
+documentation checkpoint before any commit, tag, push, image publication, or
+deployment.
+
+
+#### v0.10.5 pre-version full matrix r31 — complete green
+
+r31 used baseline archive SHA-256
+`6ee67ee4d426a29893e9959c01065aae73bab2b76d9ce4b1f6852c0e42adf7a8`,
+overlay SHA-256
+`7a310f45e2c8a7a568abc9c1091f5d76536b63990bcb792f85fa7fc1a8d127eb`,
+inner-runner SHA-256
+`8b23c5766e252fc88009ae405c6c5b2133ce94035a890342f29996ba38e354f7`,
+and host-runner SHA-256
+`4bc3378346f31c9a25051e424b6b9482f92c0bc0fa7a18c1f18759a1eb74230a`.
+It ran inside the existing `pig-ubuntu-builder` environment with Go 1.24.5,
+linux/amd64, and `CGO_ENABLED=1`. Every status was zero for formatting, vet,
+all tests, targeted race, full race, build, deterministic KV simulation, KV
+performance, verbose goodput, JSON goodput, candidate benchmarks, fallback
+benchmark, v0.10.4 baseline benchmarks, source overall, builder-local image
+build, production image contract, image inspection, and final overall.
+
+The deterministic aggregate remained:
+
+```text
+current threshold completion-token goodput: 39840
+v0.9.0 KV-only completion-token goodput:    37536
+predictive completion-token goodput:        44704
+predictive improvement versus current:     +12.21%
+predictive SLO-compliant completions:       51
+predictive TPS violations:                  0
+predictive TPOT violations:                 0
+predictive KV-hard violations:              0
+predictive preemption-proxy events:         0
+predictive false accepts:                   0
+predictive false denies:                    7
+predictive reservation leaks:               0
+TTFT diagnostics only:                      4
+```
+
+The low-flow progress and drain-recovery scenarios remained green, and the
+repeated-prefix scenario again passed full cache-cold charging. Performance
+recorded 64-KiB estimator p95 `1.985 us`, 2-MiB estimator p99 `124.567 us`,
+and shadow decision p99 `6.955 us`. The unpublished builder-local image was
+`pig-v0105-matrix-r31:local`, image ID
+`sha256:6136d1024a79c34abd325f11276aa9931f81dfa76721a1b4b02030d4f23b875d`,
+with contract version `0.10.4`, entrypoint `/phala-inference-guard`, and
+`NVIDIA_VISIBLE_DEVICES=all`.
+
+The downloaded evidence archive SHA-256 is
+`f051cdcd36fdab00abda90949da473471f0f1fb13398ab744dcdf9000b584359`.
+Its internal SHA256SUMS passed on the builder and a local second verification.
+Material log SHA-256 values are:
+
+```text
+full-test.log             10fce57d8c92c5f58126d54e2e35d49953892a27116cf9b51806ccf7f28bc176
+targeted-race.log         18cdc9d7735f25de53babb428668472700ace2454c44bc3690dd60ecee7acee4
+full-race.log             61e091f0538153f09b2ae13d4e2afc8225bcab715853b9b38e389fe15eeee93b
+goodput-verbose.log       92c325cdc87373b2b4a978005a07bd6b211e4a619ec8bc70a0a4f291bc872337
+kv-performance.log       29af024bddb5c8bf72ea11a00725453a5786b264a27e73082b91503c14403879
+candidate-benchmarks.log ace8bc7a29c15a35918d89b1598b2b48884bb59d468b9ff46e3cc708cd7cd8b5
+baseline-benchmarks.log  d3da1c24c6550c9ebe2c04dc2a51a6d9dca5ac67b5ec9011673a7b04786c2ed5
+image-contract.log       4165703e25a5059114ebfde0ac5e667f3bfbdf19b355f4228e66830d4879ed03
+```
+
+r31 proves the complete pre-version source and image shape only. It did not
+publish an image or authorize deployment because the runtime and image label
+still identified v0.10.4.
+
+#### v0.10.5 version unification — active after r31
+
+The working tree now consistently identifies the candidate as v0.10.5 in the
+Docker OCI version label, runtime `PIG-v0.10.5` constant, README section and
+Compose example, advanced configuration heading, observability example, and
+goodput acceptance comment. A current-tree search found no non-historical
+v0.10.4 reference outside this audit plan. These changes affect executable and
+Docker inputs, so r31 cannot be reused as final versioned evidence.
+
+The next mandatory gate is a fresh exact versioned builder matrix and production
+image contract expecting `v0.10.5`. It must at minimum repeat formatting, vet,
+all tests, targeted and full race, build, deterministic simulations, candidate
+benchmarks, builder-local image build, image contract, and image inspection.
+Only after that exact archive is green may source be committed and pushed,
+annotated tag `v0.10.5` be created and pushed, and an immutable registry image
+be built/published and verified. No Compose, CVM, Router, or production-traffic
+action is authorized by r31 or the version-text update alone.
+
+#### v0.10.5 final versioned full matrix r32 — complete green
+
+r32 used baseline archive SHA-256
+`6ee67ee4d426a29893e9959c01065aae73bab2b76d9ce4b1f6852c0e42adf7a8`,
+versioned overlay SHA-256
+`8b1d660e5524b0e56fb245dd9bbd7e2c9139a0b1bf7db3a8a36aaaa8513a1b28`,
+inner-runner SHA-256
+`3a3b843e29fd6ccbfdfab1aae5d22e4b4d7eae67dd205944bafe07b5bd295bde`,
+and host-runner SHA-256
+`499ff938cb8d4c70d7fd5914abe92b1475cfef3477ab5202f8a7104a3b7b7ac3`.
+The environment remained Go 1.24.5, linux/amd64, `CGO_ENABLED=1` in the
+approved remote builder container.
+
+Every status was zero for formatting, vet, all tests, targeted race, full race,
+build, deterministic KV simulation, KV performance, verbose and JSON goodput,
+candidate benchmarks, candidate fallback benchmark, v0.10.4 baseline
+benchmarks, source overall, builder-local image build, the production image
+contract expecting `v0.10.5`, image inspection, and final overall. The
+deterministic goodput and safety result remained `44,704` predictive completion
+tokens versus `39,840` current (`+12.21%`), 51 SLO-compliant completions, zero
+TPS/TPOT/KV-hard/preemption-proxy violations, zero false accepts, seven false
+denies, and zero reservation leaks. TTFT remained four diagnostics and was not
+an admission constraint.
+
+The final versioned performance run recorded 64-KiB estimator p95 `2.922 us`,
+2-MiB estimator p99 `200.269 us`, and shadow decision p99 `2.607 us`; all are
+inside the unchanged acceptance thresholds. The builder-local image
+`pig-v0105-matrix-r32:local` has image ID
+`sha256:d881fd5d1339c4c2411ed438645cd0d7c14c46375ac24b244c510c7baa1d5760`,
+OCI version `0.10.5`, entrypoint `/phala-inference-guard`, and
+`NVIDIA_VISIBLE_DEVICES=all`. The contract output is exactly
+`PIG_PRODUCTION_IMAGE_CONTRACT_OK image=pig-v0105-matrix-r32:local
+version=0.10.5`.
+
+The downloaded r32 evidence archive SHA-256 is
+`654c4cfbe20295332522b601cee567679da300ed85cb4873253d7f3078dc3c81`.
+Its internal checksums passed on the builder and in a local second
+verification. Material log SHA-256 values are:
+
+```text
+full-test.log             f978f75e8802bbda35376bf8abced42bdddf64f7ecb3465a17895e2b8ab6241b
+targeted-race.log         551c615a5fed4f8ad32c4cb0e804ad1bcecc6c313fb435cfd90a8c1a2dde297f
+full-race.log             720ec3e351bc7b91ee44a8df26f9f46e31b459b059196a8c862c54ce8807e8df
+goodput-verbose.log       08b611bfb37e3cc47671eb0db6788dca6fefb952e47eb86bcecc0860f9101228
+kv-performance.log       4c5a74970f7236f43bcadca31374729b3fa7906861609e6a4d5d90ac71ab671f
+candidate-benchmarks.log b648b5ca67daccec52aab767a6c224d37092fbabbdbea0a035db85de1159a16c
+baseline-benchmarks.log  bc0b803140c6bd52b6b799dca77906b16522489cf1faecf968b6618a14efe435
+image-contract.log       40a2b196341f21c026de571e4f5d442ffc8d5278baddb924650bfc57be5f4827
+image-inspect.json       b31b05a043846daea2eae0c6db9d00b96321c906fa00bcc0251bd7010831076f
+```
+
+This section is a documentation-only evidence update after r32. The final
+commit gate must prove that every `cmd/`, `internal/`, `go.mod`, `go.sum`, and
+`Dockerfile` byte remains identical to the r32 reconstructed source. If that
+check passes, the r32 executable and image-contract evidence applies to the
+commit candidate; otherwise a new matrix is mandatory.
+
+
+No v0.10.5 commit, push, tag, registry publication, Compose change, deployment,
+Router mutation, production request, or 30-minute canary has occurred. TTFT
+remains measurement/learning/diagnosis only and must not become an admission or
+Router-capacity condition in any subsequent gate.
+
+##### v0.10.13 focused r4, full r5 harness red, and current r6/r7 proof — completed 2026-08-05
+
+Focused r4 froze the first pre-full-matrix candidate after the source reviews.
+Its exact candidate archive SHA-256 was
+`a6693698c723173fb019fd67b231294b80a984c973221dde72c80d5b6c44e634`,
+its runner SHA-256 was
+`fd28f657fbbf8930f217538d8d9d3c63a2c96731c684a9d184ae1b4dd0af61b5`,
+and its downloaded evidence archive SHA-256 was
+`43eb8ca976b5d95d88f52a2b3ae91979f17beed2688f4d7a96f13fe2eccecfdb`.
+All 12 manifest entries matched and remote gofmt, focused server, focused
+metrics, and targeted race statuses were zero. This is retained as focused
+evidence only.
+
+Full r5 used that exact `a6693698...` archive and runner SHA-256
+`76edfdf6d7bdc4a5cd487db1e488b6b933c1053d5c446b3281fe2e2b3f85339e`.
+It completed input/source/secret contracts, formatting, focused and full tests,
+model-agnostic and low-flow contracts, vet, targeted and full race, build,
+predictive and KV simulations, two-order goodput comparison, the standard
+two-order benchmark contract, and all four shadow-store benchmark executions.
+Thirty-one of 32 recorded statuses were zero. The final shadow-store benchmark
+contract status was one because the harness still required an `active_64`
+group while the real bounded-store benchmark used the existing default maximum
+of 256 and emitted `active_1|active_2|active_256`. It reported three groups
+where that stale contract expected four. This was a harness failure, not a
+product-test failure. r5 stopped before image build, image contract, image
+inspection, and source archive. Its partial downloaded evidence archive
+SHA-256 is
+`79b1aa5b33b85af2fa1d8b372c8398d154dddd1a671ae728c45d0640c54f99bc`.
+The r5 finalizer also produced an empty top-level manifest, so r5 is retained
+only as raw per-stage and harness-red evidence and is not release proof.
+
+The ensuing efficiency review moved the internal begin sequence from each map
+value into the already allocated handle. The map value therefore returned to
+the pre-v0.10.13 `PendingPrefillObservation` shape without changing the
+algorithm, ownership, bounds, or public behavior. That executable change
+invalidated r4/r5 as current-candidate evidence. The current focused r6 archive
+SHA-256 is
+`c7078c7f5ad805a11d3bf7aa00e880e294cf9e97a9577c33f82ade5d3c7f57d3`;
+the runner SHA-256 is
+`b6010f8b355121f9545306b3abf53173dc8c3d88bb3cf3292069f51586d10fae`;
+and the downloaded evidence archive SHA-256 is
+`34814dbfc96c3bfd01b621e868c253a663241189b27074b86208db3164416872`.
+All 12 internal entries matched and gofmt, focused server, focused metrics, and
+targeted race statuses were zero. The logs reported server `0.018s`, metrics
+`0.004s`, and targeted race `1.033s` on Go `1.24.13 linux/amd64`.
+
+Paired r7 then measured the exact current candidate against v0.10.12 in both
+execution orders with five one-second samples per group. The remotely formatted
+contract SHA-256 was
+`d6057b574867df55dbb205d644da8cb112843f8d45185659d11dabe954e64724`,
+the runner SHA-256 was
+`24537c0d4ef3e64ab7b8518ea35a3ce76446c9679580012d4ed1998c5f46cca9`,
+and the downloaded evidence archive SHA-256 was
+`5d6be08e01b672f0fafa3e8abee134d62031b8dcce21a5b4841bcafd938e0ebf`.
+All six statuses and all internal hashes were zero/valid. Candidate begin/end
+was `174.3/174.5 ns/op`, `160 B/op`, and two allocations versus baseline
+`167.0/164.0 ns/op`, `152 B/op`, and two allocations, a combined ratio of
+`1.053776` and exactly the allowed eight-byte increase. Snapshot at one, two,
+and 256 active entries was respectively `83.02/83.15 ns/op`,
+`242.8/246.3 ns/op`, and `12.980/12.887 us/op`, with zero bytes and zero
+allocations for every snapshot. Combined ratios were `1.161541`, `3.100672`,
+and `4.181539`; the bounded 256-entry absolute time remained far below the
+`100 us/op` ceiling.
+
+##### v0.10.13 exact current-candidate full r8 matrix and builder-local image — completed 2026-08-05
+
+Full r8 started from scratch rather than inheriting any r5 green stage. Its
+fixed inputs were current candidate archive `c7078c7f...`, v0.10.12 baseline
+archive SHA-256
+`0a2eb956fd50d730e5e146ad89a0b09f9f4a33122e5892f1bea567a49bb6092d`,
+standard benchmark contract SHA-256
+`13b48a355929a3e66346611de7c24f56ea6d7804887d107bdd93dfb47b67ecca`,
+and shadow-store contract `d6057b57...`. The r8 runner SHA-256 was
+`41e1b54e5b9d400d4be148da3236844817d30d68530ee56168d7329494bfc8fb`.
+Its finalizer used a portable nonempty manifest loop, refused to overwrite the
+r5 paths, and propagated manifest or evidence-archive failure into the process
+exit status.
+
+The builder was CVM `cvm_3e2k83KX`, container `pig-v01011-builder`, container
+image `sha256:e0cffc405270b9114fac7706d07c373727d1b42b0e47c525b9cd1ab1097779ff`,
+with `running=true`, `OOMKilled=false`, restart count zero, and Go
+`1.24.13 linux/amd64`. In 671.4 seconds, all 36 stages returned zero:
+
+```text
+input/source contract, secret scan
+benchmark-tool gofmt, candidate gofmt
+focused tests, model-agnostic contract, low-flow false-lock contract
+vet, go test ./..., targeted race, go test -race ./..., go build ./...
+predictive simulation, KV simulation, KV performance
+candidate/baseline goodput in both orders plus exact comparison
+candidate/baseline standard benchmarks in both orders plus contract
+shadow-store benchmark injection, both orders, and contract
+production image build, production image contract, image inspection
+exact source archive
+```
+
+The focused packages reported runtime predictive `0.034s`, server `1.921s`,
+and metrics `0.005s`. Full test and full race passed every package; targeted
+race additionally covered runtime predictive, server, metrics, KV admission,
+and request handling. The low-flow contract included sparse progress, idle-floor
+sticky-zero prevention, calibrator sparse-flow recovery, 20-request false-lock
+avoidance, recovery after TPS drain/waiting/preemption, and exclusion of idle or
+request-specific Router pressure.
+
+Candidate and v0.10.12 goodput summaries were byte-identical in both orders.
+The deterministic aggregate retained 53 SLO-compliant completions and 45,216
+completion-token goodput versus the current-threshold baseline's 37 and 39,840,
+with zero protected TPS/TPOT, KV-hard, preemption-proxy, false-accept, and
+reservation-leak violations. TTFT remained observational: the predictive
+aggregate recorded four TTFT observations but did not treat them as protected
+failures. The repair therefore obtained no learning by tightening current
+admission or Router capacity.
+
+The standard benchmark contract reported no allocation regression. The
+model-agnostic lexical hint remained approximately `91.85-94.29 ns/op` with
+zero allocations across 1 KiB, 64 KiB, and 2 MiB inputs. Whole estimator
+medians were approximately `0.272 us` at 1 KiB, `1.94-1.97 us` at 64 KiB, and
+`61.85-64.76 us` at 2 MiB, all zero-allocation. The full shadow-store contract
+reported begin/end `178.3/169.2 ns/op`, `160 B/op`, two allocations, combined
+ratio `1.031157`; one-entry snapshot `81.37/81.93 ns/op`; two-entry snapshot
+`247.7/245.2 ns/op`; and 256-entry snapshot `13.346/12.992 us/op`, with zero
+snapshot allocations. Its combined snapshot ratios were `1.139329`,
+`3.132507`, and `4.277733`, all inside the preregistered limits.
+
+The builder-local production image `pig-v01013-full-r8:local` passed the
+production contract as version `0.10.13`. Its local image ID is
+`sha256:9b979520ad6095e9a6519fa932e63a963aff3fcad64b2701f2153cb6623843bd`,
+the extracted `/phala-inference-guard` binary SHA-256 is
+`793409f942ca37f3d924c75ed3da20600b0753fa873190334c7264f04e4e3d64`,
+and the exact source archive SHA-256 is
+`3f8becf53505e258eda9d8ecd2386874f41ea9bbb8305dd47dda36a12e485e6b`.
+The source archive and the r8 input candidate each contained 275 files and a
+recursive content comparison found zero differences.
+
+The evidence archive SHA-256 is
+`b5b9dba907be57c38e003a83e41ed29a10d82378666182fbc1ef418f3bd15023`.
+Two direct SCP attempts were rejected locally because their byte counts or
+hashes did not match the remote archive. The accepted local copy was rebuilt
+from 15 remotely hashed 256 KiB-or-smaller chunks: all 15 chunk hashes matched,
+the reconstructed size was 3,864,217 bytes, and its whole-archive hash exactly
+matched `b5b9dba9...`. Local extraction then verified all 118 manifest entries
+and all 36 zero status files. No local Go, race, build, simulation, formatting,
+or benchmark command was run.
+
+This completes the clean-builder and builder-local-image layers only. Source is
+still uncommitted, the image is not published, no Compose or CVM was changed,
+`use1-cb` remains Router-disabled, and no live readiness claim follows from r8.
+
+##### v0.10.13 final review pass 1 — causal prediction and future-only learning, completed 2026-08-05
+
+The review retraced the actual transaction rather than only the aggregate
+helper. A shadow load-risk decision first obtains its anonymous feature vector
+from the validated pre-forward prediction and cost, publishes it only after the
+request is actually forwarded, and never adds a Manager reservation. Compatible
+entries require the same immutable Manager sequence and base state. Begin order
+selects the latest forwarded marginal request; only earlier request deltas are
+added to its existing pressure, while every delta is added to the post-admit
+state. The latest request alone owns complexity, decode horizon, and local
+admission latency. A reconstructed multi-request feature is always exploratory;
+a single request retains its original provenance.
+
+The observer accepts that reconstruction only when the current Manager event
+sequence and combined pending count/tokens still exactly materialize it, and
+then only across two stable vLLM samples with unchanged Manager and shadow
+episodes, running set, waiting zero, and no preemption. Episode deduplication
+permits one outcome per stable interval. The resulting feedback is consumed by
+the learner only after the interval and can affect only later requests. Neither
+the shadow store, its validity/state metric, nor this feedback path is read by
+the current request's admission decision or Router-capacity calculation. The
+repair therefore preserves the requested boundary: prediction is pre-forward;
+feedback is future-only.
+
+No exact or model-specific tokenizer, template asset, cache admission, TTFT
+protection, Router policy, or vLLM source change entered the candidate. The
+estimator remains `json-cost-lexical-hint-v2`, the predictor is
+`adaptive-tps-kv-v10`, and TTFT/cache remain observational.
+
+##### v0.10.13 final review pass 2 — lifecycle, arithmetic, efficiency, and SOLID, completed 2026-08-05
+
+The store owns only anonymous active-shadow lifecycle under one mutex. Begin and
+End are O(1); Snapshot is O(N) over the existing hard bound of 256 and allocates
+zero bytes. End, clear, duplicate end, cancellation, disconnect, timeout,
+completion, and close converge on idempotent removal or terminal zero. Checked
+int/int64 arithmetic rejects malformed or overflowing aggregates. Event-sequence
+exhaustion never wraps into a historical episode: it permanently refuses new
+begins, marks survivors incompatible, and still lets them terminate.
+
+The final layout keeps the begin sequence in the already allocated handle and
+the observation directly in the map, saving the draft's extra 16-byte map value
+while keeping ownership explicit. The store aggregates; the observer qualifies
+stable evidence; the scheduler learns; metrics/status only render bounded
+state. No payload, request ID, user value, model label, traffic-sized buffer,
+unbounded key, or cross-layer Router dependency was introduced. Targeted and
+full race plus the deterministic lifecycle matrix found no race, leak,
+double-release, or unsafe reuse.
+
+The pre-existing outer shadow-observation bound remains operationally relevant:
+an excess request is forwarded in shadow without an observation record and
+increments
+`pig_predictive_shadow_observations_total{result="dropped"}`. Although the
+default bound of 256 is above the intended live episode, any positive dropped
+delta would make an aggregate canary window incomplete. The live gate is
+therefore strengthened to require dropped delta zero; otherwise the episode is
+invalid and must return to a new repair version rather than train or advance.
+
+##### v0.10.13 final review pass 3 — evidence, provenance, and rollout boundary, completed 2026-08-05
+
+The evidence review explicitly separates the r4 focused green, r5 harness red,
+r6 current focused green, r7 paired microbenchmark green, and r8 complete
+matrix. No result was inherited across the executable map-layout change. The
+r8 input hashes, builder/container identity, 36 stage statuses, 118-entry
+manifest, two-order comparisons, image ID, binary hash, exact source archive,
+and local reconstruction were independently checked. The review found no new
+executable or release-blocking defect in the scoped compatible-aggregate repair.
+
+Appending this audit changes only this authoritative plan after r8. Before
+commit, a documentation-only provenance gate must compare the current tree to
+the exact r8 source archive, prove every executable and non-plan file
+byte-identical, and archive that comparison. Only then may the source be
+committed and tagged `v0.10.13`, pushed to `pig-origin`, and used to publish and
+pull-verify a new immutable image. Publication still authorizes only a
+Router-disabled `use1-cb` shadow deployment. Live aggregate, protocol, latency,
+low-flow, cancellation, logs/metrics, terminal-zero, zero-drop, and fresh audit
+gates remain mandatory before Router-disabled enforce; enforce and a fresh
+preflight remain mandatory before target-only Router enablement and the
+continuous 30-minute canary.
+
+##### v0.10.13 documentation-only provenance r9 and final commit boundary — completed 2026-08-05
+
+After the r8 evidence and three final reviews were recorded, release-document
+candidate r9 contained exactly 275 files and had archive SHA-256
+`652593692467dc81647dc8e47ea2b09c51bfa6d2e0208d46adb78b00a5eee098`.
+Its plan SHA-256 was
+`f431b439dde9c48bb860ff4a04509d8343134d0777313b6dd74afaaf29bbec81`;
+the r8 reference plan SHA-256 was
+`1d3e12d995ab11ae3daa7abcadb34aa431f350f42aec2210c15d1fed859f6171`.
+The remote provenance runner SHA-256 was
+`790048479fc5e938f05332c887e33d5c8cae6957f7d4c5f84bb6f226fca8ecee`.
+
+All four r9 stages were zero. Candidate and r8 reference file lists each had
+275 entries and were identical; 274 non-plan files were compared byte-for-byte
+and all matched; the sole differing path was this plan. The downloaded evidence
+archive SHA-256 is
+`a316039824c9ebb4176d64eb63e210b9c450f15e9d93d40402f023839f026b5c`.
+Every internal manifest entry matched, all four status files were zero, and the
+non-plan audit log contained 274 successful comparisons.
+
+Recording r9 here changes this plan one final time. Therefore the actual commit
+candidate must pass one last r10 documentation-only provenance comparison
+against the same r8 source archive after this paragraph is present. r10 must
+again show 275 equal paths, 274 byte-identical non-plan files, and exactly one
+plan-only delta. Its evidence is retained outside the source tree so recording
+the proof cannot recursively alter the commit. No source or documentation edit
+is allowed between r10 and commit; any such edit invalidates r10 and requires a
+new provenance run, while any non-plan edit requires a fresh full matrix.

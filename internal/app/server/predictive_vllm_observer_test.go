@@ -1072,9 +1072,9 @@ func TestPredictiveVLLMObserverCensorsAmbiguousOrChangedShadowPrefillAttribution
 		mutate func(*predictiveShadowPendingPrefillStore, *predictiveShadowPendingPrefillHandle)
 	}{
 		{
-			name: "multiple_shadow_prefills",
+			name: "incompatible_shadow_prefills",
 			mutate: func(store *predictiveShadowPendingPrefillStore, _ *predictiveShadowPendingPrefillHandle) {
-				if store.Begin(runtimepredictive.PendingPrefillObservation{Tokens: 100, Features: features, DecisionManagerSequence: 9}) == nil {
+				if store.Begin(runtimepredictive.PendingPrefillObservation{Tokens: 100, Features: features, DecisionManagerSequence: 10}) == nil {
 					t.Fatal("second shadow prefill was not retained")
 				}
 			},

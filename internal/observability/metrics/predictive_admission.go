@@ -41,6 +41,7 @@ type PredictiveAdmissionInput struct {
 	ShadowPendingPrefills                   int
 	ShadowPendingPrefillTokens              int64
 	ShadowPendingPrefillAttributionValid    bool
+	ShadowPendingPrefillAttributionState    string
 	RetiredReservations                     int
 	RetiredEvictions                        uint64
 	LearningAccepted                        uint64
@@ -203,6 +204,10 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	if backpressureScope == "" {
 		backpressureScope = "none"
 	}
+	shadowPendingPrefillAttributionState := normalizeShadowPendingPrefillAttributionState(
+		input.ShadowPendingPrefillAttributionState,
+		input.ShadowPendingPrefills,
+	)
 	fmt.Fprintf(w, "pig_predictive_admission_mode_info{mode=%q} 1\n", mode)
 	fmt.Fprintf(w, "pig_predictive_admission_enabled %d\n", num.BoolAsInt(mode != "off"))
 	fmt.Fprintf(w, "pig_predictive_admission_enforce %d\n", num.BoolAsInt(mode == "enforce"))
@@ -228,6 +233,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_shadow_pending_prefills %d\n", input.ShadowPendingPrefills)
 	fmt.Fprintf(w, "pig_predictive_admission_shadow_pending_prefill_tokens %d\n", input.ShadowPendingPrefillTokens)
 	fmt.Fprintf(w, "pig_predictive_admission_shadow_pending_prefill_attribution_valid %d\n", num.BoolAsInt(input.ShadowPendingPrefillAttributionValid))
+	fmt.Fprintf(w, "pig_predictive_admission_shadow_pending_prefill_attribution_state_info{state=%q} 1\n", shadowPendingPrefillAttributionState)
 	fmt.Fprintf(w, "pig_predictive_admission_retired_reservations %d\n", input.RetiredReservations)
 	fmt.Fprintf(w, "pig_predictive_admission_retired_evictions_total %d\n", input.RetiredEvictions)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_active %d\n", num.BoolAsInt(input.RouterBackpressure.Active))
@@ -340,6 +346,18 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "terminal", input.FailureTerminal)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_prediction_duration_seconds", input.PredictionDuration)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_estimator_duration_seconds", input.EstimatorDuration)
+}
+
+func normalizeShadowPendingPrefillAttributionState(state string, count int) string {
+	switch state {
+	case "empty", "single", "aggregate", "incompatible":
+		return state
+	default:
+		if count <= 0 {
+			return "empty"
+		}
+		return "incompatible"
+	}
 }
 
 func predictiveMetricUnixSeconds(value time.Time) float64 {

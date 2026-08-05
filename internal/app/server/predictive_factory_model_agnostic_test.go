@@ -63,8 +63,8 @@ vllm:generation_tokens_total{model_name="vendor/arbitrary-model-v17",engine="0"}
 	if identity.PredictorVersion != predictiveApproximatePredictorVersion {
 		t.Fatalf("model-neutral predictor identity = %+v, want factory identity %q", identity, predictiveApproximatePredictorVersion)
 	}
-	if predictiveApproximatePredictorVersion != "adaptive-tps-kv-v9" {
-		t.Fatalf("model-neutral predictor version = %q, want isolated v0.10.12 prefill-episode semantics", predictiveApproximatePredictorVersion)
+	if predictiveApproximatePredictorVersion != "adaptive-tps-kv-v10" {
+		t.Fatalf("model-neutral predictor version = %q, want isolated v0.10.13 shadow-aggregate attribution semantics", predictiveApproximatePredictorVersion)
 	}
 	state := domainpredictive.VirtualState{DecodeSequences: 1}
 	small := domainpredictive.RequestCost{InputTokens: 100, UncachedPrefillUpper: 100, DecodeSequencesUpper: 1}

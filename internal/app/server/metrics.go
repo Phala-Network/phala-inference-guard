@@ -101,7 +101,13 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.ForwardedPendingPrefillAttributionValid = snapshot.Manager.ForwardedPendingPrefillFeaturesValid
 	input.ShadowPendingPrefills = snapshot.ShadowPendingPrefills.Count
 	input.ShadowPendingPrefillTokens = snapshot.ShadowPendingPrefills.Tokens
-	input.ShadowPendingPrefillAttributionValid = snapshot.ShadowPendingPrefills.FeaturesValid
+	shadowPending := observedPredictivePendingPrefills(snapshot.Manager, snapshot.ShadowPendingPrefills)
+	input.ShadowPendingPrefillAttributionValid = shadowPending.FromShadow && shadowPending.FeaturesValid
+	shadowAttributionState := snapshot.ShadowPendingPrefills.AttributionState
+	if snapshot.ShadowPendingPrefills.Count > 0 && !input.ShadowPendingPrefillAttributionValid {
+		shadowAttributionState = predictiveShadowPrefillAttributionIncompatible
+	}
+	input.ShadowPendingPrefillAttributionState = string(shadowAttributionState)
 	input.RetiredReservations = snapshot.Manager.RetiredReservations
 	input.RetiredEvictions = snapshot.Manager.RetiredEvictions
 	input.LearningAccepted = snapshot.Learning.SamplesAccepted
