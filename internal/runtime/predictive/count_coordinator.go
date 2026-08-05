@@ -40,6 +40,7 @@ type PendingPrefillObservation struct {
 	Tokens                  int64
 	Features                SchedulerFeatures
 	DecisionManagerSequence uint64
+	Exploratory             bool
 }
 
 type CountCoordinator struct {
@@ -213,6 +214,7 @@ func PendingPrefillObservationForResult(result CountAdmissionResult) (PendingPre
 		Tokens:                  result.Cost.UncachedPrefillUpper,
 		Features:                features,
 		DecisionManagerSequence: result.DecisionManagerSequence,
+		Exploratory:             result.Prediction.Exploratory,
 	}, true
 }
 

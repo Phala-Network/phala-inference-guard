@@ -126,6 +126,7 @@ type predictiveObservedPendingPrefill struct {
 	FeaturesValid           bool
 	FromShadow              bool
 	DecisionManagerSequence uint64
+	Exploratory             bool
 }
 
 func newPredictiveVLLMObserver(config predictiveVLLMObserverConfig) (*predictiveVLLMObserver, error) {
@@ -481,6 +482,7 @@ func (o *predictiveVLLMObserver) qualifyStablePrefillOutcomeLocked(current predi
 		(!previousPending.FromShadow || previousPending.DecisionManagerSequence == previous.Manager.EventSequence) &&
 		currentPending.Count == pending && currentPending.Tokens == pendingTokens &&
 		currentPending.FeaturesValid && currentPending.Features == features &&
+		currentPending.Exploratory == previousPending.Exploratory &&
 		features.ExistingPendingPrefillSequences == 0 && features.PendingPrefillSequences == 1 &&
 		features.ExistingUncachedPrefill == 0 && features.UncachedPrefillTokens == pendingTokens &&
 		previous.Running == features.DecodeSequences
@@ -500,6 +502,7 @@ func (o *predictiveVLLMObserver) qualifyStablePrefillOutcomeLocked(current predi
 		PendingPrefillSequences: pending,
 		PendingPrefillTokens:    pendingTokens,
 		ExistingUserTPS:         perUserTPS,
+		Exploratory:             previousPending.Exploratory,
 	}, true
 }
 
@@ -514,6 +517,7 @@ func (o *predictiveVLLMObserver) observeStablePrefillOutcome(outcome runtimepred
 	o.prefillStats.Accepted++
 	o.prefillStats.LastExistingUserTPS = outcome.ExistingUserTPS
 	o.prefillStats.LastExistingUserTPSValid = true
+	o.prefillStats.LastExploratory = outcome.Exploratory
 }
 
 func (o *predictiveVLLMObserver) qualifyStableAggregateThroughputOutcomeLocked(current predictiveStablePrefillWindow, started, finished, shadowStarted, shadowFinished uint64) (runtimepredictive.AggregateThroughputOutcome, bool) {
@@ -593,11 +597,13 @@ func observedPredictivePendingPrefills(manager runtimepredictive.Snapshot, shado
 	case manager.ForwardedPendingPrefills == 1 && shadow.Count == 0 && manager.ForwardedPendingPrefillFeaturesValid:
 		result.Features = manager.ForwardedPendingPrefillFeatures
 		result.FeaturesValid = true
+		result.Exploratory = manager.ForwardedPendingPrefillExploratory
 	case manager.ForwardedPendingPrefills == 0 && shadow.Count == 1 && shadow.FeaturesValid:
 		result.Features = shadow.Features
 		result.FeaturesValid = true
 		result.FromShadow = true
 		result.DecisionManagerSequence = shadow.DecisionManagerSequence
+		result.Exploratory = shadow.Exploratory
 	}
 	return result
 }

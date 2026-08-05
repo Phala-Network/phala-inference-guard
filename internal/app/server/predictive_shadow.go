@@ -101,6 +101,7 @@ type predictiveExistingPrefillObservationSnapshot struct {
 	Censored                 uint64
 	LastExistingUserTPS      float64
 	LastExistingUserTPSValid bool
+	LastExploratory          bool
 }
 
 type predictiveTPSOutcomeSnapshot struct {

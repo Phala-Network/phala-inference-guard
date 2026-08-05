@@ -188,6 +188,7 @@ type Snapshot struct {
 	ForwardedPendingPrefillTokens        int64
 	ForwardedPendingPrefillFeatures      SchedulerFeatures
 	ForwardedPendingPrefillFeaturesValid bool
+	ForwardedPendingPrefillExploratory   bool
 	EventSequence                        uint64
 	RetiredReservations                  int
 	RetiredEvictions                     uint64
@@ -607,6 +608,7 @@ func (m *Manager) Snapshot() Snapshot {
 			result.ForwardedPendingPrefillTokens = addInt64Saturating(result.ForwardedPendingPrefillTokens, item.Cost.UncachedPrefillUpper)
 			if result.ForwardedPendingPrefills == 1 {
 				result.ForwardedPendingPrefillFeatures, result.ForwardedPendingPrefillFeaturesValid = pendingPrefillFeatures(item.Prediction, item.Cost)
+				result.ForwardedPendingPrefillExploratory = item.Prediction.Exploratory
 			} else {
 				// Concurrent prefills cannot be attributed to one candidate's
 				// pre-forward feature vector without retaining request identity or
@@ -614,6 +616,7 @@ func (m *Manager) Snapshot() Snapshot {
 				// censor this window for learning.
 				result.ForwardedPendingPrefillFeatures = SchedulerFeatures{}
 				result.ForwardedPendingPrefillFeaturesValid = false
+				result.ForwardedPendingPrefillExploratory = false
 			}
 		}
 	}

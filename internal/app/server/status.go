@@ -82,7 +82,7 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 		lastRejectScope = "none"
 	}
 	return fmt.Sprintf(
-		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s/%d last_reject=%s/%s/%s/%d reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d deferred=%d prefill_learning=%d/%d/%d completion_observer=%d/%d/%d/%d router_bp=%d/%d/%s/%s throughput=%.2f/%.2f router_lease=%d/%d/%d/%d/%s/%s effective=%d/%d raw=%d/%d}",
+		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s/%d last_reject=%s/%s/%s/%d reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d deferred=%d prefill_learning=%d/%d/%d/%.3f/%d/%d hard_origin=%d/%d/%d/%d/%d/%d completion_observer=%d/%d/%d/%d router_bp=%d/%d/%s/%s throughput=%.2f/%.2f router_lease=%d/%d/%d/%d/%s/%s effective=%d/%d raw=%d/%d}",
 		input.Mode,
 		input.Attempts,
 		input.Fits,
@@ -105,6 +105,15 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 		input.ExistingPrefill.Accepted,
 		input.ExistingPrefill.Rejected,
 		input.ExistingPrefill.Censored,
+		input.ExistingPrefill.LastExistingUserTPS,
+		boolInt(input.ExistingPrefill.LastExistingUserTPSValid),
+		boolInt(input.ExistingPrefill.LastExploratory),
+		input.LearningHardExistingTPSExploratory,
+		input.LearningHardExistingTPSNonExploratory,
+		input.LearningHardNewTPSExploratory,
+		input.LearningHardNewTPSNonExploratory,
+		input.LearningHardTPOTExploratory,
+		input.LearningHardTPOTNonExploratory,
 		input.CompletionObserverAttached,
 		input.CompletionObserverClaimed,
 		input.CompletionObserverUsage,

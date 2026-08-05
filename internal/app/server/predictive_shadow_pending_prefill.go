@@ -12,6 +12,7 @@ type predictiveShadowPendingPrefillSnapshot struct {
 	Features                runtimepredictive.SchedulerFeatures
 	FeaturesValid           bool
 	DecisionManagerSequence uint64
+	Exploratory             bool
 	EventSequence           uint64
 }
 
@@ -82,12 +83,14 @@ func (s *predictiveShadowPendingPrefillStore) Snapshot() predictiveShadowPending
 			result.Features = observation.Features
 			result.FeaturesValid = true
 			result.DecisionManagerSequence = observation.DecisionManagerSequence
+			result.Exploratory = observation.Exploratory
 		}
 	}
 	if result.Count != 1 {
 		result.Features = runtimepredictive.SchedulerFeatures{}
 		result.FeaturesValid = false
 		result.DecisionManagerSequence = 0
+		result.Exploratory = false
 	}
 	return result
 }

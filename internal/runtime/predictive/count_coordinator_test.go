@@ -263,6 +263,11 @@ func TestCountCoordinatorReservesApproximateUpperWithoutExactTokenizerIdentity(t
 	if !ok || pending.DecisionManagerSequence != result.DecisionManagerSequence {
 		t.Fatalf("pending-prefill decision sequence was not preserved: pending=%+v result=%+v", pending, result)
 	}
+	result.Prediction.Exploratory = true
+	pending, ok = PendingPrefillObservationForResult(result)
+	if !ok || !pending.Exploratory {
+		t.Fatalf("pending-prefill exploratory origin was not preserved: pending=%+v result=%+v", pending, result)
+	}
 	if result.Cost.PhysicalKVUpper != 88 || result.Cost.FuturePhysicalKVUpper != 12 {
 		t.Fatalf("approximate block-rounded cost = %+v, want total/future 88/12", result.Cost)
 	}

@@ -120,6 +120,12 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.LearningHardExistingTPSAdverse = snapshot.Learning.HardExistingTPSAdverse
 	input.LearningHardNewTPSAdverse = snapshot.Learning.HardNewTPSAdverse
 	input.LearningHardTPOTAdverse = snapshot.Learning.HardTPOTAdverse
+	input.LearningHardExistingTPSExploratory = snapshot.Learning.HardExistingTPSOrigins.Exploratory
+	input.LearningHardExistingTPSNonExploratory = snapshot.Learning.HardExistingTPSOrigins.NonExploratory
+	input.LearningHardNewTPSExploratory = snapshot.Learning.HardNewTPSOrigins.Exploratory
+	input.LearningHardNewTPSNonExploratory = snapshot.Learning.HardNewTPSOrigins.NonExploratory
+	input.LearningHardTPOTExploratory = snapshot.Learning.HardTPOTOrigins.Exploratory
+	input.LearningHardTPOTNonExploratory = snapshot.Learning.HardTPOTOrigins.NonExploratory
 	input.LearningSoftExistingTPSMisses = snapshot.Learning.SoftExistingTPSMisses
 	input.LearningSoftNewTPSMisses = snapshot.Learning.SoftNewTPSMisses
 	input.LearningSoftTPOTMisses = snapshot.Learning.SoftTPOTMisses
@@ -176,6 +182,7 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 		Censored:                 snapshot.ExistingPrefill.Censored,
 		LastExistingUserTPS:      snapshot.ExistingPrefill.LastExistingUserTPS,
 		LastExistingUserTPSValid: snapshot.ExistingPrefill.LastExistingUserTPSValid,
+		LastExploratory:          snapshot.ExistingPrefill.LastExploratory,
 	}
 	input.RouterBackpressure = metrics.PredictiveRouterBackpressureInput{
 		Active:                                 snapshot.RouterBackpressure.Active,

@@ -225,6 +225,7 @@ type ExistingPrefillOutcome struct {
 	PendingPrefillSequences int
 	PendingPrefillTokens    int64
 	ExistingUserTPS         float64
+	Exploratory             bool
 }
 
 // AggregateThroughputOutcome is an anonymous stable backend window. It is kept
@@ -255,6 +256,9 @@ type LearnedSchedulerSnapshot struct {
 	HardExistingTPSAdverse     uint64
 	HardNewTPSAdverse          uint64
 	HardTPOTAdverse            uint64
+	HardExistingTPSOrigins     HardAdverseOriginSnapshot
+	HardNewTPSOrigins          HardAdverseOriginSnapshot
+	HardTPOTOrigins            HardAdverseOriginSnapshot
 	SoftExistingTPSMisses      uint64
 	SoftNewTPSMisses           uint64
 	SoftTPOTMisses             uint64
@@ -262,6 +266,11 @@ type LearnedSchedulerSnapshot struct {
 	ExploratorySamples         uint64
 	WaitingPressureEvents      uint64
 	PreemptionPressureEvents   uint64
+}
+
+type HardAdverseOriginSnapshot struct {
+	Exploratory    uint64
+	NonExploratory uint64
 }
 
 type featureCell struct {
@@ -346,6 +355,9 @@ type LearnedScheduler struct {
 	hardExistingTPSAdverse          uint64
 	hardNewTPSAdverse               uint64
 	hardTPOTAdverse                 uint64
+	hardExistingTPSOrigins          HardAdverseOriginSnapshot
+	hardNewTPSOrigins               HardAdverseOriginSnapshot
+	hardTPOTOrigins                 HardAdverseOriginSnapshot
 	softExistingTPSMisses           uint64
 	softNewTPSMisses                uint64
 	softTPOTMisses                  uint64
@@ -462,10 +474,10 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	}
 	s.mu.Unlock()
 
-	userRatios, userExploratory := preferTPSRatiosWithExploration(local.UserTPS, global.UserTPS, s.config.MinimumSamples)
-	existingUserRatios, existingExploratory := preferTPSRatiosWithExploration(local.ExistingUserTPS, global.ExistingUserTPS, s.config.MinimumSamples)
+	userRatios, userExploratory, userHardDebt := preferTPSRatiosWithExploration(local.UserTPS, global.UserTPS, s.config.MinimumSamples, s.config.LowerQuantile)
+	existingUserRatios, existingExploratory, existingHardDebt := preferTPSRatiosWithExploration(local.ExistingUserTPS, global.ExistingUserTPS, s.config.MinimumSamples, s.config.LowerQuantile)
 	ttftRatios := preferMatureRatios(local.TTFT, global.TTFT, s.config.MinimumSamples)
-	tpotRatios, tpotExploratory := preferTPOTRatiosWithExploration(local.TPOT, global.TPOT, s.config.MinimumSamples)
+	tpotRatios, tpotExploratory, tpotHardDebt := preferTPOTRatiosWithExploration(local.TPOT, global.TPOT, s.config.MinimumSamples, s.config.UpperQuantile)
 	calibratedSamples := 0
 	nonExploratorySamples := 0
 	nonExploratoryEstimate := prior
@@ -475,6 +487,7 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	if len(userRatios) > 0 {
 		userMultiplier := clampFloat(quantileInPlace(userRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
 		candidate := prior.NewUserTPSLower * userMultiplier
+		candidate = preserveHardTPSBoundary(candidate, s.config.HardUserTPSTarget, userHardDebt)
 		if userExploratory && explorationBlocked {
 			frontierReached = true
 			frontierSamples = minimumPositiveInt(frontierSamples, len(userRatios))
@@ -492,6 +505,7 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	if len(existingUserRatios) > 0 && !prior.ExistingUserTPSNotApplicable {
 		existingUserMultiplier := clampFloat(quantileInPlace(existingUserRatios, s.config.LowerQuantile), s.config.MinimumTPSMultiplier, s.config.MaximumTPSMultiplier)
 		candidate := prior.ExistingUserTPSLower * existingUserMultiplier
+		candidate = preserveHardTPSBoundary(candidate, s.config.HardUserTPSTarget, existingHardDebt)
 		if existingExploratory && explorationBlocked {
 			frontierReached = true
 			frontierSamples = minimumPositiveInt(frontierSamples, len(existingUserRatios))
@@ -516,6 +530,7 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	if len(tpotRatios) > 0 {
 		tpotMultiplier := clampFloat(quantileInPlace(tpotRatios, s.config.UpperQuantile), s.config.MinimumLatencyMultiplier, s.config.MaximumLatencyMultiplier)
 		candidate := scaleDuration(prior.TPOTUpper, tpotMultiplier)
+		candidate = preserveHardTPOTBoundary(candidate, s.config.HardTPOTSLO, tpotHardDebt)
 		if tpotExploratory && explorationBlocked {
 			frontierReached = true
 			frontierSamples = minimumPositiveInt(frontierSamples, len(tpotRatios))
@@ -600,6 +615,7 @@ func (s *LearnedScheduler) Observe(prediction SchedulerPrediction, outcome Sched
 		return s.rejectOutcome(err)
 	}
 	classifyAdverseEvidence(&sample, outcome, s.config)
+	normalizeHardAdverseRatios(&sample, prediction, outcome, s.config)
 	key := s.featureCell(prediction.Features)
 	s.mu.Lock()
 	cell := s.cells[key]
@@ -623,12 +639,15 @@ func (s *LearnedScheduler) Observe(prediction SchedulerPrediction, outcome Sched
 	}
 	if sample.ExistingUserTPSValid && sample.ExistingUserTPSAdverse {
 		s.hardExistingTPSAdverse++
+		recordHardAdverseOrigin(&s.hardExistingTPSOrigins, prediction.Exploratory)
 	}
 	if sample.UserTPSValid && sample.UserTPSAdverse {
 		s.hardNewTPSAdverse++
+		recordHardAdverseOrigin(&s.hardNewTPSOrigins, prediction.Exploratory)
 	}
 	if sample.TPOTValid && sample.TPOTAdverse {
 		s.hardTPOTAdverse++
+		recordHardAdverseOrigin(&s.hardTPOTOrigins, prediction.Exploratory)
 	}
 	if softTPSMiss(sample.ExistingUserTPSValid, sample.ExistingUserTPSAdverse, outcome.ExistingUserTPS, s.config.ExplorationUserTPSTarget) {
 		s.softExistingTPSMisses++
@@ -687,6 +706,7 @@ func (s *LearnedScheduler) ObserveExistingPrefill(outcome ExistingPrefillOutcome
 		Estimate:    prior,
 		Source:      PredictionSourceStatic,
 		Confidence:  s.profile.Confidence,
+		Exploratory: outcome.Exploratory,
 	}
 	return s.Observe(prediction, SchedulerOutcome{
 		Identity:             outcome.Identity,
@@ -900,6 +920,9 @@ func (s *LearnedScheduler) Snapshot() LearnedSchedulerSnapshot {
 		HardExistingTPSAdverse:     s.hardExistingTPSAdverse,
 		HardNewTPSAdverse:          s.hardNewTPSAdverse,
 		HardTPOTAdverse:            s.hardTPOTAdverse,
+		HardExistingTPSOrigins:     s.hardExistingTPSOrigins,
+		HardNewTPSOrigins:          s.hardNewTPSOrigins,
+		HardTPOTOrigins:            s.hardTPOTOrigins,
 		SoftExistingTPSMisses:      s.softExistingTPSMisses,
 		SoftNewTPSMisses:           s.softNewTPSMisses,
 		SoftTPOTMisses:             s.softTPOTMisses,
@@ -911,10 +934,11 @@ func (s *LearnedScheduler) Snapshot() LearnedSchedulerSnapshot {
 }
 
 type residualDimension struct {
-	Standard      []float64
-	Exploratory   []float64
-	Adverse       []float64
-	LastAdverseAt time.Time
+	Standard             []float64
+	StandardAdverseCount int
+	Exploratory          []float64
+	Adverse              []float64
+	LastAdverseAt        time.Time
 }
 
 type residualRatios struct {
@@ -941,6 +965,8 @@ func freshLocalResidualRatios(samples []residualSample, now time.Time, maxAge, a
 			switch {
 			case sample.ExistingUserTPSAdverse && age <= adverseMaxAge && existingTPSAdverseCompatible(sample.Features, query):
 				ratios.ExistingUserTPS.Adverse = appendResidualRatio(ratios.ExistingUserTPS.Adverse, ratio, len(samples))
+			case sample.ExistingUserTPSAdverse && age > adverseMaxAge && existingTPSAdverseCompatible(sample.Features, query):
+				appendStandardAdverseRatio(&ratios.ExistingUserTPS, ratio, len(samples))
 			case !sample.ExistingUserTPSAdverse && newerThanAdverse(sample.ObservedAt, cutoffs.ExistingUserTPS):
 				appendExistingTPSRatio(&ratios.ExistingUserTPS, sample, query, decodeBucket, len(samples))
 			}
@@ -950,6 +976,8 @@ func freshLocalResidualRatios(samples []residualSample, now time.Time, maxAge, a
 			switch {
 			case sample.UserTPSAdverse && age <= adverseMaxAge && userTPSAdverseCompatible(sample.Features, query):
 				ratios.UserTPS.Adverse = appendResidualRatio(ratios.UserTPS.Adverse, ratio, len(samples))
+			case sample.UserTPSAdverse && age > adverseMaxAge && userTPSAdverseCompatible(sample.Features, query):
+				appendStandardAdverseRatio(&ratios.UserTPS, ratio, len(samples))
 			case !sample.UserTPSAdverse && newerThanAdverse(sample.ObservedAt, cutoffs.UserTPS):
 				appendUserTPSRatio(&ratios.UserTPS, sample, query, decodeBucket, len(samples))
 			}
@@ -962,6 +990,8 @@ func freshLocalResidualRatios(samples []residualSample, now time.Time, maxAge, a
 			switch {
 			case sample.TPOTAdverse && age <= adverseMaxAge && tpotAdverseCompatible(sample.Features, query):
 				ratios.TPOT.Adverse = appendResidualRatio(ratios.TPOT.Adverse, ratio, len(samples))
+			case sample.TPOTAdverse && age > adverseMaxAge && tpotAdverseCompatible(sample.Features, query):
+				appendStandardAdverseRatio(&ratios.TPOT, ratio, len(samples))
 			case !sample.TPOTAdverse && newerThanAdverse(sample.ObservedAt, cutoffs.TPOT):
 				appendTPOTRatio(&ratios.TPOT, sample, query, decodeBucket, len(samples))
 			}
@@ -1034,6 +1064,8 @@ func freshCompatibleResidualRatios(samples []residualSample, now time.Time, maxA
 			switch {
 			case sample.ExistingUserTPSAdverse && age <= adverseMaxAge && existingTPSAdverseCompatible(sample.Features, query):
 				result.ExistingUserTPS.Adverse = append(result.ExistingUserTPS.Adverse, ratio)
+			case sample.ExistingUserTPSAdverse && age > adverseMaxAge && existingTPSAdverseCompatible(sample.Features, query):
+				appendStandardAdverseRatio(&result.ExistingUserTPS, ratio, len(samples))
 			case !sample.ExistingUserTPSAdverse && newerThanAdverse(sample.ObservedAt, cutoffs.ExistingUserTPS):
 				appendExistingTPSRatio(&group.ExistingUserTPS, sample, query, decodeBucket, 0)
 			}
@@ -1043,6 +1075,8 @@ func freshCompatibleResidualRatios(samples []residualSample, now time.Time, maxA
 			switch {
 			case sample.UserTPSAdverse && age <= adverseMaxAge && userTPSAdverseCompatible(sample.Features, query):
 				result.UserTPS.Adverse = append(result.UserTPS.Adverse, ratio)
+			case sample.UserTPSAdverse && age > adverseMaxAge && userTPSAdverseCompatible(sample.Features, query):
+				appendStandardAdverseRatio(&result.UserTPS, ratio, len(samples))
 			case !sample.UserTPSAdverse && newerThanAdverse(sample.ObservedAt, cutoffs.UserTPS):
 				appendUserTPSRatio(&group.UserTPS, sample, query, decodeBucket, 0)
 			}
@@ -1055,6 +1089,8 @@ func freshCompatibleResidualRatios(samples []residualSample, now time.Time, maxA
 			switch {
 			case sample.TPOTAdverse && age <= adverseMaxAge && tpotAdverseCompatible(sample.Features, query):
 				result.TPOT.Adverse = append(result.TPOT.Adverse, ratio)
+			case sample.TPOTAdverse && age > adverseMaxAge && tpotAdverseCompatible(sample.Features, query):
+				appendStandardAdverseRatio(&result.TPOT, ratio, len(samples))
 			case !sample.TPOTAdverse && newerThanAdverse(sample.ObservedAt, cutoffs.TPOT):
 				appendTPOTRatio(&group.TPOT, sample, query, decodeBucket, 0)
 			}
@@ -1071,18 +1107,21 @@ func freshCompatibleResidualRatios(samples []residualSample, now time.Time, maxA
 	existingAdverse := len(result.ExistingUserTPS.Adverse) > 0
 	userAdverse := len(result.UserTPS.Adverse) > 0
 	tpotAdverse := len(result.TPOT.Adverse) > 0
+	var existingStandard residualDimension
+	var userStandard residualDimension
+	var tpotStandard residualDimension
 	for sequence, group := range groups {
-		if !existingAdverse && len(group.ExistingUserTPS.Standard) >= minimum && sequence > existingSequence {
+		if !existingAdverse && residualGroupEligible(result.ExistingUserTPS, group.ExistingUserTPS, minimum) && sequence > existingSequence {
 			existingSequence = sequence
-			result.ExistingUserTPS.Standard = group.ExistingUserTPS.Standard
+			existingStandard = group.ExistingUserTPS
 		}
 		if len(group.ExistingUserTPS.Exploratory) >= minimum && sequence > existingExplorationSequence {
 			existingExplorationSequence = sequence
 			result.ExistingUserTPS.Exploratory = group.ExistingUserTPS.Exploratory
 		}
-		if !userAdverse && len(group.UserTPS.Standard) >= minimum && sequence > userSequence {
+		if !userAdverse && residualGroupEligible(result.UserTPS, group.UserTPS, minimum) && sequence > userSequence {
 			userSequence = sequence
-			result.UserTPS.Standard = group.UserTPS.Standard
+			userStandard = group.UserTPS
 		}
 		if len(group.UserTPS.Exploratory) >= minimum && sequence > userExplorationSequence {
 			userExplorationSequence = sequence
@@ -1092,16 +1131,39 @@ func freshCompatibleResidualRatios(samples []residualSample, now time.Time, maxA
 			ttftSequence = sequence
 			result.TTFT = group.TTFT
 		}
-		if !tpotAdverse && len(group.TPOT.Standard) >= minimum && sequence > tpotSequence {
+		if !tpotAdverse && residualGroupEligible(result.TPOT, group.TPOT, minimum) && sequence > tpotSequence {
 			tpotSequence = sequence
-			result.TPOT.Standard = group.TPOT.Standard
+			tpotStandard = group.TPOT
 		}
 		if len(group.TPOT.Exploratory) >= minimum && sequence > tpotExplorationSequence {
 			tpotExplorationSequence = sequence
 			result.TPOT.Exploratory = group.TPOT.Exploratory
 		}
 	}
+	mergeSelectedStandardResiduals(&result.ExistingUserTPS, existingStandard)
+	mergeSelectedStandardResiduals(&result.UserTPS, userStandard)
+	mergeSelectedStandardResiduals(&result.TPOT, tpotStandard)
 	return result
+}
+
+func residualGroupEligible(expiredHard, candidate residualDimension, minimum int) bool {
+	if len(candidate.Standard) == 0 {
+		return false
+	}
+	return expiredHard.StandardAdverseCount > 0 || len(candidate.Standard) >= minimum
+}
+
+func mergeSelectedStandardResiduals(target *residualDimension, selected residualDimension) {
+	if target == nil || len(selected.Standard) == 0 {
+		return
+	}
+	if len(target.Standard) == 0 {
+		target.Standard = selected.Standard
+		target.StandardAdverseCount = selected.StandardAdverseCount
+		return
+	}
+	target.Standard = append(target.Standard, selected.Standard...)
+	target.StandardAdverseCount += selected.StandardAdverseCount
 }
 
 type adverseEvidenceCutoffs struct {
@@ -1138,6 +1200,14 @@ func appendExistingTPSRatio(target *residualDimension, sample residualSample, qu
 	if existingTPSExplorationCompatible(sample.Features, query, sample.ExistingUserTPSRatio, decodeBucket) {
 		target.Exploratory = appendResidualRatio(target.Exploratory, sample.ExistingUserTPSRatio, capacityHint)
 	}
+}
+
+func appendStandardAdverseRatio(target *residualDimension, ratio float64, capacityHint int) {
+	if target == nil {
+		return
+	}
+	target.Standard = appendResidualRatio(target.Standard, ratio, capacityHint)
+	target.StandardAdverseCount++
 }
 
 func appendUserTPSRatio(target *residualDimension, sample residualSample, query SchedulerFeatures, decodeBucket, capacityHint int) {
@@ -1302,38 +1372,82 @@ func preferMatureRatios(local, global []float64, minimum int) []float64 {
 	return nil
 }
 
-func preferTPSRatiosWithExploration(local, global residualDimension, minimum int) ([]float64, bool) {
+func preferTPSRatiosWithExploration(local, global residualDimension, minimum int, quantile float64) ([]float64, bool, bool) {
 	local, global = preferLatestAdverseGeneration(local, global)
 	if adverse, ok := minimumAdverseRatio(local.Adverse, global.Adverse); ok {
-		return []float64{adverse}, false
+		return []float64{adverse}, false, true
 	}
-	if ratios := preferMatureRatios(local.Standard, global.Standard, minimum); len(ratios) >= minimum {
-		return ratios, false
+	if ratios, adverse := preferMatureResidualDimension(local, global, minimum); len(ratios) >= minimum || adverse > 0 {
+		return ratios, false, lowerQuantileSelectsAdverseDebt(len(ratios), adverse, quantile)
 	}
 	if len(local.Exploratory) >= minimum {
-		return local.Exploratory, true
+		return local.Exploratory, true, false
 	}
 	if len(global.Exploratory) >= minimum {
-		return global.Exploratory, true
+		return global.Exploratory, true, false
 	}
-	return nil, false
+	return nil, false, false
 }
 
-func preferTPOTRatiosWithExploration(local, global residualDimension, minimum int) ([]float64, bool) {
+func preferTPOTRatiosWithExploration(local, global residualDimension, minimum int, quantile float64) ([]float64, bool, bool) {
 	local, global = preferLatestAdverseGeneration(local, global)
 	if adverse, ok := maximumAdverseRatio(local.Adverse, global.Adverse); ok {
-		return []float64{adverse}, false
+		return []float64{adverse}, false, true
 	}
-	if ratios := preferMatureRatios(local.Standard, global.Standard, minimum); len(ratios) >= minimum {
-		return ratios, false
+	if ratios, adverse := preferMatureResidualDimension(local, global, minimum); len(ratios) >= minimum || adverse > 0 {
+		return ratios, false, upperQuantileSelectsAdverseDebt(len(ratios), adverse, quantile)
 	}
 	if len(local.Exploratory) >= minimum {
-		return local.Exploratory, true
+		return local.Exploratory, true, false
 	}
 	if len(global.Exploratory) >= minimum {
-		return global.Exploratory, true
+		return global.Exploratory, true, false
 	}
-	return nil, false
+	return nil, false, false
+}
+
+func preferMatureResidualDimension(local, global residualDimension, minimum int) ([]float64, int) {
+	if len(local.Standard) >= minimum || local.StandardAdverseCount > 0 {
+		return local.Standard, local.StandardAdverseCount
+	}
+	if len(global.Standard) >= minimum || global.StandardAdverseCount > 0 {
+		return global.Standard, global.StandardAdverseCount
+	}
+	return nil, 0
+}
+
+func lowerQuantileSelectsAdverseDebt(total, adverse int, quantile float64) bool {
+	adverse = boundedAdverseCount(total, adverse)
+	return adverse > 0 && nearestRankQuantileIndex(total, quantile) < adverse
+}
+
+func upperQuantileSelectsAdverseDebt(total, adverse int, quantile float64) bool {
+	adverse = boundedAdverseCount(total, adverse)
+	return adverse > 0 && nearestRankQuantileIndex(total, quantile) >= total-adverse
+}
+
+func boundedAdverseCount(total, adverse int) int {
+	if total <= 0 || adverse <= 0 {
+		return 0
+	}
+	if adverse > total {
+		return total
+	}
+	return adverse
+}
+
+func preserveHardTPSBoundary(candidate, target float64, hardDebt bool) float64 {
+	if !hardDebt || target <= 0 || candidate < target {
+		return candidate
+	}
+	return math.Nextafter(target, 0)
+}
+
+func preserveHardTPOTBoundary(candidate, target time.Duration, hardDebt bool) time.Duration {
+	if !hardDebt || target <= 0 || candidate > target {
+		return candidate
+	}
+	return addDurationSaturating(target, time.Nanosecond)
 }
 
 func preferLatestAdverseGeneration(local, global residualDimension) (residualDimension, residualDimension) {
@@ -1425,6 +1539,38 @@ func classifyAdverseEvidence(sample *residualSample, outcome SchedulerOutcome, c
 		existingTPSAdverse
 	sample.UserTPSAdverse = sample.UserTPSValid && userTPSAdverse
 	sample.TPOTAdverse = sample.TPOTValid && tpotAdverse
+}
+
+func normalizeHardAdverseRatios(sample *residualSample, prediction SchedulerPrediction, outcome SchedulerOutcome, config ResidualCalibratorConfig) {
+	if sample == nil || config.HardUserTPSTarget <= 0 {
+		return
+	}
+	if sample.ExistingUserTPSValid && sample.ExistingUserTPSAdverse {
+		denominator := math.Max(prediction.Prior.ExistingUserTPSLower, config.HardUserTPSTarget)
+		sample.ExistingUserTPSRatio = outcome.ExistingUserTPS / denominator
+	}
+	if sample.UserTPSValid && sample.UserTPSAdverse {
+		denominator := math.Max(prediction.Prior.NewUserTPSLower, config.HardUserTPSTarget)
+		sample.UserTPSRatio = outcome.UserTPS / denominator
+	}
+	if sample.TPOTValid && sample.TPOTAdverse {
+		denominator := prediction.Prior.TPOTUpper
+		if denominator > config.HardTPOTSLO {
+			denominator = config.HardTPOTSLO
+		}
+		sample.TPOTRatio = float64(outcome.TPOT) / float64(denominator)
+	}
+}
+
+func recordHardAdverseOrigin(target *HardAdverseOriginSnapshot, exploratory bool) {
+	if target == nil {
+		return
+	}
+	if exploratory {
+		target.Exploratory++
+		return
+	}
+	target.NonExploratory++
 }
 
 func softTPSMiss(valid, hardAdverse bool, actual, target float64) bool {
@@ -1592,14 +1738,21 @@ func quantileInPlace(values []float64, q float64) float64 {
 		return 1
 	}
 	sort.Float64s(values)
-	index := int(math.Ceil(q*float64(len(values)))) - 1
+	return values[nearestRankQuantileIndex(len(values), q)]
+}
+
+func nearestRankQuantileIndex(total int, q float64) int {
+	if total <= 0 {
+		return 0
+	}
+	index := int(math.Ceil(q*float64(total))) - 1
 	if index < 0 {
 		index = 0
 	}
-	if index >= len(values) {
-		index = len(values) - 1
+	if index >= total {
+		index = total - 1
 	}
-	return values[index]
+	return index
 }
 
 func appendResidualRatio(values []float64, value float64, capacityHint int) []float64 {

@@ -29,6 +29,7 @@ type recordingUpperBoundCoordinator struct {
 	correctAfterOutcome bool
 	available           bool
 	managerSequence     uint64
+	exploratory         bool
 }
 
 type blockingUpperBoundCoordinator struct {
@@ -87,7 +88,7 @@ func (c *recordingUpperBoundCoordinator) DecideUpperBoundAndReserve(now time.Tim
 		requestComplexity = proposal.InputTokensUpper
 	}
 	prediction := runtimepredictive.SchedulerPrediction{
-		Identity: c.identity, PredictedAt: now, Source: runtimepredictive.PredictionSourceStatic, Confidence: 1,
+		Identity: c.identity, PredictedAt: now, Source: runtimepredictive.PredictionSourceStatic, Confidence: 1, Exploratory: c.exploratory,
 		Features: runtimepredictive.SchedulerFeatures{
 			ExistingDecodeSequences:         c.virtual.DecodeSequences,
 			DecodeSequences:                 c.virtual.DecodeSequences + 1,
@@ -724,6 +725,7 @@ func TestApproximatePredictiveShadowRiskPublishesAnonymousPendingPrefillWithoutR
 	coordinator.reject = true
 	coordinator.rejectReason = domainpredictive.ReasonExistingTPSAtRisk
 	coordinator.managerSequence = 17
+	coordinator.exploratory = true
 	coordinator.virtual = domainpredictive.VirtualState{
 		PhysicalKVUpper:     1_000,
 		ActiveKVUpper:       1_000,
@@ -755,7 +757,7 @@ func TestApproximatePredictiveShadowRiskPublishesAnonymousPendingPrefillWithoutR
 	pending := shadowPrefills.Snapshot()
 	if pending.Count != 1 || pending.Tokens <= 0 || !pending.FeaturesValid ||
 		pending.Features.ExistingDecodeSequences != 1 || pending.Features.DecodeSequences != 2 ||
-		pending.DecisionManagerSequence != 17 {
+		pending.DecisionManagerSequence != 17 || !pending.Exploratory {
 		t.Fatalf("forwarded shadow risk was not published as one anonymous pending prefill: %+v", pending)
 	}
 	coordinator.mu.Lock()
@@ -767,7 +769,7 @@ func TestApproximatePredictiveShadowRiskPublishesAnonymousPendingPrefillWithoutR
 	if !decision.Reservation.MarkPrefillComplete() {
 		t.Fatal("shadow pending prefill did not complete")
 	}
-	if snapshot := shadowPrefills.Snapshot(); snapshot.Count != 0 || snapshot.Tokens != 0 || snapshot.FeaturesValid {
+	if snapshot := shadowPrefills.Snapshot(); snapshot.Count != 0 || snapshot.Tokens != 0 || snapshot.FeaturesValid || snapshot.Exploratory {
 		t.Fatalf("semantic output left a shadow pending-prefill observation: %+v", snapshot)
 	}
 	if !decision.Reservation.Terminate(runtimepredictive.TerminalCompleted) {

@@ -573,6 +573,15 @@ func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) 
 		Mode: "enforce", Attempts: 12, Fits: 4, Risks: 8, EnforcedRejects: 8,
 		LastReason: "existing_tps_at_risk", LastSource: "calibrated", LastSamples: 6,
 		Reservations: 1, VirtualDecodeSequences: 3, DeferredOutcomes: metrics.PredictiveDeferredOutcomeInput{Active: 2},
+		LearningHardExistingTPSExploratory:    1,
+		LearningHardExistingTPSNonExploratory: 2,
+		LearningHardNewTPSExploratory:         3,
+		LearningHardNewTPSNonExploratory:      4,
+		LearningHardTPOTExploratory:           5,
+		LearningHardTPOTNonExploratory:        6,
+		ExistingPrefill: metrics.PredictiveExistingPrefillInput{
+			Accepted: 7, Rejected: 1, Censored: 2, LastExistingUserTPS: 1.998185, LastExistingUserTPSValid: true, LastExploratory: true,
+		},
 		CompletionObserverAttached: 4, CompletionObserverClaimed: 3, CompletionObserverUsage: 2, CompletionObserverTerminal: 3,
 		RouterBackpressure: metrics.PredictiveRouterBackpressureInput{
 			Active: true, Applied: true, Scope: "load", Reason: "existing_tps_at_risk",
@@ -584,7 +593,8 @@ func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) 
 	})
 	for _, want := range []string{
 		"predictive={mode=enforce", "attempts=12", "risk=8", "last=existing_tps_at_risk/calibrated/6",
-		"last_reject=none/unknown/none/0", "reservations=1", "virtual_decode=3", "pending_prefill=0/0", "deferred=2", "completion_observer=4/3/2/3", "router_bp=1/1/load/existing_tps_at_risk", "throughput=154.00/300.00", "effective=1/1", "raw=1/50",
+		"last_reject=none/unknown/none/0", "reservations=1", "virtual_decode=3", "pending_prefill=0/0/0", "deferred=2",
+		"prefill_learning=7/1/2/1.998/1/1", "hard_origin=1/2/3/4/5/6", "completion_observer=4/3/2/3", "router_bp=1/1/load/existing_tps_at_risk", "throughput=154.00/300.00", "effective=1/1", "raw=1/50",
 		"router_lease=2/5/2/3/1970-01-01T23:20:00Z/1970-01-01T23:20:05Z",
 	} {
 		if !strings.Contains(line, want) {

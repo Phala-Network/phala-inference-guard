@@ -10,7 +10,7 @@ runs. The interval is controlled by `PIG_STATUS_LOG_INTERVAL_SECONDS`; set it to
 `0` to disable periodic status logging.
 
 ```text
-pig_status v=PIG-v0.10.10 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 deferred=0 prefill_learning=0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
+pig_status v=PIG-v0.10.11 backend={state=green backend=1/1 running=1 waiting=0 ...} pig={limit=50 admit=50 cap=50 queue=0 reject=0 tier_basic=1/49 tier_premium=0/1 ...} predictive={mode=enforce attempts=12 fit=4 risk=8 unknown=0 reject=8 last=existing_tps_at_risk/calibrated/6 last_reject=existing_tps_at_risk/calibrated/load/6 reservations=1 virtual_decode=1 pending_prefill=0/0/0 deferred=0 prefill_learning=7/1/2/1.998/1/1 hard_origin=1/0/0/0/0/0 completion_observer=4/4/4/4 router_bp=1/1/load/existing_tps_at_risk router_lease=1/7/2/5/2026-08-02T12:00:00Z/2026-08-02T12:00:05Z effective=1/1 raw=1/50}
 ```
 
 The status line has three required parts:
@@ -202,6 +202,15 @@ For production operation, watch these first:
   increase for censored local wall-clock outcomes. A corroborated joining
   request under real concurrent work may tighten the next pre-forward decision;
   a standalone idle adverse request must not create an idle self-lock.
+- `pig_predictive_learning_hard_adverse_origin_total{dimension="existing_tps|new_tps|tpot",origin="exploratory|non_exploratory"}`:
+  exposes six fixed series identifying whether each hard outcome came from a
+  one-step frontier probe or an ordinary forecast. For every dimension, the two
+  origin counters must sum exactly to the corresponding hard-adverse total.
+- `pig_predictive_existing_prefill_last_user_tps`,
+  `pig_predictive_existing_prefill_last_user_tps_valid`, and
+  `pig_predictive_existing_prefill_last_exploratory`: expose the last accepted
+  anonymous stable backend prefill-interference value and its original
+  admission origin. They carry no request, user, model, or prompt labels.
 - `pig_predictive_tps_outcomes_total{result="backend_qualified|local_corroborated|local_censored|missing|rejected"}`:
   distinguishes structurally qualified backend timing, local direction checks
   corroborated by a stable overlapping vLLM generation window, censored local

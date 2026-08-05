@@ -57,6 +57,7 @@ type stablePrefillTestCoordinator struct {
 	sequence      uint64
 	pending       int
 	pendingTokens int64
+	exploratory   bool
 	manager       runtimepredictive.Snapshot
 }
 
@@ -128,11 +129,12 @@ func (c *stablePrefillTestCoordinator) ReconcileSample(sample runtimepredictive.
 	state.PhysicalKVUpper += c.pendingTokens
 	state.ActiveKVUpper += c.pendingTokens
 	c.manager = runtimepredictive.Snapshot{
-		IntakeOpen:                    true,
-		EventSequence:                 c.sequence,
-		ForwardedPendingPrefills:      c.pending,
-		ForwardedPendingPrefillTokens: c.pendingTokens,
-		Virtual:                       domainpredictive.VirtualStateInterval{Lower: state, Upper: state},
+		IntakeOpen:                         true,
+		EventSequence:                      c.sequence,
+		ForwardedPendingPrefills:           c.pending,
+		ForwardedPendingPrefillTokens:      c.pendingTokens,
+		ForwardedPendingPrefillExploratory: c.exploratory,
+		Virtual:                            domainpredictive.VirtualStateInterval{Lower: state, Upper: state},
 	}
 	if c.pending == 1 && raw.DecodeSequences >= 1 && c.pendingTokens > 0 {
 		existingContext := raw.ActiveContextTokens - c.pendingTokens
@@ -177,6 +179,12 @@ func (c *stablePrefillTestCoordinator) Set(sequence uint64, pending int, pending
 	c.sequence = sequence
 	c.pending = pending
 	c.pendingTokens = pendingTokens
+	c.mu.Unlock()
+}
+
+func (c *stablePrefillTestCoordinator) SetExploratory(exploratory bool) {
+	c.mu.Lock()
+	c.exploratory = exploratory
 	c.mu.Unlock()
 }
 
@@ -799,6 +807,7 @@ func TestPredictiveVLLMObserverLearnsZeroTPSOnlyFromStablePendingPrefillWindow(t
 	defer server.Close()
 	coordinator := &stablePrefillTestCoordinator{}
 	coordinator.Set(7, 1, 100)
+	coordinator.SetExploratory(true)
 	learner := &recordingExistingPrefillLearner{}
 	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
 	observer.coordinatorSnapshot = coordinator
@@ -813,11 +822,11 @@ func TestPredictiveVLLMObserverLearnsZeroTPSOnlyFromStablePendingPrefillWindow(t
 	if len(outcomes) != 1 {
 		t.Fatalf("stable prefill outcomes = %d, want 1", len(outcomes))
 	}
-	if outcomes[0].ExistingUserTPS != 0 || outcomes[0].ExistingDecodeSequences != 1 || outcomes[0].PendingPrefillSequences != 1 || outcomes[0].PendingPrefillTokens != 100 {
+	if outcomes[0].ExistingUserTPS != 0 || outcomes[0].ExistingDecodeSequences != 1 || outcomes[0].PendingPrefillSequences != 1 || outcomes[0].PendingPrefillTokens != 100 || !outcomes[0].Exploratory {
 		t.Fatalf("stable zero-generation outcome = %+v", outcomes[0])
 	}
 	stats := observer.ExistingPrefillTelemetry()
-	if stats.Accepted != 1 || stats.Rejected != 0 || stats.Censored != 0 || !stats.LastExistingUserTPSValid || stats.LastExistingUserTPS != 0 {
+	if stats.Accepted != 1 || stats.Rejected != 0 || stats.Censored != 0 || !stats.LastExistingUserTPSValid || stats.LastExistingUserTPS != 0 || !stats.LastExploratory {
 		t.Fatalf("stable prefill telemetry = %+v", stats)
 	}
 }
@@ -834,6 +843,7 @@ func TestPredictiveVLLMObserverLearnsFromOneStableAnonymousShadowPrefill(t *test
 	handle := shadowPrefills.Begin(runtimepredictive.PendingPrefillObservation{
 		Tokens:                  100,
 		DecisionManagerSequence: 8,
+		Exploratory:             true,
 		Features: runtimepredictive.SchedulerFeatures{
 			ExistingDecodeSequences: 1,
 			DecodeSequences:         2,
@@ -857,15 +867,42 @@ func TestPredictiveVLLMObserverLearnsFromOneStableAnonymousShadowPrefill(t *test
 	outcomes := learner.Outcomes()
 	if len(outcomes) != 1 || outcomes[0].ExistingUserTPS != 60 ||
 		outcomes[0].ExistingDecodeSequences != 1 || outcomes[0].PendingPrefillSequences != 1 ||
-		outcomes[0].PendingPrefillTokens != 100 {
+		outcomes[0].PendingPrefillTokens != 100 || !outcomes[0].Exploratory {
 		t.Fatalf("stable anonymous shadow-prefill outcomes = %+v", outcomes)
 	}
 	if stats := observer.ExistingPrefillTelemetry(); stats.Accepted != 1 || stats.Censored != 0 ||
-		!stats.LastExistingUserTPSValid || stats.LastExistingUserTPS != 60 {
+		!stats.LastExistingUserTPSValid || stats.LastExistingUserTPS != 60 || !stats.LastExploratory {
 		t.Fatalf("stable anonymous shadow-prefill telemetry = %+v", stats)
 	}
 	if !handle.End() {
 		t.Fatal("anonymous shadow-prefill handle did not end")
+	}
+}
+
+func TestPredictiveVLLMObserverCensorsPendingPrefillExploratoryOriginChange(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(90_175, 0)}
+	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	coordinator := &stablePrefillTestCoordinator{}
+	coordinator.Set(8, 1, 100)
+	coordinator.SetExploratory(true)
+	learner := &recordingExistingPrefillLearner{}
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+	observer.coordinatorSnapshot = coordinator
+	observer.existingPrefillLearner = learner
+
+	observer.poll(context.Background())
+	coordinator.SetExploratory(false)
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 160, true))
+	observer.poll(context.Background())
+
+	if outcomes := learner.Outcomes(); len(outcomes) != 0 {
+		t.Fatalf("changed pending-prefill origin trained outcomes: %+v", outcomes)
+	}
+	if stats := observer.ExistingPrefillTelemetry(); stats.Accepted != 0 || stats.Censored != 1 || stats.LastExistingUserTPSValid || stats.LastExploratory {
+		t.Fatalf("changed pending-prefill origin telemetry = %+v", stats)
 	}
 }
 

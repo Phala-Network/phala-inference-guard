@@ -202,7 +202,7 @@ func TestExistingPrefillZeroTPSImmediatelyTightensNextCompatiblePrediction(t *te
 	}
 }
 
-func TestExistingPrefillAdverseOverrideRecoversFromNewerMatureHealthyEvidence(t *testing.T) {
+func TestExistingPrefillAdverseOverrideRecoversFromSustainedNewerHealthyEvidence(t *testing.T) {
 	now := time.Unix(3_810, 0)
 	profile := testLearnedProfile()
 	profile.PrefillTPSPenaltyPerKToken = 0
@@ -210,6 +210,8 @@ func TestExistingPrefillAdverseOverrideRecoversFromNewerMatureHealthyEvidence(t 
 	config.MaxAge = time.Hour
 	config.MinimumTPSMultiplier = 0.10
 	config.MaximumTPSMultiplier = 8
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
 	scheduler := mustLearnedScheduler(t, profile, config)
 	state := domain.VirtualState{
 		DecodeSequences: 1, ActiveContextTokens: 10_000, PhysicalKVUpper: 12_000, ActiveKVUpper: 12_000,
@@ -246,22 +248,24 @@ func TestExistingPrefillAdverseOverrideRecoversFromNewerMatureHealthyEvidence(t 
 		t.Fatalf("fresh adverse evidence did not immediately retreat: %+v", retreated)
 	}
 
-	for index := 0; index < config.MinimumSamples; index++ {
+	for index := 0; index < 10; index++ {
 		observe(now.Add(20*time.Second+time.Duration(index)*time.Second), 240)
 	}
-	recovered := scheduler.Predict(now.Add(24*time.Second), state, cost)
+	recovered := scheduler.Predict(now.Add(31*time.Second), state, cost)
 	if recovered.Source != PredictionSourceCalibrated || recovered.Estimate.ExistingUserTPSLower <= recovered.Prior.ExistingUserTPSLower {
-		t.Fatalf("one old adverse sample remained sticky after newer mature healthy evidence: %+v", recovered)
+		t.Fatalf("one hard lower-tail sample did not recover after ten newer healthy samples: %+v", recovered)
 	}
 }
 
-func TestExistingPrefillAdverseRecoveryRequiresNewerMatureHealthyEvidence(t *testing.T) {
+func TestExistingPrefillAdverseRecoveryRequiresQuantileDebtRepayment(t *testing.T) {
 	now := time.Unix(3_820, 0)
 	profile := testLearnedProfile()
 	profile.PrefillTPSPenaltyPerKToken = 0
 	config := testResidualConfig()
 	config.AdverseEvidenceMaxAge = 5 * time.Second
 	config.MaximumTPSMultiplier = 8
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
 	scheduler := mustLearnedScheduler(t, profile, config)
 	state := domain.VirtualState{DecodeSequences: 1, ActiveContextTokens: 10_000, PhysicalKVUpper: 12_000, ActiveKVUpper: 12_000}
 	cost := learnedTestCost()
@@ -280,17 +284,336 @@ func TestExistingPrefillAdverseRecoveryRequiresNewerMatureHealthyEvidence(t *tes
 		observe(now.Add(time.Duration(index)*time.Second), 240)
 	}
 	observe(now.Add(4*time.Second), 5)
-	for index := 0; index < config.MinimumSamples-1; index++ {
+	for index := 0; index < 9; index++ {
 		observe(now.Add(time.Duration(10+index)*time.Second), 240)
 	}
-	immature := scheduler.Predict(now.Add(12*time.Second), state, cost)
-	if immature.Estimate.ExistingUserTPSLower > immature.Prior.ExistingUserTPSLower {
-		t.Fatalf("fewer than the minimum newer samples restored headroom: %+v", immature)
+	guarded := scheduler.Predict(now.Add(19*time.Second), state, cost)
+	if guarded.Estimate.ExistingUserTPSLower >= config.HardUserTPSTarget {
+		t.Fatalf("nine newer healthy samples erased one hard lower-tail value: %+v", guarded)
 	}
-	observe(now.Add(12*time.Second), 240)
-	recovered := scheduler.Predict(now.Add(13*time.Second), state, cost)
+	observe(now.Add(19*time.Second), 240)
+	recovered := scheduler.Predict(now.Add(20*time.Second), state, cost)
 	if recovered.Source != PredictionSourceCalibrated || recovered.Estimate.ExistingUserTPSLower <= recovered.Prior.ExistingUserTPSLower {
-		t.Fatalf("mature newer evidence did not restore headroom: %+v", recovered)
+		t.Fatalf("ten newer healthy samples did not repay one hard lower-tail value: %+v", recovered)
+	}
+}
+
+func TestExpiredHardExistingPrefillResidualCarriesLowerQuantileDebt(t *testing.T) {
+	now := time.Unix(3_822, 0)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 40
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.AdverseEvidenceMaxAge = 3 * time.Second
+	config.MinimumTPSMultiplier = 0.05
+	config.MaximumTPSMultiplier = 4
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	config.ExplorationUserTPSTarget = 25
+	config.ExplorationTPOTSLO = 40 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1}
+	cost := learnedTestCost()
+	features := scheduler.Predict(now, state, cost).Features
+	observe := func(at time.Time, tps float64, exploratory bool) {
+		t.Helper()
+		if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+			Identity: scheduler.Identity(), StartedAt: at, ObservedAt: at.Add(time.Millisecond), Features: features,
+			ExistingDecodeSequences: 1, PendingPrefillSequences: 1, PendingPrefillTokens: cost.UncachedPrefillUpper,
+			ExistingUserTPS: tps, Exploratory: exploratory,
+		}); err != nil {
+			t.Fatalf("observe existing-prefill TPS %.3f: %v", tps, err)
+		}
+	}
+
+	observe(now, 5, true)
+	for index := 0; index < config.MinimumSamples; index++ {
+		observe(now.Add(time.Duration(10+index)*time.Second), 80, false)
+	}
+	guarded := scheduler.Predict(now.Add(13*time.Second), state, cost)
+	if guarded.Source != PredictionSourceCalibrated || guarded.Estimate.ExistingUserTPSLower >= config.HardUserTPSTarget {
+		t.Fatalf("three newer healthy values erased one hard lower-tail value: %+v", guarded)
+	}
+
+	for index := config.MinimumSamples; index < 10; index++ {
+		observe(now.Add(time.Duration(10+index)*time.Second), 80, false)
+	}
+	recovered := scheduler.Predict(now.Add(20*time.Second), state, cost)
+	if recovered.Source != PredictionSourceCalibrated || recovered.Estimate.ExistingUserTPSLower <= recovered.Prior.ExistingUserTPSLower {
+		t.Fatalf("ten newer healthy values did not move the 0.10 lower quantile beyond one hard value: %+v", recovered)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.HardExistingTPSAdverse != 1 ||
+		snapshot.HardExistingTPSOrigins.Exploratory != 1 || snapshot.HardExistingTPSOrigins.NonExploratory != 0 {
+		t.Fatalf("hard existing-prefill origin accounting = %+v", snapshot)
+	}
+}
+
+func TestExpiredHardResidualRemainsEffectiveWithoutNewerHealthySamples(t *testing.T) {
+	now := time.Unix(3_822, 250)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 72
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MinimumSamples = 3
+	config.AdverseEvidenceMaxAge = 3 * time.Second
+	config.MinimumTPSMultiplier = 0.50
+	config.MaximumTPSMultiplier = 2
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1}
+	cost := learnedTestCost()
+	prediction := scheduler.Predict(now, state, cost)
+	if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+		Identity: scheduler.Identity(), StartedAt: now, ObservedAt: now.Add(time.Millisecond), Features: prediction.Features,
+		ExistingDecodeSequences: 1, PendingPrefillSequences: 1, PendingPrefillTokens: cost.UncachedPrefillUpper,
+		ExistingUserTPS: 5, Exploratory: true,
+	}); err != nil {
+		t.Fatalf("observe sparse hard existing-prefill outcome: %v", err)
+	}
+
+	expired := scheduler.Predict(now.Add(4*time.Second), state, cost)
+	if expired.Source != PredictionSourceCalibrated || expired.Samples != 1 || expired.Estimate.ExistingUserTPSLower >= config.HardUserTPSTarget {
+		t.Fatalf("single expired hard residual reopened before newer evidence: %+v", expired)
+	}
+	idle := scheduler.Predict(now.Add(4*time.Second), domain.VirtualState{}, cost)
+	if !idle.Prior.ExistingUserTPSNotApplicable || idle.Estimate.NewUserTPSLower < idle.Prior.NewUserTPSLower || idle.Estimate.TPOTUpper > idle.Prior.TPOTUpper {
+		t.Fatalf("single expired hard residual blocked idle progress: %+v", idle)
+	}
+}
+
+func TestExpiredHardJoiningTPSAndTPOTRemainEffectiveWithoutNewerHealthySamples(t *testing.T) {
+	now := time.Unix(3_822, 312)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 72
+	profile.PrefillTPSPenaltyPerKToken = 0
+	profile.BaseTPOT = 20 * time.Millisecond
+	profile.TPOTPerExistingDecodeSequence = 2 * time.Millisecond
+	config := testResidualConfig()
+	config.MinimumSamples = 3
+	config.AdverseEvidenceMaxAge = 3 * time.Second
+	config.MinimumTPSMultiplier = 0.50
+	config.MaximumTPSMultiplier = 2
+	config.MinimumLatencyMultiplier = 0.50
+	config.MaximumLatencyMultiplier = 2
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1}
+	cost := learnedTestCost()
+	prediction := scheduler.Predict(now, state, cost)
+	if err := scheduler.Observe(prediction, SchedulerOutcome{
+		Identity: prediction.Identity, ObservedAt: now.Add(time.Millisecond), Attributed: true,
+		UserTPS: 5, UserTPSValid: true, TPOT: 60 * time.Millisecond, TPOTValid: true,
+	}); err != nil {
+		t.Fatalf("observe sparse joining-user hard outcome: %v", err)
+	}
+
+	expired := scheduler.Predict(now.Add(4*time.Second), state, cost)
+	if expired.Source != PredictionSourceCalibrated || expired.Samples != 1 ||
+		expired.Estimate.NewUserTPSLower >= config.HardUserTPSTarget || expired.Estimate.TPOTUpper <= config.HardTPOTSLO {
+		t.Fatalf("single expired joining-user hard residuals reopened before newer evidence: %+v", expired)
+	}
+}
+
+func TestGlobalExpiredHardDebtCannotBeBypassedByAnotherMatureDecodeGroup(t *testing.T) {
+	now := time.Unix(3_822, 375)
+	hardFeatures := SchedulerFeatures{DecodeSequences: 2}
+	healthyFeatures := SchedulerFeatures{DecodeSequences: 3}
+	samples := []residualSample{{
+		ObservedAt: now.Add(-10 * time.Second), Features: hardFeatures,
+		UserTPSRatio: 0.25, UserTPSValid: true, UserTPSAdverse: true,
+		TPOTRatio: 2, TPOTValid: true, TPOTAdverse: true,
+	}}
+	for index := 0; index < 3; index++ {
+		samples = append(samples, residualSample{
+			ObservedAt: now.Add(time.Duration(-9+index) * time.Second), Features: healthyFeatures,
+			UserTPSRatio: 2, UserTPSValid: true,
+			TPOTRatio: 0.5, TPOTValid: true,
+		})
+	}
+
+	got := freshCompatibleResidualRatios(samples, now, time.Minute, 3*time.Second, healthyFeatures, 3, 1)
+	if len(got.UserTPS.Standard) != 4 || got.UserTPS.StandardAdverseCount != 1 ||
+		!lowerQuantileSelectsAdverseDebt(len(got.UserTPS.Standard), got.UserTPS.StandardAdverseCount, 0.10) {
+		t.Fatalf("global mature group bypassed compatible hard debt: %+v", got.UserTPS)
+	}
+	if len(got.TPOT.Standard) != 4 || got.TPOT.StandardAdverseCount != 1 ||
+		!upperQuantileSelectsAdverseDebt(len(got.TPOT.Standard), got.TPOT.StandardAdverseCount, 0.90) {
+		t.Fatalf("global mature group bypassed compatible hard TPOT debt: %+v", got.TPOT)
+	}
+}
+
+func TestRepeatedExpiredHardResidualsAddProportionalQuantileDebt(t *testing.T) {
+	now := time.Unix(3_822, 500)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 40
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.MaxAge = time.Minute
+	config.MaximumCells = 2
+	config.MaximumSamplesPerCell = 32
+	config.AdverseEvidenceMaxAge = 3 * time.Second
+	config.MinimumTPSMultiplier = 0.05
+	config.MaximumTPSMultiplier = 4
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1}
+	cost := learnedTestCost()
+	features := scheduler.Predict(now, state, cost).Features
+	observe := func(at time.Time, tps float64) {
+		t.Helper()
+		if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+			Identity: scheduler.Identity(), StartedAt: at, ObservedAt: at.Add(time.Millisecond), Features: features,
+			ExistingDecodeSequences: 1, PendingPrefillSequences: 1, PendingPrefillTokens: cost.UncachedPrefillUpper,
+			ExistingUserTPS: tps, Exploratory: true,
+		}); err != nil {
+			t.Fatalf("observe repeated existing-prefill TPS %.3f: %v", tps, err)
+		}
+	}
+
+	observe(now, 5)
+	observe(now.Add(time.Second), 5)
+	for index := 0; index < 10; index++ {
+		observe(now.Add(time.Duration(10+index)*time.Second), 80)
+	}
+	guarded := scheduler.Predict(now.Add(20*time.Second), state, cost)
+	if guarded.Estimate.ExistingUserTPSLower >= config.HardUserTPSTarget {
+		t.Fatalf("ten healthy values erased two hard lower-tail values: %+v", guarded)
+	}
+	idle := scheduler.Predict(now.Add(20*time.Second), domain.VirtualState{}, cost)
+	if !idle.Prior.ExistingUserTPSNotApplicable || idle.Estimate.NewUserTPSLower < idle.Prior.NewUserTPSLower || idle.Estimate.TPOTUpper > idle.Prior.TPOTUpper {
+		t.Fatalf("hard existing-prefill memory blocked an idle low-flow request: %+v", idle)
+	}
+	for index := 10; index < 19; index++ {
+		observe(now.Add(time.Duration(10+index)*time.Second), 80)
+	}
+	recovered := scheduler.Predict(now.Add(29*time.Second), state, cost)
+	if recovered.Estimate.ExistingUserTPSLower <= recovered.Prior.ExistingUserTPSLower {
+		t.Fatalf("nineteen healthy values did not move the lower quantile beyond two hard values: %+v", recovered)
+	}
+	for index := 0; index < 40; index++ {
+		observe(now.Add(time.Duration(30+index)*time.Second), 80)
+	}
+	snapshot := scheduler.Snapshot()
+	if snapshot.Cells > config.MaximumCells || snapshot.GlobalSamples > scheduler.globalLimit || len(scheduler.cells[scheduler.featureCell(features)].Samples) > config.MaximumSamplesPerCell {
+		t.Fatalf("hard-memory samples exceeded existing bounds: snapshot=%+v global_limit=%d", snapshot, scheduler.globalLimit)
+	}
+	expired := scheduler.Predict(now.Add(130*time.Second), state, cost)
+	if expired.Source != PredictionSourceStatic || expired.Estimate != expired.Prior {
+		t.Fatalf("ordinary learning age did not expire bounded hard memory: %+v", expired)
+	}
+	if snapshot.HardExistingTPSAdverse != 2 || snapshot.HardExistingTPSOrigins.Exploratory != 2 || snapshot.HardExistingTPSOrigins.NonExploratory != 0 {
+		t.Fatalf("repeated hard origin accounting = %+v", snapshot)
+	}
+}
+
+func TestAbsoluteHardOutcomesRemainDirectionallyConservativeAcrossAdverseHorizon(t *testing.T) {
+	now := time.Unix(3_822, 750)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 10
+	profile.PrefillTPSPenaltyPerKToken = 0
+	profile.BaseTPOT = 100 * time.Millisecond
+	profile.TPOTPerExistingDecodeSequence = 0
+	config := testResidualConfig()
+	config.MinimumSamples = 1
+	config.AdverseEvidenceMaxAge = 3 * time.Second
+	config.MinimumTPSMultiplier = 0.05
+	config.MaximumTPSMultiplier = 4
+	config.MinimumLatencyMultiplier = 0.10
+	config.MaximumLatencyMultiplier = 4
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1}
+	cost := learnedTestCost()
+	prediction := scheduler.Predict(now, state, cost)
+	if prediction.Prior.NewUserTPSLower >= config.HardUserTPSTarget || prediction.Prior.TPOTUpper <= config.HardTPOTSLO {
+		t.Fatalf("absolute-hard direction fixture is invalid: %+v", prediction.Prior)
+	}
+	if err := scheduler.Observe(prediction, SchedulerOutcome{
+		Identity: prediction.Identity, ObservedAt: now.Add(time.Millisecond), Attributed: true,
+		UserTPS: 15, UserTPSValid: true, TPOT: 60 * time.Millisecond, TPOTValid: true,
+	}); err != nil {
+		t.Fatalf("observe absolute hard outcome: %v", err)
+	}
+
+	for _, at := range []time.Time{now.Add(time.Second), now.Add(4 * time.Second)} {
+		guarded := scheduler.Predict(at, state, cost)
+		if guarded.Estimate.NewUserTPSLower >= guarded.Prior.NewUserTPSLower || guarded.Estimate.TPOTUpper <= guarded.Prior.TPOTUpper {
+			t.Fatalf("absolute hard residual changed direction at %s: %+v", at, guarded)
+		}
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.HardNewTPSAdverse != snapshot.HardNewTPSOrigins.Exploratory+snapshot.HardNewTPSOrigins.NonExploratory ||
+		snapshot.HardTPOTAdverse != snapshot.HardTPOTOrigins.Exploratory+snapshot.HardTPOTOrigins.NonExploratory ||
+		snapshot.HardNewTPSOrigins.NonExploratory != 1 || snapshot.HardTPOTOrigins.NonExploratory != 1 ||
+		snapshot.HardNewTPSOrigins.Exploratory != 0 || snapshot.HardTPOTOrigins.Exploratory != 0 {
+		t.Fatalf("non-exploratory hard origin accounting = %+v", snapshot)
+	}
+}
+
+func TestHardOutcomesCrossAbsoluteBoundariesDespiteMultiplierClamps(t *testing.T) {
+	now := time.Unix(3_822, 875)
+	profile := testLearnedProfile()
+	profile.BaseCompletionTPS = 72
+	profile.PrefillTPSPenaltyPerKToken = 0
+	profile.BaseTPOT = 20 * time.Millisecond
+	profile.TPOTPerExistingDecodeSequence = 2 * time.Millisecond
+	config := testResidualConfig()
+	config.MinimumSamples = 1
+	config.AdverseEvidenceMaxAge = 3 * time.Second
+	config.MinimumTPSMultiplier = 0.50
+	config.MaximumTPSMultiplier = 1.50
+	config.MinimumLatencyMultiplier = 0.50
+	config.MaximumLatencyMultiplier = 2
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1}
+	cost := learnedTestCost()
+	prediction := scheduler.Predict(now, state, cost)
+	// Both generic clamps must be capable of masking the absolute hard result;
+	// otherwise this fixture would not exercise the boundary preservation.
+	if prediction.Prior.ExistingUserTPSLower*config.MinimumTPSMultiplier < config.HardUserTPSTarget ||
+		scaleDuration(prediction.Prior.TPOTUpper, config.MaximumLatencyMultiplier) > config.HardTPOTSLO {
+		t.Fatalf("hard clamp fixture is invalid: prior=%+v config=%+v", prediction.Prior, config)
+	}
+	if err := scheduler.Observe(prediction, SchedulerOutcome{
+		Identity: prediction.Identity, ObservedAt: now.Add(time.Millisecond), Attributed: true,
+		ExistingUserTPS: 5, ExistingUserTPSValid: true,
+		TPOT: 60 * time.Millisecond, TPOTValid: true,
+	}); err != nil {
+		t.Fatalf("observe hard clamp outcome: %v", err)
+	}
+	for _, at := range []time.Time{now.Add(time.Second), now.Add(4 * time.Second)} {
+		guarded := scheduler.Predict(at, state, cost)
+		if guarded.Source != PredictionSourceCalibrated || guarded.Estimate.ExistingUserTPSLower >= config.HardUserTPSTarget || guarded.Estimate.TPOTUpper <= config.HardTPOTSLO {
+			t.Fatalf("generic multiplier clamp masked hard boundary at %s: %+v", at, guarded)
+		}
+	}
+}
+
+func TestAdverseDebtTracksNearestRankQuantileTail(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		total    int
+		adverse  int
+		selected bool
+	}{
+		{name: "one_hard_three_healthy", total: 4, adverse: 1, selected: true},
+		{name: "one_hard_ten_healthy", total: 11, adverse: 1, selected: false},
+		{name: "two_hard_ten_healthy", total: 12, adverse: 2, selected: true},
+		{name: "two_hard_nineteen_healthy", total: 21, adverse: 2, selected: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := lowerQuantileSelectsAdverseDebt(test.total, test.adverse, 0.10); got != test.selected {
+				t.Fatalf("lower-tail hard debt = %t, want %t", got, test.selected)
+			}
+			if got := upperQuantileSelectsAdverseDebt(test.total, test.adverse, 0.90); got != test.selected {
+				t.Fatalf("upper-tail hard debt = %t, want %t", got, test.selected)
+			}
+		})
 	}
 }
 

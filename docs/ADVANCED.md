@@ -477,7 +477,7 @@ labels through `pig_dynamic_capacity_projected_limit` and
 : Default: `16`. Minimum running load before severe pressure is treated as
   representative for learning.
 
-## PREDICTIVE ADMISSION (v0.10.10)
+## PREDICTIVE ADMISSION (v0.10.11)
 
 Predictive admission is a pre-forward guard for one configured vLLM upstream.
 It uses a bounded model-family-neutral JSON size interval, a fixed-budget
@@ -492,6 +492,16 @@ tokenize with model assets, inspect prefix-cache hits, route between backends,
 or change vLLM. Mature healthy evidence may probe exactly one higher decode
 bucket after progressive context growth only when it dominates the joining
 request's input-complexity upper and decode horizon.
+
+Qualified hard TPS/TPOT evidence applies an immediate bounded retreat and then
+remains in the existing bounded residual population. The 10% TPS lower
+quantile or 90% TPOT upper quantile therefore requires sustained newer healthy
+evidence before reopening the same frontier; ordinary learning age, backend
+epoch invalidation, and existing eviction bounds still remove stale evidence.
+Hard counters are split into exploratory and non-exploratory origin with fixed
+metric cardinality. This changes only later predictions and does not add a
+model tokenizer, cache-aware admission, request identity store, or Router/vLLM
+algorithm.
 
 Feedback is qualified and causal: it can update only a later prediction. A
 reservation keeps the exact estimate and forecast used for its decision. A

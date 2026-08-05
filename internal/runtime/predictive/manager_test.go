@@ -11,6 +11,10 @@ import (
 
 type safeScheduler struct{}
 
+type exploratoryScheduler struct {
+	safeScheduler
+}
+
 type mismatchedPredictionScheduler struct {
 	safeScheduler
 }
@@ -70,6 +74,12 @@ func (safeScheduler) Predict(now time.Time, state domain.VirtualState, request d
 	}
 }
 
+func (exploratoryScheduler) Predict(now time.Time, state domain.VirtualState, request domain.RequestCost) SchedulerPrediction {
+	prediction := safeScheduler{}.Predict(now, state, request)
+	prediction.Exploratory = true
+	return prediction
+}
+
 func safeSchedulerIdentity() ModelIdentity {
 	return ModelIdentity{
 		ProfileID:        "safe-test-profile",
@@ -112,7 +122,7 @@ func testRequest() domain.RequestCost {
 }
 
 func TestManagerSnapshotExposesOnlyForwardedPendingPrefillDemand(t *testing.T) {
-	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), exploratoryScheduler{})
 	now := time.Unix(450, 0)
 	if decision := manager.DecideAndReserve(now, "pending", testRequest()); decision.Reason != domain.ReasonFit {
 		t.Fatalf("pending admission reason = %s", decision.Reason)
@@ -124,7 +134,8 @@ func TestManagerSnapshotExposesOnlyForwardedPendingPrefillDemand(t *testing.T) {
 		t.Fatal("pending reservation was not forwarded")
 	}
 	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 1 || snapshot.ForwardedPendingPrefillTokens != testRequest().UncachedPrefillUpper ||
-		!snapshot.ForwardedPendingPrefillFeaturesValid || snapshot.ForwardedPendingPrefillFeatures != schedulerFeatures(domain.VirtualState{}, testRequest()) {
+		!snapshot.ForwardedPendingPrefillFeaturesValid || snapshot.ForwardedPendingPrefillFeatures != schedulerFeatures(domain.VirtualState{}, testRequest()) ||
+		!snapshot.ForwardedPendingPrefillExploratory {
 		t.Fatalf("forwarded pending prefill snapshot = %+v", snapshot)
 	}
 	if decision := manager.DecideAndReserve(now.Add(time.Millisecond), "second-pending", testRequest()); decision.Reason != domain.ReasonFit {
@@ -133,11 +144,14 @@ func TestManagerSnapshotExposesOnlyForwardedPendingPrefillDemand(t *testing.T) {
 	if !manager.MarkForwarded("second-pending") {
 		t.Fatal("second pending reservation was not forwarded")
 	}
-	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 2 || snapshot.ForwardedPendingPrefillFeaturesValid {
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 2 || snapshot.ForwardedPendingPrefillFeaturesValid || snapshot.ForwardedPendingPrefillExploratory {
 		t.Fatalf("ambiguous concurrent prefills exposed trainable features: %+v", snapshot)
 	}
 	if !manager.Terminate("second-pending", TerminalExpired) {
 		t.Fatal("second pending reservation was not terminated")
+	}
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 1 || !snapshot.ForwardedPendingPrefillFeaturesValid || !snapshot.ForwardedPendingPrefillExploratory {
+		t.Fatalf("single pending prefill did not recover immutable attribution: %+v", snapshot)
 	}
 	if !manager.MarkPrefillComplete("pending") {
 		t.Fatal("pending reservation did not complete prefill")

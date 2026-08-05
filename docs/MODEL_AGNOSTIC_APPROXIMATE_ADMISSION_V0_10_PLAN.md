@@ -7568,3 +7568,598 @@ QoS, or obvious throughput problem must immediately disable only `use1-cb`,
 preserve evidence, and return to the source/builder/image/disabled-route loop.
 The Goal remains active until that real-traffic observation and any required
 repair loop are complete.
+
+##### v0.10.10 30-minute canary r40 hard-existing-TPS finding and v0.10.11 repair loop — active 2026-08-04
+
+The corrected r40 supervisor enabled only `use1-cb` after a clean preflight and
+observed real traffic for 1,399.118 seconds. It then disabled only `use1-cb`
+when `pig_predictive_learning_hard_adverse_total{dimension="existing_tps"}`
+increased from zero to one. The target processed 887 routed requests, made 977
+predictive attempts (`620/354/3` fit/risk/unknown), enforced 357 pre-forward
+rejects, completed 536 vLLM requests, and produced 311,981 completion tokens.
+There were zero vLLM preemptions, PIG preemption-pressure events, predictive
+failures, release failures, dropped deferred outcomes, error completions,
+new-user hard-TPS outcomes, or hard-TPOT outcomes. Router publication was
+visible and bounded; the supervisor restored the exact disabled baseline.
+
+The first post-disable snapshot still contained one naturally draining request.
+The fresh terminal snapshot in
+`../tmp/pig-v01010-use1-cb-live-20260804/terminal-zero-r42-20260804T224745Z`
+supersedes that transient state. Its 16/16 validator proves CVM and containers
+running, immutable v0.10.10 image and enforce Compose unchanged, Router digest
+restored, enabled set exactly `use1-19`, target route running zero, PIG
+reservations/deferred/running/waiting zero, vLLM running/waiting zero, KV zero,
+and raw/effective capacity `50/50`. The cumulative hard counter correctly
+remains one. v0.10.10 must not be re-enabled as if that counter and learner
+history did not exist.
+
+This hard outcome is not the joining request's completion histogram and is not
+a cache, tokenizer, TTFT, Router, or vLLM fault. The accepted existing-prefill
+counter advanced from 14 to 15 at approximately `22:38:19Z`; the last accepted
+backend value is `1.998185` tokens/s. The observer required one unchanged
+forwarded pending prefill, two existing decode sequences, identical manager and
+shadow event sequences across the sample, unchanged running count, zero
+waiting, unchanged preemption counter, a matching model/capacity/block-size
+epoch, and a fresh generation-counter delta. The contemporaneous status then
+showed `running=3 prefill=1 decode=2 gen_tps=4.0`; after prefill ended, aggregate
+generation recovered to about 521--554 tokens/s and per-user status to about
+176--189 tokens/s. This is a short but real, backend-corroborated prefill
+interference event below the configured 20-token/s red floor.
+
+Source review found two incomplete learning/evidence semantics:
+
+1. `ObserveExistingPrefill` reconstructs a static prediction from the pending
+   request's feature vector. The manager snapshot retains the original features
+   but not whether the admitted prediction was exploratory. Consequently the
+   hard counter cannot prove whether this was the one allowed unknown-frontier
+   probe or a non-exploratory forecast failure. Treating every hard increment as
+   immediately fatal in the canary contradicts the documented one-probe hard
+   knee budget, while ignoring the distinction would hide a genuine predictor
+   miss.
+2. A hard residual is the immediate minimum for the three-second
+   `MaxMetricsAge` adverse horizon. After that horizon it is neither an adverse
+   override nor an ordinary residual, although its timestamp invalidates older
+   optimism for the 1,800-second learning age. Only three newer compatible
+   healthy samples can therefore reopen one-step exploration and the numeric
+   hard result contributes no longer-run statistical weight. The current hard
+   frontier simulation stops after its first rejected stabilization check and
+   does not exercise repeated safe-evidence/re-probe cycles. This is weaker
+   than the stated requirement that feedback make later predictions
+   progressively more accurate and can permit the same unknown knee to be
+   exposed too frequently.
+
+v0.10.11 must preserve the model-neutral, approximate-tokenizer-assisted
+architecture and make the smallest coherent correction:
+
+1. Keep the fresh hard-adverse override and exploration block exactly bounded
+   by the existing maximum-metrics-age contract. This retains immediate retreat
+   without introducing a user-facing timer, sticky zero, or node-wide idle
+   latch.
+2. After that immediate horizon expires, retain each qualified hard TPS/TPOT
+   residual in the existing bounded local/global residual population until the
+   ordinary learning age, invalidation, or eviction removes it. It participates
+   in the existing 0.10 TPS lower quantile or 0.90 TPOT upper quantile under the
+   same adverse compatibility/dominance rules. Hard classification uses the
+   absolute red boundary, while an ordinary residual is relative to the static
+   prior; those directions can differ when the prior is already beyond red.
+   Normalize a hard TPS residual as `actual / max(prior, red_target)` so it is
+   strictly below one, and normalize hard TPOT as
+   `actual / min(prior, red_slo)` so it is strictly above one. A qualified hard
+   result must never become optimistic evidence merely because its static prior
+   was more pessimistic. The generic minimum-TPS or maximum-latency multiplier
+   clamp must also not move a selected hard tail back across the absolute red
+   boundary: while the nearest-rank quantile still selects hard statistical
+   debt, the final TPS estimate must remain strictly below `red_target` and the
+   final TPOT estimate strictly above `red_slo`. Track only the transient count
+   of hard values already present in the selected bounded residual slice; do not
+   allocate or retain a second sample population. Older optimistic evidence
+   remains cut off; only newer qualified compatible evidence joins the
+   post-adverse generation. With one
+   hard value, the 0.10 nearest-rank lower quantile needs at least ten newer
+   healthy values before the hard value leaves the selected lower tail.
+   Repeated hard results add proportionate statistical debt, while sustained
+   qualified health can recover without a permanent minimum-adverse latch. Do
+   not add a request map, second controller, model/user/prompt key, unbounded
+   store, or extra hot-path allocation.
+3. Carry the original immutable `prediction.Exploratory` bit through manager
+   pending-prefill and shadow snapshots into `ExistingPrefillOutcome`. Record
+   hard-adverse origin as fixed-cardinality `exploratory` versus
+   `non_exploratory` counters for all three hard dimensions; completion-derived
+   QoS already owns its original scheduler prediction, while existing-prefill
+   evidence must use the newly propagated bit. Advance the predictor semantic
+   identity so older residual semantics cannot cross the boundary.
+4. Expose the origin counters in `/pig/metrics` and combined `/v1/metrics`, and
+   include cumulative hard-origin counts plus the last existing-prefill TPS and
+   exploratory bit in the bounded status log. Logs and metrics must agree after
+   a hard event without request, model, user, or prompt labels. Existing
+   dimension counters remain for compatibility and must equal the sum of their
+   two origin counters.
+5. Keep request prediction, evaluation, and atomic reservation pre-forward.
+   Feedback still changes only later requests. The lexical input-size hint,
+   cold-safe fallback, KV hard bounds, lifecycle reconciliation, Router capacity
+   publication, and TTFT observation-only behavior remain unchanged. Cache
+   metrics remain observation-only. Router and vLLM source remain out of scope.
+
+Mandatory v0.10.11 red/green evidence is:
+
+- a current-source focused red proving that, after one qualified exploratory
+  hard existing-prefill result and expiry of the immediate horizon, only the
+  normal three newer healthy samples can reopen the same failed frontier; green
+  must keep it closed while the hard result remains in the 0.10 lower tail and
+  must recover only after enough newer healthy evidence moves that quantile;
+- repeated-hard deterministic coverage proving additional hard values increase
+  the healthy-evidence debt, bounded stores and expiry still work, and idle or
+  one-user low flow always makes progress;
+- absolute-hard/residual-direction coverage where the static TPS prior is below
+  red or static TPOT prior is above red, proving a hard outcome remains
+  conservative during both the immediate override and post-horizon quantile;
+- manager/observer red/green coverage proving the original exploratory bit is
+  preserved only for exactly one attributable pending prefill and is censored
+  for concurrent or incoherent prefills;
+- scheduler, metrics, combined-metrics, and status-log coverage proving
+  dimension/origin parity, last backend TPS visibility, and no label or log
+  cardinality growth;
+- the existing source-qualified completion QoS, waiting/preemption, hard-knee,
+  beneficial/harmful soft-knee, input-size, atomic reservation, lease,
+  cancellation, low-flow/self-lock, protocol, simulation, and performance
+  suites without weakened thresholds.
+
+Local Windows may perform source review, documentation, AST/static script
+checks, and artifact analysis only. It must not run PIG Go tests, race tests,
+simulations, benchmarks, image builds, or local service tests. Exact
+reconstruction on the approved remote builder must run focused red against
+v0.10.10, focused green, formatting, full tests, vet, focused and full race,
+build, deterministic simulation, benchmark/allocation gates, image contract,
+and binary/image identity checks before release. Version and semantic identity
+must advance autonomously to v0.10.11 only after those gates pass.
+
+After an immutable v0.10.11 image exists, deploy it only to
+`a0f0bfb3-e46f-4b22-814e-24872f251193` while `use1-cb` remains Router-disabled.
+Repeat exact Compose/image/readiness, shadow then enforce, protocol, latency,
+source-qualified QoS, progressive learning, statistical hard-memory,
+request/load publication, lease expiry, cancellation, low-flow, no-self-lock,
+terminal-zero, log, metrics, and secret gates. No other CVM or upstream may be
+changed.
+
+The next 30-minute real-traffic supervisor must baseline the new origin
+counters. One previously unknown hard-adverse *event* is observation-eligible
+only when every hard dimension it increments is marked exploratory, no
+non-exploratory hard counter grows, no preemption/waiting/lifecycle/publication
+failure accompanies it, immediate retreat is visible, and the same compatible
+frontier is not exposed again during the observation. Any non-exploratory hard
+event, a second exploratory hard event, dimension/origin parity failure, hard
+resource violation, preemption, persistent waiting, low-flow lock, telemetry
+under-publication, lifecycle failure, or obvious throughput collapse must
+immediately disable only `use1-cb`. A single eligible event is not automatic
+success: the full 30 minutes must finish and show that later pre-forward
+predictions retained the learned statistical debt while useful throughput and
+low-flow progress continued.
+
+Three plan review passes are mandatory before editing executable source:
+
+1. Model/causality review: prove the backend window, original-prediction origin,
+   post-horizon quantile population, and later pre-forward decision form one
+   causal chain; do not infer per-user completion QoS from aggregate status or
+   confuse Router allocation with PIG prediction.
+2. Correctness/efficiency/SOLID review: prove quantile semantics for one and
+   repeated hard values, fixed memory and labels, no new hot-path allocation,
+   exact lock order, single-owner lifecycle, low-flow escape, and unchanged
+   observer/scheduler/manager/adapter responsibilities.
+3. Evidence/release review: keep source, remote red, remote green/matrix,
+   image, Router-disabled deployment, readiness, direct gates, and production
+   canary as separate layers; require exact hashes, secret scans, terminal-zero
+   evidence, and rollback before each mutation.
+
+The Goal remains active. v0.10.10 is not production-ready, v0.10.11 is not yet
+implemented, and no Router enablement is authorized until the ordered source,
+builder, image, Router-disabled live gates, and fresh canary preflight pass.
+
+##### v0.10.11 pre-implementation three-pass plan review — complete 2026-08-04
+
+Pass 1 traced both real paths. Completion-derived TPS/TPOT calls `Observe` with
+the immutable admission prediction, so its exploratory origin already exists.
+Existing-prefill learning instead takes the one anonymous pending reservation's
+original feature vector from `Manager.Snapshot`, validates it against stable
+vLLM generation/running/waiting/preemption counters, then constructs a new
+static prediction; only this path loses origin. The planned boolean propagation
+therefore repairs an evidence field without changing admission, attribution,
+or request identity. The r40 value and status arithmetic agree exactly:
+`4.0 / 2 = about 1.998` tokens/s. No completion-histogram, cache, or TTFT signal
+is needed for that conclusion.
+
+Pass 2 checked the nearest-rank quantile and bounded data path. At lower
+quantile 0.10, one lowest hard residual plus ten higher healthy residuals gives
+11 values and selects index one; one hard plus only three healthy values still
+selects index zero. This review also found and corrected an initially missing
+absolute-hard/residual-direction rule: if a static TPS prior is already below
+red, `actual/prior` can exceed one despite an absolute hard miss; TPOT has the
+inverse case. Red-boundary denominator normalization now guarantees hard TPS
+ratios below one and hard TPOT ratios above one before either immediate or
+post-horizon use. The implementation review later found a second, symmetric
+boundary requirement: generic multiplier clamps can still move that ratio back
+across red, so selected hard-tail debt must preserve the absolute boundary after
+the clamp. Reclassifying an expired immediate-adverse value into the
+already allocated ordinary residual slice therefore supplies proportional,
+directionally conservative statistical debt with no new map, timer, label
+value, request state, or prediction-path allocation. The latest-adverse cutoff
+still excludes optimism that predates the failure; normal cell/global bounds,
+age, backend-epoch invalidation, dominance, and eviction still apply. Idle
+admission retains its existing no-decoder floor, so the change cannot make an
+adverse concurrent shape latch an otherwise empty node. Repeated values
+naturally occupy a larger fraction of the same fixed sample budget rather than
+mutating a second capacity controller.
+
+Pass 3 checked evidence feasibility and mutation scope. The origin metric has
+exactly six fixed series (three dimensions times two origins); existing totals
+remain a parity check. The status line can report cumulative counters and the
+last anonymous backend value without request/model/user labels. Focused red can
+be reconstructed from exact v0.10.10 source, and all executable validation can
+remain on the remote builder. The only later live target remains `use1-cb`,
+with Router disabled through deployment and direct gates. One exploratory
+hard-event budget is measurable as one adverse-event delta with only
+exploratory origin deltas; a non-exploratory delta or a second event remains an
+unambiguous automatic disable. The residual-direction correction remains
+entirely inside the scheduler and requires no Router, vLLM, cache-aware
+admission, TTFT protection, model assets, or local Go execution. Executable
+v0.10.11 work may now begin.
+
+##### v0.10.11 focused red and implementation-review correction — active 2026-08-04
+
+The approved builder environment had drifted operationally but not in scope.
+PowerShell blocked the `phala.ps1` shim, and `phala.cmd ssh --dry-run` printed
+the correct endpoint before a Node/UV assertion. Direct Windows OpenSSH through
+the Git OpenSSL dstack TLS proxy restored access. The prior
+`pig-ubuntu-builder` container no longer existed; the remaining Ubuntu helper
+had a full 204 MiB root filesystem and no Go. On the same approved builder CVM,
+an isolated `pig-v01011-builder` container was therefore recreated from the
+Dockerfile's exact pinned Go image digest
+`sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`,
+with only the dedicated persistent builder path mounted at `/work`. It reports
+Go 1.24.13, GCC 12.2.0, Git 2.39.5, and about 167 GiB free. This is builder
+repair only; no GPU, Router, vLLM, or production node changed.
+
+All five r1 inputs matched local and remote SHA-256. Exact tag `v0.10.10` plus a
+test-only source-compatible test failed as required:
+
+```text
+TestV01011HardExistingPrefillDebtSurvivesThreeHealthySamples
+prior existing TPS = 40
+one hard existing-prefill TPS = 5
+three newer healthy TPS values = 80
+v0.10.10 post-horizon prediction = 80, samples = 3
+failure = three healthy samples reopened failed hard frontier
+```
+
+This proves the requested red independently of v0.10.11-only origin fields.
+The first candidate preflight then stopped before tests on two pure gofmt
+alignment differences; those differences were applied locally and r2 gofmt was
+clean. r2 focused green exposed a deeper correctness issue rather than being
+repeated until passing. With prior existing TPS 72, hard actual TPS 5, red TPS
+20, and `MinimumTPSMultiplier=0.50`, the normalized hard ratio was selected but
+the generic clamp raised the final estimate to 36. That estimate remained below
+the prior but above red and could therefore reopen the failed frontier. TPOT has
+the symmetric failure when `MaximumLatencyMultiplier * prior_tpot` remains
+below the red SLO.
+
+The corrected implementation keeps one transient `StandardAdverseCount` beside
+each already allocated residual slice. It does not retain another sample,
+request, timer, map, or label. For TPS, nearest-rank index
+`ceil(0.10*n)-1 < hard_count` means the lower tail still selects hard debt. For
+TPOT, `ceil(0.90*n)-1 >= n-hard_count` means the upper tail still selects hard
+debt. In either case the normal multiplier clamp still executes, after which
+the estimate is bounded strictly across the absolute red line. One hard plus
+ten healthy and two hard plus nineteen healthy no longer select hard debt;
+ordinary clamp behavior then resumes automatically. The count is reconstructed
+in the existing local/global scan, obeys the same latest-adverse generation,
+age, compatibility, capacity, and eviction rules, and creates no prediction
+path allocation. The existing zero-decoder TPS/TPOT floor still overrides
+concurrent-shape debt for idle progress.
+
+Three correction reviews were completed before the next builder upload:
+
+1. Causality: hard classification, direction-normalized residual, bounded tail
+   count, quantile selection, generic clamp, absolute-boundary preservation,
+   and the next pre-forward evaluation now form one ordered path. Feedback
+   never changes the request that produced it.
+2. Correctness/efficiency/SOLID: TPS and TPOT use symmetric nearest-rank tail
+   predicates and scheduler-owned final-estimate helpers; observer, manager,
+   adapter, Router, and vLLM responsibilities do not change. Only an integer in
+   a transient scan result is added, with no durable controller or allocation.
+3. Evidence: the exact v0.10.10 red remains valid; r2 failure is retained as a
+   negative candidate result. New tests must prove both immediate and
+   post-horizon TPS/TPOT red-boundary preservation under masking multiplier
+   clamps, the one/two-hard nearest-rank thresholds, existing quantile recovery,
+   and low-flow progress before focused green can authorize the full matrix.
+
+Candidate r3 included that correction and the new symmetric tests. Its base
+HEAD archive, independent red test, candidate patch, and runner matched on the
+builder with SHA-256 values:
+
+```text
+base HEAD archive  7fc57892b3b253cb3fe2df11a2f1e15606dbfa5f048e703df4268aca1d52cdd0
+red test           bfa5d0c2e0217bef8b894b1ed4939c4efa2f6eac8c6f5712a0fe4f0e6fe9acb7
+candidate r3       c0ce7cb4cccda66d0d87bdfc748a1fc5830cffe9177d74d732bb0647b6b53960
+runner r3          b916024448fb31252cc56985cfff71ca68ef7883d7a3c3fd1f5ed94205ebe221
+```
+
+Remote gofmt produced an empty diff. The focused green then passed exactly once
+for the three ownership packages:
+
+```text
+ok  internal/runtime/predictive       0.033s
+ok  internal/app/server               1.915s
+ok  internal/observability/metrics    0.004s
+```
+
+This focused green authorizes only a new exact-source full builder matrix. The
+plan update itself changes the candidate archive hash, so r3 must not be cited
+as the hash for that full matrix. No commit, tag, image, deployment, Router
+enablement, or production readiness follows from the focused result alone.
+
+##### v0.10.11 final-review correction and full builder matrix — complete 2026-08-05
+
+The first nominally complete r5/r6 matrix is retained but superseded. r5 ran
+source contract, secret scan, gofmt, focused/full tests, vet, targeted/full
+race, build, KV simulation/performance, both-order goodput, and the first
+candidate benchmark stage with status zero. Its foreground SSH wrapper ended
+between benchmark stages while the builder container remained healthy
+(`running=true`, `OOMKilled=false`, `RestartCount=0`). r6 then ran the complete
+four-order paired benchmark contract and builder-local image gates with status
+zero. The combined archive copied from the builder is:
+
+```text
+../tmp/pig-v01011-builder-20260804/
+  pig-v01011-full-r5-r6-evidence-20260805T0036Z.tar.gz
+SHA-256 93a608e1420fd560bd8fb225c5ed03e7afeeb8db41c08e1765bbf8a670340a97
+r5 manifest entries 51, status files 16, nonzero 0
+r6 manifest entries 37, status files 10, nonzero 0
+```
+
+That green result cannot be promoted. A source review performed after r6 found
+that production `MinimumSamples=3` still converted one expired hard residual
+back to `static`/zero samples in sparse traffic. It also found that the global
+fallback could select a different mature decode-sequence group without joining
+compatible expired hard debt from the original group. Those are product
+defects in the r5/r6 candidate, not harness failures. They directly permit a
+known bad frontier to be exposed again after the three-second immediate horizon
+and therefore supersede every green r5/r6 release conclusion while retaining
+the artifacts as negative audit history.
+
+The exact r7 test-only correction audit reproduced both defects on the r5
+candidate:
+
+```text
+TestV01011ExpiredHardResidualRemainsEffectiveWithoutNewerHealthySamples
+  got Source=static Samples=0
+TestV01011GlobalExpiredHardDebtCannotBeBypassedByAnotherMatureDecodeGroup
+  got Standard=[2 2 2] StandardAdverseCount=0
+red test SHA-256 b33714d077e4d250b54a85501eb5bbb1ca9d2faa1339c38c8e053a792ee564c5
+runner SHA-256   32a18f1811338c69851c38250d56dd936fd032f7b6abd0827abd6b2fbef15ab0
+```
+
+r8 is retained as an intermediate product red. It fixed the cross-group bypass
+but the sparse single-hard test still failed because the helper accepted hard
+debt while the caller independently required `len(ratios) >= minimum`. The
+final correction removes that contradictory second maturity gate. A compatible
+expired hard value can itself produce a calibrated protective estimate, while
+global fallback first joins every compatible expired hard value with at most
+one selected healthy decode-sequence group. TPS and TPOT then use the same
+bounded-tail contract. No second population, request map, timer, lock, durable
+controller, or label was added.
+
+r9 passed the two correction tests and the three owning packages. r10 added the
+joining-user TPS/TPOT symmetric sparse test and passed all three exact tests:
+
+```text
+TestExpiredHardResidualRemainsEffectiveWithoutNewerHealthySamples
+TestExpiredHardJoiningTPSAndTPOTRemainEffectiveWithoutNewerHealthySamples
+TestGlobalExpiredHardDebtCannotBeBypassedByAnotherMatureDecodeGroup
+
+scheduler.go SHA-256
+  7f46bf8ba0e7126936922793a626878f596075e577617ec0ae70e5e912f204f8
+scheduler_test.go SHA-256
+  405b51a42160f8e98d40285a37a8962bae92a19a60ca0c96cd99620c2f276c12
+r10 runner SHA-256
+  4fa9cb22af59939a939659556736966d09065eae94d1bdd102274a6340bd284d
+runtime/predictive 0.033s; app/server 1.917s; observability/metrics 0.004s
+```
+
+The accepted full r11 matrix used a fresh non-reused directory:
+
+```text
+/var/volatile/dstack/persistent/pig-builder-work/
+  pig-v01011-full-r11-14d6b389
+```
+
+Its exact changed inputs were:
+
+```text
+scheduler.go
+  7f46bf8ba0e7126936922793a626878f596075e577617ec0ae70e5e912f204f8
+scheduler_test.go
+  405b51a42160f8e98d40285a37a8962bae92a19a60ca0c96cd99620c2f276c12
+benchmark contract
+  33d555db871a9d20bb78be47e71a81e54132b1f8c09c259d83d406701dff44f3
+r11 runner
+  c620202f84e2e55c105f1710fc2431dc1b000ecef2135a13ba532e2af471af9a
+```
+
+The builder remained the isolated `pig-v01011-builder` container on approved
+builder application `89811a9add5b20427ee1fbf4dc22a33984e41959`, using pinned
+Go image digest
+`sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`.
+It reported Go 1.24.13, GCC 12.2.0, Git 2.39.5, 167 GiB free,
+`OOMKilled=false`, and restart count zero.
+
+All 24 r11 status files are zero: source delta/contract, secret scan, gofmt,
+focused tests, vet, full test, targeted/full race, build, KV
+simulation/performance, four goodput orders, four benchmark orders, benchmark
+contract, image build, production image contract, and image inspection. The
+runner ended normally with `PIG_V01011_FULL_R11_MATRIX_OK`.
+
+The deterministic goodput result was identical in both execution orders. The
+predictive policy completed 53 SLO-compliant requests and 45,216 completion
+tokens versus 33 and 37,536 for the old KV-only policy. It reported zero
+existing/new TPS violations, zero TPOT violations, zero KV hard violations,
+zero preemption proxies, zero false accepts, and zero reservation leaks. Four
+TTFT violations remained diagnostic only, as required. The hard-knee scenario
+made exactly one decode-seven probe and then retained mature decode six at 300
+aggregate completion TPS. The beneficial soft knee reached mature decode eight
+at 320 TPS, the harmful soft knee retained decode six at 300 TPS, and the safe
+frontier matched the 400 TPS oracle at decode eight.
+
+The two-order/five-sample paired benchmark contract passed with no allocation
+regression. Important combined candidate/baseline timing ratios are:
+
+```text
+PredictCalibratedTPSAndLatency             +3.5683%  128 B/op 1 alloc/op
+PredictAggregateFrontier baseline path     +6.7802%    0 B/op 0 allocs/op
+PredictAggregateFrontier curve path        +9.3824%    0 B/op 0 allocs/op
+ObserveAggregateThroughput                 -0.6688%    0 B/op 0 allocs/op
+Admission lifecycle                        +0.7412%  912 B/op 2 allocs/op
+Deferred outcome lifecycle                 +0.2564% 1664-1689 B/op 2 allocs/op
+```
+
+The frontier change is a real watchpoint rather than hidden noise: both orders
+showed approximately 9.1--9.6 percent on the curve path. It nevertheless stays
+inside the fixed ten-percent combined regression gate, remains about
+`504--509 ns/op`, and adds no allocation. The complete calibrated prediction
+path remained `1.751--1.790 us/op`. This bounded sub-microsecond cost is accepted
+for the required cross-group hard-debt join; any later executable change to
+reduce it must invalidate r11 and rerun the full matrix rather than silently
+inherit this evidence.
+
+The unchanged model-neutral lexical hint remained about `88.42--93.07 ns/op`,
+zero bytes, and zero allocations for 1 KiB through 2 MiB benchmark bodies. Full
+estimator medians were approximately `1.968--1.969 us/op` at 64 KiB and
+`63.073--64.375 us/op` at 2 MiB, also with zero allocations. The independent
+performance runner reported 64 KiB estimator p95 between `2.014--2.36 us`,
+2 MiB p99 between `119.918--131.802 us`, and shadow-decision p99 between
+`2.102--2.32 us` across its text and JSON runs. These are CPU path gates, not a
+claim about end-to-end request or GPU latency.
+
+The r11 builder-local image passed the production contract with:
+
+```text
+image tag        pig-v01011-full-r11:local
+image ID         sha256:5633bf59f27b019443f839eca267d799a4746c02bfc68ab4c922a85c80ccb37e
+platform         linux/amd64
+size             29,475,951 bytes
+OCI version      0.10.11
+entrypoint       /phala-inference-guard
+binary SHA-256   8bf73af6b5c358f3fe854e675f86a600005e240084a4053a4195c5a25a8e52f9
+```
+
+The downloaded r11 archive is:
+
+```text
+../tmp/pig-v01011-builder-20260804/
+  pig-v01011-full-r11-evidence-20260805T0110Z.tar.gz
+remote and local SHA-256
+  5b832c2cd76eda6da86fcc61c67910d2d0fd28032fb84eb1d5573dce3a53ccf6
+```
+
+Independent local artifact analysis verified every entry in its internal
+`SHA256SUMS`, counted exactly 24 status files, and found all 24 zero. This is
+accepted complete clean-builder evidence for the exact r11 executable source.
+It is not yet a commit, pushed source, tag, registry image, Compose integration,
+CVM deployment, live readiness result, Router enablement, or production canary.
+
+##### v0.10.11 final implementation review pass 1 — model and causality
+
+The review retraced the complete causal path after the r7/r8 correction.
+Request cost and the fixed-budget lexical input-size hint are calculated before
+the scheduler. `Predict` evaluates local/global compatible residuals and the
+post-admit virtual state before `Manager` atomically decides and reserves. The
+forwarded reservation retains the original immutable exploratory bit. A single
+stable backend prefill window can therefore attribute its existing-user TPS to
+that prediction; concurrent, changed, stale, waiting, preempted, or incoherent
+windows remain censored. Hard feedback is normalized and stored only after the
+outcome, so it cannot retroactively change its own request. On a later request,
+fresh hard evidence supplies the immediate adverse override; expired evidence
+joins the existing bounded statistical population and affects the 0.10 TPS or
+0.90 TPOT tail. The r7 exact red and r10/r11 green tests prove that this later
+pre-forward estimate changes from the previously unsafe static reopening to a
+calibrated protected result. No cache, TTFT, Router, or model-specific signal is
+part of that decision.
+
+##### v0.10.11 final implementation review pass 2 — correctness, efficiency, lifecycle, and SOLID
+
+The local and global scanners apply the same age, backend identity,
+compatibility, dominance, and latest-adverse-generation rules. One compatible
+expired hard residual is sufficient to remain effective under sparse traffic;
+another mature decode group cannot bypass it; one hard value recovers only
+after ten newer healthy values and two hard values only after nineteen. The
+absolute TPS/TPOT red boundary remains conservative even when the static prior
+or generic multiplier clamp points in the opposite direction. Idle/no-decoder
+floors supersede concurrent-shape debt, preserving low-flow progress without a
+sticky-zero latch. Existing sample/cell/global bounds, eviction, age expiry,
+backend-epoch invalidation, manager ownership, atomic reservation, terminal
+release, cancellation, and lock order are unchanged and passed full race and
+simulation gates.
+
+Responsibilities remain separated: the estimator owns only bounded approximate
+size; scheduler owns residual selection and prediction; manager owns atomic
+reservation lifecycle; observer owns qualified anonymous backend windows;
+metrics owns fixed-cardinality rendering. The change reuses existing residual
+slices and global scan, adds only transient hard counts and fixed counters, and
+adds no request map, second population, timer, model/user/prompt key, label
+cardinality, or hot-path allocation. The approximately 9.38-percent frontier
+microbenchmark regression is close to but below the predetermined ten-percent
+gate and remains about half a microsecond with zero allocations. It is recorded
+as a live CPU/latency watchpoint but is not a correctness or release blocker.
+
+##### v0.10.11 final implementation review pass 3 — evidence and release boundary
+
+The evidence chain now explicitly retains the r5/r6 false-green candidate, r7
+valid product red, r8 intermediate product red, r9/r10 focused green, and r11
+complete matrix without counting a superseded result as success. Exact input,
+runner, archive, log, image, and binary hashes are recorded above. Local Windows
+performed only source/document review and artifact hashing; every executable
+Go, race, simulation, benchmark, build, and image gate ran on the approved
+builder. Secret scan and the internal/external archive hashes passed.
+
+The next mutation gate is exact release-source identity. `Dockerfile`,
+`go.mod`, `go.sum`, `cmd/**`, `internal/**`, and the production image-contract
+script must be byte-identical to the r11 tested candidate after this plan-only
+append. The complete worktree, staged paths, `git diff --check`, release
+identity, and secret scan must then be audited. Only if those checks pass may
+v0.10.11 be committed, annotated-tagged, and pushed to `pig-origin`; the nested
+repository's unrelated `origin` remote must not be used. Registry publication,
+independent immutable-digest pull, OCI/startup/binary equivalence, the
+Router-disabled `use1-cb` deployment, direct live gates, and a newly timed
+30-minute canary remain later independent layers. `use1-cb` remains disabled,
+no v0.10.11 deployment has occurred, and the Goal remains active.
+
+##### v0.10.11 release-source identity gate — complete 2026-08-05
+
+After the evidence/review append above, the downloaded r11
+`candidate-source.sha256` manifest was compared directly with the current
+working tree. All 246 release-relevant files were byte-identical: the gate
+included `.dockerignore`, `Dockerfile`, `go.mod`, `go.sum`, every file under
+`cmd/**` and `internal/**`, and
+`tools/validate-production-image-contract.sh`. There were zero executable,
+test, module, Docker, or production image-contract mismatches.
+
+The complete 273-file manifest had exactly two expected non-release byte
+differences. This plan differs because it records post-r11 evidence. `LICENSE`
+is unmodified in Git but its Windows working-tree newline representation differs
+from the normalized archive byte representation. Neither path enters the
+compiled binary contract; the committed Git archive will normalize the latter.
+No result for an executable path was excused on that basis.
+
+`git diff --check` was clean, no paths were staged at the time of the audit, the
+working tree contained exactly the 25 intended v0.10.11 paths recorded in the
+diff, and the current release identity was consistent: runtime
+`PIG-v0.10.11`, OCI `0.10.11`, image reference `v0.10.11`, predictor
+`adaptive-tps-kv-v8`, and unchanged estimator `json-cost-lexical-hint-v2`.
+No current `PIG-v0.10.10`, v0.10.10 image reference, OCI 0.10.10 label, or
+`adaptive-tps-kv-v7` remained outside the mixed historical plan. The scoped
+secret scan was clean. Local and remote `v0.10.11` tags did not yet exist, and
+both local HEAD and `pig-origin/codex/pig-v0.10.0-model-agnostic` still pointed
+to `a926d0dcae73e5ae467f12a2d7eef8084f7a201a` before release mutation.
+
+This gate authorizes staging and committing the exact reviewed v0.10.11 source
+and this audit history. It does not authorize use of the unrelated nested
+`origin` remote, nor does it substitute for the annotated tag, pushed source,
+registry image, immutable pull, live deployment, readiness, or canary layers.

@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.10.10 model-agnostic predictive admission
+### v0.10.11 model-agnostic predictive admission
 
-PIG v0.10.10 can estimate request size locally and predict the post-admit
+PIG v0.10.11 can estimate request size locally and predict the post-admit
 KV/TPS/TPOT/preemption state before forwarding to a vLLM upstream. TTFT is
 still measured and learned for diagnosis, but it is observation-only and can
 never reject a request:
@@ -180,7 +180,7 @@ payload-free observation record so qualified completion feedback improves only
 later predictions. `enforce` rejects a non-fit or unknown decision before
 upstream forwarding with the normal OpenAI-compatible PIG 429 response.
 Predictive `shadow` and `enforce` require `DYNAMIC_TTFT_ENABLED=false`; this is
-also the v0.10.10 default. Legacy dynamic TTFT limiting remains available only
+also the v0.10.11 default. Legacy dynamic TTFT limiting remains available only
 as an explicit opt-in while predictive admission is `off`.
 
 This path is model-family neutral: it has no exact model tokenizer, chat
@@ -201,6 +201,13 @@ numeric outcome state may then wait for the final handler result; successful
 qualified outcomes train later predictions, while failure, cancellation,
 timeout, disconnect, or shutdown is censored or dropped without learned
 headroom.
+
+Qualified hard TPS/TPOT feedback retreats immediately. After that short
+override expires, the hard residual remains in the same bounded 10% TPS or 90%
+TPOT learning quantile until sustained newer healthy evidence, ordinary age,
+epoch invalidation, or bounded eviction removes it. Metrics split every hard
+dimension into exploratory and non-exploratory origin without request, user,
+model, or prompt labels; feedback still changes only later predictions.
 
 Backend-provided response mean-ITL or generation duration is qualified QoS
 feedback after structural validation. When stock vLLM does not return those
@@ -283,7 +290,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.10
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.11
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

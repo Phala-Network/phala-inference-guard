@@ -59,6 +59,12 @@ type PredictiveAdmissionInput struct {
 	LearningHardExistingTPSAdverse          uint64
 	LearningHardNewTPSAdverse               uint64
 	LearningHardTPOTAdverse                 uint64
+	LearningHardExistingTPSExploratory      uint64
+	LearningHardExistingTPSNonExploratory   uint64
+	LearningHardNewTPSExploratory           uint64
+	LearningHardNewTPSNonExploratory        uint64
+	LearningHardTPOTExploratory             uint64
+	LearningHardTPOTNonExploratory          uint64
 	LearningSoftExistingTPSMisses           uint64
 	LearningSoftNewTPSMisses                uint64
 	LearningSoftTPOTMisses                  uint64
@@ -164,6 +170,7 @@ type PredictiveExistingPrefillInput struct {
 	Censored                 uint64
 	LastExistingUserTPS      float64
 	LastExistingUserTPSValid bool
+	LastExploratory          bool
 }
 
 func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
@@ -259,6 +266,12 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_total{dimension=%q} %d\n", "existing_tps", input.LearningHardExistingTPSAdverse)
 	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_total{dimension=%q} %d\n", "new_tps", input.LearningHardNewTPSAdverse)
 	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_total{dimension=%q} %d\n", "tpot", input.LearningHardTPOTAdverse)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_origin_total{dimension=%q,origin=%q} %d\n", "existing_tps", "exploratory", input.LearningHardExistingTPSExploratory)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_origin_total{dimension=%q,origin=%q} %d\n", "existing_tps", "non_exploratory", input.LearningHardExistingTPSNonExploratory)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_origin_total{dimension=%q,origin=%q} %d\n", "new_tps", "exploratory", input.LearningHardNewTPSExploratory)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_origin_total{dimension=%q,origin=%q} %d\n", "new_tps", "non_exploratory", input.LearningHardNewTPSNonExploratory)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_origin_total{dimension=%q,origin=%q} %d\n", "tpot", "exploratory", input.LearningHardTPOTExploratory)
+	fmt.Fprintf(w, "pig_predictive_learning_hard_adverse_origin_total{dimension=%q,origin=%q} %d\n", "tpot", "non_exploratory", input.LearningHardTPOTNonExploratory)
 	fmt.Fprintf(w, "pig_predictive_learning_soft_qos_misses_total{dimension=%q} %d\n", "existing_tps", input.LearningSoftExistingTPSMisses)
 	fmt.Fprintf(w, "pig_predictive_learning_soft_qos_misses_total{dimension=%q} %d\n", "new_tps", input.LearningSoftNewTPSMisses)
 	fmt.Fprintf(w, "pig_predictive_learning_soft_qos_misses_total{dimension=%q} %d\n", "tpot", input.LearningSoftTPOTMisses)
@@ -314,6 +327,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_outcomes_total{result=%q} %d\n", "censored", input.ExistingPrefill.Censored)
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_last_user_tps %.6f\n", input.ExistingPrefill.LastExistingUserTPS)
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_last_user_tps_valid %d\n", num.BoolAsInt(input.ExistingPrefill.LastExistingUserTPSValid))
+	fmt.Fprintf(w, "pig_predictive_existing_prefill_last_exploratory %d\n", num.BoolAsInt(input.ExistingPrefill.LastExploratory))
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "decide", input.FailureDecide)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "forward", input.FailureForward)
