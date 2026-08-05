@@ -8244,3 +8244,112 @@ does not itself prove Compose integration, CVM deployment, backend readiness,
 shadow/enforce behavior, Router publication, or real-traffic safety. Those
 remain ordered live gates; `use1-cb` is still disabled at this checkpoint and
 the Goal remains active.
+
+##### v0.10.11 Router-disabled shadow deployment and direct-live gates — complete 2026-08-05
+
+Fresh predeploy evidence reconfirmed CVM
+`a0f0bfb3-e46f-4b22-814e-24872f251193` running with no operation in progress,
+Router upstream `use1-cb` disabled and drained, enabled set exactly `use1-19`,
+and the v0.10.10 rollback Compose at SHA-256
+`7831debce24924a7770b548f818068d2e08138411c246aa084491a3ff17821a9`.
+The shadow candidate changed exactly the immutable PIG digest and
+`PREDICTIVE_ADMISSION_MODE=enforce -> shadow`; it retained TTFT protection off,
+legacy KV admission off, the five-second Router backpressure hold, every vLLM
+field, and every other Compose byte. Candidate SHA-256 is
+`645bf6790eec052e6b4e8636074210b1467b2424f066843bc2289403c1db3b24`.
+One Compose-only deploy ran from `2026-08-05T01:44:10.8624968Z` through
+`2026-08-05T01:48:20.6171638Z` and returned zero. The first postdeploy snapshot
+at approximately 30 seconds observed startup HTTP 503 and was not treated as
+readiness or failure.
+
+The existing startup completed without a second deploy. vLLM logged
+`Application startup complete` at `2026-08-05T01:53:40.264784332Z`; PIG then
+reported `PIG-v0.10.11`, `predictive_admission=shadow`, KV admission off,
+dynamic TTFT protection off, backend `1/1`, and
+`hard_origin=0/0/0/0/0/0`. Fresh ready snapshot `shadow-ready-r5` proved the
+exact Compose, immutable image digest and image ID, expected
+`google/gemma-4-31B-it` model, authenticated models/PIG metrics/combined
+metrics/attestation HTTP 200, unauthenticated metrics HTTP 401, Router still
+disabled, and terminal zero. The v0.10.11 validator proved exactly six fixed
+hard-origin series, all initially zero, exact per-dimension origin-sum parity,
+the existing-prefill exploratory gauge, 885 stable PIG/combined metric lines in
+parity, and restored idle capacity `50/50`.
+
+The first log-capture attempt `shadow-startup-logs-r6` is retained as a harness
+red: the current container-log API returned `{"error":"Invalid since"}` for the
+documented RFC3339 form while the CLI still exited zero. Fresh r7 used the
+accepted relative `30m` form and passed with one vLLM startup-complete marker,
+one PIG v0.10.11 shadow startup, 85 zero-origin status records, 84 green backend
+records, zero vLLM/PIG/serial critical matches, and a clean secret scan.
+
+Direct protocol gate `shadow-protocol-r8` returned HTTP 200 for all five
+independent shapes: normal chat, stream with final usage, required tool call,
+strict JSON-Schema structured output, and CJK. Post-protocol snapshot r9
+returned to terminal zero with five fit decisions, no prediction failures,
+waiting, preemption, hard-adverse event, or Router activation; all six origin
+counters remained zero and the v0.10.11 validator passed again.
+
+Sparse gate `shadow-lowflow-r10` sent 20 intentionally separated requests. All
+20 returned HTTP 200; the input-size learner was mature by request four, the
+low lexical-ratio request caused zero input or hint invalidations, the following
+ordinary request remained learned, and all 20 test requests used the learned
+input estimate and lexical hint. It proved no false lock, sticky zero,
+preemption, Router activation, or terminal residue. Its live histograms placed
+20/20 predictions under one millisecond and 19/20 estimator samples under
+0.25 milliseconds.
+
+The independent 100-request latency gate `shadow-latency-r11` passed all HTTP,
+metrics-parity, preemption, and terminal checks. The request-path estimator
+histogram mean was `53.81 us`, with 100/100 at or below 0.25 milliseconds. The
+complete prediction histogram mean was `61.84 us`, with 97/100 at or below
+0.25 milliseconds and 99/100 at or below one millisecond. This meets the fixed
+live gate but retains one prediction sample above one millisecond as a live-tail
+watchpoint; it is not evidence that the path has zero jitter or that these CPU
+histograms equal end-to-end serving latency.
+
+QoS-source run `shadow-qos-source-r12` produced one normal 4,096-token decode
+with qualified TPS/TPOT, then a deliberately client-throttled 1,024-token
+stream that took `175.288303 s` at curl. The inherited v0.10.10 harness stopped
+because it required that second request to increment only `local_censored`.
+That requirement was too narrow, not a product failure: PIG recorded one
+`local_corroborated` outcome using a fresh stable backend magnitude of
+`234.720221 TPS` and `0.004260 s` TPOT, while the client wall clock implied only
+`5.836100 TPS`. Independent v0.10.11 validation proved the client wall clock did
+not supply the learned magnitude, qualified count advanced exactly once, the
+backend magnitude remained on the safe side of the `20 TPS` and `0.05 s` hard
+boundaries, every hard counter stayed unchanged, input-size feedback remained
+live, preemptions stayed zero, and lifecycle returned to terminal zero. The
+original harness red and corrected product-contract validation are both
+retained. Post-QoS snapshot r13 passed the exact runtime/origin/metrics validator
+with three bounded scheduler samples and all origin counters still zero.
+
+Shadow cancellation gate r14 loaded two simultaneous decode requests with
+predictive and observed decode counts both equal to two and waiting zero. After
+the two client processes were terminated, all reservations, deferred state,
+running, waiting, and Router protection returned to zero in `1,269.599 ms`; an
+immediate small recovery request returned HTTP 200. Preemption and
+resource-release-failure deltas were zero and PIG/combined lifecycle metrics
+remained equal.
+
+Final snapshot `shadow-final-r15` retained the exact Compose/image/model,
+Router-disabled state, terminal zero, zero hard-origin values with dimension
+parity, and all endpoint/authentication checks. Final 45-minute log audit r16
+contained exactly one vLLM startup and one PIG startup, 288 zero-origin status
+records, 287 green backend records, and zero vLLM/PIG/serial critical matches.
+The cumulative shadow run reached 130 fit attempts, 128 successful vLLM
+requests, zero predictive risk/unknown/enforced reject/failure, zero waiting,
+zero preemption, and zero hard event. Consequently shadow proves protocol,
+model-neutral request-size learning, low-flow progress, bounded request-path
+latency, qualified QoS sourcing, cancellation reconciliation, telemetry parity,
+and runtime stability. It does not exercise a nonzero live hard-origin event;
+that behavior remains covered by the exact builder matrix and must still be
+observed under the later origin-aware canary rules.
+
+The Router-disabled shadow gate is complete. `use1-cb` remains disabled and the
+enabled set remains exactly `use1-19`. The next authorized step is to generate a
+fresh enforce candidate from the byte-exact live shadow Compose, change only
+`PREDICTIVE_ADMISSION_MODE=shadow -> enforce`, repeat drift/idle preflight,
+deploy once, and then repeat readiness, protocol, pre-forward rejection,
+progressive learning, cancellation, lease expiry, origin parity, terminal-zero,
+and critical-log gates. No Router enablement or production-readiness conclusion
+follows from shadow alone; the Goal remains active.
