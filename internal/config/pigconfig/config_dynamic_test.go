@@ -2,9 +2,34 @@ package pigconfig
 
 import (
 	"testing"
+	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
 )
+
+func TestLoadDynamicConfigUsesFasterDefaultPollInterval(t *testing.T) {
+	t.Setenv("DYNAMIC_POLL_INTERVAL_MS", "")
+
+	cfg := Config{GlobalLimit: 512}
+	if err := loadDynamicConfig(&cfg); err != nil {
+		t.Fatalf("loadDynamicConfig returned error: %v", err)
+	}
+	if cfg.DynamicPollInterval != 500*time.Millisecond {
+		t.Fatalf("DynamicPollInterval = %v, want 500ms", cfg.DynamicPollInterval)
+	}
+}
+
+func TestLoadDynamicConfigAllowsPollIntervalOverride(t *testing.T) {
+	t.Setenv("DYNAMIC_POLL_INTERVAL_MS", "250")
+
+	cfg := Config{GlobalLimit: 512}
+	if err := loadDynamicConfig(&cfg); err != nil {
+		t.Fatalf("loadDynamicConfig returned error: %v", err)
+	}
+	if cfg.DynamicPollInterval != 250*time.Millisecond {
+		t.Fatalf("DynamicPollInterval = %v, want 250ms", cfg.DynamicPollInterval)
+	}
+}
 
 func TestLoadDynamicConfigReadsTTFTPolicy(t *testing.T) {
 	t.Setenv("DYNAMIC_TTFT_TARGET_SECONDS", "2")

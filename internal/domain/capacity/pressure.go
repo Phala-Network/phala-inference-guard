@@ -138,7 +138,7 @@ func RecoverPressureCap(cap *PressureCap, cfg Config, baseLimit, running, waitin
 
 func recoveredLearnedPressureCap(cfg Config, baseLimit, learned, running, waiting int, kvValue float64, preemptionDelta uint64, qosHealthy bool) bool {
 	if learned <= 0 || learned >= baseLimit {
-		return true
+		return false
 	}
 	if !qosHealthy || waiting > 0 || preemptionDelta > 0 || KVPressureActive(cfg, kvValue) {
 		return false
@@ -232,10 +232,15 @@ func EvaluatePressureLimit(cap *PressureCap, cfg Config, baseLimit, running, wai
 		}
 	}
 	if learned := int(cap.Load()); learned > 0 && !prefillTransition {
-		if recoveredLearnedPressureCap(cfg, baseLimit, learned, running, waiting, kvValue, preemptionDelta, qosHealthy) {
-			cap.compareAndSwap(int64(learned), int64(baseLimit))
-		} else {
-			apply(learned, "learned_cap", "learned_pressure_cap")
+		// A base limit at or below the learned cap came from an earlier
+		// controller. It already wins this evaluation and must not be stored as
+		// pressure recovery.
+		if learned < baseLimit {
+			if recoveredLearnedPressureCap(cfg, baseLimit, learned, running, waiting, kvValue, preemptionDelta, qosHealthy) {
+				cap.compareAndSwap(int64(learned), int64(baseLimit))
+			} else {
+				apply(learned, "learned_cap", "learned_pressure_cap")
+			}
 		}
 	}
 	if waiting >= cfg.WaitingYellow && waiting > 0 {

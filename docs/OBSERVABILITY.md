@@ -205,6 +205,10 @@ For production operation, watch these first:
   capacity separately. Retained `learned_cap` can still win the final cap, but
   it does not mark `scheduler_pressure_capacity` yellow unless it is actively
   binding current demand or an active pressure signal is present.
+- `pig_dynamic_pressure_limit` is the pressure component's effective limit for
+  the current evaluation, while `pig_dynamic_pressure_learned_cap` is retained
+  pressure memory. A tighter QoS, throughput, TTFT, or admission limit can lower
+  the former without rewriting the latter.
 - `pig_dynamic_prefill_limit_info{reason="...",target_reason="..."}`: shows
   why the prefill guard chose its current cap, for example backend waiting,
   running at an observed decode cap, the prefill-protected threshold, a

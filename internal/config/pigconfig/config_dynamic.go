@@ -19,7 +19,7 @@ func loadDynamicConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	dynamicPollIntervalMs, err := env.Int("DYNAMIC_POLL_INTERVAL_MS", 1000)
+	dynamicPollIntervalMs, err := env.Int("DYNAMIC_POLL_INTERVAL_MS", 500)
 	if err != nil {
 		return err
 	}

@@ -182,7 +182,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.8.12
+    image: ghcr.io/phala-network/phala-inference-guard:v0.8.13
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

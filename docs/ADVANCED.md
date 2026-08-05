@@ -315,7 +315,15 @@ must restrict PIG to a specific GPU.
   failsafe path.
 
 `DYNAMIC_POLL_INTERVAL_MS`
-: Default: `1000`. Metrics poll interval.
+: Default: `500`. Metrics poll interval. vLLM refreshes the core running,
+  waiting, and KV gauges as engine outputs are recorded, so the shorter default
+  reduces PIG's observation delay under active load. SGLang scheduler gauges
+  such as running, queued, token usage, and generation throughput are published
+  on its decode-log cadence (40 decode iterations by default in SGLang
+  `v0.5.16`), not on a fixed wall-clock interval. Values below `500` can
+  therefore read the same SGLang snapshot more than once and also shorten the
+  wall-clock duration represented by poll-count-based consecutive thresholds;
+  use such overrides only after validating the target backend and workload.
 
 `DYNAMIC_FAILSAFE_STATE`
 : Default: `yellow`. State label used when metrics polling fails. Metrics

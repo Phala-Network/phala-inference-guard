@@ -9,6 +9,12 @@ import (
 	runtimedynamic "github.com/Phala-Network/phala-inference-guard/internal/runtime/dynamic"
 )
 
+type fixedInt64Loader int64
+
+func (v fixedInt64Loader) Load() int64 {
+	return int64(v)
+}
+
 func TestWriteDynamicExposesCleanLearningReasons(t *testing.T) {
 	var out bytes.Buffer
 	WriteDynamic(&out, runtimedynamic.Snapshot{
@@ -75,6 +81,23 @@ func TestWriteDynamicUsesUnknownForMissingCleanLearningReasons(t *testing.T) {
 	assertContains(t, got, `pig_dynamic_ttft_learning_reason_info{state="",reason="unknown",target_reason="unknown"} 1`)
 	assertContains(t, got, `pig_dynamic_pressure_limit_info{reason="unknown",target_reason="unknown"} 1`)
 	assertContains(t, got, `pig_dynamic_prefill_limit_info{reason="unknown",target_reason="unknown"} 1`)
+}
+
+func TestWriteDynamicSeparatesCurrentPressureLimitFromRetainedLearnedCap(t *testing.T) {
+	var out bytes.Buffer
+	WriteDynamic(&out, runtimedynamic.Snapshot{
+		State:                "green",
+		Source:               "metrics",
+		Updated:              time.Unix(300, 0),
+		PressureLimit:        1,
+		PressureReason:       "base_limit",
+		PressureTargetReason: "base_limit",
+	}, DynamicConfig{}, fixedInt64Loader(15))
+
+	got := out.String()
+	assertContains(t, got, "pig_dynamic_pressure_limit 1\n")
+	assertContains(t, got, "pig_dynamic_pressure_learned_cap 15\n")
+	assertContains(t, got, `pig_dynamic_pressure_limit_info{reason="base_limit",target_reason="base_limit"} 1`)
 }
 
 func assertContains(t *testing.T, got, want string) {

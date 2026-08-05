@@ -290,6 +290,52 @@ func TestCleanPipelinePressureCapHoldsDuringHealthyNoDemandWindow(t *testing.T) 
 	}
 }
 
+func TestCleanPressureStageTransientEarlierLimitDoesNotOverwriteLearnedCap(t *testing.T) {
+	cfg := cleanEvaluateConfig()
+	pressureCap := &capacity.PressureCap{}
+
+	learned := evaluateCleanPressureStage(cfg, Input{PressureCap: pressureCap}, cleanSignals{
+		Running:         20,
+		DecodeRunning:   20,
+		PreemptionDelta: 1,
+		UserTPS:         40,
+		QOSHealthy:      true,
+		UserTPSRedReady: false,
+	}, 100)
+	if learned.Limit != 15 {
+		t.Fatalf("learned pressure limit = %d, want 15", learned.Limit)
+	}
+	if got := pressureCap.Load(); got != 15 {
+		t.Fatalf("learned pressure cap = %d, want 15", got)
+	}
+
+	transient := evaluateCleanPressureStage(cfg, Input{PressureCap: pressureCap}, cleanSignals{
+		Running:       1,
+		DecodeRunning: 1,
+		UserTPS:       40,
+		QOSHealthy:    true,
+	}, 1)
+	if transient.Limit != 1 {
+		t.Fatalf("pressure limit during transient earlier-stage limit = %d, want 1", transient.Limit)
+	}
+	if got := pressureCap.Load(); got != 15 {
+		t.Fatalf("pressure cap during transient earlier-stage limit = %d, want retained 15", got)
+	}
+
+	restored := evaluateCleanPressureStage(cfg, Input{PressureCap: pressureCap}, cleanSignals{
+		Running:       1,
+		DecodeRunning: 1,
+		UserTPS:       40,
+		QOSHealthy:    true,
+	}, 15)
+	if restored.Limit != 15 {
+		t.Fatalf("pressure limit after earlier-stage recovery = %d, want 15", restored.Limit)
+	}
+	if got := pressureCap.Load(); got != 15 {
+		t.Fatalf("pressure cap after earlier-stage recovery = %d, want retained 15", got)
+	}
+}
+
 func TestCleanPipelineTTFTLimitExplainsLatencyDown(t *testing.T) {
 	now := time.Unix(425, 0)
 	cfg := cleanEvaluateConfig()

@@ -90,6 +90,51 @@ func TestEvaluatePressureLimitKeepsNearBaseLearnedCapWhenActivelyBinding(t *test
 	}
 }
 
+func TestEvaluatePressureLimitTransientBasePreservesLearnedCap(t *testing.T) {
+	tests := []struct {
+		name          string
+		learned       int64
+		restoredBase  int
+		restoredLimit int
+	}{
+		{
+			name:          "cap matches restored base",
+			learned:       15,
+			restoredBase:  15,
+			restoredLimit: 15,
+		},
+		{
+			name:          "genuine lower cap remains binding",
+			learned:       12,
+			restoredBase:  15,
+			restoredLimit: 12,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cap := &PressureCap{}
+			cap.value.Store(tt.learned)
+
+			transient := EvaluatePressureLimit(cap, cleanTestConfig(), 1, 1, 0, 1, 0.10, 0, 40, true, false, false)
+			if transient.Limit != 1 {
+				t.Fatalf("transient pressure limit = %d, want tighter base limit 1", transient.Limit)
+			}
+			if got := cap.Load(); got != tt.learned {
+				t.Fatalf("pressure cap after transient base = %d, want retained %d", got, tt.learned)
+			}
+
+			restored := EvaluatePressureLimit(cap, cleanTestConfig(), tt.restoredBase, 1, 0, 1, 0.10, 0, 40, true, false, false)
+			if restored.Limit != tt.restoredLimit {
+				t.Fatalf("pressure limit after base recovery = %d, want %d", restored.Limit, tt.restoredLimit)
+			}
+			if got := cap.Load(); got != tt.learned {
+				t.Fatalf("pressure cap after base recovery = %d, want retained %d", got, tt.learned)
+			}
+		})
+	}
+}
+
 func TestRecoverPressureCapRequiresDemandPressure(t *testing.T) {
 	cap := &PressureCap{}
 	cap.value.Store(12)
