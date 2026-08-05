@@ -105,7 +105,7 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 			Active: 3, Released: 12, Terminated: 8, Qualified: 6, Censored: 2, Dropped: 1,
 		},
 		ExistingPrefill: PredictiveExistingPrefillInput{
-			Accepted: 3, Rejected: 1, Censored: 2, LastExistingUserTPS: 1.998185, LastExistingUserTPSValid: true, LastExploratory: true,
+			Accepted: 3, Rejected: 1, Censored: 2, Deduplicated: 4, LastExistingUserTPS: 1.998185, LastExistingUserTPSValid: true, LastExploratory: true,
 		},
 		FailureClose:               1,
 		FailureDecide:              2,
@@ -239,6 +239,7 @@ func TestWritePredictiveAdmissionExposesBoundedOperationalState(t *testing.T) {
 		`pig_predictive_deferred_outcomes_total{result="censored"} 2`,
 		`pig_predictive_deferred_outcomes_total{result="dropped"} 1`,
 		`pig_predictive_existing_prefill_outcomes_total{result="accepted"} 3`,
+		`pig_predictive_existing_prefill_outcomes_total{result="deduplicated"} 4`,
 		"pig_predictive_existing_prefill_last_user_tps 1.998185",
 		"pig_predictive_existing_prefill_last_user_tps_valid 1",
 		"pig_predictive_existing_prefill_last_exploratory 1",

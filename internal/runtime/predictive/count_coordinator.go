@@ -214,7 +214,7 @@ func PendingPrefillObservationForResult(result CountAdmissionResult) (PendingPre
 		Tokens:                  result.Cost.UncachedPrefillUpper,
 		Features:                features,
 		DecisionManagerSequence: result.DecisionManagerSequence,
-		Exploratory:             result.Prediction.Exploratory,
+		Exploratory:             predictionExistingTPSExploratory(result.Prediction),
 	}, true
 }
 

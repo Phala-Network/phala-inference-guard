@@ -133,9 +133,10 @@ func TestManagerSnapshotExposesOnlyForwardedPendingPrefillDemand(t *testing.T) {
 	if !manager.MarkForwarded("pending") {
 		t.Fatal("pending reservation was not forwarded")
 	}
+	firstPendingSequence := manager.Snapshot().ForwardedPendingPrefillSequence
 	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 1 || snapshot.ForwardedPendingPrefillTokens != testRequest().UncachedPrefillUpper ||
 		!snapshot.ForwardedPendingPrefillFeaturesValid || snapshot.ForwardedPendingPrefillFeatures != schedulerFeatures(domain.VirtualState{}, testRequest()) ||
-		!snapshot.ForwardedPendingPrefillExploratory {
+		!snapshot.ForwardedPendingPrefillExploratory || firstPendingSequence == 0 {
 		t.Fatalf("forwarded pending prefill snapshot = %+v", snapshot)
 	}
 	if decision := manager.DecideAndReserve(now.Add(time.Millisecond), "second-pending", testRequest()); decision.Reason != domain.ReasonFit {
@@ -144,20 +145,96 @@ func TestManagerSnapshotExposesOnlyForwardedPendingPrefillDemand(t *testing.T) {
 	if !manager.MarkForwarded("second-pending") {
 		t.Fatal("second pending reservation was not forwarded")
 	}
-	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 2 || snapshot.ForwardedPendingPrefillFeaturesValid || snapshot.ForwardedPendingPrefillExploratory {
-		t.Fatalf("ambiguous concurrent prefills exposed trainable features: %+v", snapshot)
+	secondPendingSequence := manager.Snapshot().ForwardedPendingPrefillSequence
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 2 ||
+		snapshot.ForwardedPendingPrefillTokens != 2*testRequest().UncachedPrefillUpper ||
+		!snapshot.ForwardedPendingPrefillFeaturesValid ||
+		snapshot.ForwardedPendingPrefillFeatures.PendingPrefillSequences != 2 ||
+		snapshot.ForwardedPendingPrefillFeatures.UncachedPrefillTokens != 2*testRequest().UncachedPrefillUpper ||
+		!snapshot.ForwardedPendingPrefillExploratory || secondPendingSequence <= firstPendingSequence {
+		t.Fatalf("concurrent prefills did not expose the latest aggregate-pressure attribution: %+v", snapshot)
 	}
 	if !manager.Terminate("second-pending", TerminalExpired) {
 		t.Fatal("second pending reservation was not terminated")
 	}
-	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 1 || !snapshot.ForwardedPendingPrefillFeaturesValid || !snapshot.ForwardedPendingPrefillExploratory {
+	afterTerminationSequence := manager.Snapshot().ForwardedPendingPrefillSequence
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 1 || !snapshot.ForwardedPendingPrefillFeaturesValid || !snapshot.ForwardedPendingPrefillExploratory || afterTerminationSequence <= secondPendingSequence {
 		t.Fatalf("single pending prefill did not recover immutable attribution: %+v", snapshot)
 	}
 	if !manager.MarkPrefillComplete("pending") {
 		t.Fatal("pending reservation did not complete prefill")
 	}
-	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 0 || snapshot.ForwardedPendingPrefillTokens != 0 {
+	if snapshot := manager.Snapshot(); snapshot.ForwardedPendingPrefills != 0 || snapshot.ForwardedPendingPrefillTokens != 0 || snapshot.ForwardedPendingPrefillSequence <= afterTerminationSequence {
 		t.Fatalf("completed prefill remained in pending counters: %+v", snapshot)
+	}
+}
+
+func TestManagerPendingPrefillEpisodeAdvancesExactlyOncePerLifecycleTransition(t *testing.T) {
+	now := time.Unix(475, 0)
+	causes := []TerminalCause{
+		TerminalCompleted,
+		TerminalLocalQoSReject,
+		TerminalClientCancelled,
+		TerminalClientDisconnected,
+		TerminalUpstreamFailure,
+		TerminalTimeout,
+		TerminalExpired,
+	}
+	for _, cause := range causes {
+		t.Run(string(cause), func(t *testing.T) {
+			manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+			if decision := manager.DecideAndReserve(now, "pending", testRequest()); decision.Reason != domain.ReasonFit {
+				t.Fatalf("pending admission reason = %s", decision.Reason)
+			}
+			if sequence := manager.Snapshot().ForwardedPendingPrefillSequence; sequence != 0 {
+				t.Fatalf("unforwarded reservation advanced prefill episode to %d", sequence)
+			}
+			if !manager.MarkForwarded("pending") {
+				t.Fatal("pending reservation was not forwarded")
+			}
+			forwardedSequence := manager.Snapshot().ForwardedPendingPrefillSequence
+			if forwardedSequence == 0 {
+				t.Fatal("forward did not create a prefill episode")
+			}
+			if !manager.Terminate("pending", cause) {
+				t.Fatal("pending reservation was not terminated")
+			}
+			terminatedSequence := manager.Snapshot().ForwardedPendingPrefillSequence
+			if terminatedSequence <= forwardedSequence {
+				t.Fatalf("pending termination did not advance episode: %d -> %d", forwardedSequence, terminatedSequence)
+			}
+			if manager.Terminate("pending", cause) {
+				t.Fatal("duplicate termination succeeded")
+			}
+			if sequence := manager.Snapshot().ForwardedPendingPrefillSequence; sequence != terminatedSequence {
+				t.Fatalf("duplicate termination advanced episode: %d -> %d", terminatedSequence, sequence)
+			}
+		})
+	}
+
+	manager := NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	if decision := manager.DecideAndReserve(now, "completed-prefill", testRequest()); decision.Reason != domain.ReasonFit ||
+		!manager.MarkForwarded("completed-prefill") || !manager.MarkPrefillComplete("completed-prefill") {
+		t.Fatal("completed-prefill lifecycle setup failed")
+	}
+	completedSequence := manager.Snapshot().ForwardedPendingPrefillSequence
+	if !manager.Complete("completed-prefill") {
+		t.Fatal("completed-prefill reservation was not released")
+	}
+	if sequence := manager.Snapshot().ForwardedPendingPrefillSequence; sequence != completedSequence {
+		t.Fatalf("terminal release advanced an already-complete prefill episode: %d -> %d", completedSequence, sequence)
+	}
+
+	manager = NewManager("test-profile", domain.VirtualState{}, testConstraints(), safeScheduler{})
+	if decision := manager.DecideAndReserve(now, "released", testRequest()); decision.Reason != domain.ReasonFit || !manager.MarkForwarded("released") {
+		t.Fatal("resource-release lifecycle setup failed")
+	}
+	releaseSequence := manager.Snapshot().ForwardedPendingPrefillSequence
+	if _, released := manager.ReleaseResources("released"); !released {
+		t.Fatal("pending resources were not released")
+	}
+	if sequence := manager.Snapshot().ForwardedPendingPrefillSequence; sequence <= releaseSequence {
+		t.Fatalf("pending resource release did not close the episode: %d -> %d", releaseSequence, sequence)
 	}
 }
 

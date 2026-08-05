@@ -202,6 +202,177 @@ func TestExistingPrefillZeroTPSImmediatelyTightensNextCompatiblePrediction(t *te
 	}
 }
 
+func TestExistingPrefillLearnsAggregateConcurrentPrefillPressure(t *testing.T) {
+	now := time.Unix(3_805, 0)
+	profile := testLearnedProfile()
+	profile.PrefillTPSPenaltyPerKToken = 0
+	scheduler := mustLearnedScheduler(t, profile, testResidualConfig())
+	features := SchedulerFeatures{
+		ExistingDecodeSequences:         2,
+		DecodeSequences:                 3,
+		ExistingPendingPrefillSequences: 1,
+		PendingPrefillSequences:         2,
+		ExistingActiveContextTokens:     310_000,
+		ExistingUncachedPrefill:         300_000,
+		ExistingPhysicalKVUpper:         320_000,
+		ExistingActiveKVUpper:           320_000,
+		RequestComplexityTokensUpper:    382_000,
+		ActiveContextTokens:             692_000,
+		UncachedPrefillTokens:           682_000,
+		PhysicalKVUpper:                 702_000,
+		ActiveKVUpper:                   702_000,
+		DecodeHorizonUpper:              8_192,
+	}
+	if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+		Identity:                scheduler.Identity(),
+		StartedAt:               now,
+		ObservedAt:              now.Add(time.Second),
+		Features:                features,
+		ExistingDecodeSequences: 1,
+		PendingPrefillSequences: 2,
+		PendingPrefillTokens:    682_000,
+		ExistingUserTPS:         0,
+	}); err != nil {
+		t.Fatalf("observe aggregate concurrent-prefill stall: %v", err)
+	}
+	if snapshot := scheduler.Snapshot(); snapshot.ExistingUserTPSSamples != 1 || snapshot.HardExistingTPSAdverse != 1 {
+		t.Fatalf("aggregate concurrent-prefill evidence was not retained once: %+v", snapshot)
+	}
+}
+
+func TestExistingTPSHardOriginUsesDimensionProvenance(t *testing.T) {
+	now := time.Unix(3_807, 0)
+	profile := testLearnedProfile()
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{DecodeSequences: 1, ActiveContextTokens: 1_000, PhysicalKVUpper: 1_000, ActiveKVUpper: 1_000}
+	prediction := scheduler.Predict(now, state, learnedTestCost())
+	if prediction.Exploratory || !prediction.ExistingUserTPSProvenanceValid || !prediction.ExistingUserTPSExploratory {
+		t.Fatalf("cold existing-TPS provenance = %+v", prediction)
+	}
+	if err := scheduler.Observe(prediction, SchedulerOutcome{
+		Identity: prediction.Identity, ObservedAt: now.Add(time.Second), Attributed: true,
+		ExistingUserTPS: 0, ExistingUserTPSValid: true,
+	}); err != nil {
+		t.Fatalf("observe dimension-provenance hard outcome: %v", err)
+	}
+	snapshot := scheduler.Snapshot()
+	if snapshot.HardExistingTPSAdverse != 1 || snapshot.HardExistingTPSOrigins.Exploratory != 1 || snapshot.HardExistingTPSOrigins.NonExploratory != 0 {
+		t.Fatalf("existing-TPS hard origin ignored dimension provenance: %+v", snapshot)
+	}
+}
+
+func TestAggregatePrefillHardEvidenceDoesNotLockLowerPressureRecovery(t *testing.T) {
+	now := time.Unix(3_808, 0)
+	profile := testLearnedProfile()
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	largeFeatures := SchedulerFeatures{
+		ExistingDecodeSequences:         2,
+		DecodeSequences:                 3,
+		ExistingPendingPrefillSequences: 1,
+		PendingPrefillSequences:         2,
+		ExistingActiveContextTokens:     310_000,
+		ExistingUncachedPrefill:         300_000,
+		ExistingPhysicalKVUpper:         320_000,
+		ExistingActiveKVUpper:           320_000,
+		RequestComplexityTokensUpper:    382_000,
+		ActiveContextTokens:             692_000,
+		UncachedPrefillTokens:           682_000,
+		PhysicalKVUpper:                 702_000,
+		ActiveKVUpper:                   702_000,
+		DecodeHorizonUpper:              8_192,
+	}
+	if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+		Identity: scheduler.Identity(), StartedAt: now, ObservedAt: now.Add(time.Second), Features: largeFeatures,
+		ExistingDecodeSequences: 1, PendingPrefillSequences: 2, PendingPrefillTokens: 682_000,
+		ExistingUserTPS: 0, Exploratory: true,
+	}); err != nil {
+		t.Fatalf("observe large aggregate-prefill hard evidence: %v", err)
+	}
+	// Keep the same aggregate pending count as the failed sample so recovery is
+	// proven by lower token/KV pressure, not merely by having fewer prefills.
+	smallState := domain.VirtualState{
+		DecodeSequences: 2, PendingPrefillSequences: 1,
+		ActiveContextTokens: 10_000, UncachedPrefillTokens: 8_000,
+		PhysicalKVUpper: 12_000, ActiveKVUpper: 12_000,
+	}
+	smallCost := learnedTestCost()
+	smallCost.InputTokens = 1_000
+	smallCost.RequestComplexityTokensUpper = 1_000
+	smallCost.UncachedPrefillUpper = 1_000
+	smallCost.ActiveContextTokensUpper = 1_256
+	smallCost.KV.PhysicalKVUpper = 1_280
+	smallCost.KV.ActiveKVUpper = 1_280
+	recovery := scheduler.Predict(now.Add(2*time.Second), smallState, smallCost)
+	if recovery.Features.PendingPrefillSequences != largeFeatures.PendingPrefillSequences ||
+		recovery.Estimate.ExistingUserTPSLower != recovery.Prior.ExistingUserTPSLower {
+		t.Fatalf("large-pressure hard evidence locked lower-pressure recovery: %+v", recovery)
+	}
+}
+
+func TestAggregatePrefillHardEvidenceTightensOnlyEqualOrHigherPressure(t *testing.T) {
+	now := time.Unix(3_809, 0)
+	profile := testLearnedProfile()
+	profile.PrefillTPSPenaltyPerKToken = 0
+	config := testResidualConfig()
+	config.HardUserTPSTarget = 20
+	config.HardTPOTSLO = 50 * time.Millisecond
+	scheduler := mustLearnedScheduler(t, profile, config)
+	state := domain.VirtualState{
+		DecodeSequences: 2, PendingPrefillSequences: 1,
+		ActiveContextTokens: 310_000, UncachedPrefillTokens: 300_000,
+		PhysicalKVUpper: 320_000, ActiveKVUpper: 320_000,
+	}
+	cost := learnedTestCost()
+	cost.InputTokens = 382_000
+	cost.RequestComplexityTokensUpper = 382_000
+	cost.UncachedPrefillUpper = 382_000
+	cost.ActiveContextTokensUpper = 382_000
+	cost.KV.PhysicalKVUpper = 382_000
+	cost.KV.ActiveKVUpper = 382_000
+	cost.DecodeHorizonUpper = 8_192
+	failed := scheduler.Predict(now, state, cost)
+	if err := scheduler.ObserveExistingPrefill(ExistingPrefillOutcome{
+		Identity: scheduler.Identity(), StartedAt: now, ObservedAt: now.Add(time.Second), Features: failed.Features,
+		ExistingDecodeSequences: 1, PendingPrefillSequences: 2, PendingPrefillTokens: 682_000,
+		ExistingUserTPS: 0, Exploratory: true,
+	}); err != nil {
+		t.Fatalf("observe equal-pressure aggregate-prefill hard evidence: %v", err)
+	}
+
+	for _, test := range []struct {
+		name string
+		cost domain.RequestCost
+	}{
+		{name: "equal", cost: cost},
+		{name: "higher", cost: func() domain.RequestCost {
+			higher := cost
+			higher.InputTokens += 64_000
+			higher.RequestComplexityTokensUpper += 64_000
+			higher.UncachedPrefillUpper += 64_000
+			higher.ActiveContextTokensUpper += 64_000
+			higher.KV.PhysicalKVUpper += 64_000
+			higher.KV.ActiveKVUpper += 64_000
+			return higher
+		}()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prediction := scheduler.Predict(now.Add(2*time.Second), state, test.cost)
+			if prediction.Estimate.ExistingUserTPSLower >= prediction.Prior.ExistingUserTPSLower ||
+				prediction.Estimate.ExistingUserTPSLower >= config.HardUserTPSTarget {
+				t.Fatalf("%s pressure did not inherit compatible hard evidence: %+v", test.name, prediction)
+			}
+		})
+	}
+}
+
 func TestExistingPrefillAdverseOverrideRecoversFromSustainedNewerHealthyEvidence(t *testing.T) {
 	now := time.Unix(3_810, 0)
 	profile := testLearnedProfile()

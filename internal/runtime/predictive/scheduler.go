@@ -174,15 +174,26 @@ type SchedulerFeatures struct {
 }
 
 type SchedulerPrediction struct {
-	Identity    ModelIdentity
-	PredictedAt time.Time
-	Features    SchedulerFeatures
-	Prior       domain.SchedulerEstimate
-	Estimate    domain.SchedulerEstimate
-	Source      PredictionSource
-	Samples     int
-	Confidence  float64
-	Exploratory bool
+	Identity                       ModelIdentity
+	PredictedAt                    time.Time
+	Features                       SchedulerFeatures
+	Prior                          domain.SchedulerEstimate
+	Estimate                       domain.SchedulerEstimate
+	Source                         PredictionSource
+	Samples                        int
+	Confidence                     float64
+	Exploratory                    bool
+	ExistingUserTPSProvenanceValid bool
+	ExistingUserTPSExploratory     bool
+}
+
+func predictionExistingTPSExploratory(prediction SchedulerPrediction) bool {
+	if prediction.ExistingUserTPSProvenanceValid {
+		return prediction.ExistingUserTPSExploratory
+	}
+	// Preserve compatibility for injected schedulers and older deterministic
+	// fixtures that provide only the whole-decision provenance bit.
+	return prediction.Exploratory
 }
 
 type LoadPressureKind string
@@ -450,13 +461,15 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 	features := schedulerFeatures(state, request)
 	prior := s.staticEstimate(features)
 	prediction := SchedulerPrediction{
-		Identity:    s.profile.Identity,
-		PredictedAt: now,
-		Features:    features,
-		Prior:       prior,
-		Estimate:    prior,
-		Source:      PredictionSourceStatic,
-		Confidence:  s.profile.Confidence,
+		Identity:                       s.profile.Identity,
+		PredictedAt:                    now,
+		Features:                       features,
+		Prior:                          prior,
+		Estimate:                       prior,
+		Source:                         PredictionSourceStatic,
+		Confidence:                     s.profile.Confidence,
+		ExistingUserTPSProvenanceValid: true,
+		ExistingUserTPSExploratory:     !prior.ExistingUserTPSNotApplicable,
 	}
 
 	key := s.featureCell(features)
@@ -511,6 +524,7 @@ func (s *LearnedScheduler) Predict(now time.Time, state domain.VirtualState, req
 			frontierSamples = minimumPositiveInt(frontierSamples, len(existingUserRatios))
 		} else {
 			prediction.Estimate.ExistingUserTPSLower = candidate
+			prediction.ExistingUserTPSExploratory = existingExploratory
 			calibratedSamples = minimumPositiveInt(calibratedSamples, len(existingUserRatios))
 			if existingExploratory {
 				exploratory = true
@@ -639,7 +653,7 @@ func (s *LearnedScheduler) Observe(prediction SchedulerPrediction, outcome Sched
 	}
 	if sample.ExistingUserTPSValid && sample.ExistingUserTPSAdverse {
 		s.hardExistingTPSAdverse++
-		recordHardAdverseOrigin(&s.hardExistingTPSOrigins, prediction.Exploratory)
+		recordHardAdverseOrigin(&s.hardExistingTPSOrigins, predictionExistingTPSExploratory(prediction))
 	}
 	if sample.UserTPSValid && sample.UserTPSAdverse {
 		s.hardNewTPSAdverse++
@@ -682,31 +696,33 @@ func (s *LearnedScheduler) ObserveExistingPrefill(outcome ExistingPrefillOutcome
 		return s.rejectOutcome(fmt.Errorf("existing-user prefill outcome window is invalid"))
 	}
 	features := outcome.Features
-	if outcome.ExistingDecodeSequences <= 0 || outcome.PendingPrefillSequences != 1 || outcome.PendingPrefillTokens <= 0 ||
+	if outcome.ExistingDecodeSequences <= 0 || outcome.PendingPrefillSequences <= 0 || outcome.PendingPrefillTokens <= 0 ||
 		readyExistingDecodeSequences(features) != outcome.ExistingDecodeSequences ||
-		features.ExistingPendingPrefillSequences != 0 ||
+		features.ExistingPendingPrefillSequences != outcome.PendingPrefillSequences-1 ||
 		features.PendingPrefillSequences != outcome.PendingPrefillSequences ||
-		features.DecodeSequences != features.ExistingDecodeSequences+outcome.PendingPrefillSequences ||
+		features.DecodeSequences != features.ExistingDecodeSequences+1 ||
 		features.ExistingActiveContextTokens < 0 || features.ExistingUncachedPrefill < 0 ||
 		features.ExistingPhysicalKVUpper < 0 || features.ExistingActiveKVUpper < 0 ||
 		features.ActiveContextTokens < features.ExistingActiveContextTokens ||
-		features.UncachedPrefillTokens < features.ExistingUncachedPrefill ||
-		features.UncachedPrefillTokens-features.ExistingUncachedPrefill != outcome.PendingPrefillTokens ||
+		features.UncachedPrefillTokens <= features.ExistingUncachedPrefill ||
+		features.UncachedPrefillTokens != outcome.PendingPrefillTokens ||
 		features.PhysicalKVUpper < features.ExistingPhysicalKVUpper || features.ActiveKVUpper < features.ExistingActiveKVUpper ||
-		features.RequestComplexityTokensUpper < outcome.PendingPrefillTokens ||
+		features.RequestComplexityTokensUpper <= 0 ||
 		!nonNegativeFinite(outcome.ExistingUserTPS) {
 		return s.rejectOutcome(fmt.Errorf("existing-user prefill outcome state is invalid"))
 	}
 	prior := s.staticEstimate(features)
 	prediction := SchedulerPrediction{
-		Identity:    s.profile.Identity,
-		PredictedAt: outcome.StartedAt,
-		Features:    features,
-		Prior:       prior,
-		Estimate:    prior,
-		Source:      PredictionSourceStatic,
-		Confidence:  s.profile.Confidence,
-		Exploratory: outcome.Exploratory,
+		Identity:                       s.profile.Identity,
+		PredictedAt:                    outcome.StartedAt,
+		Features:                       features,
+		Prior:                          prior,
+		Estimate:                       prior,
+		Source:                         PredictionSourceStatic,
+		Confidence:                     s.profile.Confidence,
+		Exploratory:                    outcome.Exploratory,
+		ExistingUserTPSProvenanceValid: true,
+		ExistingUserTPSExploratory:     outcome.Exploratory,
 	}
 	return s.Observe(prediction, SchedulerOutcome{
 		Identity:             outcome.Identity,

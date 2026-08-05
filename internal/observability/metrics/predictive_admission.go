@@ -168,6 +168,7 @@ type PredictiveExistingPrefillInput struct {
 	Accepted                 uint64
 	Rejected                 uint64
 	Censored                 uint64
+	Deduplicated             uint64
 	LastExistingUserTPS      float64
 	LastExistingUserTPSValid bool
 	LastExploratory          bool
@@ -325,6 +326,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_outcomes_total{result=%q} %d\n", "accepted", input.ExistingPrefill.Accepted)
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_outcomes_total{result=%q} %d\n", "rejected", input.ExistingPrefill.Rejected)
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_outcomes_total{result=%q} %d\n", "censored", input.ExistingPrefill.Censored)
+	fmt.Fprintf(w, "pig_predictive_existing_prefill_outcomes_total{result=%q} %d\n", "deduplicated", input.ExistingPrefill.Deduplicated)
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_last_user_tps %.6f\n", input.ExistingPrefill.LastExistingUserTPS)
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_last_user_tps_valid %d\n", num.BoolAsInt(input.ExistingPrefill.LastExistingUserTPSValid))
 	fmt.Fprintf(w, "pig_predictive_existing_prefill_last_exploratory %d\n", num.BoolAsInt(input.ExistingPrefill.LastExploratory))

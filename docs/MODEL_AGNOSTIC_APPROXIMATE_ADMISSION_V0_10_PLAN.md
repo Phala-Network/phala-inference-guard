@@ -2,7 +2,7 @@
 
 Status: active plan. The v0.9.4 Gemma4-exact deployment path is superseded and must not be deployed.
 
-Last updated: 2026-08-03 (Asia/Shanghai).
+Last updated: 2026-08-05 (Asia/Shanghai).
 
 ## 1. Authoritative objective
 
@@ -43,6 +43,12 @@ a resource/QoS prediction using one approximate demand feature, not a
 tokenizer-only verdict.
 
 PIG does not route and this version does not inspect prefix-cache/cache hits.
+
+This document is the execution authority when older persistent Goal wording
+conflicts with later requirements. In particular, the current controller is
+throughput-first with bounded hard QoS constraints rather than strict
+`TPS-first`, and TTFT remains observation-only rather than an admission
+constraint.
 
 ## 2. v0.9.4 disposition
 
@@ -8503,3 +8509,539 @@ enabled set, and arm automatic target-only disable conditions. The continuous
 the first jointly proven routed request; any stop condition disables only
 `use1-cb`, collects fresh terminal/log/metrics/Compose/Router evidence, and
 invalidates the partial window.
+
+##### v0.10.11 origin-aware canary r30 failure — closed and disabled 2026-08-05
+
+The pre-enable harness was audited before any Router mutation. The final audit
+proved six fixed hard-origin series, exploratory and non-exploratory dimension
+parity, first-exploratory-event timer restart, second-exploratory-event stop,
+immediate non-exploratory-event stop, calibrated retreat within the next three
+compatible predictions, persistent-waiting and sustained-low-TPS guards,
+target-only mutation, sanitized mutation evidence, and preflight-before-enable
+ordering. Two harness defects were found and repaired before enablement:
+
+1. A dynamically created script block had no usable `$PSScriptRoot`, so the
+   generated supervisor failed before preflight. The generated script now pins
+   its harness root explicitly. The original red is retained under
+   `canary-preflight-supervisor-r29a`.
+2. Plain version replacement did not update the escaped regex
+   `PIG-v0\.10\.10`. Both supervisor and observer now pin
+   `PIG-v0\.10\.11`, and the transform-only audit requires
+   `version_metric_pinned=true`.
+
+These are evidence-harness corrections, not product failures. They occurred
+before Router enablement and did not change PIG, vLLM, Router source, traffic,
+cache behavior, TTFT policy, or any CVM.
+
+Fresh preflight r29 at `2026-08-05T03:34:53.4800607Z` and final supervisor
+`PreflightOnly` r29c passed the exact enforce Compose SHA-256
+`dc09612d32beec12787e2b7ff811aeccaada536b3fa470c6b99c4eb6ed66452c`,
+immutable v0.10.11 image digest
+`sha256:2983036b1454ed60d075d907d8991b6d2e8d5ea1b81ca7ca21acbf98dccaca9e`,
+image ID
+`sha256:1a3064cf8fdc40baa16764b9882c9d04955bcc6a5a5cd570d4ed73df272ba632`,
+runtime identity, authenticated readiness, metrics authentication, expected
+model, KV-off, TTFT-off, all-zero terminal state, raw/effective idle capacity
+`50/50`, six zero origins with dimension parity, 885 stable PIG/combined metric
+lines, and Router-disabled/drained target state. The preflight age was
+`458.502 s`, within the harness bound.
+
+The supervisor changed only `use1-cb.enabled=false -> true` at
+`2026-08-05T03:43:17.6682137Z`; HTTP returned 200 and the enabled set changed
+exactly from `use1-19` to `use1-19,use1-cb`. A fresh Router scrape at
+`03:43:23.2825057Z` reported `pig_ok=true`, `stale=false`, age `692 ms`,
+running two, waiting zero, and global limit two. The continuous 30-minute timer
+did not begin merely on mutation. It began at
+`2026-08-05T03:44:47.2258567Z` only after Router processed count, PIG attempts,
+backend accepted count, vLLM success, prompt tokens, and generation tokens all
+proved routed target traffic.
+
+The product canary stopped correctly after `337.84 s` with fatal reason
+`non_exploratory_hard_event`. The exact hard-origin deltas were:
+
+- `existing_tps/exploratory = 0`;
+- `existing_tps/non_exploratory = 2`;
+- `new_tps/exploratory = 0`;
+- `new_tps/non_exploratory = 0`;
+- `tpot/exploratory = 0`;
+- `tpot/non_exploratory = 0`.
+
+This is a v0.10.11 product/forecast failure. It is not a timer assumption or a
+harness failure: mature calibrated existing-prefill decisions produced two hard
+existing-user-TPS outcomes. At `2026-08-05T03:50:25.3110217Z` the supervisor
+automatically changed only `use1-cb.enabled=true -> false`; HTTP returned 200
+and the enabled set returned exactly to `use1-19`. v0.10.11 must not be
+re-enabled or redeployed unchanged.
+
+The partial-window evidence separates useful behavior from the failed QoS
+decision. Target traffic advanced by 192 Router processed requests, 97 vLLM
+successes, 357,964 prompt tokens, and 38,067 generation tokens. Qualified
+per-user TPS mean was `154.537625`, request TPOT mean was `0.009011 s`, target
+generation goodput was `112.677676 token/s`, and target cache-hit ratio was
+`0.060073`. The same wall-clock comparator `use1-19` advanced by 126 processed
+requests, 125 vLLM successes, 578,165 prompt tokens, and 160,837 generation
+tokens, with `476.074801 token/s` generation rate, `0.065623 s` mean TPOT,
+`0.077708` cache-hit ratio, and zero preemption. These unequal live workloads
+are diagnostic rather than an A/B causal throughput proof, but the large target
+goodput deficit is a mandatory optimization warning.
+
+The safety/lifecycle layer remained coherent: target preemption delta, waiting
+pressure, preemption pressure, predictive failures, and release failures were
+all zero. Router backpressure activations increased from 10 to 58. Across 63
+fast samples, 39 reported capacity full, 24 capacity open, eight idle-capacity
+open, zero Router/PIG unhealthy state, zero consecutive waiting pressure, zero
+capacity-parity failure, and no slow-sample underpublication or
+overpublication. The node did not sticky-lock at idle and cancellation/error
+reconciliation did not leak capacity. Cache metrics remained observation-only
+and TTFT remained observation-only.
+
+The direct PIG log window identifies the mechanism to reproduce, without yet
+overstating final root cause. At approximately `03:49:40Z`, one existing decode
+was running at reported user TPS `231.1`; attempts were `243`, fit/risk were
+`148/95`, the latest decision was `fit/calibrated/15`, and pending-prefill state
+was approximately `2/682027/0`. At `03:49:50Z`, the backend reported running
+two with one prefill and one decode, user TPS `185.2`, and pending-prefill state
+`1/8167/1`. By `03:49:55Z`, status user TPS was `122.0` while
+`prefill_learning=2/0/145/0.000/1/0` and hard origin became
+`0/2/0/0/0/0`. The hard evidence came from two stable existing-prefill observer
+windows whose generation delta was zero, yielding attributed existing-user TPS
+zero below the default hard target 20; it was not triggered directly by the
+status-line TPS value 122.
+
+Post-failure snapshot r31 and the exact v0.10.11 validator proved safe
+convergence: Router target disabled and idle, enabled set `use1-19`, exact
+Compose/image/image ID, PIG and vLLM running, terminal zero, idle capacity
+`50/50`, preemptions zero, waiting zero, KV zero, all six origin series present,
+dimension parity correct, and 885 stable PIG/combined metric lines equal. The
+cumulative state after collection was 260 attempts, 157 fit, 103 risk, 103
+enforced rejects, 135 vLLM successes, 145,940 generation tokens, origins
+`0/2/0/0/0/0`, and zero predictive/release failures.
+
+The 120-minute log capture r32 contained 2,154 vLLM lines, 1,102 PIG lines, and
+1,151 serial lines. PIG and serial critical matches were zero. The generic
+audit marked vLLM red because it matched 18 traceback lines across nine invalid
+image-input episodes (`PIL.UnidentifiedImageError` / failed image load). The
+raw red is retained, but current evidence contains no EngineDead, CUDA OOM,
+Xid, kernel panic, segmentation fault, or PIG panic. Invalid client image data
+is a distinct request-validation issue and is not relabeled as the predictive
+QoS failure.
+
+##### v0.10.12 existing-prefill interference repair plan — active 2026-08-05
+
+The next version is v0.10.12. Because executable prediction behavior will
+change, none of v0.10.11's builder, archive, image, shadow, enforce, direct-gate,
+or canary evidence may be inherited. The approximate estimator identity remains
+`json-cost-lexical-hint-v2` unless its implementation changes. If the predictor
+changes as planned, its identity must advance from `adaptive-tps-kv-v8` to a
+new explicit identity such as `adaptive-tps-kv-v9`; the exact final identity is
+fixed before the final versioned matrix, not after image publication.
+
+The first implementation task is a source-level causal audit, not an immediate
+threshold change. It must determine whether the two hard outcomes represent two
+independent forwarded prefill episodes or multiple stable poll windows from one
+episode; whether the transition from aggregate pending pressure about 682k to
+about 8k attributed all interfering work correctly; whether zero generation was
+a real decode stall or an overly short/repeated sampling artifact; and how
+multiple concurrent pending prefills are represented when the existing
+qualification path requires previous pending count exactly one. A true zero-TPS
+stall remains valid hard evidence and must not be censored merely to make the
+counter green.
+
+The intended repair contract is:
+
+1. Assign a bounded in-memory identity to each forwarded prefill episode or
+   equivalently prove an existing lifecycle identity can be reused safely.
+   Aggregate the episode's observation window and emit at most one attributed
+   existing-prefill learning outcome for that episode. Poll cadence alone must
+   not duplicate evidence.
+2. Represent concurrent prefill interference as bounded aggregate pressure.
+   Approximate input tokens, request feature class, protected/uncached prefill
+   work, and unabsorbed reservations may contribute to that pressure. The
+   estimator remains model-neutral, bounded, allocation-conscious, and cheap;
+   no exact model tokenizer, model asset, cache lookup, Router logic, or upstream
+   tokenizer RPC is introduced.
+3. Preserve genuine stalls. An episode with a qualified stable zero-generation
+   interval may produce one hard sample. Repeated polls of the same episode do
+   not manufacture multiple independent hard samples, while distinct episodes
+   may each produce evidence.
+4. Feed the attributed pressure/outcome only into later predictions. The
+   forwarded request is never retroactively rejected. Admission and reservation
+   remain pre-forward and atomic.
+5. Apply hard learned evidence monotonically to compatible requests at the same
+   or higher interference pressure. Smaller/lower-pressure requests retain a
+   recovery path; one hard large-prefill frontier must not globally close the
+   node, create sticky zero, or repeatedly renew the same five-second Router
+   fullness lease without a new causal decision.
+6. Keep yellow debt exploratory and throughput-seeking. Do not globally tighten
+   TPS/KV thresholds to hide the failure. A change is accepted only if it reduces
+   duplicate/unsafe large-prefill admission without reducing compatible
+   low-pressure useful goodput below v0.10.11 in deterministic comparison.
+7. Retain the current lifecycle guarantees for completion, cancellation,
+   client error, invalid input, timeout, and observer failure. Every reservation
+   and episode record is bounded and eventually reconciled; observation failure
+   falls back conservatively without permanent protection.
+8. Keep cache metrics and TTFT observational. Cache hit or miss does not alter
+   admission in v0.10.12, and TTFT never rejects or changes Router capacity.
+
+The deterministic red/green suite must cover at least:
+
+- one existing decoder plus two large forwarded prefills with aggregate pending
+  pressure near the observed 682k scale;
+- consecutive stable polls with zero generation, proving current behavior can
+  produce duplicate non-exploratory hard outcomes before the repair;
+- one repaired episode producing at most one attributed hard outcome despite
+  multiple polls;
+- two truly distinct qualified zero-TPS episodes producing two independent hard
+  outcomes, so de-duplication cannot erase real stalls;
+- multi-pending attribution retaining aggregate size/pressure rather than
+  training only a later `pending==1` tail fragment;
+- the next compatible same-or-higher-pressure request rejected before upstream
+  after hard evidence, with unchanged upstream success/prompt counters;
+- a smaller or lower-pressure request admitted after the large-pressure hard
+  event, including lease expiry, idle-capacity restoration, and no sticky or
+  low-flow self-lock;
+- monotonic request-size/pressure behavior at bucket boundaries and under
+  approximate-token under/over-estimation;
+- cancellation, completion, backend error, client disconnect, invalid image,
+  observer staleness, episode expiry, and process shutdown releasing all
+  reservations and episode state exactly once;
+- concurrency/race coverage for overlapping poll, completion, cancellation,
+  feedback, and admission paths;
+- deterministic throughput/goodput comparison in which the repair does not
+  simply trade the observed failure for more false denies than v0.10.11;
+- unchanged cache-observation-only and TTFT-observation-only decisions;
+- tokenizer/estimator and complete predictor latency/allocation benchmarks with
+  no material regression from the v0.10.11 accepted envelopes.
+
+Implementation must preserve SOLID boundaries. The vLLM observer owns raw
+snapshot/episode qualification; a bounded attribution component owns episode
+identity and one-shot emission; the predictive scheduler owns feature/pressure
+compatibility and counterfactual decisions; the coordinator owns atomic counts,
+reservations, and Router-visible capacity; metrics only expose state and never
+drive decisions. Interfaces should remain narrow, deterministic clocks and
+bounded stores must be injectable in tests, and no HTTP/Prometheus parsing may
+leak into the learning model.
+
+Execution order is fixed:
+
+1. finish the observer/window/coordinator source audit and record the exact root
+   cause;
+2. add deterministic behavioral red tests that fail on unmodified v0.10.11;
+3. implement the smallest v0.10.12 episode/pressure repair and focused greens;
+4. review correctness, race/lifecycle behavior, algorithmic complexity,
+   allocations, SOLID boundaries, and telemetry before broad validation;
+5. run focused tests, full Go tests, race suites, deterministic simulations,
+   benchmarks, vet, formatting, source-contract, secret, and exact-version gates
+   only on the remote builder; do not execute them on local Windows;
+6. perform three final source/evidence reviews, freeze source/archive hashes,
+   commit, annotated-tag, and push only to `pig-origin`;
+7. build and publish a new immutable v0.10.12 image from the tested source, pull
+   and verify its digest/image ID, and do not reuse the v0.10.11 image;
+8. deploy only to CVM `a0f0bfb3-e46f-4b22-814e-24872f251193` / `use1-cb`,
+   first Router-disabled shadow and then Router-disabled enforce after all
+   protocol, learning, request-scope, cancellation, low-flow, lease,
+   origin-parity, terminal-zero, metrics, and log gates pass;
+9. run a fresh target-only preflight, enable only `use1-cb`, and start a new
+   continuous 30-minute origin-aware observation only after jointly proven
+   routed traffic; any fatal condition disables only `use1-cb`;
+10. analyze QoS, attributed hard origins, goodput/throughput, reject mix,
+    preemptions, Router capacity, low-flow recovery, logs, and metrics. Repeat
+    the versioned repair loop until no obvious correctness, QoS, throughput, or
+    self-lock problem remains.
+
+##### v0.10.12 plan review pass 1 — model and causality, completed 2026-08-05
+
+The first review found a causal ambiguity in an earlier repair idea: simply
+de-duplicating zero-generation samples could suppress a real stall, while
+simply lowering the hard counter could relabel the same unsafe event. The plan
+was corrected to identify and aggregate a forwarded prefill episode, emit one
+outcome per episode, and retain a true qualified zero-TPS episode as hard
+evidence. It also requires separate tests for one episode across many polls and
+two distinct episodes. Input size remains an approximate explanatory feature;
+it is neither a tokenizer-only gate nor a claim of exact upstream tokens.
+
+##### v0.10.12 plan review pass 2 — lifecycle, efficiency, and SOLID, completed 2026-08-05
+
+The second review found two overprotection risks: globally tightening thresholds
+would worsen the observed goodput deficit, and global hard memory could lock out
+small traffic after one very large prefill. The plan was corrected to scope hard
+evidence monotonically by compatible pressure, require an explicit low-pressure
+recovery test, prohibit Router lease renewal without a new causal decision, and
+compare false denies/goodput with v0.10.11. It also separates snapshot parsing,
+episode attribution, scheduling, coordination, and telemetry ownership; bounds
+episode state; and mandates race, cancellation, expiry, and allocation tests.
+
+##### v0.10.12 plan review pass 3 — evidence and release boundary, completed 2026-08-05
+
+The third review found that a source-only fix could be mistaken for a deployable
+release and that invalid-image tracebacks could be misclassified as predictor
+crashes. The plan was corrected to invalidate every executable v0.10.11 test and
+image claim after a source change, require a complete builder/image/shadow/
+enforce/canary chain for v0.10.12, preserve original harness reds, and classify
+client image failures separately from PIG/vLLM engine failures. Only use1-cb is
+authorized for live work; Router and vLLM source, cache admission, TTFT
+admission, other CVMs, and local Go execution remain out of scope. The Goal
+remains active, and v0.10.11 remains disabled and not production-ready.
+
+##### v0.10.12 implementation, focused proof, and exact-source builder matrix — completed 2026-08-05
+
+The source audit confirmed two independent v0.10.11 attribution defects and one
+telemetry-provenance defect. First, the observer replaced its stable-prefill
+baseline after every poll, so one unchanged forwarded prefill could emit one
+hard outcome per poll. Second, Manager deliberately invalidated trainable
+features whenever more than one prefill was pending. The approximately 682k
+aggregate two-prefill pressure seen in the failed canary was therefore censored,
+then the later approximately 8k single-prefill tail became the only trainable
+shape. Third, whole-decision `Exploratory` could be false because another QoS
+dimension was mature even while the existing-user-TPS dimension was still
+cold. That mislabeled existing-TPS hard evidence as non-exploratory.
+
+The v0.10.12 implementation repairs those causes without adding a model
+tokenizer, cache lookup, Router decision, TTFT gate, global threshold change, or
+request identity. Manager now advances a nonzero, bounded
+`ForwardedPendingPrefillSequence` exactly when the forwarded pending set changes:
+forward, prefill completion, or terminal release before prefill completion.
+Snapshot still scans the existing bounded reservation map once. It selects the
+latest marginal forwarded request, whose immutable prediction already includes
+earlier pending work, and exposes its features only when post-admit pending
+count and aggregate uncached tokens exactly equal the current active aggregate.
+An unmatched materialization order remains censored.
+
+The observer now uses a fixed-size `predictivePrefillEpisodeTracker` containing
+only origin and sequence. It emits at most one qualified outcome for an
+unchanged Manager or shadow episode, retains distinct episodes, and reports
+skipped stable repeats as `deduplicated` rather than `censored`. Fetch failure,
+waiting, preemption, or a cleared stable-window baseline cannot reopen an
+already emitted episode. A missing dedicated prefill sequence cannot fall back
+to an unrelated Manager event sequence. Learner identity is validated once at
+construction, stable-window callbacks are panic-contained outside the observer
+lock, and no request ID, payload, label cardinality, new map, or traffic-sized
+store was added.
+
+Scheduler accepts attributed aggregate outcomes with more than one pending
+prefill only when ready existing decoders, aggregate pending count, marginal
+shape, and aggregate uncached tokens are internally consistent. Existing-user
+TPS now carries its own exploratory provenance; injected older schedulers retain
+the prior whole-decision fallback only when the new provenance is absent.
+Adverse aggregate evidence transfers only to compatible equal-or-higher
+concurrency and normalized prefill/KV pressure. A deterministic correction test
+keeps pending count equal to the failed two-prefill shape while lowering token
+and KV pressure, proving request-size pressure rather than pending count alone
+reopens small traffic. Separate tests prove equal and higher pressure still
+retreat before upstream.
+
+The original focused red r1 remains retained as causal evidence. Its three
+expected failures proved repeated-poll duplication, multi-prefill feature
+invalidation, and scheduler rejection of aggregate pending outcomes. Focused r2
+first proved the initial repair. Review then added distinct-episode, lifecycle,
+pressure recovery, panic, discontinuity, and identity coverage. The final
+focused r4 exact inputs and artifacts are:
+
+```text
+base a48cbb0 archive:
+b0eb009eaf078d22beaa938220be55f769f94279c114d4427bf67003d93ea91c
+
+candidate r4 patch:
+781a82e73c7752814736a35359d0501065e5be6ab0add811414a4fb4cc2a286c
+
+focused r4 runner:
+24efd0db314a843f7d3f99d2743af1475121994980f85ce6c080df87e76d6f71
+
+focused r4 evidence archive:
+9397badb7e7cef41a436f4085e76fc5e4159fde897b51743e1af6c6255b985a3
+
+builder-formatted candidate archive:
+dec212834f32e90f0bb47de7fa175a57180425a2f06f3965b8e199c19614fec2
+```
+
+On the approved remote builder, focused packages and the same three packages
+under `-race` all exited zero. The final builder environment is not inherited
+from the older note: the running container is image
+`sha256:e0cffc405270b9114fac7706d07c373727d1b42b0e47c525b9cd1ab1097779ff`,
+whose repository digest remains
+`golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`,
+but its effective tool reports `go1.24.13 linux/amd64`, CGO enabled. The
+container had zero restarts and was not OOM-killed.
+
+The exact r4 candidate was then compared against the formal v0.10.11 release
+source archive
+`168d06b2967f07f5dda4f418b963d94f4b28e9947c808df4751062bef58c294c`
+in a 455.8-second full r5 matrix. The benchmark contract helper and runner
+hashes are respectively:
+
+```text
+benchmark contract:
+13b48a355929a3e66346611de7c24f56ea6d7804887d107bdd93dfb47b67ecca
+
+full r5 runner:
+c6c529bcf0c4728b99d795dba8180f7e02c19bcf1f69b43d756ae10ff12a89df
+
+full r5 evidence archive:
+f7f41aa09f05f9fda3abd3531c512424f4590f4dd3ffc1311a96e8080207bcb8
+```
+
+All 26 independent full-matrix status files are zero: source identity,
+secret scan, gofmt, focused tests, model-agnostic/TTFT/cache-cold contract, vet,
+full tests, targeted and full race, build, predictive simulation, KV simulation
+and performance, four goodput orders, the exact goodput contract, four benchmark
+orders, benchmark contract, builder-local image build, production image
+contract, and image inspection. The downloaded archive SHA-256 and every entry
+in its internal `SHA256SUMS` were independently revalidated locally.
+
+The candidate and v0.10.11 baseline goodput summaries are byte-identical in
+both execution orders. The aggregate predictive result remains 81 arrivals, 59
+admitted, 53 completed, 53 SLO-compliant completions, 45,216 completion-token
+goodput, zero TPS/TPOT/KV/preemption-proxy violations, zero false accepts, three
+false denies, and zero reservation leaks. The non-predictive current policy
+remains 39,840 completion-token goodput and 37 false denies. Sparse low flow,
+drain recovery, completion-before-poll, cancellation, local reject, timeout,
+upstream failure, stale/reset epoch, repeated-prefix cache-cold charging, and
+calibration-shift scenarios all preserve progress. TTFT violations remain
+diagnostic and never count as protected-QoS failures.
+
+The paired five-sample, two-order benchmark contract passed without allocation
+regression. Representative candidate medians are:
+
+```text
+fixed lexical hint:
+1 KiB   90.840 ns/op, 0 B/op, 0 allocs/op
+64 KiB  93.360 ns/op, 0 B/op, 0 allocs/op
+2 MiB   88.350 ns/op, 0 B/op, 0 allocs/op
+
+complete JSON estimator:
+1 KiB      273.400 ns/op, 0 B/op, 0 allocs/op
+64 KiB       1.983 us/op, 0 B/op, 0 allocs/op
+2 MiB        63.461 us/op, 0 B/op, 0 allocs/op
+
+calibrated scheduler prediction:
+1.746 us/op, 128 B/op, 1 alloc/op
+
+complete approximate admission lifecycle:
+1.655 us/op, 912 B/op, 2 allocs/op
+```
+
+The deferred-outcome lifecycle combined paired timing ratio is `1.044841`,
+below the 1.10 gate, with two allocations in both orders; every other
+prediction/admission relative timing gate also passed. These are builder CPU
+microbenchmarks, not GPU or end-to-end service latency.
+
+The builder-local production image contract passed with OCI version `0.10.12`.
+The local image ID is
+`sha256:f655a414c1517965a4fc30edeff1a7e9237e8a96834fe3a1e637e6620d9631fc`;
+the extracted `/phala-inference-guard` SHA-256 is
+`2e814532cd58cf5fbb8f573cb166275b8a7d4769cffedc5980a69afccac12604`.
+This image has no registry digest and is not a published or deployed artifact.
+
+##### v0.10.12 final source review pass 1 — model and causality, completed 2026-08-05
+
+The final causal review verified the complete path: an approximate request-size
+interval enters the atomic post-admit prediction; the latest marginal admission
+contains earlier pending pressure; only an exact aggregate match is observable;
+one stable episode produces one future-only feedback outcome; scheduler pressure
+compatibility changes only later decisions. Same-count lower-token recovery and
+equal/higher-pressure retreat prevent both a global lock and an unsafe
+underreaction. Genuine distinct zero-TPS episodes remain visible. No threshold
+was globally tightened, and deterministic goodput/false-deny results are exactly
+unchanged from v0.10.11.
+
+##### v0.10.12 final source review pass 2 — lifecycle, efficiency, and SOLID, completed 2026-08-05
+
+The lifecycle review verified unforwarded reservations never enter pending
+attribution; every forwarded, complete, cancelled, disconnected, failed,
+timed-out, expired, or resource-released path advances or closes the pending
+episode exactly once; duplicate terminal calls do not advance it; and an
+already prefill-complete terminal release does not manufacture another episode.
+Fetch failure, waiting, preemption, learner rejection, and learner panic cannot
+duplicate evidence or leak a reservation. The tracker is two fixed numeric
+fields, Manager reuses its existing locked scan, metrics add one fixed result
+series, and no request-cardinality state or hot-path tokenizer work was added.
+Targeted and full race, full tests, and benchmark/allocation gates found no
+remaining lifecycle, race, allocation, or responsibility-boundary defect.
+
+##### v0.10.12 final source review pass 3 — evidence and release boundary, completed 2026-08-05
+
+The evidence review verified that every currently modified executable, test,
+README, Docker, and pre-evidence plan file is byte-identical to the builder r4
+candidate. v0.10.11 evidence was used only as a baseline, never as v0.10.12
+proof. Full r5 re-created all applicable test, race, simulation, benchmark, and
+builder-image gates from exact source and retained original hashes. This
+documentation append is non-executable; before commit/tag, a final exact-archive
+provenance supplement must prove executable paths remain byte-identical to r4
+and rerun source identity plus secret scan. The completed matrix authorizes
+release packaging and a new immutable registry image, not deployment readiness,
+Router enablement, or production success.
+
+The next fixed order is: create and validate that documentation-only provenance
+supplement; freeze the final source archive; commit; create annotated tag
+`v0.10.12`; push only to `pig-origin`; publish and pull-verify the immutable
+registry image; then use only Router-disabled `use1-cb` for shadow and enforce
+gates. Router may enable only `use1-cb` after a fresh preflight, and the
+continuous 30-minute origin-aware canary starts only after jointly proven routed
+traffic. Any fatal condition still disables only `use1-cb`.
+
+##### v0.10.12 documentation-only provenance supplement — completed 2026-08-05
+
+The final pre-supplement worktree was frozen as an a48cbb0-relative release
+patch and reconstructed on the approved remote builder. The immutable inputs
+were:
+
+```text
+base a48cbb0 archive:
+b0eb009eaf078d22beaa938220be55f769f94279c114d4427bf67003d93ea91c
+
+release r6 patch:
+63420d2283c51493bf564d8a423c9261246054cefce0e29eb751da17d739245d
+
+successful provenance r6c runner:
+0c65c88d01c95c9d87061416152d0e3959d55526af43c98aa00593f492cd6702
+```
+
+Two earlier provenance harness attempts are retained rather than erased. The
+first exited 127 while collecting environment metadata because it invoked
+`git` on the minimal builder host instead of inside `pig-v01011-builder`; it
+never reached patch application or source comparison. The second successfully
+applied the same release patch and proved the full-tree diff contained exactly
+the authoritative plan, then its redundant explicit-path check treated the
+repository's intentionally absent `native/` path as an error. r6c changed only
+the harness: Git runs inside the mounted builder container, and an explicit
+path is equal when absent on both sides while any one-sided addition or removal
+still fails. The release patch and candidate source did not change between
+those attempts.
+
+r6c exited successfully. Its full recursive comparison against the exact r4
+candidate produced one and only one line: this
+`docs/MODEL_AGNOSTIC_APPROXIMATE_ADMISSION_V0_10_PLAN.md` file differed.
+Explicit `cmd`, `internal`, `go.mod`, `go.sum`, `Dockerfile`, `README.md`,
+`tools`, and `scenarios` comparisons were byte-identical; `native` was absent
+on both sides. Independent full manifests with the plan removed were
+byte-identical and contained the same number of files. Input identity, patch
+application plus reverse-check, exact version/predictor/estimator contract,
+secret scan including docs, and builder `gofmt -d` all exited zero. The builder
+container still reported running, zero restarts, and not OOM-killed.
+
+The pre-supplement source and evidence artifacts are:
+
+```text
+release r6c source archive:
+2807a16005e14cd22a3e1977fe45ef63a152c091c5726be3cc265aa01203f6b9
+
+provenance r6c evidence archive:
+f20583e7eff59d623b93f1b2cb6fdf30872434d2680723b89b0e7a3c03f1e5dd
+```
+
+Both downloaded archive hashes match the builder. All 33 entries in the
+evidence archive's internal `SHA256SUMS` were independently revalidated, and
+all eight stage statuses are zero: input contract, patch application,
+full-tree plan-only diff, explicit validated-source identity, source contract,
+secret scan, gofmt, and plan-excluded manifest identity.
+
+This evidence paragraph necessarily postdates the archive whose hash it
+records and therefore changes only the same authoritative plan document. It
+does not alter or invalidate the executable/test/README/Docker/module/tool
+manifest proven by r4, full r5, and provenance r6c. Before commit, the current
+tree must again be compared with r6c and must still differ only in this plan;
+the exact commit and annotated tag then become the final source identity. No
+later executable or release-identity edit may redefine that tagged source
+without a new versioned validation cycle. Post-tag live evidence may be
+appended only in a separate documentation commit that explicitly preserves the
+immutable tag boundary.

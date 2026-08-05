@@ -180,6 +180,7 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 		Accepted:                 snapshot.ExistingPrefill.Accepted,
 		Rejected:                 snapshot.ExistingPrefill.Rejected,
 		Censored:                 snapshot.ExistingPrefill.Censored,
+		Deduplicated:             snapshot.ExistingPrefill.Deduplicated,
 		LastExistingUserTPS:      snapshot.ExistingPrefill.LastExistingUserTPS,
 		LastExistingUserTPSValid: snapshot.ExistingPrefill.LastExistingUserTPSValid,
 		LastExploratory:          snapshot.ExistingPrefill.LastExploratory,

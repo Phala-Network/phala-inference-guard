@@ -73,6 +73,30 @@ type recordingAggregateThroughputLearner struct {
 	err      error
 }
 
+type panickingLearnerIdentity struct{}
+
+type panickingStableWindowLearner struct{}
+
+func (panickingLearnerIdentity) Identity() runtimepredictive.ModelIdentity {
+	panic("injected learner identity panic")
+}
+
+func (panickingLearnerIdentity) ObserveExistingPrefill(runtimepredictive.ExistingPrefillOutcome) error {
+	return nil
+}
+
+func (panickingStableWindowLearner) Identity() runtimepredictive.ModelIdentity {
+	return adapterTestIdentity()
+}
+
+func (panickingStableWindowLearner) ObserveExistingPrefill(runtimepredictive.ExistingPrefillOutcome) error {
+	panic("injected existing-prefill learner panic")
+}
+
+func (panickingStableWindowLearner) ObserveAggregateThroughput(runtimepredictive.AggregateThroughputOutcome) error {
+	panic("injected aggregate-throughput learner panic")
+}
+
 func (*recordingExistingPrefillLearner) Identity() runtimepredictive.ModelIdentity {
 	return adapterTestIdentity()
 }
@@ -134,30 +158,36 @@ func (c *stablePrefillTestCoordinator) ReconcileSample(sample runtimepredictive.
 		ForwardedPendingPrefills:           c.pending,
 		ForwardedPendingPrefillTokens:      c.pendingTokens,
 		ForwardedPendingPrefillExploratory: c.exploratory,
+		ForwardedPendingPrefillSequence:    c.sequence,
 		Virtual:                            domainpredictive.VirtualStateInterval{Lower: state, Upper: state},
 	}
-	if c.pending == 1 && raw.DecodeSequences >= 1 && c.pendingTokens > 0 {
-		existingContext := raw.ActiveContextTokens - c.pendingTokens
+	if c.pending > 0 && raw.DecodeSequences >= c.pending && c.pendingTokens > 0 {
+		latestTokens := c.pendingTokens / int64(c.pending)
+		if latestTokens <= 0 {
+			latestTokens = c.pendingTokens
+		}
+		existingContext := raw.ActiveContextTokens - latestTokens
 		if existingContext < 0 {
 			existingContext = 0
 		}
-		existingPhysical := raw.PhysicalKVUpper - c.pendingTokens
+		existingPhysical := raw.PhysicalKVUpper - latestTokens
 		if existingPhysical < 0 {
 			existingPhysical = 0
 		}
-		existingActive := raw.ActiveKVUpper - c.pendingTokens
+		existingActive := raw.ActiveKVUpper - latestTokens
 		if existingActive < 0 {
 			existingActive = 0
 		}
 		c.manager.ForwardedPendingPrefillFeatures = runtimepredictive.SchedulerFeatures{
 			ExistingDecodeSequences:         raw.DecodeSequences - 1,
 			DecodeSequences:                 raw.DecodeSequences,
-			ExistingPendingPrefillSequences: 0,
-			PendingPrefillSequences:         1,
+			ExistingPendingPrefillSequences: c.pending - 1,
+			PendingPrefillSequences:         c.pending,
 			ExistingActiveContextTokens:     existingContext,
+			ExistingUncachedPrefill:         c.pendingTokens - latestTokens,
 			ExistingPhysicalKVUpper:         existingPhysical,
 			ExistingActiveKVUpper:           existingActive,
-			RequestComplexityTokensUpper:    c.pendingTokens,
+			RequestComplexityTokensUpper:    latestTokens,
 			ActiveContextTokens:             raw.ActiveContextTokens,
 			UncachedPrefillTokens:           c.pendingTokens,
 			PhysicalKVUpper:                 raw.PhysicalKVUpper,
@@ -186,6 +216,24 @@ func (c *stablePrefillTestCoordinator) SetExploratory(exploratory bool) {
 	c.mu.Lock()
 	c.exploratory = exploratory
 	c.mu.Unlock()
+}
+
+func TestPredictivePrefillEpisodeTrackerBoundsAndSeparatesOrigins(t *testing.T) {
+	var tracker predictivePrefillEpisodeTracker
+	manager := predictivePrefillEpisodeIdentity{Origin: predictivePrefillEpisodeManager, Sequence: 7}
+	shadow := predictivePrefillEpisodeIdentity{Origin: predictivePrefillEpisodeShadow, Sequence: 7}
+	if tracker.MarkEmitted(predictivePrefillEpisodeIdentity{}) {
+		t.Fatal("invalid episode identity was emitted")
+	}
+	if !tracker.MarkEmitted(manager) || tracker.MarkEmitted(manager) {
+		t.Fatal("manager episode was not emitted exactly once")
+	}
+	if !tracker.MarkEmitted(shadow) || tracker.MarkEmitted(shadow) {
+		t.Fatal("same numeric sequence from a distinct origin was not isolated")
+	}
+	if !tracker.MarkEmitted(predictivePrefillEpisodeIdentity{Origin: predictivePrefillEpisodeManager, Sequence: 8}) {
+		t.Fatal("new manager episode was not retained after a shadow episode")
+	}
 }
 
 func (c *learningInvalidationCoordinator) StartSampleWindow() uint64 {
@@ -817,17 +865,128 @@ func TestPredictiveVLLMObserverLearnsZeroTPSOnlyFromStablePendingPrefillWindow(t
 	clock.Advance(time.Second)
 	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true))
 	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	observer.poll(context.Background())
 
 	outcomes := learner.Outcomes()
 	if len(outcomes) != 1 {
-		t.Fatalf("stable prefill outcomes = %d, want 1", len(outcomes))
+		t.Fatalf("one stable prefill episode produced %d outcomes across repeated polls, want 1", len(outcomes))
 	}
 	if outcomes[0].ExistingUserTPS != 0 || outcomes[0].ExistingDecodeSequences != 1 || outcomes[0].PendingPrefillSequences != 1 || outcomes[0].PendingPrefillTokens != 100 || !outcomes[0].Exploratory {
 		t.Fatalf("stable zero-generation outcome = %+v", outcomes[0])
 	}
 	stats := observer.ExistingPrefillTelemetry()
-	if stats.Accepted != 1 || stats.Rejected != 0 || stats.Censored != 0 || !stats.LastExistingUserTPSValid || stats.LastExistingUserTPS != 0 || !stats.LastExploratory {
+	if stats.Accepted != 1 || stats.Rejected != 0 || stats.Censored != 0 || stats.Deduplicated != 1 || !stats.LastExistingUserTPSValid || stats.LastExistingUserTPS != 0 || !stats.LastExploratory {
 		t.Fatalf("stable prefill telemetry = %+v", stats)
+	}
+}
+
+func TestPredictiveVLLMObserverRejectsPanickingLearnerIdentity(t *testing.T) {
+	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
+		MetricsURL:             "http://127.0.0.1:1/metrics",
+		ServedModel:            "google/gemma-4-fixture",
+		MaximumKVTokens:        1_000,
+		BlockSize:              4,
+		PollInterval:           time.Second,
+		MaximumAge:             2 * time.Second,
+		RequestTimeout:         time.Second,
+		Coordinator:            &stablePrefillTestCoordinator{},
+		ExistingPrefillLearner: panickingLearnerIdentity{},
+	})
+	if err == nil || observer != nil {
+		t.Fatalf("panicking learner identity was accepted: observer=%v err=%v", observer, err)
+	}
+}
+
+func TestPredictiveVLLMObserverContainsStableWindowLearnerPanics(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(90_050, 0)}
+	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	coordinator := &stablePrefillTestCoordinator{}
+	coordinator.Set(12, 1, 100)
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+	observer.coordinatorSnapshot = coordinator
+	observer.existingPrefillLearner = panickingStableWindowLearner{}
+
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	observer.poll(context.Background())
+	if stats := observer.ExistingPrefillTelemetry(); stats.Accepted != 0 || stats.Rejected != 1 {
+		t.Fatalf("existing-prefill learner panic telemetry = %+v", stats)
+	}
+
+	coordinator.Set(13, 0, 0)
+	observer.aggregateThroughputLearner = panickingStableWindowLearner{}
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 1, 0, 0, 110, true))
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 1, 0, 0, 120, true))
+	observer.poll(context.Background())
+}
+
+func TestPredictiveVLLMObserverLearnsAggregateConcurrentPrefillPressureOnce(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(90_100, 0)}
+	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000_000, 0.70, 3, 0, 0, 100, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	coordinator := &stablePrefillTestCoordinator{}
+	coordinator.Set(17, 2, 682_000)
+	learner := &recordingExistingPrefillLearner{}
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000_000, coordinator, clock.Now)
+	observer.coordinatorSnapshot = coordinator
+	observer.existingPrefillLearner = learner
+
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	observer.poll(context.Background())
+
+	outcomes := learner.Outcomes()
+	if len(outcomes) != 1 || outcomes[0].ExistingDecodeSequences != 1 ||
+		outcomes[0].PendingPrefillSequences != 2 || outcomes[0].PendingPrefillTokens != 682_000 ||
+		outcomes[0].ExistingUserTPS != 0 {
+		t.Fatalf("aggregate concurrent-prefill outcomes = %+v", outcomes)
+	}
+	if stats := observer.ExistingPrefillTelemetry(); stats.Accepted != 1 || stats.Deduplicated != 1 || stats.Censored != 0 {
+		t.Fatalf("aggregate concurrent-prefill telemetry = %+v", stats)
+	}
+}
+
+func TestPredictiveVLLMObserverRetainsDistinctStablePrefillEpisodes(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(90_115, 0)}
+	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	coordinator := &stablePrefillTestCoordinator{}
+	coordinator.Set(21, 1, 100)
+	learner := &recordingExistingPrefillLearner{}
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+	observer.coordinatorSnapshot = coordinator
+	observer.existingPrefillLearner = learner
+
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	observer.poll(context.Background())
+	coordinator.Set(22, 0, 0)
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 1, 0, 0, 100, true))
+	observer.poll(context.Background())
+	coordinator.Set(23, 1, 100)
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true))
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	observer.poll(context.Background())
+
+	outcomes := learner.Outcomes()
+	if len(outcomes) != 2 || outcomes[0].ExistingUserTPS != 0 || outcomes[1].ExistingUserTPS != 0 {
+		t.Fatalf("distinct stable prefill episodes = %+v", outcomes)
+	}
+	if stats := observer.ExistingPrefillTelemetry(); stats.Accepted != 2 || stats.Deduplicated != 0 {
+		t.Fatalf("distinct stable prefill telemetry = %+v", stats)
 	}
 }
 
@@ -1255,6 +1414,120 @@ func TestPredictiveVLLMObserverFetchFailureClearsPendingPrefillBaseline(t *testi
 	}
 }
 
+func TestPredictiveVLLMObserverDoesNotReemitEpisodeAfterFetchFailure(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(90_900, 0)}
+	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	coordinator := &stablePrefillTestCoordinator{}
+	coordinator.Set(14, 1, 100)
+	learner := &recordingExistingPrefillLearner{}
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+	observer.coordinatorSnapshot = coordinator
+	observer.existingPrefillLearner = learner
+
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	fixture.Set("invalid metrics")
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true))
+	observer.poll(context.Background())
+	clock.Advance(time.Second)
+	observer.poll(context.Background())
+
+	if outcomes := learner.Outcomes(); len(outcomes) != 1 {
+		t.Fatalf("one episode was re-emitted after fetch failure: %+v", outcomes)
+	}
+	if stats := observer.ExistingPrefillTelemetry(); stats.Accepted != 1 || stats.Deduplicated != 1 || stats.Censored != 1 {
+		t.Fatalf("fetch-failure episode telemetry = %+v", stats)
+	}
+}
+
+func TestPredictiveVLLMObserverDoesNotReemitEpisodeAfterWaitingOrPreemption(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		waiting     int
+		preemptions uint64
+	}{
+		{name: "waiting", waiting: 1},
+		{name: "preemption", preemptions: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock := &adapterTestClock{now: time.Unix(90_950, 0)}
+			fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true)}
+			server := httptest.NewServer(fixture)
+			defer server.Close()
+			coordinator := &stablePrefillTestCoordinator{}
+			coordinator.Set(15, 1, 100)
+			learner := &recordingExistingPrefillLearner{}
+			observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+			observer.coordinatorSnapshot = coordinator
+			observer.existingPrefillLearner = learner
+
+			observer.poll(context.Background())
+			clock.Advance(time.Second)
+			observer.poll(context.Background())
+			clock.Advance(time.Second)
+			fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, test.waiting, test.preemptions, 100, true))
+			observer.poll(context.Background())
+			clock.Advance(time.Second)
+			fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, 0, test.preemptions, 100, true))
+			observer.poll(context.Background())
+			if test.waiting > 0 {
+				clock.Advance(time.Second)
+				observer.poll(context.Background())
+			}
+
+			if outcomes := learner.Outcomes(); len(outcomes) != 1 {
+				t.Fatalf("one episode was re-emitted after %s: %+v", test.name, outcomes)
+			}
+			if stats := observer.ExistingPrefillTelemetry(); stats.Accepted != 1 || stats.Deduplicated != 1 || stats.Censored != 1 {
+				t.Fatalf("%s episode telemetry = %+v", test.name, stats)
+			}
+		})
+	}
+}
+
+func TestPredictiveVLLMObserverRequiresDedicatedManagerPrefillEpisodeIdentity(t *testing.T) {
+	now := time.Unix(90_975, 0)
+	features := runtimepredictive.SchedulerFeatures{
+		ExistingDecodeSequences: 1, DecodeSequences: 2,
+		PendingPrefillSequences: 1, RequestComplexityTokensUpper: 100,
+		ActiveContextTokens: 100, UncachedPrefillTokens: 100,
+		PhysicalKVUpper: 100, ActiveKVUpper: 100,
+	}
+	manager := runtimepredictive.Snapshot{
+		EventSequence:                        17,
+		ForwardedPendingPrefills:             1,
+		ForwardedPendingPrefillTokens:        100,
+		ForwardedPendingPrefillFeatures:      features,
+		ForwardedPendingPrefillFeaturesValid: true,
+		// ForwardedPendingPrefillSequence intentionally remains zero. The
+		// unrelated Manager event sequence must never substitute for it.
+	}
+	observer := &predictiveVLLMObserver{
+		maximumAge:              time.Minute,
+		existingPrefillLearner:  &recordingExistingPrefillLearner{},
+		existingPrefillIdentity: adapterTestIdentity(),
+		coordinatorSnapshot:     &stablePrefillTestCoordinator{},
+		prefillWindow: &predictiveStablePrefillWindow{
+			ObservedAt: now, Generation: 100, Running: 2, EventSequence: 17, Manager: manager,
+		},
+	}
+	current := predictiveStablePrefillWindow{
+		ObservedAt: now.Add(time.Second), Generation: 100, Running: 2, EventSequence: 17, Manager: manager,
+	}
+	if outcome, candidate := observer.qualifyStablePrefillOutcomeLocked(current, 17, 17, 0, 0); candidate {
+		t.Fatalf("manager event sequence substituted for a missing prefill episode: %+v", outcome)
+	}
+	if observer.prefillStats.Censored != 1 || observer.prefillStats.Deduplicated != 0 {
+		t.Fatalf("missing manager episode identity telemetry = %+v", observer.prefillStats)
+	}
+}
+
 func TestPredictiveVLLMObserverCensorsAmbiguousPrefillWindows(t *testing.T) {
 	for _, test := range []struct {
 		name              string
@@ -1348,16 +1621,18 @@ func TestPredictiveVLLMMetricsURLRequiresExactlyOneUpstream(t *testing.T) {
 
 func newManualPredictiveVLLMObserver(metricsURL string, maximumKV int64, coordinator predictiveSampleCoordinator, now func() time.Time) *predictiveVLLMObserver {
 	return &predictiveVLLMObserver{
-		metricsURL:          metricsURL,
-		modelIdentitySHA256: predictiveModelIdentitySHA256("google/gemma-4-fixture"),
-		maximumKVTokens:     maximumKV,
-		blockSize:           4,
-		pollInterval:        time.Second,
-		maximumAge:          10 * time.Second,
-		preemptionCooldown:  5 * time.Second,
-		coordinator:         coordinator,
-		now:                 now,
-		client:              &http.Client{Timeout: time.Second},
+		metricsURL:                  metricsURL,
+		modelIdentitySHA256:         predictiveModelIdentitySHA256("google/gemma-4-fixture"),
+		maximumKVTokens:             maximumKV,
+		blockSize:                   4,
+		pollInterval:                time.Second,
+		maximumAge:                  10 * time.Second,
+		preemptionCooldown:          5 * time.Second,
+		coordinator:                 coordinator,
+		existingPrefillIdentity:     adapterTestIdentity(),
+		aggregateThroughputIdentity: adapterTestIdentity(),
+		now:                         now,
+		client:                      &http.Client{Timeout: time.Second},
 	}
 }
 

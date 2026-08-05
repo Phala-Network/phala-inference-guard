@@ -165,18 +165,19 @@ type SampleWindow struct {
 }
 
 type Manager struct {
-	mu                 sync.Mutex
-	manifestID         string
-	intakeOpen         bool
-	base               domain.VirtualStateInterval
-	constraints        domain.Constraints
-	scheduler          Scheduler
-	reservations       map[string]reservation
-	retired            retiredReservationQueue
-	retiredEvictions   uint64
-	eventSequence      uint64
-	lastSampleFinished uint64
-	hasSample          bool
+	mu                     sync.Mutex
+	manifestID             string
+	intakeOpen             bool
+	base                   domain.VirtualStateInterval
+	constraints            domain.Constraints
+	scheduler              Scheduler
+	reservations           map[string]reservation
+	retired                retiredReservationQueue
+	retiredEvictions       uint64
+	eventSequence          uint64
+	pendingPrefillSequence uint64
+	lastSampleFinished     uint64
+	hasSample              bool
 }
 
 type Snapshot struct {
@@ -189,6 +190,7 @@ type Snapshot struct {
 	ForwardedPendingPrefillFeatures      SchedulerFeatures
 	ForwardedPendingPrefillFeaturesValid bool
 	ForwardedPendingPrefillExploratory   bool
+	ForwardedPendingPrefillSequence      uint64
 	EventSequence                        uint64
 	RetiredReservations                  int
 	RetiredEvictions                     uint64
@@ -353,6 +355,7 @@ func (m *Manager) MarkForwarded(requestID string) bool {
 		return false
 	}
 	m.eventSequence++
+	m.advancePendingPrefillEpisodeLocked()
 	item.Forwarded = true
 	item.ForwardedSequence = m.eventSequence
 	m.reservations[requestID] = item
@@ -370,6 +373,7 @@ func (m *Manager) MarkPrefillComplete(requestID string) bool {
 		return false
 	}
 	m.eventSequence++
+	m.advancePendingPrefillEpisodeLocked()
 	item.PrefillComplete = true
 	item.PrefillCompletedSequence = m.eventSequence
 	m.reservations[requestID] = item
@@ -468,6 +472,9 @@ func (m *Manager) ReleaseResources(requestID string) (outcomeInterfered bool, re
 
 func (m *Manager) terminateReservationLocked(requestID string, item reservation, cause TerminalCause) {
 	m.eventSequence++
+	if item.Forwarded && !item.PrefillComplete {
+		m.advancePendingPrefillEpisodeLocked()
+	}
 	item.TerminalCause = cause
 	if item.Assimilation == assimilationAbsorbed && item.PrefillComplete {
 		materialized := materializedStateFloor(item.Cost)
@@ -481,6 +488,16 @@ func (m *Manager) terminateReservationLocked(requestID string, item reservation,
 		}
 	}
 	delete(m.reservations, requestID)
+}
+
+func (m *Manager) advancePendingPrefillEpisodeLocked() {
+	// Zero means that no forwarded-prefill episode has existed yet. Preserve
+	// that sentinel across the practically unreachable uint64 wrap boundary so
+	// every real pending-set transition continues to have a valid identity.
+	m.pendingPrefillSequence++
+	if m.pendingPrefillSequence == 0 {
+		m.pendingPrefillSequence = 1
+	}
 }
 
 func (m *Manager) InvalidateLearning() bool {
@@ -593,32 +610,41 @@ func (m *Manager) Snapshot() Snapshot {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := Snapshot{
-		IntakeOpen:          m.intakeOpen,
-		Reservations:        len(m.reservations),
-		EventSequence:       m.eventSequence,
-		RetiredReservations: m.retired.Len(),
-		RetiredEvictions:    m.retiredEvictions,
-		Virtual:             m.virtualStateIntervalLocked(),
+		IntakeOpen:                      m.intakeOpen,
+		Reservations:                    len(m.reservations),
+		ForwardedPendingPrefillSequence: m.pendingPrefillSequence,
+		EventSequence:                   m.eventSequence,
+		RetiredReservations:             m.retired.Len(),
+		RetiredEvictions:                m.retiredEvictions,
+		Virtual:                         m.virtualStateIntervalLocked(),
 	}
+	var latestForwardedSequence uint64
+	var latestFeatures SchedulerFeatures
+	var latestFeaturesValid bool
+	var latestExploratory bool
 	for _, item := range m.reservations {
 		result.ReservedPhysicalKV += item.Cost.KV.PhysicalKVUpper
 		result.ReservedActiveKV += item.Cost.KV.ActiveKVUpper
 		if item.Forwarded && !item.PrefillComplete {
 			result.ForwardedPendingPrefills++
 			result.ForwardedPendingPrefillTokens = addInt64Saturating(result.ForwardedPendingPrefillTokens, item.Cost.UncachedPrefillUpper)
-			if result.ForwardedPendingPrefills == 1 {
-				result.ForwardedPendingPrefillFeatures, result.ForwardedPendingPrefillFeaturesValid = pendingPrefillFeatures(item.Prediction, item.Cost)
-				result.ForwardedPendingPrefillExploratory = item.Prediction.Exploratory
-			} else {
-				// Concurrent prefills cannot be attributed to one candidate's
-				// pre-forward feature vector without retaining request identity or
-				// guessing materialization order. Keep the aggregate accounting, but
-				// censor this window for learning.
-				result.ForwardedPendingPrefillFeatures = SchedulerFeatures{}
-				result.ForwardedPendingPrefillFeaturesValid = false
-				result.ForwardedPendingPrefillExploratory = false
+			if item.ForwardedSequence > latestForwardedSequence {
+				latestForwardedSequence = item.ForwardedSequence
+				latestFeatures, latestFeaturesValid = pendingPrefillFeatures(item.Prediction, item.Cost)
+				latestExploratory = predictionExistingTPSExploratory(item.Prediction)
 			}
 		}
+	}
+	// The latest forwarded prefill is the marginal admission whose immutable
+	// prediction includes all earlier pending work. It is attributable only
+	// when that post-admit feature vector still exactly matches the active
+	// aggregate pending count and tokens. This preserves multi-prefill pressure
+	// without retaining request identity or guessing materialization order.
+	if latestFeaturesValid && latestFeatures.PendingPrefillSequences == result.ForwardedPendingPrefills &&
+		latestFeatures.UncachedPrefillTokens == result.ForwardedPendingPrefillTokens {
+		result.ForwardedPendingPrefillFeatures = latestFeatures
+		result.ForwardedPendingPrefillFeaturesValid = true
+		result.ForwardedPendingPrefillExploratory = latestExploratory
 	}
 	return result
 }

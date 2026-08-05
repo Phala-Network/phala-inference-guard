@@ -99,6 +99,7 @@ type predictiveExistingPrefillObservationSnapshot struct {
 	Accepted                 uint64
 	Rejected                 uint64
 	Censored                 uint64
+	Deduplicated             uint64
 	LastExistingUserTPS      float64
 	LastExistingUserTPSValid bool
 	LastExploratory          bool

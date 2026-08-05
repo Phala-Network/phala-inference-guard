@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.10.11 model-agnostic predictive admission
+### v0.10.12 model-agnostic predictive admission
 
-PIG v0.10.11 can estimate request size locally and predict the post-admit
+PIG v0.10.12 can estimate request size locally and predict the post-admit
 KV/TPS/TPOT/preemption state before forwarding to a vLLM upstream. TTFT is
 still measured and learned for diagnosis, but it is observation-only and can
 never reject a request:
@@ -180,7 +180,7 @@ payload-free observation record so qualified completion feedback improves only
 later predictions. `enforce` rejects a non-fit or unknown decision before
 upstream forwarding with the normal OpenAI-compatible PIG 429 response.
 Predictive `shadow` and `enforce` require `DYNAMIC_TTFT_ENABLED=false`; this is
-also the v0.10.11 default. Legacy dynamic TTFT limiting remains available only
+also the v0.10.12 default. Legacy dynamic TTFT limiting remains available only
 as an explicit opt-in while predictive admission is `off`.
 
 This path is model-family neutral: it has no exact model tokenizer, chat
@@ -208,6 +208,20 @@ TPOT learning quantile until sustained newer healthy evidence, ordinary age,
 epoch invalidation, or bounded eviction removes it. Metrics split every hard
 dimension into exploratory and non-exploratory origin without request, user,
 model, or prompt labels; feedback still changes only later predictions.
+
+Forwarded-prefill learning uses a bounded, payload-free episode identity.
+Repeated stable metrics polls emit at most one outcome for the same episode,
+while genuinely distinct episodes remain independent evidence. When multiple
+prefills overlap, the latest marginal admission may attribute the complete
+aggregate pending count and approximate uncached-token pressure only when its
+immutable pre-forward feature vector exactly matches the active aggregate.
+Ambiguous materialization is censored instead of guessed. Existing-user TPS
+keeps dimension-specific exploratory provenance, so maturity in another QoS
+dimension cannot relabel a cold existing-user frontier. Adverse aggregate
+prefill evidence applies monotonically to compatible equal-or-higher pressure;
+it does not globally close smaller, lower-pressure traffic. Metrics expose
+accepted, rejected, censored, and deduplicated prefill outcomes without adding
+request IDs or unbounded labels.
 
 Backend-provided response mean-ITL or generation duration is qualified QoS
 feedback after structural validation. When stock vLLM does not return those
@@ -290,7 +304,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.11
+    image: ghcr.io/phala-network/phala-inference-guard:v0.10.12
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia
