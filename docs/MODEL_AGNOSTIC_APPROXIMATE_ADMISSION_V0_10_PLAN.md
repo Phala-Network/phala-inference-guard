@@ -8233,8 +8233,13 @@ remote and local SHA-256
 ```
 
 Independent local extraction repeated all 11 checksums and the binary hash.
-The official registry image is therefore eligible to generate a fresh one-field
-Compose candidate for the authorized Router-disabled `use1-cb` target. This
+The official registry image is therefore eligible to generate a fresh minimal
+Compose candidate for the authorized Router-disabled `use1-cb` target. Because
+the live rollback Compose is v0.10.10 `enforce` while the required new-image
+validation order begins in `shadow`, that first candidate may change exactly
+two values: the immutable PIG digest and `PREDICTIVE_ADMISSION_MODE` from
+`enforce` to `shadow`. Every vLLM, Router, TTFT, cache, KV, and other Compose
+value must remain byte-identical. This
 does not itself prove Compose integration, CVM deployment, backend readiness,
 shadow/enforce behavior, Router publication, or real-traffic safety. Those
 remain ordered live gates; `use1-cb` is still disabled at this checkpoint and
