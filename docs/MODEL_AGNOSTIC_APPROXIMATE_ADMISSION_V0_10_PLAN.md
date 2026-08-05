@@ -8353,3 +8353,153 @@ deploy once, and then repeat readiness, protocol, pre-forward rejection,
 progressive learning, cancellation, lease expiry, origin parity, terminal-zero,
 and critical-log gates. No Router enablement or production-readiness conclusion
 follows from shadow alone; the Goal remains active.
+
+##### v0.10.11 Router-disabled enforce deployment and direct-live gates — complete 2026-08-05
+
+The enforce candidate was generated mechanically from fresh shadow-final r15
+and changed exactly one value, `PREDICTIVE_ADMISSION_MODE=shadow -> enforce`.
+Its SHA-256 is
+`dc09612d32beec12787e2b7ff811aeccaada536b3fa470c6b99c4eb6ed66452c`;
+reversing that one replacement reproduces the shadow SHA-256
+`645bf6790eec052e6b4e8636074210b1467b2424f066843bc2289403c1db3b24`
+byte-for-byte. Predeploy r17 proved the live shadow Compose had not drifted,
+the target was disabled and idle, terminal state was zero, the image was the
+tested immutable v0.10.11 digest, and KV-off, TTFT-off, and the five-second
+backpressure hold were unchanged. The one enforce Compose deploy ran from
+`2026-08-05T02:22:15.5532204Z` through `2026-08-05T02:26:43.6950152Z` and
+returned zero. The first approximately 20-second postdeploy snapshot r19 saw
+HTTP 503 and was retained only as startup evidence, not readiness or failure.
+
+Without another deploy, vLLM logged `Application startup complete` at
+`2026-08-05T02:33:10.630023583Z`. Fresh ready snapshot r20 and startup-log audit
+r21 then proved the exact enforce Compose, immutable image and image ID,
+expected model, authenticated models/PIG metrics/combined metrics/attestation
+HTTP 200, unauthenticated metrics HTTP 401, PIG v0.10.11 enforce identity,
+KV-off, TTFT protection off, terminal zero, restored `50/50` capacity, all six
+hard-origin series zero with exact dimension-sum parity, and 885 stable
+PIG/combined metric lines in parity. Logs contained exactly one vLLM startup,
+one PIG enforce startup, no vLLM/PIG/serial critical match, and no secret.
+
+Direct protocol gate r22 returned HTTP 200 for normal chat, streaming with
+final usage, a required tool call, strict JSON-Schema structured output, and
+CJK. Post-protocol snapshot r22a returned to terminal zero with origin counters
+unchanged and exact stable metrics parity. Request-scoped gate r23 then sent a
+1,600,121-byte request and received pre-forward HTTP 429 in `3,946.589 ms` with
+typed identity `kv_over_budget/static/request`. vLLM success and prompt-token
+counters did not move at the rejection point, Router backpressure remained
+inactive, a small recovery request returned HTTP 200, preemption delta was zero,
+and post-gate snapshot r23a retained terminal zero and all-zero origins. This
+large-body wall time remains an efficiency watchpoint and must not be confused
+with the lexical sampler's sub-microsecond CPU cost.
+
+The inherited progressive runner r24 is retained as a harness red. It scraped
+`/pig/metrics` before `/v1/metrics` and required volatile five-second lease
+gauges to be equal across the two non-atomic network samples. The direct sample
+captured `active=1/effective_limit=2`; the later combined sample captured the
+coherent expired state `active=0/effective_limit=50`. Activation identity,
+reservation state, rejection identity, hard counters, and the following fresh
+stable parity snapshot all agreed. This was a temporal fixture error, not a
+publication failure. Corrected runner
+`run-enforce-progressive-learning-v01011.ps1` has SHA-256
+`83f025bb12bc4adeba101fc68d8fdb0790004a1c2c1216794b0de4ec9609da09`;
+it captures the Router-visible combined endpoint first, accepts either a
+coherent active or expired later direct snapshot, and still requires exact
+cross-endpoint parity at final idle.
+
+Corrected r24b retained a second intentional harness red: it allowed only three
+training rounds and therefore stopped immediately after the qualified
+`new_decode` count moved `0 -> 1 -> 2 -> 3`, before issuing the next prediction
+that could consume the third sample. All three rounds used pre-forward
+load-scoped static protection, published Router-visible protection, completed
+their two admitted streams, produced no hard event or preemption, and returned
+to terminal zero. Immediate continuation r24c issued that missing next
+prediction. Its third same-shape request was admitted as
+`fit/calibrated/samples=3/exploratory=1`; all three 4,096-token streams and the
+small recovery request returned HTTP 200. Preemption, resource-release failure,
+and every hard dimension remained unchanged. The paired r24b/r24c evidence is
+the actual reject-to-learned-fit transition; the local `observed_reject_to_fit`
+field in r24c is false only because the three preceding rejects are retained in
+the separate r24b artifact.
+
+Cancellation gate r25 loaded two concurrent 1,536-token decodes with predictive
+and observed running both equal to two and waiting zero. Client cancellation
+took `26.230 ms`; all lifecycle state converged to terminal zero in
+`3,189.220 ms`; immediate recovery returned HTTP 200. Preemption and
+resource-release-failure deltas were zero and final PIG/combined metrics were in
+parity.
+
+The inherited fixed lease fixture r26 expected the third 1,536-token request to
+be rejected. The mature learner instead admitted it, which is desired learned
+throughput rather than a product failure. Several retained temporary runner
+iterations then exposed fixture assumptions rather than executable defects: a
+1.5-second process timeout mislabeled a delayed pre-forward 429 as forwarded;
+sequential metrics scrapes allowed earlier streams to finish; an exact
+`activations_delta=1` assertion rejected a coherent reactivation after network
+latency crossed lease expiry; and a later renewal was correctly admitted after
+the live load naturally recovered. Each red runner performed clean process and
+temporary-file cleanup; fresh evidence showed no hard event, preemption,
+reservation residue, or metrics drift. These reds are retained and are not
+counted as green gates.
+
+The final learned-frontier runner
+`run-enforce-frontier-lease-v01011.ps1` has SHA-256
+`63677a5c2ffad9bc75f364cb913e50da5fdfa10cff745bda4cfc84521af1a08a`.
+It uses `ignore_eos` only in the direct synthetic workload to keep two
+8,192-token streams live, discovers the actual learned frontier rather than
+fixing a request ordinal, validates the Router-consumed endpoint first, renews
+the finite lease, cancels only its own synthetic streams, and requires exact
+expiry and final stable parity. Clean r26h admitted two streams and rejected
+request three pre-forward as `new_tps_at_risk/calibrated/load`. Both
+Router-visible and direct metrics reported `active=1`, `applied=1`, and effective
+running/limit two. After the two clients were cancelled, an active-zero-running
+sentinel reported raw running zero, predictive/effective running one, and
+effective limit one. It expired to `active=0`, running zero, and exact `50/50`
+raw/effective capacity `3,018.689 ms` after the sentinel. Recovery returned HTTP
+200. Preemption, resource-release failure, and all hard-adverse deltas were zero;
+terminal state and PIG/combined parity passed.
+
+Final snapshot r27 retained the exact enforce Compose/image/model and unchanged
+Router digest, with `use1-cb` disabled, enabled set exactly `use1-19`, terminal
+zero, idle capacity `50/50`, six all-zero hard-origin counters with exact parity,
+and all endpoint/authentication checks green. Cumulative enforce evidence
+contained 59 predictive attempts (`42 fit / 17 risk / 0 unknown`), 17 enforced
+pre-forward rejects, 32 successful vLLM requests, 105,589 generated tokens,
+zero vLLM preemptions, zero waiting/preemption learning events, zero predictive
+or release failures, and zero hard-adverse evidence. Final 50-minute log audit
+r28 contained 379 vLLM lines and 495 PIG lines, exactly one vLLM startup and one
+PIG enforce startup, 468 all-zero hard-origin statuses, 467 backend-green
+statuses, no critical vLLM/PIG/serial match, and no secret. The exact v0.10.11
+snapshot validator passed r27 with the r28 runtime log.
+
+Three live-evidence review passes were repeated after the final snapshot:
+
+1. Model and causality: request sizing remains model-neutral and bounded;
+   request-scoped rejection was proven pre-forward by unchanged vLLM counters;
+   load-scoped static protection transitioned to calibrated exploratory fit only
+   after three qualified new-decode samples; the mature learned frontier admitted
+   useful concurrency before rejecting the next request; feedback affected only
+   later predictions.
+2. Safety and lifecycle: shadow/enforce admission, reservation, completion,
+   cancellation, request rejection, load rejection, Router publication, lease
+   renewal/reactivation, active-zero-running, exact expiry, recovery, terminal
+   reconciliation, preemption, hard-origin parity, and low-flow progress were
+   checked. No executable source, vLLM, Router, cache, TTFT, or other CVM changed
+   during these direct gates; only ignored local evidence runners were corrected.
+3. Evidence and release: every original harness red remains preserved beside its
+   corrected evidence, temporal scrapes are not claimed atomic, CPU histograms
+   are not presented as end-to-end latency, exact source/image/Compose/runtime
+   identities remain separated, final logs and metrics agree, and no direct gate
+   is being substituted for real routed-traffic evidence.
+
+The Router-disabled enforce gate is complete. This makes v0.10.11 eligible for
+a fresh origin-aware canary preflight and supervisor; it does not itself prove
+production readiness. `use1-cb` remains disabled, the Router enabled set remains
+exactly `use1-19`, and the Goal remains active. Before enabling the target, the
+supervisor must baseline all six exploratory/non-exploratory hard-origin
+counters, enforce exact per-dimension origin parity, validate the
+existing-prefill exploratory gauge, snapshot the exact Router config digest and
+enabled set, and arm automatic target-only disable conditions. The continuous
+30-minute timer starts only after Router enablement, supervisor sampling, and
+the first jointly proven routed request; any stop condition disables only
+`use1-cb`, collects fresh terminal/log/metrics/Compose/Router evidence, and
+invalidates the partial window.
