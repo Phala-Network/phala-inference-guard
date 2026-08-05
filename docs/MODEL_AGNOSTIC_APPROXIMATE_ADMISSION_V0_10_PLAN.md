@@ -8163,3 +8163,79 @@ This gate authorizes staging and committing the exact reviewed v0.10.11 source
 and this audit history. It does not authorize use of the unrelated nested
 `origin` remote, nor does it substitute for the annotated tag, pushed source,
 registry image, immutable pull, live deployment, readiness, or canary layers.
+
+##### v0.10.11 source release and immutable registry evidence — complete 2026-08-05
+
+The 25 reviewed paths were staged explicitly; cached and working-tree
+`diff --check` were clean and no unrelated path entered the commit. The release
+commit is:
+
+```text
+c1ec43b08a062ed658c0e1d8554b8152876db7db
+feat: retain predictive hard QoS memory v0.10.11
+```
+
+Its Git archive is
+`../tmp/pig-v01011-builder-20260804/v01011-release-c1ec43b-source.tar.gz`,
+SHA-256
+`168d06b2967f07f5dda4f418b963d94f4b28e9947c808df4751062bef58c294c`.
+An object-level comparison against the r11 candidate manifest again found zero
+mismatches across all 246 release-relevant paths. The only complete-manifest
+difference was this post-r11 plan history. This proves the committed executable
+tree, Docker contract, module files, and tests are the exact r11 inputs.
+
+Annotated tag `v0.10.11` has tag object
+`979f93b47eebe3b6aee3f66adccc9767625c9574` and peels to the same release
+commit. The branch and tag were pushed only to `pig-origin`; remote branch
+`codex/pig-v0.10.0-model-agnostic` and `refs/tags/v0.10.11^{}` both resolve to
+`c1ec43b08a062ed658c0e1d8554b8152876db7db`. The unrelated nested `origin`
+remote was not used.
+
+The tag triggered public GitHub Actions workflow `Publish Image`, run
+`30966327629`, which completed successfully for the same head SHA. The official
+registry tag resolves to:
+
+```text
+tag
+  ghcr.io/phala-network/phala-inference-guard:v0.10.11
+immutable digest
+  ghcr.io/phala-network/phala-inference-guard@sha256:2983036b1454ed60d075d907d8991b6d2e8d5ea1b81ca7ca21acbf98dccaca9e
+registry image ID
+  sha256:1a3064cf8fdc40baa16764b9882c9d04955bcc6a5a5cd570d4ed73df272ba632
+size/platform
+  29,475,951 bytes; linux/amd64
+OCI version / entrypoint
+  0.10.11 / ["/phala-inference-guard"]
+binary SHA-256
+  8bf73af6b5c358f3fe854e675f86a600005e240084a4053a4195c5a25a8e52f9
+```
+
+The first registry verifier r1 completed tag and digest pulls, production image
+contract, binary comparison, and startup identity, but its final evidence
+enumeration used BusyBox-unsupported `find -printf`. Because the pipeline lacked
+`pipefail`, it generated only the empty-stdin `-` checksum and printed a false
+OK. r1 is retained as a verifier-harness failure and is not counted as registry
+green. Its product outputs are corroborating only.
+
+Fresh r2 used a new directory and BusyBox-compatible enumeration, repeated both
+tag and immutable-digest pulls, ran the exact r11 production image-contract
+script against the digest, extracted the binary, compared it byte-for-byte with
+the r11 builder-local binary, and started a bounded container. The runtime log
+reported `PIG-v0.10.11`, `predictive_admission=off`,
+`dynamic_ttft_protect=false`, and six zero hard-origin status values. All 11
+evidence files passed their internal checksum. The downloaded archive is:
+
+```text
+../tmp/pig-v01011-builder-20260804/
+  pig-v01011-registry-r2-evidence-20260805T0133Z.tar.gz
+remote and local SHA-256
+  5eca5a3821b80dda1db0da3c95e15f4b1308ed6af9acb9a57e32683d55ccad4d
+```
+
+Independent local extraction repeated all 11 checksums and the binary hash.
+The official registry image is therefore eligible to generate a fresh one-field
+Compose candidate for the authorized Router-disabled `use1-cb` target. This
+does not itself prove Compose integration, CVM deployment, backend readiness,
+shadow/enforce behavior, Router publication, or real-traffic safety. Those
+remain ordered live gates; `use1-cb` is still disabled at this checkpoint and
+the Goal remains active.
