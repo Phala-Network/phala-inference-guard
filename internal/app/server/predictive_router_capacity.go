@@ -18,25 +18,26 @@ type predictiveRouterCapacityProjection struct {
 	PredictiveRunning    int
 	RawRunning           int
 	EffectiveRunning     int
+	RawWaiting           int
+	EffectiveWaiting     int
 	RawGlobalLimit       int
 	EffectiveGlobalLimit int
+	InspectCapacity      int
 }
 
 type predictiveRouterCapacityEvent struct {
-	Activation                             uint64
-	Scope                                  string
-	Reason                                 string
-	Source                                 string
-	Samples                                int
-	AggregateCompletionTPSEstimate         float64
-	PreviousAggregateCompletionTPSEstimate float64
-	PredictiveRunning                      int
-	RawRunning                             int
-	EffectiveRunning                       int
-	RawGlobalLimit                         int
-	EffectiveGlobalLimit                   int
-	ActivatedAt                            time.Time
-	Until                                  time.Time
+	Activation           uint64
+	Scope                string
+	Reason               string
+	Source               string
+	PredictiveRunning    int
+	RawRunning           int
+	EffectiveRunning     int
+	RawWaiting           int
+	EffectiveWaiting     int
+	RawGlobalLimit       int
+	EffectiveGlobalLimit int
+	ActivatedAt          time.Time
 }
 
 type predictiveRouterCapacityLogState struct {
@@ -45,10 +46,11 @@ type predictiveRouterCapacityLogState struct {
 
 func predictiveRouterBackpressureFromMetrics(input metrics.PredictiveRouterBackpressureInput) predictiveRouterBackpressureSnapshot {
 	return predictiveRouterBackpressureSnapshot{
-		Active:         input.Active,
-		Activation:     input.Activation,
-		Scope:          predictiveProtectionScope(input.Scope),
-		MinimumRunning: input.MinimumRunning,
+		Active:          input.Active,
+		Activation:      input.Activation,
+		Scope:           predictiveProtectionScope(input.Scope),
+		MinimumRunning:  input.MinimumRunning,
+		InspectCapacity: input.InspectCapacity,
 	}
 }
 
@@ -61,12 +63,19 @@ func predictiveRouterCapacity(
 	capacity := predictiveRouterCapacityProjection{
 		RawRunning:           snapshot.Running,
 		EffectiveRunning:     snapshot.Running,
+		RawWaiting:           snapshot.Waiting,
+		EffectiveWaiting:     snapshot.Waiting,
 		RawGlobalLimit:       snapshot.GlobalLimit,
 		EffectiveGlobalLimit: snapshot.GlobalLimit,
 	}
 	if mode != "enforce" {
 		return capacity
 	}
+	// Request-aware enforce is the only effective admission authority. Preserve
+	// legacy dynamic values as raw telemetry, but do not let Router reapply the
+	// old waiting/global-limit policy before request size can reach PIG.
+	capacity.EffectiveWaiting = 0
+	capacity.EffectiveGlobalLimit = 0
 	capacity.Activation = backpressure.Activation
 	capacity.Scope = backpressure.Scope
 	capacity.BackpressureActive = backpressure.Active
@@ -87,22 +96,29 @@ func predictiveRouterCapacity(
 		return capacity
 	}
 	capacity.BackpressureApplied = true
-	capacity.EffectiveGlobalLimit = clampPredictiveRouterLimit(snapshot.GlobalLimit, capacity.EffectiveRunning)
+	capacity.EffectiveGlobalLimit = projectPredictiveRouterLimit(
+		capacity.EffectiveRunning,
+		backpressure.InspectCapacity,
+	)
+	if capacity.EffectiveGlobalLimit > capacity.EffectiveRunning {
+		capacity.InspectCapacity = capacity.EffectiveGlobalLimit - capacity.EffectiveRunning
+	}
 	return capacity
 }
 
-func clampPredictiveRouterLimit(base, active int) int {
+func projectPredictiveRouterLimit(active, inspectCapacity int) int {
 	if active <= 0 {
-		return base
+		return 0
 	}
-	// Router treats a non-positive global limit as missing capacity and reports
-	// zero fullness. During bounded predictive backpressure, use the active load
-	// as an effective sentinel so Router sees exactly 100% fullness. The raw
-	// limit and PIG's local admission limit remain unchanged.
-	if base <= 0 || active < base {
-		return active
+	if inspectCapacity < 0 {
+		inspectCapacity = 0
 	}
-	return base
+	maximumInspect := int(^uint(0)>>1) - active
+	if inspectCapacity > maximumInspect {
+		inspectCapacity = maximumInspect
+	}
+	projected := active + inspectCapacity
+	return projected
 }
 
 func applyPredictiveRouterCapacity(input *metrics.PredictiveAdmissionInput, capacity predictiveRouterCapacityProjection) {
@@ -115,6 +131,7 @@ func applyPredictiveRouterCapacity(input *metrics.PredictiveAdmissionInput, capa
 	input.RouterBackpressure.EffectiveRunning = capacity.EffectiveRunning
 	input.RouterBackpressure.RawGlobalLimit = capacity.RawGlobalLimit
 	input.RouterBackpressure.EffectiveGlobalLimit = capacity.EffectiveGlobalLimit
+	input.RouterBackpressure.InspectCapacity = capacity.InspectCapacity
 }
 
 func predictiveRouterCapacityMetrics(capacity predictiveRouterCapacityProjection) metrics.DynamicRouterCapacity {
@@ -124,6 +141,8 @@ func predictiveRouterCapacityMetrics(capacity predictiveRouterCapacityProjection
 		BackpressureApplied:  capacity.BackpressureApplied,
 		RawRunning:           capacity.RawRunning,
 		EffectiveRunning:     capacity.EffectiveRunning,
+		RawWaiting:           capacity.RawWaiting,
+		EffectiveWaiting:     capacity.EffectiveWaiting,
 		RawGlobalLimit:       capacity.RawGlobalLimit,
 		EffectiveGlobalLimit: capacity.EffectiveGlobalLimit,
 	}
@@ -146,20 +165,18 @@ func (s *predictiveRouterCapacityLogState) Claim(
 			continue
 		}
 		return &predictiveRouterCapacityEvent{
-			Activation:                             activation,
-			Scope:                                  input.RouterBackpressure.Scope,
-			Reason:                                 input.RouterBackpressure.Reason,
-			Source:                                 input.RouterBackpressure.Source,
-			Samples:                                input.RouterBackpressure.Samples,
-			AggregateCompletionTPSEstimate:         input.RouterBackpressure.AggregateCompletionTPSEstimate,
-			PreviousAggregateCompletionTPSEstimate: input.RouterBackpressure.PreviousAggregateCompletionTPSEstimate,
-			PredictiveRunning:                      capacity.PredictiveRunning,
-			RawRunning:                             capacity.RawRunning,
-			EffectiveRunning:                       capacity.EffectiveRunning,
-			RawGlobalLimit:                         capacity.RawGlobalLimit,
-			EffectiveGlobalLimit:                   capacity.EffectiveGlobalLimit,
-			ActivatedAt:                            input.RouterBackpressure.ActivatedAt,
-			Until:                                  input.RouterBackpressure.Until,
+			Activation:           activation,
+			Scope:                input.RouterBackpressure.Scope,
+			Reason:               input.RouterBackpressure.Reason,
+			Source:               input.RouterBackpressure.Source,
+			PredictiveRunning:    capacity.PredictiveRunning,
+			RawRunning:           capacity.RawRunning,
+			EffectiveRunning:     capacity.EffectiveRunning,
+			RawWaiting:           capacity.RawWaiting,
+			EffectiveWaiting:     capacity.EffectiveWaiting,
+			RawGlobalLimit:       capacity.RawGlobalLimit,
+			EffectiveGlobalLimit: capacity.EffectiveGlobalLimit,
+			ActivatedAt:          input.RouterBackpressure.ActivatedAt,
 		}
 	}
 }
@@ -174,21 +191,19 @@ func predictiveRouterCapacityLogLine(event predictiveRouterCapacityEvent) string
 		source = "unknown"
 	}
 	return fmt.Sprintf(
-		"predictive_router_backpressure event=router_capacity_applied mode=enforce activation=%d scope=%s reason=%s source=%s samples=%d aggregate_completion_tps_estimate=%.6f previous_aggregate_completion_tps_estimate=%.6f predictive_running=%d raw_running=%d effective_running=%d raw_global_limit=%d effective_global_limit=%d activated_at=%s until=%s",
+		"predictive_router_backpressure event=router_capacity_applied mode=enforce activation=%d scope=%s reason=%s source=%s predictive_running=%d raw_running=%d effective_running=%d raw_waiting=%d effective_waiting=%d raw_global_limit=%d effective_global_limit=%d activated_at=%s",
 		event.Activation,
 		event.Scope,
 		reason,
 		source,
-		event.Samples,
-		event.AggregateCompletionTPSEstimate,
-		event.PreviousAggregateCompletionTPSEstimate,
 		event.PredictiveRunning,
 		event.RawRunning,
 		event.EffectiveRunning,
+		event.RawWaiting,
+		event.EffectiveWaiting,
 		event.RawGlobalLimit,
 		event.EffectiveGlobalLimit,
 		event.ActivatedAt.UTC().Format(time.RFC3339Nano),
-		predictiveRouterBackpressureTime(event.Until),
 	)
 }
 

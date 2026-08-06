@@ -78,7 +78,10 @@ const (
 	ReasonPreemptionAtRisk        Reason = "preemption_at_risk"
 	ReasonTokenizerProfileUnknown Reason = "tokenizer_profile_unknown"
 	ReasonRequestSizeUnknown      Reason = "request_size_unknown"
+	ReasonRequestSizeAtPressure   Reason = "request_size_at_pressure"
 	ReasonPredictorProfileUnknown Reason = "predictor_profile_unknown"
+	ReasonMetricsStale            Reason = "metrics_stale"
+	ReasonPreemptionCooldown      Reason = "preemption_cooldown"
 	ReasonDuplicateRequest        Reason = "duplicate_request"
 )
 

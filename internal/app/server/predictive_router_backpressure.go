@@ -83,6 +83,7 @@ type predictiveRouterBackpressureSnapshot struct {
 	Until                time.Time
 	Hold                 time.Duration
 	MinimumRunning       int
+	InspectCapacity      int
 	Activations          uint64
 	Extensions           uint64
 	LatestRejectAt       time.Time
@@ -439,7 +440,7 @@ func (s *proxyServer) logPredictiveFailureReject(phase string) {
 	}
 	now := time.Now()
 	s.predictiveFailureLogMu.Lock()
-	event := s.predictiveFailureRejectLogs.ObservePhase(now, s.cfg.PredictiveRouterBackpressureHold, phase, runtimepredictive.CountAdmissionResult{
+	event := s.predictiveFailureRejectLogs.ObservePhase(now, defaultRequestAwareDecisionLogInterval, phase, runtimepredictive.CountAdmissionResult{
 		Decision: domainpredictive.Decision{Reason: domainpredictive.ReasonPredictorProfileUnknown},
 		Prediction: runtimepredictive.SchedulerPrediction{
 			Source: runtimepredictive.PredictionSourceUnavailable,

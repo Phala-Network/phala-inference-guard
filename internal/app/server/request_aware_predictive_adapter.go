@@ -1,0 +1,585 @@
+package server
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"strings"
+	"sync"
+	"time"
+
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
+	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
+)
+
+type requestAwareSnapshotProvider interface {
+	RequestAwareInput(time.Time) runtimepredictive.RequestAwareInput
+}
+
+type requestAwarePredictiveAdapterConfig struct {
+	Manager             *runtimepredictive.Manager
+	Policy              *runtimepredictive.RequestAwarePolicy
+	Snapshot            requestAwareSnapshotProvider
+	ManifestID          string
+	BlockSize           int64
+	Mode                string
+	Now                 func() time.Time
+	DecisionLogInterval time.Duration
+	OnDecision          func(requestAwareDecisionLogEvent)
+}
+
+type requestAwarePredictiveAdapter struct {
+	mu                      sync.Mutex
+	manager                 *runtimepredictive.Manager
+	policy                  *runtimepredictive.RequestAwarePolicy
+	snapshot                requestAwareSnapshotProvider
+	manifestID              string
+	blockSize               int64
+	mode                    string
+	now                     func() time.Time
+	closed                  bool
+	attempts                predictiveAttemptSnapshot
+	lastRequestAware        requestAwareTelemetrySnapshot
+	routerBackpressure      predictiveRouterBackpressureSnapshot
+	routerActivationCounter uint64
+	decisionLogInterval     time.Duration
+	decisionLogs            requestAwareDecisionLogState
+	onDecision              func(requestAwareDecisionLogEvent)
+}
+
+type requestAwarePredictiveReservation struct {
+	owner     *requestAwarePredictiveAdapter
+	requestID string
+}
+
+func newRequestAwarePredictiveAdapter(config requestAwarePredictiveAdapterConfig) (*requestAwarePredictiveAdapter, error) {
+	mode := strings.ToLower(strings.TrimSpace(config.Mode))
+	if config.Manager == nil || config.Policy == nil || config.Snapshot == nil ||
+		strings.TrimSpace(config.ManifestID) == "" || config.BlockSize <= 0 ||
+		(mode != "shadow" && mode != "enforce") {
+		return nil, fmt.Errorf("request-aware predictive adapter configuration is invalid")
+	}
+	if config.Now == nil {
+		config.Now = time.Now
+	}
+	if config.DecisionLogInterval <= 0 {
+		config.DecisionLogInterval = defaultRequestAwareDecisionLogInterval
+	}
+	return &requestAwarePredictiveAdapter{
+		manager:             config.Manager,
+		policy:              config.Policy,
+		snapshot:            config.Snapshot,
+		manifestID:          strings.TrimSpace(config.ManifestID),
+		blockSize:           config.BlockSize,
+		mode:                mode,
+		now:                 config.Now,
+		decisionLogInterval: config.DecisionLogInterval,
+		onDecision:          config.OnDecision,
+	}, nil
+}
+
+func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID string, input predictiveShadowInput) predictiveAdmissionDecision {
+	if a == nil {
+		return requestAwareAdapterFailure(
+			predictiveAdmissionOutcomeRequestReject,
+			domainpredictive.ReasonPredictorProfileUnknown,
+			runtimepredictive.PredictionSourceUnavailable,
+		)
+	}
+	now := a.now()
+	if requestID == "" || ctx.Err() != nil {
+		decision := requestAwareAdapterFailure(
+			predictiveAdmissionOutcomeRequestReject,
+			domainpredictive.ReasonPredictorProfileUnknown,
+			runtimepredictive.PredictionSourceUnavailable,
+		)
+		a.recordDecision(now, runtimepredictive.RequestAwareManagerResult{
+			Decision: runtimepredictive.RequestAwareDecision{
+				Action: runtimepredictive.RequestAwareHardProtect,
+				Reason: runtimepredictive.RequestAwareReasonInvalid,
+			},
+		}, 0, 0, runtimepredictive.RequestAwareInput{}, decision)
+		return decision
+	}
+	a.mu.Lock()
+	closed := a.closed
+	a.mu.Unlock()
+	if closed {
+		decision := requestAwareAdapterFailure(
+			predictiveAdmissionOutcomeAvailabilityProtection,
+			domainpredictive.ReasonPredictorProfileUnknown,
+			runtimepredictive.PredictionSourceUnavailable,
+		)
+		a.recordDecision(now, runtimepredictive.RequestAwareManagerResult{
+			Decision: runtimepredictive.RequestAwareDecision{
+				Action: runtimepredictive.RequestAwareHardProtect,
+				Reason: runtimepredictive.RequestAwareReasonUnavailable,
+			},
+		}, 0, 0, runtimepredictive.RequestAwareInput{}, decision)
+		return decision
+	}
+	selectionInputTokens, cost, valid := requestAwareAdapterCost(a.manifestID, a.blockSize, input)
+	if !valid {
+		decision := requestAwareAdapterFailure(
+			predictiveAdmissionOutcomeRequestReject,
+			domainpredictive.ReasonRequestSizeUnknown,
+			runtimepredictive.PredictionSourceDeterministic,
+		)
+		a.recordDecision(now, runtimepredictive.RequestAwareManagerResult{
+			Decision: runtimepredictive.RequestAwareDecision{
+				Action: runtimepredictive.RequestAwareHardProtect,
+				Reason: runtimepredictive.RequestAwareReasonInvalid,
+			},
+		}, 0, 0, runtimepredictive.RequestAwareInput{}, decision)
+		return decision
+	}
+	snapshot, valid := requestAwareAdapterSnapshot(a.snapshot, now)
+	if !valid {
+		decision := requestAwareAdapterFailure(
+			predictiveAdmissionOutcomeAvailabilityProtection,
+			domainpredictive.ReasonMetricsStale,
+			runtimepredictive.PredictionSourceUnavailable,
+		)
+		a.recordDecision(now, runtimepredictive.RequestAwareManagerResult{
+			Decision: runtimepredictive.RequestAwareDecision{
+				Action: runtimepredictive.RequestAwareHardProtect,
+				Reason: runtimepredictive.RequestAwareReasonStale,
+			},
+		}, selectionInputTokens, requestAwareReservedTokens(cost), runtimepredictive.RequestAwareInput{}, decision)
+		return decision
+	}
+	var result runtimepredictive.RequestAwareManagerResult
+	if a.mode == "shadow" {
+		result = a.manager.DecideRequestAware(now, requestID, cost, selectionInputTokens, a.policy, snapshot)
+	} else {
+		result = a.manager.DecideRequestAwareAndReserve(now, requestID, cost, selectionInputTokens, a.policy, snapshot)
+	}
+	a.mu.Lock()
+	closed = a.closed
+	a.mu.Unlock()
+	if closed && result.Reserved {
+		a.manager.Terminate(requestID, runtimepredictive.TerminalExpired)
+		decision := requestAwareAdapterFailure(
+			predictiveAdmissionOutcomeAvailabilityProtection,
+			domainpredictive.ReasonPredictorProfileUnknown,
+			runtimepredictive.PredictionSourceUnavailable,
+		)
+		a.recordDecision(now, runtimepredictive.RequestAwareManagerResult{
+			Decision: runtimepredictive.RequestAwareDecision{
+				Action: runtimepredictive.RequestAwareHardProtect,
+				Reason: runtimepredictive.RequestAwareReasonUnavailable,
+			},
+		}, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+		return decision
+	}
+	var decision predictiveAdmissionDecision
+	if result.Decision.Action == runtimepredictive.RequestAwareAdmit {
+		if a.mode == "shadow" {
+			decision = predictiveAdmissionDecision{
+				Outcome: predictiveAdmissionOutcomeForward,
+				Reason:  domainpredictive.ReasonFit,
+				Source:  runtimepredictive.PredictionSourceDeterministic,
+			}
+			a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+			return decision
+		}
+		if !result.Reserved {
+			decision = requestAwareAdapterFailure(
+				predictiveAdmissionOutcomeAvailabilityProtection,
+				domainpredictive.ReasonPredictorProfileUnknown,
+				runtimepredictive.PredictionSourceUnavailable,
+			)
+			a.recordDecision(now, runtimepredictive.RequestAwareManagerResult{
+				Decision: runtimepredictive.RequestAwareDecision{
+					Action: runtimepredictive.RequestAwareHardProtect,
+					Reason: runtimepredictive.RequestAwareReasonUnavailable,
+				},
+			}, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+			return decision
+		}
+		decision = predictiveAdmissionDecision{
+			Outcome: predictiveAdmissionOutcomeForward,
+			Reservation: &requestAwarePredictiveReservation{
+				owner:     a,
+				requestID: requestID,
+			},
+			Reason: domainpredictive.ReasonFit,
+			Source: runtimepredictive.PredictionSourceDeterministic,
+		}
+		a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+		return decision
+	}
+	decision = requestAwareAdapterProtectedDecision(result.Decision)
+	a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+	return decision
+}
+
+func (a *requestAwarePredictiveAdapter) Close() error {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	if a.closed {
+		a.mu.Unlock()
+		return nil
+	}
+	a.closed = true
+	a.mu.Unlock()
+	a.manager.InvalidateEpoch()
+	var closeErr error
+	if closer, ok := a.snapshot.(interface{ Close() error }); ok {
+		closeErr = closer.Close()
+	}
+	return closeErr
+}
+
+func (a *requestAwarePredictiveAdapter) PredictiveAdmissionTelemetry() predictiveAdmissionTelemetrySnapshot {
+	if a == nil {
+		return predictiveAdmissionTelemetrySnapshot{}
+	}
+	now := a.now()
+	router := a.inspectRouterBackpressure(now)
+	a.mu.Lock()
+	attempts := a.attempts
+	lastRequestAware := a.lastRequestAware
+	a.routerBackpressure = a.transitionRouterBackpressureLocked(now, router)
+	router = a.routerBackpressure
+	a.mu.Unlock()
+	return predictiveAdmissionTelemetrySnapshot{
+		Attempts:           attempts,
+		Manager:            a.manager.Snapshot(),
+		RouterBackpressure: router,
+		RequestAware:       lastRequestAware,
+	}
+}
+
+func (a *requestAwarePredictiveAdapter) recordDecision(
+	now time.Time,
+	result runtimepredictive.RequestAwareManagerResult,
+	selectionInputTokens int64,
+	reservedTokens int64,
+	input runtimepredictive.RequestAwareInput,
+	decision predictiveAdmissionDecision,
+) {
+	if a == nil {
+		return
+	}
+	last := requestAwareTelemetrySnapshot{
+		Action:               result.Decision.Action,
+		Reason:               result.Decision.Reason,
+		PressureSource:       result.Decision.PressureSource,
+		Pressure:             result.Decision.Pressure,
+		SelectionInputTokens: selectionInputTokens,
+		ReservedTokens:       reservedTokens,
+		AllowanceTokens:      result.Decision.AllowanceTokens,
+		EffectiveKV:          result.Decision.EffectiveKV,
+		PostAdmitKV:          result.Decision.PostAdmitKV,
+		RemainingKV:          result.Decision.RemainingKV,
+		Running:              input.Running,
+		Waiting:              input.Waiting,
+		EffectiveSequences:   result.Decision.EffectiveSequences,
+		AggregateTPSProxy:    input.AggregateTPSProxy,
+		MeanActiveTPSProxy:   input.MeanActiveTPSProxy,
+		ProjectedTPSProxy:    result.Decision.ProjectedMeanActiveTPSProxy,
+		TPSForecastValid:     result.Decision.TPSForecastValid,
+	}
+	a.mu.Lock()
+	a.attempts.Attempts++
+	a.attempts.LastReason = decision.Reason
+	a.attempts.LastSource = decision.Source
+	a.attempts.LastSamples = 0
+	a.attempts.LastExploratory = false
+	if result.Decision.Action == runtimepredictive.RequestAwareAdmit && decision.Outcome == predictiveAdmissionOutcomeForward {
+		a.attempts.Fits++
+	} else if requestAwareUnknownReason(decision.Reason) {
+		a.attempts.Unknown++
+	} else {
+		a.attempts.Risks++
+	}
+	if a.mode == "enforce" && decision.rejectsForward() {
+		a.attempts.LastRejectReason = decision.Reason
+		a.attempts.LastRejectSource = decision.Source
+		a.attempts.LastRejectScope = requestAwareProtectionScope(decision.Outcome)
+		a.attempts.LastRejectSamples = 0
+		a.attempts.LastRejectAt = now
+	}
+	a.lastRequestAware = last
+	var logEvent *requestAwareDecisionLogEvent
+	if a.onDecision != nil {
+		logEvent = a.decisionLogs.Claim(now, a.decisionLogInterval, requestAwareDecisionLogEvent{
+			Mode:                 a.mode,
+			Enforced:             a.mode == "enforce" && decision.rejectsForward(),
+			Action:               result.Decision.Action,
+			Reason:               result.Decision.Reason,
+			HTTPReason:           decision.Reason,
+			Scope:                requestAwareProtectionScope(decision.Outcome),
+			PressureSource:       result.Decision.PressureSource,
+			Pressure:             result.Decision.Pressure,
+			SelectionInputTokens: selectionInputTokens,
+			ReservedTokens:       reservedTokens,
+			AllowanceTokens:      result.Decision.AllowanceTokens,
+			EffectiveKV:          result.Decision.EffectiveKV,
+			PostAdmitKV:          result.Decision.PostAdmitKV,
+			RemainingKV:          result.Decision.RemainingKV,
+			Running:              input.Running,
+			Waiting:              input.Waiting,
+			EffectiveSequences:   result.Decision.EffectiveSequences,
+			AggregateTPSProxy:    input.AggregateTPSProxy,
+			MeanActiveTPSProxy:   input.MeanActiveTPSProxy,
+			ProjectedTPSProxy:    result.Decision.ProjectedMeanActiveTPSProxy,
+			TPSForecastValid:     result.Decision.TPSForecastValid,
+		})
+	}
+	reporter := a.onDecision
+	a.mu.Unlock()
+	emitRequestAwareDecision(reporter, logEvent)
+}
+
+func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(now time.Time) predictiveRouterBackpressureSnapshot {
+	a.mu.Lock()
+	mode := a.mode
+	closed := a.closed
+	a.mu.Unlock()
+	if mode != "enforce" {
+		return predictiveRouterBackpressureSnapshot{}
+	}
+	if closed || a.manager == nil || a.policy == nil || a.snapshot == nil || a.blockSize <= 0 {
+		return requestAwareHardRouterBackpressure(
+			domainpredictive.ReasonPredictorProfileUnknown,
+			runtimepredictive.PredictionSourceUnavailable,
+			predictiveProtectionScopeAvailability,
+		)
+	}
+	input, valid := requestAwareAdapterSnapshot(a.snapshot, now)
+	if !valid {
+		return requestAwareHardRouterBackpressure(
+			domainpredictive.ReasonMetricsStale,
+			runtimepredictive.PredictionSourceUnavailable,
+			predictiveProtectionScopeAvailability,
+		)
+	}
+	cost := requestAwareInspectCost(a.manifestID, a.blockSize)
+	result := a.manager.DecideRequestAware(
+		now,
+		"\x00pig-request-aware-inspect",
+		cost,
+		a.blockSize,
+		a.policy,
+		input,
+	)
+	if result.Decision.Action == runtimepredictive.RequestAwareAdmit {
+		if result.Decision.Pressure <= 0 {
+			return predictiveRouterBackpressureSnapshot{}
+		}
+		return predictiveRouterBackpressureSnapshot{
+			Active:               true,
+			Scope:                predictiveProtectionScopeLoad,
+			Reason:               domainpredictive.ReasonRequestSizeAtPressure,
+			Source:               runtimepredictive.PredictionSourceDeterministic,
+			MinimumRunning:       1,
+			InspectCapacity:      1,
+			AggregateTPS:         input.MeanActiveTPSProxy,
+			PreviousAggregateTPS: 0,
+		}
+	}
+	protected := requestAwareAdapterProtectedDecision(result.Decision)
+	scope := requestAwareProtectionScope(protected.Outcome)
+	if result.Decision.Reason == runtimepredictive.RequestAwareReasonInvalid ||
+		result.Decision.Reason == runtimepredictive.RequestAwareReasonUnavailable ||
+		result.Decision.Reason == runtimepredictive.RequestAwareReasonStale {
+		scope = predictiveProtectionScopeAvailability
+	}
+	return requestAwareHardRouterBackpressure(protected.Reason, protected.Source, scope)
+}
+
+func (a *requestAwarePredictiveAdapter) transitionRouterBackpressureLocked(
+	now time.Time,
+	desired predictiveRouterBackpressureSnapshot,
+) predictiveRouterBackpressureSnapshot {
+	desired.LatestRejectAt = a.attempts.LastRejectAt
+	if !desired.Active {
+		desired.Activations = a.routerActivationCounter
+		return desired
+	}
+	previous := a.routerBackpressure
+	transition := !previous.Active || previous.InspectCapacity != desired.InspectCapacity ||
+		previous.Scope != desired.Scope || previous.Reason != desired.Reason || previous.Source != desired.Source
+	if transition {
+		if a.routerActivationCounter < ^uint64(0) {
+			a.routerActivationCounter++
+		}
+		desired.Activation = a.routerActivationCounter
+		desired.ActivatedAt = now
+	} else {
+		desired.Activation = previous.Activation
+		desired.ActivatedAt = previous.ActivatedAt
+	}
+	desired.Activations = a.routerActivationCounter
+	return desired
+}
+
+func requestAwareHardRouterBackpressure(
+	reason domainpredictive.Reason,
+	source runtimepredictive.PredictionSource,
+	scope predictiveProtectionScope,
+) predictiveRouterBackpressureSnapshot {
+	return predictiveRouterBackpressureSnapshot{
+		Active:          true,
+		Scope:           scope,
+		Reason:          reason,
+		Source:          source,
+		MinimumRunning:  1,
+		InspectCapacity: 0,
+	}
+}
+
+func requestAwareInspectCost(manifestID string, blockSize int64) domainpredictive.RequestCost {
+	return domainpredictive.RequestCost{
+		ManifestID:                   manifestID,
+		InputTokens:                  blockSize,
+		RequestComplexityTokensUpper: blockSize,
+		KV: domainpredictive.KVIncrement{
+			PhysicalKVUpper: blockSize,
+			ActiveKVUpper:   blockSize,
+		},
+		UncachedPrefillUpper:     blockSize,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: blockSize,
+		Confidence:               1,
+	}
+}
+
+func requestAwareReservedTokens(cost domainpredictive.RequestCost) int64 {
+	if cost.KV.PhysicalKVUpper > cost.KV.ActiveKVUpper {
+		return cost.KV.PhysicalKVUpper
+	}
+	return cost.KV.ActiveKVUpper
+}
+
+func requestAwareUnknownReason(reason domainpredictive.Reason) bool {
+	switch reason {
+	case domainpredictive.ReasonRequestSizeUnknown,
+		domainpredictive.ReasonPredictorProfileUnknown,
+		domainpredictive.ReasonMetricsStale,
+		domainpredictive.ReasonDuplicateRequest:
+		return true
+	default:
+		return false
+	}
+}
+
+func requestAwareProtectionScope(outcome predictiveAdmissionOutcome) predictiveProtectionScope {
+	switch outcome {
+	case predictiveAdmissionOutcomeLoadProtection:
+		return predictiveProtectionScopeLoad
+	case predictiveAdmissionOutcomeAvailabilityProtection:
+		return predictiveProtectionScopeAvailability
+	default:
+		return predictiveProtectionScopeRequest
+	}
+}
+
+func (r *requestAwarePredictiveReservation) MarkForwarded() bool {
+	if r == nil || r.owner == nil {
+		return false
+	}
+	r.owner.mu.Lock()
+	defer r.owner.mu.Unlock()
+	return !r.owner.closed && r.owner.manager != nil && r.owner.manager.MarkForwarded(r.requestID)
+}
+
+func (r *requestAwarePredictiveReservation) MarkPrefillComplete() bool {
+	return r != nil && r.owner != nil && r.owner.manager != nil && r.owner.manager.MarkPrefillComplete(r.requestID)
+}
+
+func (r *requestAwarePredictiveReservation) Terminate(cause runtimepredictive.TerminalCause) bool {
+	return r != nil && r.owner != nil && r.owner.manager != nil && r.owner.manager.Terminate(r.requestID, cause)
+}
+
+func requestAwareAdapterCost(manifestID string, blockSize int64, input predictiveShadowInput) (int64, domainpredictive.RequestCost, bool) {
+	cost := input.Cost
+	if !cost.Supported || manifestID == "" || blockSize <= 0 || cost.EstimatedInputHigh <= 0 || cost.BoundedDecodeTokens < 0 {
+		return 0, domainpredictive.RequestCost{}, false
+	}
+	selectionInputTokens, known := cost.ApproximateInputTokenHint()
+	if !known {
+		selectionInputTokens = cost.EstimatedInputHigh
+	}
+	if selectionInputTokens <= 0 || cost.EstimatedInputHigh > math.MaxInt64-cost.BoundedDecodeTokens {
+		return 0, domainpredictive.RequestCost{}, false
+	}
+	activeContext := cost.EstimatedInputHigh + cost.BoundedDecodeTokens
+	inputKV, valid := requestAwareRoundUp(cost.EstimatedInputHigh, blockSize)
+	if !valid {
+		return 0, domainpredictive.RequestCost{}, false
+	}
+	totalKV, valid := requestAwareRoundUp(activeContext, blockSize)
+	if !valid || totalKV < inputKV {
+		return 0, domainpredictive.RequestCost{}, false
+	}
+	futureKV := totalKV - inputKV
+	return selectionInputTokens, domainpredictive.RequestCost{
+		ManifestID:                   manifestID,
+		InputTokens:                  cost.EstimatedInputHigh,
+		RequestComplexityTokensUpper: cost.EstimatedInputHigh,
+		KV: domainpredictive.KVIncrement{
+			PhysicalKVUpper: totalKV,
+			ActiveKVUpper:   totalKV,
+		},
+		FutureKV: domainpredictive.KVIncrement{
+			PhysicalKVUpper: futureKV,
+			ActiveKVUpper:   futureKV,
+		},
+		UncachedPrefillUpper:     cost.EstimatedInputHigh,
+		DecodeHorizonUpper:       cost.BoundedDecodeTokens,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: activeContext,
+		FutureContextTokensUpper: cost.BoundedDecodeTokens,
+		Confidence:               1,
+	}, true
+}
+
+func requestAwareRoundUp(value, blockSize int64) (int64, bool) {
+	if value <= 0 {
+		return 0, value == 0
+	}
+	if blockSize <= 0 || value > math.MaxInt64-(blockSize-1) {
+		return 0, false
+	}
+	return ((value + blockSize - 1) / blockSize) * blockSize, true
+}
+
+func requestAwareAdapterSnapshot(provider requestAwareSnapshotProvider, now time.Time) (input runtimepredictive.RequestAwareInput, valid bool) {
+	if provider == nil || now.IsZero() {
+		return runtimepredictive.RequestAwareInput{}, false
+	}
+	defer func() {
+		if recover() != nil {
+			input = runtimepredictive.RequestAwareInput{}
+			valid = false
+		}
+	}()
+	return provider.RequestAwareInput(now), true
+}
+
+func requestAwareAdapterProtectedDecision(decision runtimepredictive.RequestAwareDecision) predictiveAdmissionDecision {
+	source := runtimepredictive.PredictionSourceDeterministic
+	switch decision.Reason {
+	case runtimepredictive.RequestAwareReasonRequestSize:
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonRequestSizeAtPressure, source)
+	case runtimepredictive.RequestAwareReasonKV:
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonKVOverBudget, source)
+	case runtimepredictive.RequestAwareReasonPreemption:
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonPreemptionCooldown, source)
+	case runtimepredictive.RequestAwareReasonStale, runtimepredictive.RequestAwareReasonUnavailable:
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeAvailabilityProtection, domainpredictive.ReasonMetricsStale, runtimepredictive.PredictionSourceUnavailable)
+	case runtimepredictive.RequestAwareReasonDuplicate:
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeRequestReject, domainpredictive.ReasonDuplicateRequest, source)
+	default:
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeRequestReject, domainpredictive.ReasonPredictorProfileUnknown, source)
+	}
+}
+
+func requestAwareAdapterFailure(outcome predictiveAdmissionOutcome, reason domainpredictive.Reason, source runtimepredictive.PredictionSource) predictiveAdmissionDecision {
+	return predictiveAdmissionDecision{Outcome: outcome, Reason: reason, Source: source}
+}

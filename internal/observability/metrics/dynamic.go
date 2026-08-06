@@ -46,6 +46,8 @@ type DynamicRouterCapacity struct {
 	BackpressureApplied  bool
 	RawRunning           int
 	EffectiveRunning     int
+	RawWaiting           int
+	EffectiveWaiting     int
 	RawGlobalLimit       int
 	EffectiveGlobalLimit int
 }
@@ -56,6 +58,8 @@ func WriteDynamic(w io.Writer, snapshot dynamic.Snapshot, cfg DynamicConfig, pre
 			Present:              true,
 			RawRunning:           snapshot.Running,
 			EffectiveRunning:     snapshot.Running,
+			RawWaiting:           snapshot.Waiting,
+			EffectiveWaiting:     snapshot.Waiting,
 			RawGlobalLimit:       snapshot.GlobalLimit,
 			EffectiveGlobalLimit: snapshot.GlobalLimit,
 		}
@@ -68,7 +72,8 @@ func WriteDynamic(w io.Writer, snapshot dynamic.Snapshot, cfg DynamicConfig, pre
 	}
 	fmt.Fprintf(w, "pig_dynamic_observed_running_raw %d\n", router.RawRunning)
 	fmt.Fprintf(w, "pig_dynamic_observed_running %d\n", router.EffectiveRunning)
-	fmt.Fprintf(w, "pig_dynamic_observed_waiting %d\n", snapshot.Waiting)
+	fmt.Fprintf(w, "pig_dynamic_observed_waiting_raw %d\n", router.RawWaiting)
+	fmt.Fprintf(w, "pig_dynamic_observed_waiting %d\n", router.EffectiveWaiting)
 	fmt.Fprintf(w, "pig_dynamic_observed_kv_cache_usage %.6f\n", snapshot.KVCacheUsage)
 	fmt.Fprintf(w, "pig_dynamic_observed_preemptions %d\n", snapshot.Preemptions)
 	fmt.Fprintf(w, "pig_dynamic_observed_generation_tokens_total %d\n", snapshot.Generation)

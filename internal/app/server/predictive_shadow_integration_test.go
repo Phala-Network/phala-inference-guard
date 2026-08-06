@@ -453,11 +453,11 @@ func TestPredictiveEnforceFitIsNotLateRejectedByLegacyDynamicFeedback(t *testing
 	}
 }
 
-func TestPredictiveEnforceStillRespectsStaticAbsoluteConcurrencyLimit(t *testing.T) {
+func TestPredictiveEnforceFitBypassesRetiredStaticGateAndQueue(t *testing.T) {
 	backendCalls := 0
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		backendCalls++
-		_, _ = w.Write([]byte(`{"id":"must-not-run"}`))
+		_, _ = w.Write([]byte(`{"id":"fit"}`))
 	}))
 	defer backend.Close()
 	admission := &recordingPredictiveShadow{}
@@ -477,15 +477,72 @@ func TestPredictiveEnforceStillRespectsStaticAbsoluteConcurrencyLimit(t *testing
 	recorder := httptest.NewRecorder()
 
 	srv.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusTooManyRequests || backendCalls != 0 {
-		t.Fatalf("predictive fit above static cap response/backend = %d/%d, want 429/0", recorder.Code, backendCalls)
+	if recorder.Code != http.StatusOK || backendCalls != 1 {
+		t.Fatalf("predictive fit through retired static gate response/backend = %d/%d, want 200/1", recorder.Code, backendCalls)
 	}
 	_, _, causes := admission.snapshot(t)
-	if len(causes) != 1 || causes[0] != runtimepredictive.TerminalLocalQoSReject {
-		t.Fatalf("static cap terminal causes = %v, want local QoS reject", causes)
+	if len(causes) != 1 || causes[0] != runtimepredictive.TerminalCompleted {
+		t.Fatalf("retired static gate terminal causes = %v, want completed", causes)
 	}
-	if got := srv.predictiveEnforcedRejects.Load(); got != 0 {
-		t.Fatalf("static cap counted as predictive enforced reject %d times", got)
+	if forwarded := admission.forwardedSnapshot(t); forwarded != 1 {
+		t.Fatalf("retired static gate forwarded = %d, want 1", forwarded)
+	}
+	if got := srv.qosGate.QueueTotal(); got != 0 {
+		t.Fatalf("predictive enforce entered retired QoS queue %d times", got)
+	}
+}
+
+func TestPredictiveEnforceDoesNotInjectRetiredTierOrBackendPriority(t *testing.T) {
+	var seenBody string
+	var seenTier string
+	var seenLane string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seenBody = string(body)
+		seenTier = r.Header.Get("X-PIG-Tier")
+		seenLane = r.Header.Get("X-PIG-Lane")
+		_, _ = w.Write([]byte(`{"id":"fit"}`))
+	}))
+	defer backend.Close()
+
+	admission := &recordingPredictiveShadow{}
+	cfg := testProxyConfig(backend.URL)
+	cfg.PredictiveAdmissionMode = "enforce"
+	cfg.BackendPriorityInjectionEnabled = true
+	cfg.BackendPriorityMode = "all"
+	cfg.BackendPriorityRewriteStrategy = "field_scan"
+	cfg.BackendPriorityField = "priority"
+	cfg.BackendPriorityPremiumValue = -100
+	cfg.BackendPriorityBasicValue = 0
+	cfg.BackendPriorityBodyBytes = defaultOpenAICompatBodyBytesForTest
+	cfg.BackendPriorityStreamBufferBytes = 4 * 1024
+	cfg.BackendPriorityRewriteLimit = 8
+	cfg.BackendPriorityFailOpen = false
+	srv, err := newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) { return admission, nil },
+	})
+	if err != nil {
+		t.Fatalf("new enforcing server: %v", err)
+	}
+
+	body := `{"model":"m","messages":[{"role":"user","content":"fit"}],"priority":100,"max_tokens":16}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-User-Tier", "premium")
+	request.Header.Set("X-PIG-Tier", "spoofed-premium")
+	request.Header.Set("X-PIG-Lane", "spoofed-lane")
+	recorder := httptest.NewRecorder()
+
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("predictive enforce priority response=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(seenBody, `"priority":100`) || strings.Contains(seenBody, `"priority":-100`) {
+		t.Fatalf("predictive enforce rewrote retired backend priority: %s", seenBody)
+	}
+	if seenTier != "" || seenLane != "" {
+		t.Fatalf("predictive enforce injected retired tier/lane headers tier=%q lane=%q", seenTier, seenLane)
 	}
 }
 

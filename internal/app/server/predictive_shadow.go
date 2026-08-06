@@ -93,6 +93,27 @@ type predictiveAdmissionTelemetrySnapshot struct {
 	DeferredOutcomes      predictiveDeferredOutcomeSnapshot
 	RouterBackpressure    predictiveRouterBackpressureSnapshot
 	ExistingPrefill       predictiveExistingPrefillObservationSnapshot
+	RequestAware          requestAwareTelemetrySnapshot
+}
+
+type requestAwareTelemetrySnapshot struct {
+	Action               runtimepredictive.RequestAwareAction
+	Reason               runtimepredictive.RequestAwareReason
+	PressureSource       runtimepredictive.RequestAwarePressureSource
+	Pressure             float64
+	SelectionInputTokens int64
+	ReservedTokens       int64
+	AllowanceTokens      int64
+	EffectiveKV          int64
+	PostAdmitKV          int64
+	RemainingKV          int64
+	Running              int
+	Waiting              int
+	EffectiveSequences   int
+	AggregateTPSProxy    float64
+	MeanActiveTPSProxy   float64
+	ProjectedTPSProxy    float64
+	TPSForecastValid     bool
 }
 
 type predictiveExistingPrefillObservationSnapshot struct {

@@ -22,7 +22,13 @@ func (s *proxyServer) upstreamStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *proxyServer) upstreamStatusCode() int {
-	if s == nil || s.qosGate == nil || s.globalLn == nil {
+	if s == nil {
+		return upstreamStatusUnknown
+	}
+	if s.cfg.PredictiveAdmissionMode == "enforce" {
+		return s.predictiveUpstreamStatusCode()
+	}
+	if s.qosGate == nil || s.globalLn == nil {
 		return upstreamStatusUnknown
 	}
 	limit, _, rejectCode := s.currentQoSLimit()
@@ -64,6 +70,21 @@ func (s *proxyServer) upstreamStatusCode() int {
 		return upstreamStatusYellow
 	}
 	return upstreamStatusGreen
+}
+
+func (s *proxyServer) predictiveUpstreamStatusCode() int {
+	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
+	if !ok {
+		return upstreamStatusRed
+	}
+	backpressure := provider.PredictiveAdmissionTelemetry().RouterBackpressure
+	if !backpressure.Active {
+		return upstreamStatusGreen
+	}
+	if backpressure.Scope == predictiveProtectionScopeLoad && backpressure.InspectCapacity > 0 {
+		return upstreamStatusYellow
+	}
+	return upstreamStatusRed
 }
 
 func upstreamStatusNearLimit(used, limit int64) bool {

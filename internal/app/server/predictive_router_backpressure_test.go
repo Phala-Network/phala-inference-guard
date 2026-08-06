@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 	"time"
@@ -427,7 +428,7 @@ func TestPredictiveRouterCapacityClampsOnlyEnforceWithActiveLoad(t *testing.T) {
 		t.Fatalf("shadow mode altered Router capacity: %+v", shadow)
 	}
 	expired := predictiveRouterCapacity("enforce", predictiveRouterBackpressureSnapshot{}, 2, snapshot)
-	if expired.BackpressureApplied || expired.PredictiveRunning != 0 || expired.EffectiveRunning != 1 || expired.EffectiveGlobalLimit != 50 {
+	if expired.BackpressureApplied || expired.PredictiveRunning != 0 || expired.EffectiveRunning != 1 || expired.EffectiveGlobalLimit != 0 {
 		t.Fatalf("expired hold retained Router clamp: %+v", expired)
 	}
 	unavailable := predictiveRouterCapacity("enforce", active, 2, runtimedynamic.Snapshot{GlobalLimit: 0, QOSLimit: 0})
@@ -439,6 +440,138 @@ func TestPredictiveRouterCapacityClampsOnlyEnforceWithActiveLoad(t *testing.T) {
 	}, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
 	if !availability.BackpressureApplied || availability.PredictiveRunning != 1 || availability.EffectiveRunning != 1 || availability.EffectiveGlobalLimit != 1 {
 		t.Fatalf("availability protection did not publish a Router-blocking sentinel: %+v", availability)
+	}
+}
+
+func TestPredictiveRouterCapacityKeepsOneInspectSlotForSelectiveProtection(t *testing.T) {
+	snapshot := runtimedynamic.Snapshot{Running: 1, GlobalLimit: 50, QOSLimit: 50}
+	selective := predictiveRouterBackpressureSnapshot{
+		Active: true, Activation: 1, Scope: predictiveProtectionScopeLoad, InspectCapacity: 1,
+	}
+	got := predictiveRouterCapacity("enforce", selective, 2, snapshot)
+	if !got.BackpressureApplied || got.EffectiveRunning != 2 || got.EffectiveGlobalLimit != 3 || got.InspectCapacity != 1 {
+		t.Fatalf("selective Router capacity=%+v, want two active plus one inspect slot", got)
+	}
+	hard := selective
+	hard.InspectCapacity = 0
+	got = predictiveRouterCapacity("enforce", hard, 2, snapshot)
+	if !got.BackpressureApplied || got.EffectiveGlobalLimit != 2 || got.InspectCapacity != 0 {
+		t.Fatalf("hard Router capacity=%+v, want full at two active requests", got)
+	}
+}
+
+func TestPredictiveRouterCapacityEnforceUsesOnlyRequestAwareEffectiveAuthority(t *testing.T) {
+	snapshot := runtimedynamic.Snapshot{Running: 2, Waiting: 7, GlobalLimit: 1, QOSLimit: 1}
+	selective := predictiveRouterBackpressureSnapshot{
+		Active: true, Activation: 1, Scope: predictiveProtectionScopeLoad, InspectCapacity: 1,
+	}
+	hard := selective
+	hard.InspectCapacity = 0
+
+	tests := []struct {
+		name              string
+		mode              string
+		backpressure      predictiveRouterBackpressureSnapshot
+		predictiveRunning int
+		wantApplied       bool
+		wantRunning       int
+		wantLimit         int
+		wantInspect       int
+	}{
+		{
+			name: "enforce open neutralizes legacy dynamic limit",
+			mode: "enforce", predictiveRunning: 9,
+			wantRunning: 2, wantLimit: 0,
+		},
+		{
+			name: "enforce selective publishes exactly one inspect slot",
+			mode: "enforce", backpressure: selective, predictiveRunning: 3,
+			wantApplied: true, wantRunning: 3, wantLimit: 4, wantInspect: 1,
+		},
+		{
+			name: "enforce hard publishes no inspect slot",
+			mode: "enforce", backpressure: hard, predictiveRunning: 3,
+			wantApplied: true, wantRunning: 3, wantLimit: 3,
+		},
+		{
+			name: "shadow preserves legacy dynamic projection",
+			mode: "shadow", backpressure: selective, predictiveRunning: 3,
+			wantRunning: 2, wantLimit: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := predictiveRouterCapacity(test.mode, test.backpressure, test.predictiveRunning, snapshot)
+			if got.BackpressureApplied != test.wantApplied || got.EffectiveRunning != test.wantRunning ||
+				got.EffectiveGlobalLimit != test.wantLimit || got.InspectCapacity != test.wantInspect {
+				t.Fatalf("capacity=%+v, want applied=%t running=%d limit=%d inspect=%d", got, test.wantApplied, test.wantRunning, test.wantLimit, test.wantInspect)
+			}
+			if got.RawRunning != snapshot.Running || got.RawGlobalLimit != snapshot.GlobalLimit {
+				t.Fatalf("raw dynamic observability was not preserved: %+v", got)
+			}
+		})
+	}
+}
+
+func TestPredictiveRouterMetricsSeparateRawWaitingFromEnforceProjection(t *testing.T) {
+	snapshot := runtimedynamic.Snapshot{Running: 2, Waiting: 7, GlobalLimit: 1, QOSLimit: 1}
+	write := func(mode string, backpressure predictiveRouterBackpressureSnapshot, predictiveRunning int) string {
+		t.Helper()
+		capacity := predictiveRouterCapacity(mode, backpressure, predictiveRunning, snapshot)
+		var out bytes.Buffer
+		metrics.WriteDynamic(&out, snapshot, metrics.DynamicConfig{}, nil, predictiveRouterCapacityMetrics(capacity))
+		return out.String()
+	}
+
+	selective := predictiveRouterBackpressureSnapshot{
+		Active: true, Activation: 1, Scope: predictiveProtectionScopeLoad, InspectCapacity: 1,
+	}
+	for _, test := range []struct {
+		name              string
+		mode              string
+		backpressure      predictiveRouterBackpressureSnapshot
+		predictiveRunning int
+		want              []string
+	}{
+		{
+			name: "enforce open",
+			mode: "enforce",
+			want: []string{
+				"pig_dynamic_observed_waiting_raw 7",
+				"pig_dynamic_observed_waiting 0",
+				"pig_dynamic_global_limit_raw 1",
+				"pig_dynamic_global_limit 0",
+			},
+		},
+		{
+			name: "enforce selective",
+			mode: "enforce", backpressure: selective, predictiveRunning: 3,
+			want: []string{
+				"pig_dynamic_observed_waiting_raw 7",
+				"pig_dynamic_observed_waiting 0",
+				"pig_dynamic_observed_running 3",
+				"pig_dynamic_global_limit 4",
+			},
+		},
+		{
+			name: "shadow remains legacy compatible",
+			mode: "shadow", backpressure: selective, predictiveRunning: 3,
+			want: []string{
+				"pig_dynamic_observed_waiting_raw 7",
+				"pig_dynamic_observed_waiting 7",
+				"pig_dynamic_observed_running 2",
+				"pig_dynamic_global_limit 1",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := write(test.mode, test.backpressure, test.predictiveRunning)
+			for _, want := range test.want {
+				if !strings.Contains(got, want) {
+					t.Fatalf("Router metrics missing %q:\n%s", want, got)
+				}
+			}
+		})
 	}
 }
 
@@ -470,7 +603,7 @@ func TestPredictiveRouterBackpressureLoadLeasePublishesFiniteIdleSentinel(t *tes
 		t.Fatalf("expired load lease retained its sentinel: %+v", expired)
 	}
 	restored := predictiveRouterCapacity("enforce", expired, 0, runtimedynamic.Snapshot{GlobalLimit: 50, QOSLimit: 50})
-	if restored.BackpressureApplied || restored.EffectiveRunning != 0 || restored.EffectiveGlobalLimit != 50 {
+	if restored.BackpressureApplied || restored.EffectiveRunning != 0 || restored.EffectiveGlobalLimit != 0 || restored.RawGlobalLimit != 50 {
 		t.Fatalf("expired load lease self-locked Router capacity: %+v", restored)
 	}
 }
@@ -485,9 +618,7 @@ func TestPredictiveRouterCapacityEventIsLoggedOncePerAppliedEpisode(t *testing.T
 			Applied:     true,
 			Reason:      "existing_tps_at_risk",
 			Source:      "calibrated",
-			Samples:     7,
 			ActivatedAt: time.Unix(83_000, 0),
-			Until:       time.Unix(83_002, 0),
 			Activations: 1,
 		},
 	}
@@ -516,14 +647,12 @@ func TestPredictiveRouterCapacityEventIsLoggedOncePerAppliedEpisode(t *testing.T
 		"scope=load",
 		"reason=existing_tps_at_risk",
 		"source=calibrated",
-		"samples=7",
 		"predictive_running=1",
 		"raw_running=0",
 		"effective_running=1",
 		"raw_global_limit=50",
 		"effective_global_limit=1",
 		"activated_at=1970-01-01T23:03:20Z",
-		"until=1970-01-01T23:03:22Z",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("capacity log missing %q: %s", want, line)
@@ -571,32 +700,26 @@ func TestPredictiveRouterBackpressureHoldIsBounded(t *testing.T) {
 func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) {
 	line := formatPredictiveStatus(metrics.PredictiveAdmissionInput{
 		Mode: "enforce", Attempts: 12, Fits: 4, Risks: 8, EnforcedRejects: 8,
-		LastReason: "existing_tps_at_risk", LastSource: "calibrated", LastSamples: 6,
-		Reservations: 1, VirtualDecodeSequences: 3, DeferredOutcomes: metrics.PredictiveDeferredOutcomeInput{Active: 2},
-		ShadowPendingPrefills: 2, ShadowPendingPrefillTokens: 300, ShadowPendingPrefillAttributionValid: true, ShadowPendingPrefillAttributionState: "aggregate",
-		LearningHardExistingTPSExploratory:    1,
-		LearningHardExistingTPSNonExploratory: 2,
-		LearningHardNewTPSExploratory:         3,
-		LearningHardNewTPSNonExploratory:      4,
-		LearningHardTPOTExploratory:           5,
-		LearningHardTPOTNonExploratory:        6,
-		ExistingPrefill: metrics.PredictiveExistingPrefillInput{
-			Accepted: 7, Rejected: 1, Censored: 2, Deduplicated: 4, LastExistingUserTPS: 1.998185, LastExistingUserTPSValid: true, LastExploratory: true,
-		},
-		CompletionObserverAttached: 4, CompletionObserverClaimed: 3, CompletionObserverUsage: 2, CompletionObserverTerminal: 3,
+		LastReason: "request_size", LastSource: "deterministic",
+		Reservations: 1, VirtualDecodeSequences: 3,
+		ForwardedPendingPrefills: 1, ForwardedPendingPrefillTokens: 300, ForwardedPendingPrefillAttributionValid: true,
+		RetiredReservations: 2, RetiredEvictions: 1,
+		RequestAwareAction: "size_protect", RequestAwareReason: "request_size", RequestAwarePressureSource: "tps",
+		RequestAwarePressure: 0.6, RequestAwareSelectionInputTokens: 1500, RequestAwareReservedTokens: 1600,
+		RequestAwareAllowanceTokens: 1333, RequestAwareEffectiveKV: 7000, RequestAwarePostAdmitKV: 8600, RequestAwareRemainingKV: 2000,
+		RequestAwareRunning: 4, RequestAwareWaiting: 1, RequestAwareEffectiveSequences: 4,
+		RequestAwareAggregateTPSProxy: 80, RequestAwareMeanActiveTPSProxy: 20, RequestAwareProjectedTPSProxy: 16, RequestAwareTPSForecastValid: true,
 		RouterBackpressure: metrics.PredictiveRouterBackpressureInput{
-			Active: true, Applied: true, Scope: "load", Reason: "existing_tps_at_risk",
-			AggregateCompletionTPSEstimate: 154, PreviousAggregateCompletionTPSEstimate: 300,
-			Activation: 2, Extensions: 5, RenewalLogs: 2, RenewalsSuppressed: 3,
-			LatestRejectAt: time.Unix(84_000, 0), Until: time.Unix(84_005, 0),
+			Active: true, Applied: true, Scope: "load", Reason: "request_size", InspectCapacity: 1,
+			Activation: 2, LatestRejectAt: time.Unix(84_000, 0),
 			RawRunning: 1, EffectiveRunning: 1, RawGlobalLimit: 50, EffectiveGlobalLimit: 1,
 		},
 	})
 	for _, want := range []string{
-		"predictive={mode=enforce", "attempts=12", "risk=8", "last=existing_tps_at_risk/calibrated/6",
-		"last_reject=none/unknown/none/0", "reservations=1", "virtual_decode=3", "pending_prefill=0/0/0", "shadow_prefill=2/300/1/aggregate", "deferred=2",
-		"prefill_learning=7/1/2/1.998/1/1", "prefill_deduplicated=4", "hard_origin=1/2/3/4/5/6", "completion_observer=4/3/2/3", "router_bp=1/1/load/existing_tps_at_risk", "throughput=154.00/300.00", "effective=1/1", "raw=1/50",
-		"router_lease=2/5/2/3/1970-01-01T23:20:00Z/1970-01-01T23:20:05Z",
+		"predictive={mode=enforce", "attempts=12", "risk=8", "last=request_size/deterministic",
+		"last_reject=none/unknown/none", "reservations=1", "virtual_decode=3", "pending_prefill=1/300/1", "retired=2/1",
+		"request_aware=size_protect/request_size/tps", "pressure=0.600", "size=1500/1600/1333", "kv=7000/8600/2000", "load=4/1/4", "tps=80.000/20.000/16.000/1",
+		"router_bp=1/1/load/request_size", "inspect=1", "activation=2", "effective=1/1", "raw=1/50",
 	} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("predictive status missing %q: %s", want, line)

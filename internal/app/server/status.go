@@ -81,18 +81,20 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 	if lastRejectScope == "" {
 		lastRejectScope = "none"
 	}
-	shadowPrefillState := input.ShadowPendingPrefillAttributionState
-	switch shadowPrefillState {
-	case "empty", "single", "aggregate", "incompatible":
-	default:
-		if input.ShadowPendingPrefills <= 0 {
-			shadowPrefillState = "empty"
-		} else {
-			shadowPrefillState = "incompatible"
-		}
+	requestAwareAction := input.RequestAwareAction
+	if requestAwareAction == "" {
+		requestAwareAction = "unknown"
+	}
+	requestAwareReason := input.RequestAwareReason
+	if requestAwareReason == "" {
+		requestAwareReason = "unknown"
+	}
+	requestAwarePressureSource := input.RequestAwarePressureSource
+	if requestAwarePressureSource == "" {
+		requestAwarePressureSource = "none"
 	}
 	return fmt.Sprintf(
-		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s/%d last_reject=%s/%s/%s/%d reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d shadow_prefill=%d/%d/%d/%s deferred=%d prefill_learning=%d/%d/%d/%.3f/%d/%d prefill_deduplicated=%d hard_origin=%d/%d/%d/%d/%d/%d completion_observer=%d/%d/%d/%d router_bp=%d/%d/%s/%s throughput=%.2f/%.2f router_lease=%d/%d/%d/%d/%s/%s effective=%d/%d raw=%d/%d}",
+		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s last_reject=%s/%s/%s reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d retired=%d/%d request_aware=%s/%s/%s pressure=%.3f size=%d/%d/%d kv=%d/%d/%d load=%d/%d/%d tps=%.3f/%.3f/%.3f/%d router_bp=%d/%d/%s/%s inspect=%d activation=%d effective=%d/%d raw=%d/%d}",
 		input.Mode,
 		input.Attempts,
 		input.Fits,
@@ -101,50 +103,39 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 		input.EnforcedRejects,
 		reason,
 		source,
-		input.LastSamples,
 		lastRejectReason,
 		lastRejectSource,
 		lastRejectScope,
-		input.LastRejectSamples,
 		input.Reservations,
 		input.VirtualDecodeSequences,
 		input.ForwardedPendingPrefills,
 		input.ForwardedPendingPrefillTokens,
 		boolInt(input.ForwardedPendingPrefillAttributionValid),
-		input.ShadowPendingPrefills,
-		input.ShadowPendingPrefillTokens,
-		boolInt(input.ShadowPendingPrefillAttributionValid),
-		shadowPrefillState,
-		input.DeferredOutcomes.Active,
-		input.ExistingPrefill.Accepted,
-		input.ExistingPrefill.Rejected,
-		input.ExistingPrefill.Censored,
-		input.ExistingPrefill.LastExistingUserTPS,
-		boolInt(input.ExistingPrefill.LastExistingUserTPSValid),
-		boolInt(input.ExistingPrefill.LastExploratory),
-		input.ExistingPrefill.Deduplicated,
-		input.LearningHardExistingTPSExploratory,
-		input.LearningHardExistingTPSNonExploratory,
-		input.LearningHardNewTPSExploratory,
-		input.LearningHardNewTPSNonExploratory,
-		input.LearningHardTPOTExploratory,
-		input.LearningHardTPOTNonExploratory,
-		input.CompletionObserverAttached,
-		input.CompletionObserverClaimed,
-		input.CompletionObserverUsage,
-		input.CompletionObserverTerminal,
+		input.RetiredReservations,
+		input.RetiredEvictions,
+		requestAwareAction,
+		requestAwareReason,
+		requestAwarePressureSource,
+		input.RequestAwarePressure,
+		input.RequestAwareSelectionInputTokens,
+		input.RequestAwareReservedTokens,
+		input.RequestAwareAllowanceTokens,
+		input.RequestAwareEffectiveKV,
+		input.RequestAwarePostAdmitKV,
+		input.RequestAwareRemainingKV,
+		input.RequestAwareRunning,
+		input.RequestAwareWaiting,
+		input.RequestAwareEffectiveSequences,
+		input.RequestAwareAggregateTPSProxy,
+		input.RequestAwareMeanActiveTPSProxy,
+		input.RequestAwareProjectedTPSProxy,
+		boolInt(input.RequestAwareTPSForecastValid),
 		boolInt(backpressure.Active),
 		boolInt(backpressure.Applied),
 		backpressureScope,
 		backpressureReason,
-		backpressure.AggregateCompletionTPSEstimate,
-		backpressure.PreviousAggregateCompletionTPSEstimate,
+		backpressure.InspectCapacity,
 		backpressure.Activation,
-		backpressure.Extensions,
-		backpressure.RenewalLogs,
-		backpressure.RenewalsSuppressed,
-		predictiveRouterBackpressureTime(backpressure.LatestRejectAt),
-		predictiveRouterBackpressureTime(backpressure.Until),
 		backpressure.EffectiveRunning,
 		backpressure.EffectiveGlobalLimit,
 		backpressure.RawRunning,

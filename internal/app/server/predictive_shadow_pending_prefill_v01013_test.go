@@ -347,49 +347,6 @@ func TestObservedPredictivePendingPrefillsPreservesExactMixedManagerSingleShadow
 	}
 }
 
-func TestPredictiveAdmissionMetricsInputCarriesShadowAggregateAttributionState(t *testing.T) {
-	server := &proxyServer{
-		cfg: config{PredictiveAdmissionMode: "shadow"},
-		predictiveShadow: &routerMetricsPredictiveShadow{telemetry: predictiveAdmissionTelemetrySnapshot{
-			Manager: runtimepredictive.Snapshot{EventSequence: 7},
-			ShadowPendingPrefills: predictiveShadowPendingPrefillSnapshot{
-				Count:                   2,
-				Tokens:                  300,
-				Features:                runtimepredictive.SchedulerFeatures{PendingPrefillSequences: 2, UncachedPrefillTokens: 300},
-				FeaturesValid:           true,
-				DecisionManagerSequence: 7,
-				AttributionState:        predictiveShadowPrefillAttributionAggregate,
-			},
-		}},
-	}
-	input := server.predictiveAdmissionMetricsInput()
-	if input.ShadowPendingPrefills != 2 || input.ShadowPendingPrefillTokens != 300 ||
-		!input.ShadowPendingPrefillAttributionValid || input.ShadowPendingPrefillAttributionState != "aggregate" {
-		t.Fatalf("shadow aggregate telemetry mapping = %+v", input)
-	}
-}
-
-func TestPredictiveAdmissionMetricsInputMarksChangedManagerAggregateIncompatible(t *testing.T) {
-	server := &proxyServer{
-		cfg: config{PredictiveAdmissionMode: "shadow"},
-		predictiveShadow: &routerMetricsPredictiveShadow{telemetry: predictiveAdmissionTelemetrySnapshot{
-			Manager: runtimepredictive.Snapshot{EventSequence: 8},
-			ShadowPendingPrefills: predictiveShadowPendingPrefillSnapshot{
-				Count:                   2,
-				Tokens:                  300,
-				Features:                runtimepredictive.SchedulerFeatures{PendingPrefillSequences: 2, UncachedPrefillTokens: 300},
-				FeaturesValid:           true,
-				DecisionManagerSequence: 7,
-				AttributionState:        predictiveShadowPrefillAttributionAggregate,
-			},
-		}},
-	}
-	input := server.predictiveAdmissionMetricsInput()
-	if input.ShadowPendingPrefillAttributionValid || input.ShadowPendingPrefillAttributionState != "incompatible" {
-		t.Fatalf("changed Manager aggregate telemetry = %+v", input)
-	}
-}
-
 func TestPredictiveVLLMObserverLearnsOncePerCompatibleShadowAggregateEpisode(t *testing.T) {
 	clock := &adapterTestClock{now: time.Unix(90_210, 0)}
 	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 3, 0, 0, 100, true)}

@@ -1,0 +1,1988 @@
+# PIG v0.11.0 确定性请求感知准入计划
+
+状态：**唯一 canonical 执行规范；第六轮三轮复查与完整 builder matrix 完成，待提交/发布**
+最后更新：2026-08-06
+仓库：`phala-inference-guard`
+默认 vLLM poll interval：`500 ms`
+
+本文档取代此前所有 v0.11 Safe Envelope、pressure bucket、RLS、marginal-goodput
+learning 和旧 dynamic QoS 方案。文件名为历史遗留，正文才是当前合同。任何算法、
+门禁、默认值或证据变化必须先更新本文档。第 1--12 节与第 13 节开头的 current
+checklist/summary 是 active contract；第 13.1 节以后只是按时间追加的证据账本，不反向覆盖
+前文。压缩上下文后先读 active contract 和最新账本尾部，不需要重读全部历史 red/green。
+
+## 1. 目标
+
+PIG 在请求进入 vLLM 之前，使用：
+
+- 最新、有效的 vLLM 容量与负载快照；
+- 尚未被上游指标吸收的本地 reservation；
+- 快速、模型无关的输入大小近似值；
+
+作出确定性的逐请求 `ADMIT` 或 `PROTECT`：
+
+1. 不突破明确的 KV 保护边界，不在 preemption cooldown 中继续扩张；
+2. TPS 可以从 target 小幅下降；有效 TPS 越接近 floor，新 intake 越偏向小请求；预测值到达
+   floor 时暂不新增 intake，但这仍是随下一 fresh snapshot 自动恢复的逐请求选择性保护，
+   不是由一个后反馈样本永久关闭 intake；
+3. 容量有压力时优先拒绝大输入请求，而不是不区分请求地全部拒绝；
+4. KV、waiting、TPS 均无压力时，所有满足 hard-fit 的请求都可进入，避免低流自锁和 GPU
+   闲置；
+5. 在上述 QoS 约束下，提高 SLO-compliant completion throughput 和总吞吐。
+
+PIG 不路由、不排队、不重排请求，也不修改 Router/vLLM 源码。因此这是同步、在线、
+work-conserving 的贪心准入，不宣称对未来未知请求实现全局最优。
+
+## 2. 明确不做什么
+
+v0.11.0 不包含：
+
+- 任何在线学习、回归、校准学习、risk price、置信区间或 exploration/probe；
+- learned KV/decode/concurrency limit、Safe Envelope、pressure bucket、frontier；
+- cache hit/cache-aware admission；
+- TTFT admission；
+- premium/basic tier、lane、priority 或 backend priority 注入；
+- 模型专用 tokenizer asset、模型 profile learner；
+- PIG 内部 queue、SJF/SRPT、backend selection；
+- 依请求、模型或 prompt cardinality 无界增长的状态。
+
+旧学习实现最终必须从 v0.11 production factory、HTTP admission、配置和 metrics 的可达路径中
+删除，不能只靠 runtime flag 假装 disabled。若静态 reachability 证明 legacy 源码只被旧模式或
+历史 tests/simulation 消费，本版不为代码洁癖大删数千行；过去的 focused green 也不是本计划
+的实现证据。
+
+## 3. 本次复查删掉的过度设计
+
+上一版计划方向正确，但以下内容不适合作为第一版：
+
+1. **把近似值叫 hard upper**：当前 `EstimatedInputHigh` 来自 JSON 字节量、tool、
+   template 和 modality surcharge；它是保守估计，不是对所有 tokenizer/template 成立的
+   数学上界。正文改称 `estimatedPromptCost`，硬 KV 保护必须另留 margin；
+2. **把平均值叫单用户 TPS**：`generationTokensDelta / running` 只是
+   `meanActiveTPSProxy`，不能证明每个用户的 TPS。它只作为当前 QoS 压力信号，真实
+   per-request TPS 仍在离线/实际流量验证；
+3. **过度限定 TPS 样本**：waiting 或 reservation 存在时直接废弃 TPS，会在高负载时
+   失明。现在只要求 counter/epoch/time 有效，并对 running 变化使用保守 denominator；
+4. **重复的 decode 保护**：删除独立 `decodeGuard + decodeLookahead + context contract`
+   三套机制，直接复用现有 bounded output reservation；
+5. **虚构 sequence hard capacity**：当前启动指标能确认 KV token capacity/block size，
+   不能确认 vLLM `max_num_seqs`。第一版不增加 guessed sequence hard limit；
+6. **参数过多**：删除 minimum intake、minimum selective KV、minimum selective input、
+   waiting emergency 和单独 prefill maximum；
+7. **组件过多**：不预先建立八个接口；只保留 estimator、observer、pure policy、
+   manager/reporting 四个实际职责；
+8. **过度实验流程**：删除在线 learner 式 grid search 和“先估 variance 再定门槛”的复杂
+   流程。先用少量预注册配置做确定性对照，再由 shadow/canary 验证真实效果；
+9. **过度 reservation 重写**：已有 Manager 已覆盖原子 reserve、forward、prefill、
+   reconcile、terminal。先验证并去掉 learning coupling，不另造第二套生命周期。
+10. **单样本 TPS 全局锁**：`meanActiveTPSProxy` 不是逐用户 TPS，单个 500-ms 样本低于
+    floor 不足以证明必须停止所有 intake。floor 改为 `pressure=1` 的选择性保护，只有
+    stale、preemption 和 hard KV 等可验证安全条件才能全局 `HARD_PROTECT`；
+11. **把所有 epoch 变化都永久锁死**：model identity、KV capacity 或 block size 漂移会使
+    当前 observer/policy 合同失效，仍必须 fail closed 并重建 PIG lifecycle；但同一 identity、
+    capacity、block size 下 generation/preemption counter 回退通常只是 vLLM restart。后者必须
+    原子清除旧 reservation/retired state，以 reset sample 重建 Manager base 和 counter baseline，
+    成功后自动 reopen。rebase 前 fail closed；rebase 后 TPS 先保持 unknown-neutral，不凭任意
+    sequence cap 限流；每个候选仍受 post-admit hard KV、waiting/KV pressure、本地 reservation
+    和下一 500-ms snapshot 约束。不能永久误锁，也不能静默复用旧 epoch 容量；
+12. **过宽的旧配置删除范围**：只删除或停止读取 predictive learning/TTFT/calibrator 的
+    专用配置与 metrics；仍被其他 dynamic/KV 模式消费的公共配置不得顺手删除；
+13. **500-ms 配置写了但没接线**：新 factory 必须读取
+    `PredictiveObservationPollInterval` 和 `PredictiveMaximumMetricsAge`，不得继续读取旧
+    `DynamicPollInterval`/KV freshness 字段。
+14. **size allowance 可超出剩余 KV 的文档漏洞**：SELECTIVE allowance 必须由
+    `remainingKV` 封顶；hard-fit 仍先比较完整 request reservation；
+15. **把最后一次拒绝做成 Router 粘滞状态**：若大请求被拒后 Router 不再送请求，PIG 将
+    没有新请求来解除保护。Router capacity 不永久复用 last verdict；每次 metrics scrape
+    以当前 observer snapshot 和 Manager virtual state 做一个无 reservation 的 one-block
+    inspect，再发布 `OPEN`、`SELECTIVE` 或 `HARD`。这是恢复机制，不是 exploration/learning。
+16. **用全部 remaining KV 缩放 size allowance 的量纲错误**：R58/R59 simulation 证明，
+    例如剩余 KV 为 7 万 token 时，20% TPS pressure 仍给出约 5.6 万 token allowance，普通
+    small/large 请求几乎都感受不到 QoS 保护。SELECTIVE 的输入阈值改由
+    `hardKVLimit-softKVLimit` 这一明确的弹性容量带缩放，再由 `remainingKV` 封顶；
+17. **pressure=1 仍固定放行一个 block 会持续穿透 floor**：同样大小的极小请求可在每个
+    500-ms epoch 反复进入，并把一次可容忍下降变成持续 QoS 退化。完整压力时 allowance
+    必须为零；这仍是可随下一 fresh snapshot 立即恢复的 `SIZE_PROTECT`，不是 stale、
+    preemption 或 hard-KV `HARD_PROTECT`，也不形成 Router 粘滞锁；
+18. **TPS 只看当前均值仍是后反馈**：observer 必须保留 generation delta 得到的
+    `aggregateTPSProxy`，Manager 必须把已观测 running 与尚未吸收的 reservation 合成
+    `effectiveSequences`；observed waiting 继续作为独立 pressure，不能再次放入 TPS
+    denominator 重复收费。当当前 TPS 已低于 target 或存在 waiting 时，用
+    `aggregateTPSProxy/(effectiveSequences+1)` 预测新请求进入后的均值；健康、无 waiting
+    且当前 TPS 不低于 target 时采用 work-conserving 假设，预测值保持当前均值，让系统先
+    增加一个请求再由下一 500-ms snapshot 校正。该规则无学习、无历史窗口、无模型资产。
+19. **用 post-admit KV 同时做 soft pressure 和 hard-fit 会对大请求双重收费**：R63 中
+    `large-only` 和 `large-small-output` 在 preemption/TPS-floor 没有改善时吞吐分别退化约
+    21% 和 20%。完整 request reservation 继续用于不可覆盖的 post-admit hard-KV 判断；
+    soft `kvPressure` 只使用已观测加本地 reservation 的当前 `effectiveKV`。健康区可以
+    work-conserving 地跨入一次弹性带，下一请求会在同一 Manager 锁内看到前序 reservation。
+20. **健康 TPS 分支把同一 poll 内整批 burst 都当成第一个请求**：只要当前
+    `meanActiveTPSProxy >= target` 且 `waiting=0`，旧公式就完全忽略不断增加的
+    `effectiveSequences`，并不能兑现“先增加一个请求再校正”。新规则只在没有尚未被
+    snapshot 吸收的本地 sequence 时采用一次 work-conserving 预测；同一 snapshot 的后续
+    请求改用 `aggregateTPSProxy/(effectiveSequences+1)`，避免 500-ms poll 前无限乐观扩张；
+21. **`BlockSize` 是未消费的死配置**：既然 request reservation 与 vLLM KV capacity 都按
+    block 工作，soft/hard operational limits 必须向下对齐真实 `blockSize`。否则配置违反
+    SOLID，边界 telemetry 也会显示不可实际分配的零碎 token；
+22. **simulation 容差量纲混用**：一个 100-ms tick 只用于 duration budget；goodput 比较只用
+    相对阈值和极小浮点 epsilon，不能把 `0.100001 seconds` 加到 tokens/s；suite aggregate
+    budget 不能把逐场景容差累加；
+23. **release gate 顺序与 test-first 执行不一致**：focused simulation 应在最终 full matrix
+    之前暴露算法问题；只有算法、生命周期和 simulation 稳定后，才在同一个 exact archive
+    上执行 full/vet/race/build/benchmark/simulation 最终矩阵。
+24. **adapter 的二次 closed check 仍留有 reserve-to-forward TOCTOU**：`Decide()` 在 reserve
+    后检查一次 `closed`，但 `Close()` 仍可在线程返回 reservation 后、真实
+    `MarkForwarded()` 前发生；当前 reservation 只持有 Manager，Manager 的
+    `MarkForwarded()` 又允许 intake 已关闭的既有 reservation commit。request-aware
+    reservation 必须通过 owner 锁把 close 与 forward commit 线性化：close 先发生则
+    `MarkForwarded()` 失败并由 HTTP deferred terminal 释放；forward commit 先发生则允许该
+    已提交请求按正常 lifecycle 收尾。该修复不增加第二套 reservation registry。
+25. **真实 enforce HTTP 在预测后仍进入旧 QoS/tier/priority 热路径**：当前 proxy 先创建
+    request-aware reservation，再调用旧 `qosGate.WaitAcquire`，因此已承诺的请求仍可能排队或
+    被 static global/tier gate 一刀切拒绝，并继续执行 backend priority rewrite。这与“PIG 不
+    排队、v0.11 不含 tier/priority、request-aware policy 是 enforce 准入控制器”的合同冲突，
+    也会让 reservation 在本地旧队列中虚占容量。v0.11 `enforce` 必须跳过旧 gate、tier
+    accounting、tier/lane header 和 backend priority injection；`shadow` 保留原服务行为，确保
+    观察模式无副作用。旧 dynamic/learning 源码若无 production factory 可达调用，本版先保留
+    为历史 tests/simulation，避免用大规模删除掩盖热路径问题；release 审计以 non-test
+    production reachability 为准。
+26. **Router 仍被旧 dynamic limit/waiting 二次控制**：即使 enforce HTTP 已绕过旧 QoS gate，
+    Router 仍消费 `pig_dynamic_observed_running`、`pig_dynamic_observed_waiting` 和
+    `pig_dynamic_global_limit`。若继续原样发布旧 dynamic snapshot，则 OPEN 仍会被旧
+    global limit 限流；更严重的是 SELECTIVE 常由 `waiting>0` 触发，而 Router 会因为同一个
+    waiting 把节点整体判为 blocked，使后续小请求无法到 PIG 做逐请求判断。v0.11 enforce 必须
+    把 Router-consumed 字段视为 request-aware policy 的派生 projection：旧 waiting/global
+    limit 只保留 raw observability；effective waiting 恒为零；OPEN 的 effective global limit
+    使用 Router 已支持的非正值表达“无外层容量钳制”；SELECTIVE 发布
+    `effectiveRunning+1`，HARD 发布 `effectiveRunning`。`shadow`/`off` 继续原样发布旧 dynamic
+    snapshot。这样 Router 只做 PIG verdict 的粗粒度流量适配，不成为第二个 admission
+    controller，也不会因 raw waiting 破坏 request-size differentiation。
+27. **enforce 仍被已禁用的 priority-only validator 耦合**：production derived config 已在
+    request-aware enforce 中关闭 backend priority injection，但顶层 `Validate` 仍会因无效的
+    priority mode/strategy/field/buffer/limit 拒绝启动。v0.11 enforce 不应被不可达功能的语义
+    配置阻断；`validatePriorityConfig` 必须在 enforce 时跳过 priority-only 校验，shadow/off 继续
+    严格验证。OpenAI compatibility 是独立能力，其字段、校验和 body rewrite 不随 priority
+    injection 一起删除或跳过。
+28. **Router inspect 与随后 Manager snapshot/publication 不是跨请求原子事务**：one-block
+    inspect 在 Manager 锁内对 sequence `S` 求值，锁释放后另一个请求可能 reserve/terminate，
+    telemetry 再读取较新的 virtual state。该窗口不能让请求逃逸到 upstream，因为真实 HTTP
+    每次仍在 Manager 锁内重新执行 policy+reservation；最坏是一个 metrics scrape 周期内多送
+    一个到 PIG 后被 429，或短暂少送一个请求。下一次 scrape 会用 fresh snapshot 重算，不能
+    形成 sticky clamp。为消除 advisory staleness 而跨 observer/metrics 长持 Manager 锁，会扩大
+    admission 延迟且仍无法使 Router scrape 与下一次网络请求原子化，本版不引入该复杂度；以
+    concurrent scrape/admit/terminate race test、最终无 reservation leak、fresh OPEN 恢复和真实
+    HTTP atomic-admission tests 固化接受边界。
+29. **PIG coarse `/v1/upstream-status` 仍由旧 QoS controller 决定**：Router 主选择读取的 metrics
+    已切到 request-aware projection，但其他下游可消费的 PIG coarse status 仍检查 static limit、
+    old dynamic waiting/state、legacy queue 和 tier。这样同一个 enforce OPEN 可能在 metrics 中
+    neutral，却在 status endpoint 被旧算法报 red。enforce status 必须复用当前 request-aware
+    inspect：OPEN=`green`、SELECTIVE（one inspect slot）=`yellow`、HARD/availability=`red`；
+    predictive provider 缺失时 fail closed 为 `red`。off/shadow 保持既有 status 行为，不能影响
+    旧模式兼容性。
+30. **把 TPS unknown 强制收缩为单次 speculation 是过度保护**：R93 的 `pre-poll-burst`
+    中，该规则只把已在允许预算内的 TPS-floor violation 从 `0.1 s` 降到 `0`，却让 completion
+    tokens/s 从 `102.405` 降至 `70.630`，约退化 31%。v0.11 不猜 `max_num_seqs`，也不增加任意
+    cold-start cap。TPS unknown 继续 neutral，由 startup baseline 尽快缩短 unknown 窗口，并由
+    post-admit hard KV、当前 waiting/KV pressure、本地 reservation 和下一 500-ms snapshot 保护。
+    simulation 必须把 burst 纳入 goodput non-regression gate，不能用不必要的 QoS 改善换取大幅
+    吞吐下降。
+31. **startup probe 没有成为 TPS counter baseline**：startup 已提供同 identity 的 generation、
+    preemption、running 和 observed time，但 observer 未设置 request-aware baseline flag，导致
+    第一轮 500-ms poll 仍无法计算 TPS。构造成功时必须把 startup sample 标为 baseline；无有效
+    startup observation 时继续按 cold-start 规则处理。
+32. **dead Router hold 配置仍能阻断 v0.11 启动**：request-aware Router projection 每次 scrape
+    fresh 重算，没有固定 hold；旧 `PREDICTIVE_ROUTER_BACKPRESSURE_HOLD` 只残留在旧 adapter/
+    日志节流代码，却仍由 v0.11 loader/validator 解析并可导致启动失败。v0.11 production config、
+    startup log 和 failure logging 不得再依赖该字段；日志去重使用内部有界常量。保留仅供不可达
+    legacy unit tests 使用的 helper 不算 production config。
+33. **canonical 文档把合同和 900 多行历史账本混成同一阅读面**：证据不能删除，但 13.1 以后
+    明确为 non-normative append-only ledger。后续恢复任务只读 active contract、current checklist
+    和最新账本尾部，避免旧方案/旧 false-green 在压缩上下文后重新成为实现要求。
+34. **完成窗口的 TPS proxy 会在低流时误触发 invalid hard protect**：observer 按合同允许
+    `previousRunning>0、currentRunning=0` 且 generation 增长的窗口产生 proxy，但 pure policy
+    把 `TPSValid && Running==0` 直接判 invalid。结果是后端已空闲的 fresh snapshot 反而拒绝下一
+    请求，直到再下一 poll 才恢复。当前没有 effective sequence 时，完成窗口的 TPS 只保留为
+    observation，admission 按 TPS unknown-neutral；第一个 hard-fit 请求可 work-conserving 进入。
+    同 snapshot 出现本地 reservation 后，后续请求可以再用该 aggregate proxy 与新的
+    `effectiveSequences+1` 做 post-admit forecast。KV、waiting、stale、preemption 保护不变。
+35. **pure policy 没有独立守住 KV margin 不变量**：production KV config 已通过
+    `target>0`、`hard<emergency<=1` 间接保证 `0 < soft < hard < 1`，但
+    `RequestAwareConfig.Validate()` 仍允许 `soft=0` 或 `hard=1`。factory 当前不可达这些值不代表
+    domain policy 可以依赖外层偶然校验；pure policy 自身必须拒绝二者，避免未来复用时悄悄
+    移除 soft band 或 hard margin。不新增第三个 ratio 或其他配置。
+
+## 4. 输入事实
+
+### 4.1 vLLM snapshot
+
+复用当前 parser/observer 的事实：
+
+```text
+capacityTokens  <- vllm:cache_config_info{kv_cache_size_tokens=...}
+blockSize       <- vllm:cache_config_info{block_size=...}
+usedTokens      <- round(kv_cache_usage_perc * capacityTokens)
+running         <- vllm:num_requests_running
+waiting         <- vllm:num_requests_waiting
+preemptions     <- vllm:num_preemptions_total
+generation      <- vllm:generation_tokens_total
+modelIdentity   <- required unique model_name hash
+observedAt
+```
+
+`capacityTokens` 和 `blockSize` 是显式指标；`usedTokens` 仍受 percentage gauge 舍入和
+500-ms 采样间增长影响。因此：
+
+```text
+softKVLimit = blockRoundDown(capacityTokens * softKVRatio, blockSize)
+hardKVLimit = blockRoundDown(capacityTokens * hardKVRatio, blockSize)
+```
+
+其中 `hardKVRatio < 1`，留出的 margin 覆盖指标误差、block 粒度和下一次 poll 前的增长。
+向下对齐 block 后，hard-fit、remaining KV 和日志/metrics 使用同一个可执行边界。
+这是一条保守 operational guard，不宣称可以形式化证明 vLLM 永不 preempt；真正结果仍
+由 preemption counter 和模拟/实际流量验证。
+
+snapshot stale、capacity/block/model identity mismatch 或 epoch transition 时先 fail closed。普通
+scrape 失败在新的完整 fresh snapshot 后恢复；model identity/capacity/block drift 要求重建
+observer/PIG lifecycle。同 identity/capacity/block 的 generation/preemption counter reset 使用
+reset sample 原子 rebase Manager 和 observer baseline，清除旧 epoch reservation/retired state 后
+自动 reopen；rebase 失败继续 fail closed。
+
+### 4.2 请求成本
+
+直接复用 bounded JSON estimator：
+
+```text
+selectionInputTokens = ApproximateInputTokens，已知且 > 0 时
+                     = EstimatedInputHigh，hint 不可用时的保守 fallback
+
+reservedTokens       = blockRoundUp(EstimatedInputHigh + BoundedDecodeTokens)
+```
+
+- `selectionInputTokens` 只在有压力时决定大/小请求差异；不用于声称 exact tokenizer；
+- `reservedTokens` 用于 post-admit KV operational guard；
+- 所有加法和 block rounding 检查 overflow；
+- malformed/unsupported 且无法给出 fallback 时 protect；
+- 不加载 Hugging Face/vLLM tokenizer，不访问网络/文件/FFI；
+- 不记录 prompt/body/model name/request ID 高基数标签。
+
+`max_tokens` 只是 reservation 上界的一部分，不作为短请求排序分数；客户端填写较大
+安全上限不应自动被视为长作业。这是有意的第一版取舍：SELECTIVE 比较即时输入大小，
+hard-fit 比较完整 bounded reservation。必须额外模拟“小输入 + 大 `max_tokens`”；若它使
+QoS 或吞吐劣于基线，才在 release 前调整 selection score，不能现在凭假设增加权重参数。
+
+### 4.3 TPS proxy
+
+相邻两个 snapshot 同 epoch、generation counter 单调且 elapsed 有效时：
+
+```text
+aggregateTPSProxy  = generationDelta / elapsedSeconds
+runningDenominator = max(previousRunning, currentRunning)
+meanActiveTPSProxy = aggregateTPSProxy / runningDenominator
+```
+
+该 proxy 是保守的活跃请求平均值，不是真实逐用户 TPS。规则：
+
+- `previousRunning` 与 `currentRunning` 都为零，或 counter 无效：TPS unknown-neutral，不因
+  缺样本保护；若请求刚在当前窗口结束，允许用非零的 previous denominator 计算；
+- `generationDelta == 0`：TPS unknown-neutral；单个 500-ms prefill/no-progress 窗口不能
+  冒充稳定 TPS=0 并触发低流 floor 自锁；hard KV、waiting/KV pressure 和本地 reservation
+  仍按正常路径生效；
+- preemption/counter reset：本窗口无效并进入相应 hard protection；
+- waiting 不使 proxy 失效；waiting 自己会增加 pressure；
+- 不保存长历史、不平滑、不学习，也不复用过期 proxy；
+- `aggregateTPSProxy` 与 `meanActiveTPSProxy` 必须来自同一个 counter delta，不能通过被保守
+  denominator 除过的均值再反推 aggregate；
+- Manager 临界区内从 `virtualStateInterval.Upper.DecodeSequences-observedWaiting` 取得
+  `effectiveSequences`，并至少由 observed running 封底。fresh sample 的 virtual state 为
+  running+waiting，而未被指标吸收的本地 reservation 会额外加一；减去 observed waiting
+  后得到正在运行或已本地准入的候选序列。waiting 已单独进入 waitingPressure，不能在 TPS
+  denominator 重复收费。这样同一 snapshot 上的后续请求仍能看到前序 admission。
+
+## 5. 最小逐请求算法
+
+所有计算与 reservation add 必须在同一 manager 临界区完成，使同一 poll 内的 burst
+看到前序请求占用。
+
+### 5.1 有效状态
+
+```text
+effectiveKV = max(managerVirtualPhysicalKVUpper,
+                  managerVirtualActiveKVUpper)
+postAdmitKV = effectiveKV + requestReservedTokens
+remainingKV = hardKVLimit - effectiveKV
+```
+
+### 5.2 不可覆盖的保护
+
+以下任一成立立即 `HARD_PROTECT`：
+
+- snapshot/identity/capacity/counter 不可信或 stale；
+- preemption 新增或仍在固定 cooldown；
+- estimator 无法给出 bounded fallback 或算术 overflow；
+- `postAdmitKV > hardKVLimit`；
+
+waiting 本身不进入 `HARD_PROTECT`。这样 `waiting=1` 不会让大小不同的请求全部得到同一
+verdict；持续 waiting 会通过 pressure 将 allowance 压小。TPS floor 也不进入
+`HARD_PROTECT`：它来自近似均值，只能把选择压力推到最大，不能单独全关。
+
+### 5.3 单一 pressure
+
+三个输入都映射到 `[0,1]`：
+
+```text
+kvPressure = clamp(
+  (effectiveKV - softKVLimit) /
+  (hardKVLimit - softKVLimit), 0, 1)
+
+waitingPressure = waiting / (running + waiting + 1)
+
+projectedTPS = unknown                                    if TPS unknown
+projectedTPS = meanActiveTPSProxy                         if TPS >= target, waiting == 0,
+                                                            and effectiveSequences == running
+projectedTPS = aggregateTPSProxy/(effectiveSequences+1)  otherwise
+
+tpsPressure = 0                                      if projectedTPS unknown or >= target
+tpsPressure = (target-projectedTPS)/(target-floor)   if floor < projectedTPS < target
+tpsPressure = 1                                      if projectedTPS <= floor
+
+pressure = max(kvPressure, waitingPressure, tpsPressure)
+```
+
+这是每次决策重新计算的纯函数，不是持久 controller state。`postAdmitKV` 只用于 hard-fit；
+soft KV pressure 使用已经承诺的 current `effectiveKV`，避免把候选 reservation 双重收费。
+`effectiveSequences+1` 包含当前候选请求，反馈只更新下一次预测的输入。健康、无 waiting 且
+没有本地未吸收 sequence 时允许一次 work-conserving 乐观步；一旦同一 snapshot 已有本地
+reservation，后续请求必须进入 post-admit denominator。target 到 floor 之间允许 TPS 下降并
+逐渐减少新 intake；projected floor 及以下把输入 allowance 降至零，但
+verdict 仍是可自动恢复的 `SIZE_PROTECT`，不是 stale/preemption/KV hard guard。TPS unknown 时
+不凭任意 sequence cap 制造 pressure；每个候选仍在同一 Manager 锁内执行 post-admit hard-fit，
+并看到前序 reservation 的 KV 占用。
+
+### 5.4 OPEN 与 SELECTIVE
+
+若不可覆盖保护均通过：
+
+```text
+if pressure == 0:
+    ADMIT
+else:
+    selectiveWindowTokens = hardKVLimit - softKVLimit
+    allowanceTokens = min(
+        remainingKV,
+        floor(selectiveWindowTokens * (1 - pressure)))
+    ADMIT        if selectionInputTokens <= allowanceTokens
+    SIZE_PROTECT otherwise
+```
+
+性质：
+
+- OPEN 不看 size 软门槛，large-only/low-flow 不因没有 TPS 样本而自锁；
+- 同一 snapshot 下，小输入可能通过、大输入可能保护；
+- 压力越高 allowance 单调不增；
+- `selectiveWindowTokens` 与 backend KV capacity 同比例缩放，又不会因健康区的全部剩余 KV
+  很大而让 waiting/TPS pressure 失效；
+- full pressure 的 allowance 为零，阻止极小请求持续穿透 floor；恢复只依赖下一 fresh
+  snapshot，不需要固定 hold、probe 或新业务请求解除状态；
+- pressure 回落后立即重新计算，不需 learning、probe、promotion 或满 1 秒；
+- cold start/zero-delta 不会关闭 intake；其 burst 安全由 hard KV/reservation 和下一 fresh
+  snapshot 验证，不以大幅 goodput 退化换取零瞬时 TPS 波动；
+- 不保存被拒请求、不实现公平队列；大请求公平性由 large-only/mixed 测试观察。
+
+初始可调参数仅保留：
+
+```text
+softKVRatio
+hardKVRatio
+tpsTarget
+tpsFloor
+preemptionCooldown
+metricsMaxAge
+pollInterval = 500 ms
+```
+
+KV 参数直接复用明确的 vLLM operational boundaries：`softKVRatio` 对应 VLLM target ratio，
+`hardKVRatio` 对应 VLLM hard ratio，不能再像旧 factory 一样把 target ratio 当 hard limit。
+TPS target/floor 必须是新 deterministic policy 的显式配置，不得从 TTFT、learner confidence
+或探索阈值间接推导。
+
+其中现有 estimator 的 bounded output 配置继续复用，不为本策略增加第二套 output 参数。
+
+## 6. Reservation 与真实 HTTP 路径
+
+第一版复用并精简现有 `Manager`，不重写第二套 reservation 系统：
+
+```text
+request parse/estimate
+  -> fresh snapshot + existing reservations
+  -> pure policy verdict
+  -> atomic reserve on ADMIT
+  -> enforce 直接选择 upstream 并原子 mark-forwarded；不进入旧 QoS queue/tier/priority
+  -> prefill/reconcile or terminal exact-once release
+```
+
+必须验证现有 Manager：
+
+- 同一锁内 check + reserve；
+- duplicate request 不重复 reserve；
+- forward/prefill/sample 的 ambiguous window 不提前复用容量；
+- completion/error/cancel/disconnect/timeout/reset/shutdown exact-once；
+- reservation 不 leak、不 double release、不 oversubscribe；
+- 去掉 SchedulerObserver、learning invalidator、outcome training 后，上述资源语义不变；
+- shadow 只计算 would-verdict，不修改 enforce reservation 或下一次决策。
+
+同 identity/capacity/block 的 counter reset 走单一 Manager epoch-rebase 操作：在 Manager 锁内
+关闭 intake、清空旧 reservation/retired state、替换 base、推进 event sequence，再 reopen；随后
+observer 才发布 reset sample 为 fresh baseline。任何旧 reservation handle 的 forward commit 必须
+失败，terminal 可幂等返回；identity/capacity/block drift 不走该恢复路径。
+
+若现有 Manager 的 learning coupling 无法在小 diff 内拆除，再在更新本文档后决定重写；
+不能仅因代码复杂就并行保留两个 manager。
+
+## 7. SOLID 边界
+
+只保留有实际职责的五部分：
+
+- existing `RequestCostEstimator`：bounded 请求估计；
+- existing `VLLMObserver`：immutable snapshot、epoch、500-ms counter delta；
+- new `RequestAwarePolicy`：无锁纯函数，输入 state/cost/config，输出 immutable verdict；
+- existing `Manager`：原子 check/reserve、epoch 与 terminal lifecycle；
+- thin transport/reporting adapter：把同一个 immutable verdict 映射到 HTTP、日志、metrics 和
+  Router-readable capacity，不拥有第二套 resource policy 或 reservation registry。
+
+不为每个函数创建接口；仅在需要替换实现或隔离外部 I/O 时使用接口。domain policy 不依赖
+HTTP、Prometheus、Router、Docker 或 tokenizer asset。
+
+## 8. 日志、metrics 与 Router contract
+
+每个真实请求的同一个 immutable verdict 至少包含：
+
+```text
+action = admit|size_protect|hard_protect
+reason
+pressureSource
+pressureValue
+selectionInputTokens
+reservedTokens
+allowanceTokens
+effectiveKV
+postAdmitKV
+remainingKV
+running/waiting/effectiveSequences/reservedCount
+aggregateTPSProxy/projectedMeanActiveTPSProxy
+```
+
+- 数值用 gauge/histogram，不作为 label；
+- label 只允许低基数 action/reason/source；
+- last-decision HTTP、日志和 metrics 必须来自上述同一个真实请求 verdict，不得各自重算；
+- Router-readable capacity 是单独的当前状态投影：每次 metrics scrape 使用相同 pure policy
+  和当前 Manager virtual state 无副作用地评估 one-block inspect，不写 reservation、不增加
+  request/attempt 计数，也不覆盖 last-decision metrics；
+- one-block inspect 为 `HARD_PROTECT` 时发布 `inspectCapacity=0`，并令有效 global limit 等于
+  有效 running，即可用容量为零；不是把 Router 的 global-limit 数值字面写成零；
+- one-block inspect 为 `ADMIT` 且 `pressure>0` 时发布 bounded `inspectCapacity=1`，使后续
+  请求仍可到 PIG 做大小判断；不能因为拒绝一个大请求就阻止之后的小请求到达；
+- one-block inspect 为 OPEN 时立即撤销 Router clamp；不等待新业务请求或固定 hold，防止
+  低流/恢复自锁；shadow 始终不改变 Router capacity；
+- enforce 的 Router projection 不继承旧 dynamic controller 的 effective waiting/global-limit
+  判定：新增 raw waiting 仅供观测，Router 消费的既有 waiting 为零；OPEN effective global
+  limit 为非正的 neutral sentinel，SELECTIVE/HARD 才使用 `effectiveRunning+1`/
+  `effectiveRunning`。raw global limit 继续单独暴露，不能重新进入 Router verdict；
+- HTTP 必须实际保护，不能只记 `would_protect` 后仍 forward；
+- Router 继续发送另一个请求到 SELECTIVE PIG 是逐请求策略需要，不等于 PIG 在路由。
+
+Router capacity 的具体既有字段只做适配，不修改 Router 源码。
+
+## 9. Test-first 顺序
+
+### 9.1 第一组 pure-policy behavioral red
+
+先只覆盖最小因果合同：
+
+1. 同一 snapshot 下 small `ADMIT`、large `SIZE_PROTECT`；
+2. 同一个 large 请求在 OPEN hard-fit 时 `ADMIT`；
+3. `waiting=1` 进入 SELECTIVE，小请求仍可能通过；
+4. TPS 从 target 到 floor 时 allowance 单调收缩，floor 为最大 SELECTIVE 压力且 allowance
+   为零；下一 fresh snapshot 恢复后重新计算，不产生持久 TPS-only 全局锁；
+5. 健康 snapshot 的第一个 work-conserving 请求可进入，但同一 snapshot 的后续 burst 必须
+   随 `effectiveSequences` 增加而降低 projected TPS，不能无限复用当前均值；
+6. TPS unknown 不凭任意 sequence cap 限流，但每个候选仍看到前序 reservation 并执行
+   post-admit hard KV；
+7. fresh 完成窗口即使携带 TPS proxy，只要当前没有 running/local effective sequence，就不得
+   形成低流 hard/size lock；第一个请求进入后，同 snapshot 后续请求仍可使用 post-admit TPS；
+8. hard KV、preemption、stale snapshot 不能被小请求覆盖；
+9. 不同历史/调用顺序不会改变相同 pure input 的 verdict；
+10. soft/hard KV limits 必须向下 block-align，且 hard-fit、allowance、telemetry 共用同一边界。
+11. pure policy config 独立拒绝 `soft<=0`、`hard>=1`，不能依赖 production loader 才守住
+    `0 < soft < hard < 1`。
+
+red 必须 compile，并因 stub/旧行为不满足上述语义而失败；不能用缺依赖或语法错误冒充。
+
+### 9.2 Manager/HTTP integration
+
+- burst 请求按前序 reservation 重算；
+- cancel/error/timeout/disconnect/reset/shutdown exact-once；
+- sample reconcile 不提前释放或永久保留 reservation；
+- low-flow、首个长请求、transient waiting、stale recovery 无自锁；
+- metrics scrape 的 one-block inspect 可在没有新业务请求时从 HARD/SELECTIVE 恢复 OPEN，
+  且 probe 不写 reservation、不增加业务 attempt；
+- 同 identity/capacity/block counter reset 原子 rebase 后自动恢复；identity/capacity/block drift
+  仍 fail closed；旧 reservation 不能在 rebase 后 forward，且没有 reservation/retired leak；
+- startup probe 作为第一份 TPS counter baseline，第一轮 poll 可直接形成有效 delta；
+- `previousRunning>0 -> currentRunning=0` 的 fresh completion snapshot 不得在 observer→adapter
+  真实决策路径误锁下一请求；
+- shadow 无副作用；
+- HTTP/log/metrics/Router action/reason 一致；
+- enforce policy-fit 请求不再被旧 static/dynamic/tier gate 二次拒绝或排队，也不注入 backend
+  priority；shadow 仍保持原服务路径；
+- enforce Router projection 在 raw dynamic waiting/limit 改变时仍只由 request-aware
+  OPEN/SELECTIVE/HARD 决定；SELECTIVE 必须至少允许一个后续请求到达 PIG，OPEN 必须在无新
+  业务请求时立即解除外层 clamp；
+- enforce 不因不可达的 backend-priority-only 配置值失败，shadow/off 仍拒绝无效 priority
+  配置；OpenAI compatibility config 继续独立验证；
+- enforce `/v1/upstream-status` 与同一 fresh request-aware inspect 一致：OPEN/SELECTIVE/HARD
+  分别 green/yellow/red，且 raw old dynamic/queue/tier 不能改变结果；
+- 旧 learner/config/factory 不再影响 verdict。
+- 旧 Router hold env/config 不再影响 request-aware Load/Validate/startup 或 Router projection。
+
+### 9.3 Builder gates
+
+仅在授权 builder 运行：
+
+- focused/package/full `go test`；
+- `gofmt -d`、`go vet`、`go test -race`；
+- estimator 1 KiB/64 KiB/2 MiB benchmark；
+- policy hot path benchmark，目标 O(1)、0 alloc；
+- 1/16/64/256 并发 reservation race/lock test。
+
+本地 Windows 只做源码检查、`apply_patch` 编辑、归档、hash 和 Git 操作。
+
+## 10. 确定性 simulation
+
+simulation 必须调用生产 `RequestAwarePolicy`，固定 seed，可重放。比较：
+
+1. 简单全局 KV/waiting/TPS 二元拒绝；
+2. request-aware policy。
+
+场景：
+
+- short-only、large-only；
+- 80/20、50/50、20/80 small/large mixed；
+- 小后大、大后小；
+- 500-ms poll 前 burst；
+- low-flow、首个长请求、transient/sustained waiting；
+- 小输入 + 大 `max_tokens`、大输入 + 小 `max_tokens`；
+- KV 低/中/高、TPS target/floor、preemption、stale/recovery；
+- cancel、短 completion、长 streaming。
+
+TPS target/floor 场景必须通过改变合成 backend 的真实 aggregate capacity 与 background
+sequences 产生，observer proxy 必须继续由真实 generation delta 计算。不得用与 engine ground
+truth 脱离的固定 TPS override 覆盖观察值；否则会人为遮蔽 admission 后的 QoS 退化，不能作为
+算法通过或失败的证据。
+
+第一轮只比较少量预注册配置，不做在线 learner 式大规模调参。晋级要求：
+
+- preemption 不高于基线；
+- 每个场景和 suite aggregate 的 TPS floor violation duration 最多比基线多一个 100-ms
+  simulation tick；这是预注册的轻微 QoS 下降预算，不得按场景累加放大；每个场景和 suite
+  aggregate waiting duration 同样不能把逐场景容差累加；
+- short-only 和 large-only 无持续 idle/self-lock；
+- duration 比较使用一个 tick budget 加极小 seconds epsilon；goodput 比较只使用相对阈值加
+  极小 tokens/s epsilon，不能复用 duration tolerance；
+- uniform、low-flow、burst 与 output-horizon 场景的 total/SLO completion tokens/s 均不得比基线
+  退化超过 1%；不能以相同 QoS 下少处理大请求冒充保护成功；
+- mixed SLO-compliant completion tokens/s 或 total completion tokens/s 有可复现提升，
+  另一项不退化；
+- 两种到达顺序都通过；
+- 若改善落在测量噪声内，只能结论“未证明更好”。
+
+真实单用户 TPS、GPU utilization 和 completed requests/s 在 shadow/canary 继续验证，不能
+由 pure-policy benchmark 推断。
+
+## 11. 三轮实现复查
+
+每个 release candidate 记录 exact archive/source SHA-256、builder、命令、退出码：
+
+1. **因果**：request size 是否改变真实 pre-forward verdict；OPEN 是否 work-conserving；
+2. **安全**：KV margin、reservation、burst、preemption、stale/reset、低流/race；
+3. **SOLID/证据**：旧 learning 是否删除；HTTP/log/metrics/Router 是否同 verdict；
+   focused/full/image/deploy/live 证据是否分层。
+
+发现问题先更新本文档，再补 red 和修复。
+
+## 12. 版本与发布流程
+
+1. canonical plan；
+2. pure-policy behavioral red/green；
+3. Manager/HTTP integration red/green；
+4. focused deterministic simulation；
+5. reservation/Close、Router inspect 与 legacy wiring 审计及 red/green；
+6. 三轮实现复查，其中先完成 production reachability 审计并删除 v0.11 可达的旧 predictive
+   learner/calibrator/TTFT config/metrics 消费；保留其他模式仍使用的公共 dynamic/KV 配置；
+7. 上述审计不再产生源码变更后，封存唯一 exact-source archive，在同一 archive 上执行
+   full/vet/race/build/benchmark/simulation 最终矩阵；
+9. commit/push，管理 `v0.11.x`；
+10. builder 构建并发布 immutable digest 镜像；
+11. 仅 `use1-cb`、Router disabled shadow；
+12. 仅 `use1-cb`、Router disabled 短时 enforce；
+13. readiness、代表请求、日志、metrics、无 crash/restart/preemption 后，才 enable
+    Router `use1-cb`；
+14. 观察实际流量 30 分钟，与旧版 `use1-4c` 的相近负载窗口分开对照；
+15. 有明显问题则 disable `use1-cb`、更新计划、bump patch version 并重新循环。
+
+没有明确 GO 前不得修改其他 CVM、修改 Router/vLLM 源码或引入生产流量。
+
+## 13. 当前进度与证据边界
+
+- [x] 无学习、request-aware deterministic 方向确认；
+- [x] 对计划完成第五轮合理性/过度设计复查并精简；
+- [x] 默认 poll interval 为 500 ms；
+- [x] cache、TTFT、tier、priority、routing 不参与 admission；
+- [x] pure-policy behavioral red；
+- [x] pure-policy implementation/focused green；
+- [x] Manager atomic reservation integration；
+- [x] HTTP adapter with static snapshot integration；
+- [x] production observer request-aware snapshot；
+- [x] deterministic config/factory integration；
+- [x] request-aware last-verdict metrics、non-sticky Router effective waiting/inspect capacity 与
+  predictive coarse upstream status；
+- [x] 真实 proxy HTTP、统一 verdict 日志与恢复路径 integration；
+- [x] 删除 dirty v0.11 learner/Safe-Envelope/pressure-bucket 实验并清理 production legacy
+  factory/config/metrics 消费；
+- [x] R92 unknown-TPS single-speculation focused green，但被 R93 burst goodput gate 否决；R94
+  补齐 acceptance red，当前源码已回退该规则并由 R95 simulation green 覆盖；
+- [x] startup TPS baseline、same-identity counter-reset rebase 与 dead Router-hold config
+  focused/package/race red/green；
+- [x] R96 concurrent rebase 1/16/64/256、count=10 与 focused race；
+- [x] R97/R98 fresh completion-window low-flow mislock red/green；
+- [x] R100/R101 pure-policy KV band/margin validation red/green；
+- [x] R102 exact executable-source full/vet/full-race/build/benchmark；
+- [x] aggregate QoS budget、healthy-burst forecast、block-aligned limit 与 acceptance 单位修正
+  focused red/green；
+- [x] R86 deterministic simulation/benchmark（已被 R88 source change supersede，不能作最终证据）；
+- [x] R95 corrected deterministic simulation（只证明 synthetic exact archive，已被后续 test/doc
+  变化 supersede，不能作最终 release evidence）；
+- [x] 第六轮三轮实现复查完成；
+- [x] R102 exact executable-source deterministic simulation/replay；
+- [ ] commit/push/tag/image；
+- [ ] `use1-cb` shadow/enforce/canary。
+
+截至当前已完成 pure policy、Manager、server adapter、live observer、deterministic
+config/factory、request-aware telemetry、统一 verdict 日志、真实 proxy HTTP、hard guard、并发
+burst、Close/forward 线性化、enforce 旧 QoS/tier/priority 热路径移除、Router 唯一 effective
+authority、priority-only validator 解耦、advisory scrape race 边界和 predictive coarse status 的
+focused builder red/green；适用 package 与 focused race 证据见账本尾部。dirty v0.11
+learning/Safe-Envelope/pressure-bucket 实验、dead legacy factory、legacy config fields 和
+production learning metrics 已删除。第五轮复查中的 startup baseline、same-identity counter-reset
+recovery 和 dead Router-hold config 已获 R92 focused green；unknown-TPS single-speculation 虽获
+focused green，却因 R93 暴露约 31% burst goodput 退化而被否决；R94 已补齐 burst acceptance
+red，当前源码已回退该规则，R95 corrected deterministic simulation 已恢复 burst non-regression。
+R95 后新增并发 rebase 测试与文档修正，因此仍须创建新的 exact-source release archive。当前仍
+没有 commit、push、镜像、Compose、部署或流量变更。
+R20 的旧 TPS hard-floor 语义已由 R27/R28 取代。
+
+### 13.1 R19 pure-policy behavioral red
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r19-red.tar.gz
+SHA-256:
+  F85C9E684E5EB64DC86726BC911DDC939211B77286BC44A051C6B9E32B959CC6
+builder:
+  cvm_3e2k83KX / pig-v01011-builder / Go 1.24.13 linux/amd64
+commands:
+  gofmt -d request_aware_policy.go request_aware_policy_test.go
+  go test ./internal/runtime/predictive -run TestRequestAwarePolicy -count=1 -v
+```
+
+`gofmt -d` 无差异，package 编译成功。六组合同中五组因 stub 始终返回
+`hard_protect/invalid` 而失败：small/large selection、OPEN large、waiting selective、
+TPS continuous/floor、hard reason priority。history-independence 通过，因为 stub 本身无状态。
+这是有效行为 red，不是编译、依赖、格式或 runner 失败。
+
+R18 仅发现 `gofmt -d` 差异，测试未运行；更早一次 R18 调用还发生远端引号错误。二者均
+不是 behavioral red，不能作为算法证据。
+
+### 13.2 R20 pure-policy focused green
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r20-green.tar.gz
+SHA-256:
+  B98B342E5097C8AE7601A6C44D4A78A05B26A11112BD1E33291E7D87B919C2DD
+builder:
+  cvm_3e2k83KX / pig-v01011-builder / Go 1.24.13 linux/amd64
+commands:
+  gofmt -d request_aware_policy.go request_aware_policy_test.go
+  go test ./internal/runtime/predictive -run TestRequestAwarePolicy -count=1 -v
+result:
+  PASS, six behavioral groups, package compiled, 0.002 s
+```
+
+该归档曾证明 pure policy 的 small/large、OPEN、waiting selective、旧 TPS hard floor、
+hard guard priority 和 history-independence。本轮复查已废弃旧 hard-floor 语义，因此 R20
+不再是当前 policy 的完整 green；Manager/adapter 的结构性证据仍需在新 policy green 后重跑
+适用测试。不能称为可部署。
+
+### 13.3 R21 Manager behavioral red
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r21-manager-red.tar.gz
+SHA-256:
+  5050A53BAF2910243C620AC933C28B5EEF881D298241EE698455DB22A6114DCC
+builder command:
+  go test ./internal/runtime/predictive -run TestRequestAwareManager -count=1 -v
+```
+
+`gofmt -d`、package compile 均成功。真实 reservation causality、burst 重算、既有 terminal
+lifecycle 三组测试均因可编译 Manager stub 固定返回 `hard_protect/unavailable` 而失败，是
+有效行为 red。它尚未证明 HTTP adapter 已接入。
+
+### 13.4 R22 Manager focused/package/race green
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r22-manager-green.tar.gz
+SHA-256:
+  CE4197E2DF64E922F0006635B921389A743E79C16B6C7827BD329B84EEC90BE1
+focused:
+  go test ./internal/runtime/predictive -run TestRequestAware -count=1 -v
+  PASS, 0.003 s
+package:
+  go test ./internal/runtime/predictive -count=1
+  PASS, 0.038 s
+  log SHA-256 0AC6EA1C2416C7C1ADD127E084D9D7618BE659F9E15973089109189C00D0C550
+focused race:
+  go test -race ./internal/runtime/predictive -run TestRequestAware -count=1
+  PASS, 1.017 s
+  log SHA-256 1CB12106CEC94367626CCB22241E55F6D4F51111B8970C3CD0BF898CFC6B5530
+```
+
+新入口在现有 Manager 锁内读取 `virtualStateIntervalLocked().Upper`，调用 pure policy，
+仅在 `ADMIT` 时写入既有 reservation map；MarkForwarded/Terminate 复用原 lifecycle。没有
+新 manager、learner 或历史状态。focused race 仅证明当前 focused 测试未发现 race，尚未
+覆盖真正并发 burst；HTTP/observer/factory、full repo、benchmark、simulation 仍未验证。
+
+### 13.5 R24 server adapter behavioral red
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r24-adapter-red.tar.gz
+SHA-256:
+  F5348E309C9C69F96DDBCD0D4A522DC06FB4643BB318CD40C00743EAE8A8AC29
+builder command:
+  go test ./internal/app/server -run TestRequestAwareAdapter -count=1 -v
+```
+
+`gofmt -d`、server package compile 成功。request-size pre-forward causality、OPEN large、
+waiting selective 和 reservation lifecycle 四组测试均因 adapter stub 固定返回 availability
+protection 而失败，是有效 behavior red。R23 只发现格式差异、未运行测试，不是 red。
+
+### 13.6 R25 server adapter focused/package/race green
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r25-adapter-green.tar.gz
+SHA-256:
+  2FCE7E769912770471ADE69EAFA6F0D5F1C6A0FC64F6A319BCF9455B3F650732
+focused:
+  go test ./internal/app/server -run TestRequestAwareAdapter -count=1 -v
+  PASS, 0.006 s
+server package:
+  go test ./internal/app/server -count=1
+  PASS, 1.935 s
+  log SHA-256 901F00064A30B4BDEAA1E83139A27A2410476FDF139D62679C855F52BC9F6236
+focused race:
+  go test -race ./internal/app/server -run TestRequestAwareAdapter -count=1
+  PASS, 1.020 s
+  log SHA-256 D8E93DD37DF647EE932141F321F9C7D5D9AE7225288ED3C8F138E7E1A3EC5F2B
+```
+
+已证明 bounded request cost 在 server adapter 的 `Decide` 中实际改变 pre-forward outcome，
+并且 ADMIT 使用现有 Manager reservation/lifecycle。当前 snapshot 仍是测试静态 provider；
+factory 仍实例化旧 learning adapter，生产路径尚未切换。
+
+### 13.7 R26 observer behavioral red
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r26-observer-red.tar.gz
+SHA-256:
+  F1FA2BDD4CC65692B1CD6A6FCD19A4583535000D6C173AC20F4E6C9A854DFCFD
+builder command:
+  go test ./internal/app/server -run TestRequestAwareObserver -count=1 -v
+```
+
+server package 编译成功，fresh capacity/running、waiting 下的 500-ms TPS、zero-generation
+unknown、preemption cooldown 与 freshness 三组测试均因可编译 observer stub 返回空 snapshot
+而失败，是有效行为 red。
+
+### 13.8 R27/R28 TPS floor 合同修正 red/green
+
+第二轮计划复查发现旧 hard floor 会让一个近似 500-ms 样本全局关闭 intake，因此废弃 R20
+中的旧 floor 语义并重开证据：
+
+```text
+R27 red archive:
+  tmp/pig-v011-request-aware-r27-policy-floor-red.tar.gz
+SHA-256:
+  8C2D6F1A2C461983716277DFB846505E3D2B7D94000E96DBE4894C618A9C4589
+behavioral-red log SHA-256:
+  25081979837EEA818EFF4CA0B987710592AC0809FE92614F030434808763883C
+command:
+  go test ./internal/runtime/predictive
+    -run TestRequestAwarePolicyTPSContinuouslyShrinksAllowanceWithoutGlobalFloorLock
+    -count=1 -v
+
+R28 green archive:
+  tmp/pig-v011-request-aware-r28-policy-floor-green.tar.gz
+SHA-256:
+  15619E8C7278D7EF3C8CA5F7BDEDAC6215EA854CA37E4C783532F341BDC5436B
+focused/package log SHA-256:
+  0EBCE3F42B2AF57526D1469444FB86DA6ACAF33101F58F5B4D964DB2DE058237
+commands:
+  go test ./internal/runtime/predictive -run TestRequestAwarePolicy -count=1 -v
+  go test ./internal/runtime/predictive -count=1
+result:
+  PASS, 0.002 s / PASS, 0.039 s
+```
+
+R27 在 target/midway 正确、但 floor/below-floor/tiny 仍返回 `hard_protect/tps_floor`，失败
+原因精确命中新合同。R28 删除 TPS-only hard branch 后，floor/below-floor 为最大 SELECTIVE
+pressure，普通请求保护而一个 block 的 tiny hard-fit 请求可进入。R28 `gofmt -d` 为空，空文件
+SHA-256 为 `E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855`。
+
+第一次 R27 builder 调用只因非登录 shell 找不到 `gofmt` 而停止，不是行为 red；随后对同一
+archive SHA 使用 `/usr/local/go/bin/{gofmt,go}` 重跑，才得到上述有效 red。
+
+### 13.9 R29 observer focused/package/race green
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r29-observer-green.tar.gz
+SHA-256:
+  7FB9E3F371CE74AF595460AC5DDA2B159929EF95EDBB799B4B93335F7BD829C7
+commands:
+  go test ./internal/app/server -run TestRequestAwareObserver -count=1 -v
+  go test ./internal/app/server -count=1
+  go test -race ./internal/app/server -run TestRequestAwareObserver -count=1
+result:
+  PASS, 0.015 s / PASS, 1.945 s / PASS, 1.035 s
+combined log SHA-256:
+  CAC58AC9799347D038054AFCA652F5A0F77C08F18E6908C0AF5DBE8251A5C74D
+```
+
+observer 只发布最近一次成功 reconcile 的 immutable state；TPS 只由相邻成功 snapshot 计算；
+waiting 不使 TPS 失效；zero generation 为 unknown；preemption 在 reconcile 前先使旧 snapshot
+失效，并由 getter 发布 cooldown；counter/identity reset 清空 request-aware state。`gofmt -d`
+为空。尚未证明 factory/真实 proxy HTTP 使用该 snapshot，不能称为生产路径完成。
+
+### 13.10 R30-R32 deterministic TPS config red/green
+
+```text
+R30 loader red archive/SHA-256:
+  tmp/pig-v011-request-aware-r30-config-red.tar.gz
+  739853B4014233E16947B1F238C0EE5054FE57784D520DF9EB89CE1A1C393572
+R30 log SHA-256:
+  2D91848870C311AE149D44FA65D2C94FEF95045723434F152EDA6A170AB27192
+R31 bounds red archive/SHA-256:
+  tmp/pig-v011-request-aware-r31-config-bounds-red.tar.gz
+  AC38B9A3F692E432B165A3CF13921D936C9E331532E0AF52A844EF3A0013462E
+R31 log SHA-256:
+  A49585CB37200D3E3665FE9D9BC2B1EBFC6A19BCD0B89B2F95F79ADB5A388E30
+R32 green archive/SHA-256:
+  tmp/pig-v011-request-aware-r32-config-green.tar.gz
+  44413687C7EBAE807800CE488402ED92DE0F51EE985D7184E934E7BEBD1871C3
+R32 log SHA-256:
+  EB20670E9E437DDEB5B69F7374939EBB6C85867EE4A5D7EEEDB5B0E933FD3303
+```
+
+R30/R31 精确证明新字段此前未加载、默认/override 为零，且 `floor >= target` 未被拒绝；
+R32 后 `PREDICTIVE_TPS_TARGET=25`、`PREDICTIVE_TPS_FLOOR=20` 的默认、override 和 bounds
+均通过，pigconfig package 通过，`gofmt -d` 为空。
+
+### 13.11 R33-R35 deterministic factory red/green
+
+```text
+R33 behavioral red archive/SHA-256:
+  tmp/pig-v011-request-aware-r33-factory-red.tar.gz
+  54B2E85A564CF539FAEFA437738CE9C6E41B9425D4C3EFCA03B91DC8BE9BA6A9
+R33 log SHA-256:
+  507DBE9CB56B65596F509F6C7E6A299276D09D61FE2A992BF59361013D457B0E
+R35 green archive/SHA-256:
+  tmp/pig-v011-request-aware-r35-factory-green.tar.gz
+  E88270937199B2F529CBE669CDC5C1FD1D91B16FD6C43E2940E0C2CBD2A7C18F
+R35 combined log SHA-256:
+  74108DD86E7FA30DDF759233510C40069AA0E5CFA0804C0547C9C204F56AA80D
+```
+
+R33 因旧 factory 仍构造 TTFT reference 而在 shadow/enforce 均失败；R35 证明 production
+factory 返回 request-aware adapter，读取 canonical cadence/freshness/TPS/KV 配置，不再消费
+旧 TTFT/learner 输入。server package、factory/adapter focused race 与 shadow side-effect-free
+race 通过，`gofmt -d` 为空。R34 先被 PowerShell 拆分 test regex，随后又只发现格式差异、
+未运行测试，明确不计为 green。
+
+### 13.12 R36/R37 telemetry 与恢复 behavioral red
+
+```text
+R36 archive/SHA-256:
+  tmp/pig-v011-request-aware-r36-telemetry-red.tar.gz
+  8128C383B93D6B71C50541699ED0EACD0A962D54C653D9B042BAF7E80D4619DA
+R36 behavioral-red log SHA-256:
+  32B2B6943A7AA717B70D4E699F1D4E3292EF01B866A300E5AAF3D88815FC08F9
+R36 gofmt diff SHA-256:
+  31CA0303C6DE9513E08EEA69845F576100FA3B89D7959C1735E6286CFF8CDFEA
+R37 extended red archive/SHA-256:
+  tmp/pig-v011-request-aware-r37-telemetry-recovery-red.tar.gz
+  514DC949D3F2C70B3FD2DB35C2561BE4E3D34B0BE773180519A51CE4E7900D0E
+R37 behavioral-red log SHA-256:
+  9F513E035B14A39DCEF75831DDF50005E907CE514233DDFE8CD3540941FC96CB
+R37 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R36 的 adapter telemetry 全零、SELECTIVE Router 没有 inspect slot、Prometheus 缺少
+request-aware verdict；行为失败有效，但其 gofmt diff 非空，因此不是完整格式门禁 red。
+R37 修正格式并新增“无新业务请求仅靠 scrape 从 hard clamp 恢复 OPEN、probe 不改 Manager/
+attempt”合同，三组 telemetry 测试继续因 reporter stub 失败，是干净 behavioral red。
+
+### 13.13 R39 telemetry/Router/Prometheus focused/package/race green
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r39-telemetry-recovery-green.tar.gz
+SHA-256:
+  04F2343C5BFA5FF7EEF60C7C47924E8BEB3AECE8B56E8A2A8708B7465ECE80B2
+focused log SHA-256:
+  9B4A3B10A44EB60D27B5C78C5790E4999FCC09968F16D994794CFD35BAF080C9
+package/race log SHA-256:
+  967CBA1235046BAD97F431308044D094F152EC4C30EE19F975EFD6C1FAEC7B82
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+focused 证明 last request verdict 低基数 telemetry、HARD `inspectCapacity=0`、SELECTIVE
+`inspectCapacity=1`、shadow 不 clamp、无业务请求恢复 OPEN、probe 无 reservation/attempt/
+event side effect，以及 request-aware Prometheus 指标。server/metrics package 与两组 focused
+race 均通过。R38 只用于取得非空 gofmt diff 并据此修正格式，未运行测试，不计为 green。
+
+### 13.14 R41/R42 统一 verdict 日志 red/green
+
+```text
+R41 behavioral-red archive/SHA-256:
+  tmp/pig-v011-request-aware-r41-decision-log-red.tar.gz
+  67F17C0618B1503ECC9497E7001C5A495DB1808487D2FBBBFEA9B8666BCA3A53
+R41 behavioral-red log SHA-256:
+  90690DFD6A5A583312AE1793F37142CE9045FD9ACD626ACF18795C3D79E8AADD
+R41 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+R42 green archive/SHA-256:
+  tmp/pig-v011-request-aware-r42-decision-log-green.tar.gz
+  D30BCA9A8B3588D6567A60501BA6FD62DFF2991D45D771C682EAC8F373FFE7CF
+R42 focused/package/race log SHA-256:
+  AC0A982849F11891FC6BD045D63ACF3814855F31686A9BD43BCC528A0663FDC7
+R42 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R41 干净地失败于 protection decision 没有写日志；R42 证明日志直接消费同一个 immutable
+verdict，包含 action/reason/scope/pressure 和数值字段，不包含 request ID、model、prompt、
+body 或凭据。重复相同签名按一秒窗口有界抑制，下一条记录带 suppressed 计数；callback 在
+adapter 锁外执行且 panic 被隔离。focused、server package 和 focused adapter race 通过。
+
+### 13.15 R44 真实 proxy HTTP integration green
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r44-http-integration.tar.gz
+SHA-256:
+  D30B41102F4586AD2B7B427CB10F0218F29962ED18060B39E1F26129147AD5D0
+focused/package log SHA-256:
+  B0C13820D961C0E3C1584ED8F2B6ACE281EAE828245559C6AD7BA3B01FC19C06
+focused HTTP race log SHA-256:
+  DDF3A50BFBB8F8AE28C315264B571707EB4E31A7ED62109E2B33CFA5D186AE10
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+真实 JSON classifier/estimator 和 proxy HTTP 路径证明：同一 pressure snapshot 下 small request
+得到 HTTP 200 并 forward，large request 在 upstream 前得到 HTTP 429；HTTP、日志、metrics
+与 Router state 来自同一 verdict。shadow 对同一 would-protect request 仍 forward、无 enforce
+reservation、无 Router clamp。R43 仅因测试文件 unused import 无法编译，不计 behavioral red。
+
+### 13.16 R46 hard guards 与并发 burst green
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r46-hard-guards-burst.tar.gz
+SHA-256:
+  DD4591F4B248DE62C1225192784F25D9DCA0A76EA48BAC1FAB1618678C659675
+focused/package/race log SHA-256:
+  6289B15C4BFB51368E6A91CFF4B530DED08246DFA11ABB0E7E25C0CA7C8CD68F
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+真实 HTTP 路径覆盖 stale、preemption cooldown、epoch invalid/Manager intake closed：均在
+upstream 前 HTTP 429、`hard_protect`、`inspectCapacity=0`，保护日志 reason 对应。Manager 在
+1/16/64/256 并发 burst 下证明 check/decision/reservation 同锁、virtual KV 不突破 hard limit、
+terminal exact-once 后无 reservation leak；focused burst race 通过。R45 的 hard-guard 部分虽
+通过，但 burst 测试引用不存在的 terminal enum 而编译失败，因此不计完整证据。
+
+### 13.17 R47/R48 旧 learning 配置解耦 red/green
+
+```text
+R47 behavioral-red archive/SHA-256:
+  tmp/pig-v011-request-aware-r47-config-decouple-red.tar.gz
+  98360938FB46D19AC7A4334E7A0D09CE8A5C2C299C7B78B853B0F0FCE8187A5A
+R47 behavioral-red log SHA-256:
+  A3607E36EBA7F40D8AABC853F1557465C75E76225EB18A962FDCADBB08244A02
+R47 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+R48 green archive/SHA-256:
+  tmp/pig-v011-request-aware-r48-config-decouple-green.tar.gz
+  8491183D0F0B2F97555E15556C384578D6D9C71D2EE0F6FE874A928455DF3BA9
+R48 focused/package log SHA-256:
+  B678E55816044A1F9341FD25AEB33C91D0484F19EF8F1CCB86F820B3DDD1621A
+R48 pigconfig/server race log SHA-256:
+  A010D92EA9A7F23CB08652A2E32BC3A73BADCCB3384F28152577D56C753F43A2
+R48 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R47 分别证明旧 learning env 仍可阻止 Load、旧 learning 字段仍可阻止 Validate，以及
+`maximumAge < pollInterval` 未被拒绝。R48 使 v0.11 loader/validator 不再消费这些 legacy
+learning/calibrator multiplier；同时强制 poll/maximum-age 正数、不超过一分钟，且
+`maximumAge >= pollInterval`，避免每个采样周期之间稳定进入 stale 误锁。Config struct 和
+production metrics 中的旧字段仍待 dead-code 审计后删除；本节只证明 Load/Validate 解耦，
+不是旧 learning 源码已完全清除。
+
+### 13.18 R49 dead legacy factory cleanup green
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r49-legacy-factory-cleanup.tar.gz
+SHA-256:
+  E34FDF21E03E038CB5A21F64C6C039BA8F286C741D1FB2329A333EEA3871890A
+factory/server/race log SHA-256:
+  5B93249C825DDFFE1A37C4C37716DFE963A031FFF678C17BD48752B52B3BA17B
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+删除无 production 调用的 `newLegacyPredictiveShadow`，以及只为它服务的 model-profile、
+learner、TTFT/TPOT、prefill penalty helper；保留新 factory 使用的模型无关 manifest ID 和
+block-aligned hard-KV helper。同一 exact archive 上，新 deterministic factory 构造、protected
+KV、完整 server package 与 focused factory race 通过。本节仍不证明 legacy metrics/config/
+observer/source 已完全删除。
+
+### 13.19 R50 retired production metrics behavioral red
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r50-retired-metrics-red.tar.gz
+SHA-256:
+  EF98FD1A93EF48E540270E166F4CD48FD35BA707E04298859C892412230587D1
+behavioral-red log SHA-256:
+  0705E9380622A789149015F4F4D63C9C1A995979E780C6F039F88B874D4E1281
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+新增 production metrics 合同：保留 request-aware verdict/pressure 与当前 Router capacity，
+不再输出 retired learner、input calibrator、existing-prefill、deferred outcome 或 pressure-bucket
+指标。测试干净失败于输出仍包含 `pig_predictive_learning_`，证明 red 是预期行为差异，不是
+编译、依赖或格式失败。
+
+### 13.20 R51/R52 retired metrics cleanup partial/green
+
+```text
+R51 archive/SHA-256:
+  tmp/pig-v011-request-aware-r51-retired-metrics-cleanup.tar.gz
+  53C50EB4A5679C0770ACAABC290F27C5E68CF60C22E223161EB8B215BF62F889
+R51 log SHA-256:
+  B3762ADDE995C6B24429E5F2CF4F2183FDDC78CCFB0A8B18961EA3F4E06AFB13
+R51 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+R52 green archive/SHA-256:
+  tmp/pig-v011-request-aware-r52-retired-metrics-green.tar.gz
+  45E2936F464D5A8CD94F97BCB4A53259D28DB41D336FD41F88F4486D097FE7B4
+R52 focused/package/race log SHA-256:
+  E2CC808E984AB47BCA512E7DCAECEBFFD2C69285FC0B1ECB865A7A2C4DCA68D8
+R52 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R51 的新 retired-metrics focused test、metrics package 与 runtime predictive package 通过，
+但 server package 中两条旧 approximate-path 测试仍要求已删除的 learner/renewal 指标，因此
+R51 不计 green。R52 更新这些冲突断言后，证明 production 输出保留 request-aware verdict、
+bounded labels、Router inspect capacity、failure/hot-path histogram，同时不再输出 retired
+learner/calibrator/TTFT/prefill-learning 指标；metrics、runtime predictive、server packages 与
+metrics/factory focused race 通过。
+
+### 13.21 R53-R55 config/metrics SOLID cleanup
+
+```text
+R53 archive/SHA-256:
+  tmp/pig-v011-request-aware-r53-config-metrics-solid-cleanup.tar.gz
+  FB21C4A5FEACAF6ADA1B2B52F26E9BDD1C528C029BFE3C3F44B93484D70CA5F4
+R53 log SHA-256:
+  42FEBD7CECEC52B638FA064D0B932526B7F46801EA89B5ACD58188CFEABDB510
+R53 non-empty gofmt diff SHA-256:
+  70077DA0C526B3D93D70358E195B0E27641D2141D28F4ED53E550B7D486B712B
+R54 archive/SHA-256:
+  tmp/pig-v011-request-aware-r54-config-metrics-solid-green.tar.gz
+  453AB6E33465930467C3F8D4D9C296F0EE0D73CAEA9203F46FF424DCCD82C064
+R54 log SHA-256:
+  73ED8FFD892B3DC374DF71600840E19EAB5FE65EB70A3F18CAE07E66D204395B
+R54 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+R55 green archive/SHA-256:
+  tmp/pig-v011-request-aware-r55-config-metrics-solid-green.tar.gz
+  E745EBF69A457EE081DB43F5C96F3A14EBE9A772A8D45497F2F63D9257BA842D
+R55 package/focused-race log SHA-256:
+  29775CE895731559F83BC745EAEE76304F02B6CBDA18112A51FC2261DA98281E
+R55 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+清理删除 loader/validator/factory 均不再消费的 legacy learning/calibrator Config fields，并从
+每次 metrics scrape 和 status log 中移除对应 dead snapshot copying；状态行改为直接显示
+request-aware action/reason/source、pressure、size/KV/load 与 Router inspect。R53 只发现格式
+差异、未运行测试；R54 的 pigconfig/metrics/runtime packages 通过，但 server test build 被两条
+显式 v0.10.13 shadow-prefill metrics 字段引用阻止，因此两者都不计 green。R55 删除仅验证已
+退役 metrics 映射的历史测试段后，pigconfig、metrics、runtime predictive、server packages
+以及 metrics/server focused race 通过。R55 的 config race 正则没有匹配测试，明确不计 config
+race；完整 race 仍待后续同一 exact archive 门禁。
+
+### 13.22 R57-R59 deterministic simulation red 与算法修正
+
+```text
+R57 behavioral-red archive/SHA-256:
+  tmp/pig-v011-request-aware-r57-simulation-red.tar.gz
+  D9AA211D8BD602E39EA2551E8543CC91BBFA854D4E4898F8D0229928E6D99B5A
+R57 log SHA-256:
+  F4554FB71C0397B8C26CE5D0EE66B625EB040F47A8414D986769DD70508F8F8B
+R57 gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+
+R58 first implementation archive/SHA-256:
+  tmp/pig-v011-request-aware-r58-simulation-first-green.tar.gz
+  BBEF087D5769992E62504F5B1B38D4F0F673CFB2676986C6FA986401122DE622
+R58 simulation log SHA-256:
+  68FAAE8B430269C14F633DCA8DC06469569DFE3363BA6498D15BB3F6E29C4436
+R58 non-empty gofmt diff SHA-256:
+  C42F41651677487ECF4BC8B3ADF6A4A4EDAB9C4647E9BB612BCBCCE327F2AD9F
+
+R59 diagnostic archive/SHA-256:
+  tmp/pig-v011-request-aware-r59-simulation-diagnostics.tar.gz
+  48157F6BC8ED77E2F82CBD7C37A3975F09EF3CC7B61BDF52C3BB1D7814C308A5
+R59 diagnostic log SHA-256:
+  D4C492C6550EB68D6D4995C674455BD7E96F687C3DB95829DDA2CDC6A846CB5E
+R59 non-empty gofmt diff SHA-256:
+  71346BEF7400CAB9512F290D9DAA4C9D4022418D77E5B02CBB15385F458A25CF
+```
+
+R57 干净失败于 simulation 没有调用 production `RequestAwarePolicy`，是预期 behavioral red。
+R58/R59 已证明 23 个预注册场景能编译、固定 seed 可重放、且实际调用 production policy，
+但不能计 green：R58/R59 均有非空格式 diff，acceptance 首先失败于 `short-only` candidate
+TPS-floor violation `0.4s > 0s`。R59 的逐场景诊断进一步发现，脱离 engine ground truth 的
+`tps-target=24` override 会持续隐藏实际降速，使 candidate 出现 `6.3s` floor violation 和
+`6.1s` waiting；这是 simulation 因果错误，必须删除，不能用调宽门槛掩盖。
+
+R59 同时暴露 production 算法的真实量纲问题：以大额 `remainingKV` 乘 `(1-pressure)`，
+waiting/TPS pressure 对普通 request size 几乎没有作用；full pressure 固定保留一个 block 又
+允许 tiny request 持续穿透。下一 red/green 必须同时完成：真实 generation-delta TPS 场景、
+post-admit TPS forecast、弹性 KV band size allowance、full-pressure zero allowance，并重新跑
+production policy/Manager/server focused tests和全部 simulation acceptance。在这些证据完成前，
+simulation 仍为 red，v0.11.0 仍不可部署。
+
+### 13.23 R60/R61 post-admit TPS forecast behavioral red
+
+```text
+R61 clean-red archive:
+  tmp/pig-v011-request-aware-r61-post-admit-forecast-clean-red.tar.gz
+SHA-256:
+  09EB374CF678592B97FF19DBD79D298724D98540721A73E99378C3B0F11A175D
+runtime behavioral-red log SHA-256:
+  259C2A96027BEDF8A48D5B7207400F3C4D84F635CEE5D6CF8BB511719783FF6D
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R61 干净证明当时 production policy 仍未消费 post-admit TPS、同一 snapshot 的
+`effectiveSequences` 不改变 verdict、full pressure 仍允许 tiny request、size allowance 仍按
+全部 remaining KV 缩放，且 forecast telemetry 为空。R60 是 runner/preliminary 尝试，R62 是
+partial implementation；二者均不晋级为当前 green 证据。
+
+### 13.24 R63-R65 soft-KV double-charge false-green/red/green
+
+```text
+R63 first forecast archive SHA-256:
+  48C26AE7960A0EA71F4D5FF5BF71C9AF4AD255D412E4491E5C21AD0D34B860E5
+R63 runtime/observer/simulation log SHA-256:
+  F1B4ED34D8D44E15F4164824B50781C42C643F1522B4DBC63524A3FFDC1FC191
+  19354B3313A2E2682DE4E9EC4DF52F5FECF37841A6CFFCA1315381F8899732DE
+  9F3AA64F54F67B7C9287597D6E3C694E323F101AC9EA37B6BC0B3FD5CEAF3170
+
+R64 clean-red archive:
+  tmp/pig-v011-request-aware-r64-soft-kv-double-charge-red.tar.gz
+SHA-256:
+  41623A234EE9B53076081CB0993BA6714F375E14F5560E1400468DC89B243DDB
+runtime/simulation behavioral-red log SHA-256:
+  0F20C048BFA7D77EAFCB2009193154164D66E61F225342427E5E3994AEF63164
+  9BEEA8781BEB819B8E13ECC4FFEB66AAB8B329642109BB5E91AC6036D84E8B92
+
+R65 focused-green archive:
+  tmp/pig-v011-request-aware-r65-soft-kv-double-charge-green.tar.gz
+SHA-256:
+  597ECF0C8F8C62420CF78631D5FE64F1ACBA4FC5AA816CAD9D854306FDA9E05A
+runtime/observer/simulation log SHA-256:
+  DF0C37B4F6A7709B91DB6BF596D208F0EB21511016461A3426485AD7A8DF57AD
+  7436ABF2BB00A038FD5FE990820DE0FD25C0B2C5B69D73409E7E6A8FF6036EE4
+  80EB8087BFA69BF86A76A2169DCAAEFD403FA056238E524C42940274E7243382
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R63 虽通过当时 acceptance，但 `large-only` goodput 从 `91.898` 降至 `72.333`，
+`large-small-output` 从 `75.333` 降至 `60.000`，且 QoS 无改善；它是暴露验收缺口的
+false green，不能作为晋级证据。R64 用新增回归 gate 干净复现该失败；R65 将完整 request
+reservation 只用于 post-admit hard-fit，soft KV pressure 改回 current effective KV 后，两个
+场景恢复到 baseline，mixed/order 改善、preemption/waiting/低流 gate 继续通过。
+
+### 13.25 R66/R67 forecast telemetry red/green
+
+```text
+R66 clean-red archive SHA-256:
+  0CC0A409A93D35B27DD92DD5BDD6FA9C82CABE9749B30394C76A651CA602D72E
+metrics/server behavioral-red log SHA-256:
+  40F19F650C6E0C4F8A20FB66BFD725C5728BD8F126FF44E49CB35C3740334501
+  9B3C68E093B8F9E5197E82E47B5EA65E3F56957FA8995AC6EC880A8A16564C01
+
+R67 focused-green archive:
+  tmp/pig-v011-request-aware-r67-forecast-telemetry-green.tar.gz
+SHA-256:
+  809356344F61B78EC0FBED30F1FDC1DBC63C365D29D02C6E88A532CB095D10C2
+metrics/runtime/server/simulation log SHA-256:
+  D8A502E6F41450FA87AA5A5D643B4C89F163DB6994CD7225D954D3B7ECC63523
+  CEA0FF9EE2576182783A4307BCF2D983DE2A24F03946DAECDD0EE919DDC2BAAE
+  1B3861EE06AFEA0AFDBB9B63A7F2BC9EBFEA43DE5E49BF76DC532FAA18C87418
+  80EB8087BFA69BF86A76A2169DCAAEFD403FA056238E524C42940274E7243382
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R66 证明 post-admit KV、effective sequences、aggregate/current/projected TPS、forecast validity
+尚未接到真实 metrics/status/log；R67 使这些输出统一来自同一个 immutable verdict/input，并在
+同一 exact archive 上通过 metrics、runtime、完整 server 和 simulation focused packages。
+
+### 13.26 R68 deterministic JSON report
+
+```text
+archive:
+  tmp/pig-v011-request-aware-r68-simulation-json-report.tar.gz
+SHA-256:
+  A1DA93936948C0A1B36E67D45D5CEA778E0D4D4229AD6D4AF3736E5F0A3E037F
+command-test log SHA-256:
+  72467488D921C7C6B324731492E797431A3F44EC85474994BE8DC651F62804B0
+report-1/report-2 SHA-256:
+  2DD144B52F8037D5EB39A7BCF9419486EC7ED021F41E263A0F82349842EAC96A
+  2DD144B52F8037D5EB39A7BCF9419486EC7ED021F41E263A0F82349842EAC96A
+```
+
+两次 JSON report 字节级相同。固定 seed 合成 aggregate 为：baseline/candidate completion
+tokens/s `80.810/98.626`，SLO completion tokens/s `80.724/98.492`，preemptions `1/1`，
+TPS-floor violation `0.2s/0.3s`，waiting `5.0s/5.0s`，demand 下最大 idle `0/0`。这只能说明
+当前合成模型中通过当时 gate 并显示约 22% goodput 改善；不能外推真实 GPU TPS、utilization
+或生产吞吐。R68 的外围 status 输出受 PowerShell/SSH quoting 破坏，不计证据；JSON replay 和
+command test 本身有效。
+
+### 13.27 R69/R70 suite aggregate TPS-floor budget red/green
+
+```text
+R69 clean behavioral-red archive:
+  tmp/pig-v011-request-aware-r69-aggregate-tps-budget-red.tar.gz
+SHA-256:
+  478DF8F3B7EF589A054D467AC2587966D2F613D0997009039FB0B0C99235B4C0
+behavioral-red log SHA-256:
+  D640426EDAC77BE6F2454059E17DE94433B2CB84482CECFEE7915B4F8EFD2BAF
+
+R70 focused-green archive:
+  tmp/pig-v011-request-aware-r70-aggregate-tps-budget-green.tar.gz
+SHA-256:
+  41B786EE8A7A31A321432DFD2C57E6B66A1B37CED2EE630CDD0F58126564A2B2
+simulation package log SHA-256:
+  80EB8087BFA69BF86A76A2169DCAAEFD403FA056238E524C42940274E7243382
+command package log SHA-256:
+  3669F176F33B8B53B56BE95F2F42F4257FF41F527CF63C2E5EF62518FD94B8C3
+report-1/report-2 SHA-256:
+  2DD144B52F8037D5EB39A7BCF9419486EC7ED021F41E263A0F82349842EAC96A
+  2DD144B52F8037D5EB39A7BCF9419486EC7ED021F41E263A0F82349842EAC96A
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R69 的两个独立 scenario 各消耗 `0.1s` 逐场景容差，旧 acceptance 错误地允许 suite 总共
+退化 `0.2s`。R70 在逐场景检查后增加 suite aggregate gate；真实 suite 的
+`0.2s/0.3s` 仍在唯一一个 100-ms tick 预算内，合成累计用例被正确拒绝，两次报告继续字节级
+相同。R70 只证明当时的 focused simulation acceptance；当时仍待验证的 healthy-burst
+forecast、block-aligned limits、waiting aggregate 与容差量纲由后续 R71-R74 取代。
+
+### 13.28 R71-R74 第四轮计划审计 red/partial/green
+
+```text
+R71 clean behavioral-red archive:
+  tmp/pig-v011-request-aware-r71-plan-audit-clean-red.tar.gz
+SHA-256:
+  12B54485DFBA27AA98F85FC30F05F56021A42D4CE7302B041B66701E9CEA9ABC
+runtime/simulation behavioral-red log SHA-256:
+  A75544B267D6174E4D64930A761254245BD155D3628B1D7EED5548FB99D06E0A
+  B2FA8D13B71E65FC0232C5FFD42F3E43831BD66AEC0B337A4FF477EA848A6512
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+
+R72 partial archive SHA-256:
+  E0325B1492095A36DDEDA8A0684DE2BCAFF2724A99D91039FD8FA327AC718C43
+R73 focused partial archive SHA-256:
+  F8A4D47C4E46291959D94C4EE7DCCCC7A314B9ED16FF55B5A7D5053E4F4CAFC7
+
+R74 focused-green archive:
+  tmp/pig-v011-request-aware-r74-plan-audit-focused-green.tar.gz
+SHA-256:
+  72F509F552582018803B358514E9FD2BE34C124ABC3641CD3513DB2170BF06A8
+config/metrics/runtime/server/simulation/command log SHA-256:
+  D0EC12D69294923839E65FA4F2ACAC0D58F64C6130AD2E199451E7B89A24FB98
+  D8A502E6F41450FA87AA5A5D643B4C89F163DB6994CD7225D954D3B7ECC63523
+  FD8EA99C28DB0D7BD0A57043803203C261E09C739098722C1DC2BF91011D6C18
+  37FBAEE766FCCD041F8F3E5B94BF3ACB77FE684A4A6D3AA92FEDA7F5FEADD007
+  80EB8087BFA69BF86A76A2169DCAAEFD403FA056238E524C42940274E7243382
+  3669F176F33B8B53B56BE95F2F42F4257FF41F527CF63C2E5EF62518FD94B8C3
+focused race log SHA-256:
+  AE679C8F2724D11B940079051FF25F2148276DA7A0758C43758B0F66B80231A4
+report-1/report-2 SHA-256:
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R71 干净证明：(1) 健康 TPS 分支会让同一 poll 内第二个 reservation 继续复用旧均值；
+(2) `BlockSize` 未参与 operational KV limits；(3) waiting duration budget 可按场景累计；
+(4) seconds tolerance 会掩盖 goodput 退化；(5) idle/self-lock gate 错误允许一轮 poll 再加一轮
+simulation tick。R72 修复 production policy 后，两个只应验证 KV atomicity 的旧测试仍携带
+有效 TPS 样本，因新 TPS 保护只 admit 一个而失败；该 archive 不计 green。R73 将两个测试的
+TPS 明确设为 unknown 后，runtime/simulation/command 与 replay 通过，但 server 的 telemetry
+断言仍使用未 block-align 的 `remaining=4000/allowance=599`，因此仍只计 partial。
+
+R74 在同一 exact archive 上通过 config、metrics、runtime、完整 server、simulation、command
+packages 与 runtime/simulation focused race；两次报告字节级相同。新合成 aggregate 为：
+baseline/candidate completion tokens/s `80.810/98.485`，SLO completion tokens/s
+`80.724/98.398`，preemptions `1/1`，TPS-floor violation `0.2s/0.2s`，waiting `5.0s/5.0s`，
+demand 下最大 idle `0/0`。这仍只是 deterministic/focused builder 证据；full repo、vet、完整
+race、benchmark、三轮 release review、commit/push/image/deploy/live 均未完成。
+
+### 13.29 R75/R76 Close 与 forward commit 线性化 red/green
+
+```text
+R75 clean behavioral-red archive:
+  tmp/pig-v011-request-aware-r75-close-forward-commit-red.tar.gz
+SHA-256:
+  5F57775F7643C67668B96EDB27D1C5AA4F101C26E05A4FA2B00999C368216A2E
+server behavioral-red log SHA-256:
+  8DB30197D53B63996C5BEDF84AB3C3272DAF6EBA2BF608E5BB4520FC246681B6
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+
+R76 focused-green archive:
+  tmp/pig-v011-request-aware-r76-close-forward-commit-green.tar.gz
+SHA-256:
+  92C4C9872AD25A9BE493ACB060DD88AA801B9C6E21AE7CBC1AB20EF0D94F86B2
+server/server-race log SHA-256:
+  616A65737EE78DC6A7617E31B7210D7E92E6A44AB6D7B08EF797F94F6A0C8DA5
+  C4A356641DFA7051C2A53DC8D197480C9E3E2F4F6BE3E08858859599DC8AACB5
+simulation/command log SHA-256:
+  6C0AE0BC18295661B63C8D4D89F6D8086915BDC2A4AD704BF5AD6CB49ECF48F0
+report-1/report-2 SHA-256:
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R75 干净证明旧 reservation 在 adapter `Close()` 已先线性化后仍可
+`MarkForwarded()`。R76 让 request-aware reservation 持有 adapter owner，并用同一 owner 锁
+线性化 close 与 forward commit：close 先发生则 commit 返回 false，由 HTTP deferred terminal
+释放；commit 先发生则该已提交请求正常完成 lifecycle。修复没有增加第二套 reservation registry。
+
+### 13.30 R77-R79 enforce 旧 QoS/tier/priority 热路径审计
+
+```text
+R77 invalid partial archive SHA-256:
+  CD585A0B27ED5FD276BFB120DF90DDADF68B580431CE94D1E16E7AA1BE520285
+
+R78 clean behavioral-red archive:
+  tmp/pig-v011-request-aware-r78-retired-qos-hotpath-clean-red.tar.gz
+SHA-256:
+  535A145D084689BC15CFA8B6F9AF49B1A94C52E392DFB55A5FF39155A9A5537E
+server behavioral-red log SHA-256:
+  2B62223E7ABC847829603A39C09CAFF1C728F96635CCB364299560639E455699
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+
+R79 focused-green exact-source archive:
+  tmp/pig-v011-request-aware-r79-retired-qos-hotpath-green.tar.gz
+SHA-256:
+  1B464096F8239ED871A9E053800CAD08016B19389B139599959B51D940679174
+config/server/server-race log SHA-256:
+  D0EC12D69294923839E65FA4F2ACAC0D58F64C6130AD2E199451E7B89A24FB98
+  8FB7E3A727EFE05CA700800B1625497A29120B7C5C305072F79AE60F949FF3C8
+  21B52EBDA386AF157887EE223D4E098DBBBBF35B33C77F151416F22B4187620A
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R77 的 static-gate 失败有效，但 priority fixture 缺少独立 stream-buffer 配置，因此不计完整
+behavioral red。R78 干净证明 policy-fit 请求仍会被 `GlobalLimit=0` 的旧 gate 429，且
+`priority:100` 仍被 rewrite 为 `-100`。R79 的 enforce 路径跳过旧 `qosGate.WaitAcquire`、tier
+accounting 和 tier/lane header，并把 backend priority injection 的 effective config 关闭；shadow
+继续保持旧服务行为。R79 仅通过 config、完整 server 和 server race；该 exact source 没有重跑
+runtime/simulation/report，更不能继承 R76 的 simulation 证据。
+
+### 13.31 第五轮 Router contract 审计（待 red/green）
+
+只读对照既有 Router consumer 后确认，Router 在 metrics 新鲜时用
+`observed_waiting>0 || observed_running/global_limit>=1` 判定 blocked；非正 global limit 的
+fullness 为零且 route 保持可用。因此当前 enforce 虽绕过旧 PIG QoS gate，仍会被 raw dynamic
+waiting/global limit 在 Router 二次限流，尤其会把 waiting 触发的 SELECTIVE 退化为节点整体
+blocked。下一轮必须以可编译 behavioral red 证明以下合同后再修复：
+
+- off/shadow 的 existing metrics 字节语义保持不变；
+- enforce OPEN 发布 raw waiting/limit 供观测，但 effective waiting 为零、effective global limit
+  为 neutral non-positive sentinel；
+- enforce SELECTIVE 发布 effective waiting `0`、global limit `effectiveRunning+1`；
+- enforce HARD 发布 effective waiting `0`、global limit `effectiveRunning`；
+- raw dynamic waiting/limit 改变不改变相同 request-aware projection；
+- 没有新业务请求时，fresh OPEN scrape 能立即解除 SELECTIVE/HARD clamp，不产生 sticky lock。
+
+在上述 red/green 与新的 exact-source simulation/full gates 完成前，v0.11 仍不可部署。
+
+### 13.32 R80-R82 Router 唯一 effective authority red/green
+
+```text
+R80 clean behavioral-red archive:
+  tmp/pig-v011-request-aware-r80-router-authority-red.tar.gz
+SHA-256:
+  A973BBC108E4892801750891B2B17B648D9C642DE2AB776F10F4CF6D894BFAE8
+server behavioral-red log SHA-256:
+  FB3E945ECB99004B952675B47B50C0A04D9242AAF1ACFE8C3E2480C5B4C4CEEF
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+
+R81 new-contract focused-green candidate archive:
+  tmp/pig-v011-request-aware-r81-router-authority-green-candidate.tar.gz
+SHA-256:
+  1B56A99BF1B6AC783E8CE877D3591CFD2E2EC6D0D3BEAF0D020107E55D6214C9
+focused log SHA-256:
+  5CB49D1FCFDC7AF31CC9C1F33148F32B3BFB97DFEC1D391567DD9BBF3177690F
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+
+R82 server-green candidate archive:
+  tmp/pig-v011-request-aware-r82-router-authority-server-candidate.tar.gz
+SHA-256:
+  FCC9B05221B1D0B916A68ABDDD946A855D560FCCE6FCD533C01874C0F9EAFB83
+server log SHA-256:
+  BF18CB0E762588065C3C72A1B500A1978BACE9C9C7BD102740537301A4A7299C
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R80 可编译 behavioral red 同时证明：(1) enforce OPEN 仍继承旧 limit `1`；(2) SELECTIVE
+期望 `running=3/limit=4`，却被旧 limit 截成 `1`；(3) HARD 同样错误为 `1`；(4) raw waiting
+没有单独指标，Router-consumed waiting 仍为 `7`。R81 用 raw/effective waiting 分离和
+request-aware-only effective limit 修复新合同，新增 focused tests 通过；R82 同步修正旧
+“enforce 恢复到 dynamic limit=50”的历史断言后完整 server package 通过。当前实现语义为：
+off/shadow 保持 raw dynamic projection；enforce OPEN 为 `waiting=0/limit=0`；SELECTIVE 为
+`waiting=0/limit=effectiveRunning+1`；HARD 为
+`waiting=0/limit=effectiveRunning`。R82 尚未通过 metrics package、race、simulation 或 full
+matrix，仍只计 server-focused source evidence。
+
+### 13.33 R83/R84 enforce priority-only validation 解耦 red/green
+
+```text
+R83 clean behavioral-red archive:
+  tmp/pig-v011-request-aware-r83-priority-validation-red.tar.gz
+SHA-256:
+  9D7D6FFEAD5E91A9F1F9F0918A28A21696E6A0D5AC412DC4DD32D65F2626E203
+config behavioral-red log SHA-256:
+  34B6BE2859A595BE2616BE32358A46F007DB278ADD760132AB12A0A31A2D176A
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+
+R84 focused-green exact-source archive:
+  tmp/pig-v011-request-aware-r84-priority-validation-green.tar.gz
+SHA-256:
+  BD53E3C58A4564857150B50794636EAC6D6A206B41A1415961DEC4A49F0FBB66
+config/metrics/server log SHA-256:
+  0FE8EE6BF4121E83E90D18B2CA970E06E098BF32D8B3F9ECEF41E255E38B0135
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R83 干净证明 request-aware enforce 会因已禁用的 `BACKEND_PRIORITY_MODE` 失败；同一个 invalid
+fixture 在 shadow 中仍应失败。R84 让 `validatePriorityConfig` 仅在 effective backend priority
+可能启用的 off/shadow 模式执行，config、metrics、完整 server packages 通过；OpenAI
+compatibility 的独立 loader/validator/rewrite 没有修改。R84 尚未跑 race/simulation/full matrix。
+
+### 13.34 R85 Router advisory race 接受边界
+
+```text
+R85 exact-source archive:
+  tmp/pig-v011-request-aware-r85-router-advisory-race.tar.gz
+SHA-256:
+  0BFF193D3B6628FA9DBD0739C324C15B9BFB80186339BD7889944F0819DAD607
+focused count=10 log SHA-256:
+  05A83655EF2B84B21B71374C241206DDA8F7BC658102716BF25522A0B41FD3DB
+focused race log SHA-256:
+  AAB12A57AF4C9EDE39CC0746A14F2B059580CDA682B8ADD529DE09DCF8B7EBBF
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R85 新增 concurrent telemetry scrape/admit/forward/terminate test：128 个业务 decision 与
+8 个 scrape worker（每个 256 次）并发，focused 连跑 10 次及 focused race 均通过；最终
+reservation 为零、virtual KV/sequence 回到基线、business attempts 精确为 128，fresh scrape
+撤销 Router clamp。该证据支持 3.28 的 bounded advisory-stale 接受边界，但不把 metrics scrape
+与下一次 Router 网络请求宣称为原子事务，也不替代完整 race/full matrix。
+
+### 13.35 R86 exact-source benchmark 与 deterministic replay
+
+```text
+R86 exact-source archive:
+  tmp/pig-v011-request-aware-r86-benchmark-candidate.tar.gz
+SHA-256:
+  BC87810056BBA25CA526AB78D058F5FE26AB2C228FF25F4C34BCDDC78DEE0A54
+policy benchmark log SHA-256:
+  3DBF9FE135CA7A4000A66EE489ED4CFE980FF844F0F81589AEEE8203FD41E917
+estimator benchmark log SHA-256:
+  91350A84BD7CBFBEC221CCF5B21598C417CD9987443F9BEEFB2A3EDA73B3661A
+HTTP benchmark log SHA-256:
+  F121E29173D26B8744E1F12CD3D4F356C9664679300D6DC4EE9F0658D6306713
+simulation test log SHA-256:
+  6038835DFD30AFF0B25C9F2D709A7D613E12D6AC8A9DE531CB1B345A7A6E5015
+report-1/report-2 SHA-256:
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R86 builder 数据：pure policy open/selective/hard 分别约
+`29/31/27 ns/op`，全部 `0 B/op, 0 allocs/op`；完整 estimator 1 KiB/64 KiB/2 MiB 约
+`0.271/1.964/64.3 us`，全部 0 alloc；lexical JSON hint 本身约 `0.09 us`、0 alloc，但它只是
+常数级提示而非完整 body estimator；3.6 KiB pre-forward protection HTTP benchmark 约
+`46.8 us/op, 39.3 KiB/op, 119 allocs/op`，包含 `httptest` request/recorder 构造，不能当作生产
+incremental latency。deterministic simulation packages 通过，双次 JSON byte-identical，aggregate
+仍与 R74 一致。R86 后又发现 coarse status 问题，因此不能作为最终 release exact source。
+
+### 13.36 R87/R88 predictive coarse upstream status red/green
+
+```text
+R87 clean behavioral-red archive:
+  tmp/pig-v011-request-aware-r87-upstream-status-red.tar.gz
+SHA-256:
+  44EA52B493833F6F7B650F34B3FD1FBEE85BAFDA500F3BEA44DEE5A329620DD5
+server behavioral-red log SHA-256:
+  447A05989FED3850EB8CC2CCA8E7BDF11A609DAC929A593789BAD410F4A625F4
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+
+R88 focused-green exact-source archive:
+  tmp/pig-v011-request-aware-r88-upstream-status-green.tar.gz
+SHA-256:
+  D0D292A112EE726F7F07E6A145E1F5E7C8BBA07A1B5E490C8DEF248B814966FD
+server/focused-race log SHA-256:
+  EE7ACF9D9E20EE1D8D6D0B734C00FB3C72AFC7C632B71BC38173616998779FB4
+  4F4E9818204E8049BBE2FBB6E8F69539D10788B49454CF75ECB2BD67E56D1DEB
+gofmt diff:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R87 clean red 证明 enforce OPEN/SELECTIVE/HARD/availability 全部因 legacy QoS state 缺失而返回
+unknown `3`，且 provider 缺失没有 fail closed。R88 让 enforce status 直接读取当前
+`PredictiveAdmissionTelemetry()` inspect：OPEN/SELECTIVE/HARD 分别 green/yellow/red，availability
+和 provider 缺失为 red；shadow 继续使用 legacy status。完整 server 与 focused race 通过，但
+R88 尚未重跑 benchmark/simulation/full matrix。
+
+### 13.37 R89/R90 第五轮计划复查 behavioral red
+
+```text
+R89 exact-source red archive:
+  tmp/pig-v011-request-aware-r89-plan-review-red.tar.gz
+SHA-256:
+  17C0281A379AB713C2223E81294A159001FC798010CFCF5E8AEE9E8204C64977
+valid behavioral-red log SHA-256:
+  unknown TPS policy:  1F8852DDD677F5DCF10376017547B4F7588E2449604685687083C248DC146854
+  unknown TPS manager: CC22BE95DFF572297707E323DC75F0FAF688DB3DA1703492A47F7B0BC45CFaa9
+  startup baseline:    40CDBDAE928B335F1A3FB96B512797680250B4E99B30D56029219EF2DB4DAC91
+  retired hold config: 3F25C37CF0861EA98FDE4959BA12E39CA2E0F5448F8A4ABD8BA0999F978411EB
+
+R90 corrected counter-reset red archive:
+  tmp/pig-v011-request-aware-r90-counter-reset-red.tar.gz
+SHA-256:
+  627E6AEDA370C9E0A786876080E2213D77E5952EB8C93DDA1AA19C3AD7AB481C
+counter-reset behavioral-red log SHA-256:
+  99DB7416B97904A4ACBD7854C9D83F213E22045D43E0D6CDE6E9C02BB40A6557
+```
+
+R89 的 policy/Manager red 证明 TPS unknown 且已有一个本地未吸收 sequence 时，旧实现仍以
+`pressure=0` 或仅 KV soft pressure 继续 reserve；startup red 证明 probe counter 已复制但
+`requestAwareHasBaseline=false`；config red 证明已不参与 request-aware policy 的旧 hold env 仍可
+阻止 Load。R89 的第一版 counter-reset fixture 在 reset 前因 `RequestCost` 内部维度不一致失败，
+不计 red 证据。R90 修正 fixture 后，旧实现成功创建 old-epoch reservation，再在同 identity 的
+generation reset 后返回全零 stale input，证明永久 quarantine 行为差异。所有有效 red 均可编译，
+没有缺依赖或 runner 失败。R89/R90 都不是 green 或 release evidence。
+
+### 13.38 R91 formatting reject / R92 focused green
+
+```text
+R91 candidate archive:
+  tmp/pig-v011-request-aware-r91-plan-review-green.tar.gz
+SHA-256:
+  C0678290D2261B6039121D4649D93DC633DE73B0737B8D41DF6BED2DF9C158A0
+result:
+  rejected before Go tests because whole-repository gofmt diff was non-empty
+
+R92 exact-source focused-green archive:
+  tmp/pig-v011-request-aware-r92-plan-review-green.tar.gz
+SHA-256:
+  45E539209CBFD2B2659CB467335255C3ADE25162241733E20B855A9550B2D1CF
+gofmt log SHA-256:
+  E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+runtime focused log SHA-256:
+  D956A512833BA31B62B92FAB2FFED95CB06DD33D094CD51984A72D78062B8794
+server focused log SHA-256:
+  5CB49D1FCFDc7AF31CC9C1F33148F32B3BFB97DFEC1D391567DD9BBF3177690F
+config focused log SHA-256:
+  2BE1D7520B78F7E183D85D1967CB25568A597913300B2427E6B36B2537E6C28F
+config/metrics/runtime/server package log SHA-256:
+  04DA3938631D28E95396A545CB081AD1594E1BD82D0A2D423687EAB033CEE137
+focused race log SHA-256:
+  37BDE9CFA6AEA7C771BD2FBBB1F90E094D327C507EF8186C20F08EAB01550DA3
+```
+
+R91 只证明 formatter gate 正确拦截，不计测试或 green。按 builder diff 机械修正后，R92 证明：
+(1) TPS unknown 的首个 speculation 可进入，同 snapshot 后续 reservation 以 TPS source/full
+pressure 保护；(2) 1/16/64/256 并发 unknown-TPS burst 只产生一个 reservation 且 terminal 后无
+leak；(3) startup probe 成为第一份 TPS baseline；(4) 同 identity/capacity/block counter reset
+原子清空旧 reservation/retired state、拒绝旧 handle forward，并以 fresh unknown-TPS baseline
+reopen；(5) retired Router hold env 不再影响 Load。四个相关 package 和 focused race 通过。
+R92 之后 README/计划文档又有非可执行修改，因此仍不是最终 exact-source archive，也不替代
+simulation、benchmark 或完整 full/vet/race/build。
+
+### 13.39 R93 deterministic simulation 暴露 burst overprotection
+
+```text
+R93 exact-source archive:
+  tmp/pig-v011-request-aware-r93-simulation.tar.gz
+SHA-256:
+  CDE3E0CDAE30755203A3E7990B45D94ACC9CFC30DA4339D0AD90A17C4775B0CB
+simulation test log SHA-256:
+  6C0AE0BC18295661B63C8D4D89F6D8086915BDC2A4AD704BF5AD6CB49ECF48F0
+report-1/report-2 SHA-256:
+  72721EF4FFCFEB8DC87FDB17E1E69DB12ED82E35D579701D85744C57ECDD8AFD
+  72721EF4FFCFEB8DC87FDB17E1E69DB12ED82E35D579701D85744C57ECDD8AFD
+gofmt/stderr:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R93 双次 replay byte-identical。suite aggregate candidate 的 completion/SLO tokens/s 为
+`97.103/97.053`，baseline 为 `80.810/80.724`；preemption 同为 `1`，TPS-floor violation 从
+`0.2 s` 降到 `0.1 s`，waiting 同为 `5.0 s`。但 `pre-poll-burst` candidate 只 admit `1/5`，
+completion/SLO tokens/s 为 `70.630/70.630`，baseline admit `5/5` 且为
+`102.405/101.571`；candidate 仅把该场景 TPS-floor violation 从允许预算内的 `0.1 s` 降到
+`0`。因此 aggregate pass 是 acceptance coverage gap，不能晋级。active contract 已把 burst
+加入 1% goodput non-regression gate；下一步先取得该 gate 的 behavioral red，再回退
+unknown-TPS single-speculation。R93 不是合格 simulation 或 release evidence。
+
+### 13.40 R94 burst acceptance behavioral red
+
+```text
+R94 exact-source red archive:
+  tmp/pig-v011-request-aware-r94-burst-acceptance-red.tar.gz
+SHA-256:
+  E847D771177E254548A33156394CB43578B79BD3A6E420842B437A161DD49664
+behavioral-red log SHA-256:
+  6B91C1FCEE29C953C56336F5CE18BCB1214A2C713379FCDCBCFD3ECF658CB156
+gofmt log:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R94 增加一个纯 acceptance fixture：baseline burst goodput `100/100`、TPS-floor violation
+`0.1 s`；candidate goodput `70/70`、violation `0`。旧 validator 错误通过，测试干净失败于
+“candidate removed an allowed TPS-floor tick”不能掩盖 burst goodput regression。该 red 可编译、
+无 runner/fixture 错误。随后 active source 已把 `burst` 加入 1% bounded-goodput gate，并回退
+unknown-TPS single-speculation；尚待新 exact-source simulation green。
+
+### 13.41 R95 corrected deterministic simulation green
+
+```text
+R95 exact-source archive:
+  tmp/pig-v011-request-aware-r95-corrected-simulation.tar.gz
+SHA-256:
+  5DD4C0A673459047CDE1036FA1F44706A4DB206C259A234C73C92F39F0253AEE
+packages log SHA-256:
+  DDFA457A23914D34F2E86ED361DD2C6204A43F7D75650583B19A0B360211B2D0
+report-1/report-2 SHA-256:
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+gofmt/stderr:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R95 在回退 arbitrary unknown-TPS cap 后，runtime/config/metrics/server/simulation/cmd packages
+全部通过，双次 replay byte-identical。`pre-poll-burst` candidate 与 baseline 均 admit `5/5`，
+completion/SLO tokens/s 同为 `102.405/101.571`，TPS-floor violation 同为 `0.1 s`，新 burst
+non-regression gate 生效。suite aggregate candidate completion/SLO tokens/s 为
+`98.485/98.398`，baseline 为 `80.810/80.724`；preemption 均为 `1`，TPS-floor violation 均为
+`0.2 s`，waiting 均为 `5.0 s`，demand idle 均为 `0`。这是合成模型的 focused simulation
+evidence，不能外推真实 GPU/生产提升；R95 后又追加计划证据，且尚未完成三轮 review、benchmark
+和 full/vet/race/build，因此不是最终 release archive。
+
+### 13.42 第六轮计划合理性与过度设计复查
+
+本轮只复查第 1--12 节、current checklist 与账本尾部，发现并修正四处 active-contract 漂移：
+
+1. counter reset 条款仍残留已被 R93 否决的“每 snapshot 单次 speculation”，现改为与当前源码和
+   R95 一致的 TPS unknown-neutral；安全继续由 hard KV、waiting/KV pressure、reservation 与下一
+   500-ms snapshot 提供；
+2. current checklist/summary 仍写 unknown-TPS rule“待回退”和 R95“尚待”，现记录 R94 red、
+   已回退源码与 R95 focused simulation green，同时明确它们已被后续源码/文档变化 supersede；
+3. release 顺序把 legacy production-reachability 审计放在 final exact-source matrix 之后，可能在
+   matrix 后再次改源码并制造 false green；现将审计并入三轮 review，只有不再产生源码变化后才
+   封存唯一 archive 并跑最终矩阵；
+4. “删除旧学习实现”的表述过宽，且 SOLID 边界把 Manager 与 reporting 混成一个职责。现限定为
+   删除 v0.11 production 可达消费，不为不可达 legacy tests/modes 大删数千行；职责明确为
+   estimator、observer、pure policy、Manager、thin transport/reporting adapter 五部分。
+
+本轮没有新增 learner、cache、exact tokenizer、queue、route、sequence cap、参数或接口层；最小
+逐请求算法和 R95 acceptance thresholds 不变。最新新增的 concurrent rebase test 尚未取得
+builder/gofmt/race 证据，因此本轮只完成计划修正，不提高 source/release 完成层级。
+
+### 13.43 R96 concurrent rebase focused/race green
+
+```text
+R96 exact-source archive:
+  tmp/pig-v011-request-aware-r96-concurrent-rebase.tar.gz
+SHA-256:
+  510167FEC675DD4DC90F298AC83EAEF617960D4B2B78F7073BB181F819ABEC44
+builder:
+  cvm_3e2k83KX / pig-v01011-builder / Go 1.24.13 linux/amd64
+focused count=10 log SHA-256:
+  4EE292B845E803115C38891361C1D6D7538BE083CA40D5EE0B09E543E88D4424
+focused race log SHA-256:
+  687BA8ABB7BEF616C2D640C517DBD9CBBB9ACFB976533C568823E2EB749EC7E5
+gofmt log:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R96 在 1/16/64/256 个 old-epoch reservations 上并发执行 forward/terminal 与 `RebaseEpoch`；
+最终 intake reopen、reservation/retired 均为零、virtual base 精确等于 reset sample，且所有旧 ID
+再次 forward/terminal 均失败。focused test 重复 10 次与 focused race 均通过。该 fixture 与
+R96 archive 仍不替代 package/full/vet/full-race/build/simulation/benchmark；本节追加后 canonical
+文档已与 R96 archive 不再 byte-identical，因此最终 release 仍必须封存新的 exact archive。
+
+### 13.44 R97 low-flow completion-window behavioral red
+
+```text
+R97 exact-source red archive:
+  tmp/pig-v011-request-aware-r97-low-flow-completion-red.tar.gz
+SHA-256:
+  0CB3D4E5985F73F7C3F07D570DED7F312BC1948C23FC98ECBA428D716BB879CF
+observer producer log SHA-256:
+  5CB49D1FCFDC7AF31CC9C1F33148F32B3BFB97DFEC1D391567DD9BBF3177690F
+pure-policy red log SHA-256:
+  AF9881056A63CB96964C6693AC56DBEF045F25F63CF26FF4C7C803775811A7B2
+adapter red log SHA-256:
+  A9140A2483E3CD99AA957077173B7D79C9BAEF43A7D1F990109518CE07063CE4
+gofmt log:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R97 producer fixture 证明 observer 会合法发布 `previousRunning=1 -> currentRunning=0`、
+generation 增长得到的 fresh TPS proxy；旧 pure policy 随后错误返回 `hard_protect/invalid`，adapter
+真实映射为 pre-forward `request_reject/predictor_profile_unknown`。两个 red 均失败于预注册的
+low-flow verdict，而非 compile、runner、fixture 或 formatter。active source 已采用最小修复：
+当前 `effectiveSequences==0` 时 TPS 对 admission neutral；出现本地 effective sequence 后仍使用
+aggregate proxy 做 post-admit forecast。尚待 focused/package/race/simulation green。
+
+### 13.45 R98 low-flow completion-window focused/package/race green
+
+```text
+R98 exact-source archive:
+  tmp/pig-v011-request-aware-r98-low-flow-completion-green.tar.gz
+SHA-256:
+  DE1FEA14241A5FDD5E6E7305E5C77384359F27532ED3DEF2AA5372E6C97B45B2
+runtime focused count=10 log SHA-256:
+  1B42F7FF94FA01A5D834EDF604A1FEB8C2C4E2A9641039E02430E1229EC1075E
+server focused count=10 log SHA-256:
+  29742C3EDD72A1BAA60AE3A13BDA81CB41C32E0AEC90842E2CBD5353B1858E4B
+runtime/server package log SHA-256:
+  61F5B2A988E01A5B65A050847613F9606CD2E1D1E1C10228215A2B0B855E874F
+focused race log SHA-256:
+  9263B5117E1AA414787387A0B16D52EA0185EC848F200C879BBD702E7E13A491
+gofmt log:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R98 证明 idle completion snapshot 的第一个 hard-fit request 以 TPS-neutral OPEN 进入；同一
+snapshot 累积 local reservations 后，aggregate proxy 会重新进入 `effectiveSequences+1` forecast，
+不会变成无限 optimistic burst。observer/policy/adapter focused tests 各重复 10 次，runtime/server
+packages 与 focused race 通过，并同时复验 R96 concurrent rebase。该 green 尚未包含修复后的
+deterministic simulation、benchmark 或完整 release matrix；本节追加后仍须创建新 exact archive。
+
+### 13.46 R99 low-flow fix deterministic simulation green
+
+```text
+R99 exact-source archive:
+  tmp/pig-v011-request-aware-r99-low-flow-simulation.tar.gz
+SHA-256:
+  A310525EE925B23B108FB6C714CF89ECAF64A7E2BF2C6943FA2C958DB268C4CD
+packages log SHA-256:
+  19C8939B2AD925D9BAA691D898DC04A5CE7EEAC741A863CB063BACF6C804238B
+report-1/report-2 SHA-256:
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+gofmt/stderr:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R99 双次 replay byte-identical，且报告与 R95 byte-identical：candidate aggregate completion/SLO
+tokens/s 仍为 `98.485/98.398`，baseline 为 `80.810/80.724`；preemption 均为 `1`，TPS-floor
+violation 均为 `0.2 s`，waiting 均为 `5.0 s`，demand idle 均为 `0`。`pre-poll-burst` 仍为
+`5/5` admits、`102.405/101.571` completion/SLO tokens/s、`0.1 s` floor violation；
+`low-flow-first-large` 两策略均 `2/2` admits 且无 self-lock。R99 证明修复未改变现有 synthetic
+suite 结果，但不证明真实 GPU/production 提升，也不替代 benchmark 或 full matrix。
+
+### 13.47 R100 pure-policy KV margin behavioral red
+
+```text
+R100 exact-source red archive:
+  tmp/pig-v011-request-aware-r100-policy-kv-margin-red.tar.gz
+SHA-256:
+  8C01F238E68E82D05B54D19827E041BD74C3DAC50238C676636F870F5C7D9455
+behavioral-red log SHA-256:
+  254B3AD6A186848813CAB0541FEEB573986F675AE3F7BC1B35B2A8DCBE011EC1
+gofmt log:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R100 证明 production outer config 虽不可达 `soft=0`/`hard=1`，旧 pure policy 自身却同时接受
+二者，违反 active `0 < soft < hard < 1` margin contract。red 编译且干净失败于两个预注册值，
+不是 runner/formatter failure。active source 已把 Validate 边界收紧为 `soft>0`、`hard<1`；
+尚待 focused/package/race green。
+
+### 13.48 R101 pure-policy KV margin focused/package/race green
+
+```text
+R101 exact-source archive:
+  tmp/pig-v011-request-aware-r101-policy-kv-margin-green.tar.gz
+SHA-256:
+  CF59014392522491E15014DC1741040927DBF239F37FEC3777083E0B2C7C637D
+focused count=10 log SHA-256:
+  BE9629CE04B46E2E0CB66C28B9F34615D61B541F9DCD78545A516AC023F55805
+runtime package log SHA-256:
+  F2F5A19DE68781CEDB0C0E39627064368753164D7AE8DE679B6680149187BC59
+focused race log SHA-256:
+  625773C2999CFD5E3967403E225BB97EBF53AAAD044C0AC9BF0A1C0193A52FF7
+gofmt log:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+```
+
+R101 focused test 重复 10 次、runtime package 与 focused race 通过。该修正只收紧 invalid
+configuration；production defaults/valid configs 的 verdict 不变。R101 之后追加本节与三轮 review
+结论，因此仍不是最终 release archive。
+
+### 13.49 第六轮三轮实现复查结论
+
+**第一轮：model/causality，修正后通过。** Production factory 只构造
+`RequestAwarePolicy + Manager(scheduler=nil) + VLLMObserver + request-aware adapter`；manifest 为
+`model-agnostic-json-v1`，没有 tokenizer asset、model profile、cache input、learner 或 TTFT/TPOT
+gate。真实 proxy 在选择 upstream 前完成 bounded classification、policy decision 与 atomic
+reservation；同 snapshot 改变 approximate input size 会改变真实 pre-forward verdict，OPEN 对
+hard-fit large request work-conserving。审计发现 completion-window TPS 在 `currentRunning=0` 时被
+policy 误判 invalid，已由 R97/R98 修正；R99 simulation 未出现 goodput/QoS regression。
+
+**第二轮：safety/lifecycle，修正后通过 focused 层。** Manager 在同一锁内读取 virtual state、
+evaluate 与 reserve；sample reconciliation、terminal 与 rebase 都串行化。adapter 的 close/forward
+锁序为 adapter -> Manager，observer 在调用 Manager rebase 前释放 observer 锁，未发现反向锁序。
+same-identity counter reset 先使 observer snapshot fail closed，再清空 old reservations/retired、
+替换 exact base 和 reopen；identity/capacity/block drift 只 invalidates，不走 rebase。R96 覆盖并发
+old handles，R75/R76 覆盖 close/forward；stale/preemption/hard KV、shadow no-side-effect、Router
+inspect no-reservation 已有 focused tests。每个 reservation 至少占一个 block且受 hard KV bound；
+retired queue 固定 4096；observer/adapter/reporting 只有 fixed snapshots/counters，没有 prompt/model/
+request ID label。审计发现 pure policy 可独立接受无 soft band 或 hard margin 的配置，已由
+R100/R101 修正。完整 full race 仍是 release gate，不能由本轮静态 review 替代。
+
+**第三轮：SOLID/evidence/release，通过进入 final matrix。** 职责保持 estimator、observer、pure
+policy、Manager、thin transport/reporting adapter 五部分；没有为函数级抽象新增接口或第二套
+reservation registry。静态 production reachability 中 `newApproximatePredictiveShadow` 没有
+non-test caller；shared observer 的 learner fields 在唯一 production factory 均为 nil，不能改变
+v0.11 verdict。enforce 跳过 legacy queue/tier/lane/backend-priority，配置要求单一 backend；旧
+dynamic snapshot 只保留 raw telemetry，Router-consumed waiting/global limit 由 request-aware
+projection 覆盖，coarse status 同样读取该 projection。README 的 v0.11 section 与 active contract
+一致；Compose 示例继续引用真实已发布的 v0.10.13 image，未虚构 v0.11 artifact。R96/R98/R101
+只是 focused/package evidence，R99 只是 synthetic simulation；没有 commit/push/tag/image/deploy/
+live evidence。下一步必须在一个新的 exact archive 上执行 benchmark 与
+full/vet/full-race/build/simulation，且不把旧的两个非-canonical v0.11 plan 文件加入 release
+contract。
+
+### 13.50 R102 exact executable-source final matrix green
+
+```text
+R102 exact-source archive:
+  tmp/pig-v011-request-aware-r102-final-matrix.tar.gz
+SHA-256:
+  C7607359E5738B88D92F4164111D577AAA2C1F140CF01F41B22DF142AFF5DE6B
+builder:
+  cvm_3e2k83KX / pig-v01011-builder / Go 1.24.13 linux/amd64 / CGO_ENABLED=1
+executable-source manifest SHA-256:
+  E5AF955F25B4E567EED7A7DB58F0A1DE17F2C9AFD0E0824D3EEB10B74456BD8E
+full test log SHA-256:
+  F251E929E31421D61BE6CC683CEBB8A79875AA668C99B7842648A06B9E170CAB
+full race log SHA-256:
+  C4DBB901D488BB56A6E54607260DEA0C805D08FB5B3C428B6E15D4B7484534E2
+gofmt/vet/build logs:
+  empty / E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855
+policy benchmark log SHA-256:
+  22259EF919E68EC5CBB52085F68DF1610CEA0DE763F7B20E261D43C5163C6E7E
+estimator benchmark log SHA-256:
+  CD92D9925449966E2BECC8C9504422293C24979BDD94F3E51F2F5A48151B975B
+HTTP fixture benchmark log SHA-256:
+  8EDDAE181BC3BAE4AA88F36E0769143EC7B721C9B8A5FDABA1C67AA13F57940C
+report-1/report-2 SHA-256:
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+  D4E36D18BE66ADC45CFF4657DE8219DCFCA2EE67250F5CC98B7E5C714A227A2C
+```
+
+R102 在同一 archive 上通过 whole-repo `gofmt -d`、`go test ./... -count=1`、`go vet
+./...`、`go test -race ./... -count=1`、`go build ./...`、三组 benchmark 和双次 byte-identical
+simulation replay。关键 benchmark（五次范围）为：
+
+- pure policy OPEN `29.43--30.02 ns/op`、SELECTIVE `31.90--34.55 ns/op`、hard-KV
+  `26.98--28.02 ns/op`，全部 `0 B/op, 0 allocs/op`；
+- full estimator：1 KiB `273.1--280.2 ns/op`、64 KiB `1.970--2.007 us/op`、2 MiB
+  `65.114--67.026 us/op`，全部 `0 B/op, 0 allocs/op`；
+- bounded lexical hint：1 KiB `90.50--91.40 ns/op`、64 KiB `90.38--92.42 ns/op`、2 MiB
+  `88.07--90.16 ns/op`，全部 `0 B/op, 0 allocs/op`；body-size throughput 数字不表示全量扫描，
+  因为 hint 只采样固定窗口；
+- HTTP pre-forward fixture `44.136--46.568 us/op`、约 `39.3 KiB/op`、`119 allocs/op`；它包含
+  `httptest`、request/response/classification，不是 pure policy 或生产链路增量 latency。
+
+simulation 仍为 candidate aggregate `98.485/98.398` completion/SLO tokens/s 对 baseline
+`80.810/80.724`，preemption `1/1`、TPS-floor violation `0.2/0.2 s`、waiting `5.0/5.0 s`，
+acceptance passed。R102 后只追加了本节 non-executable ledger；Go source、Dockerfile、go.mod/go.sum
+未改变，R102 executable-source manifest 仍适用。当前完成层级为 source implementation + complete
+builder matrix；尚无 commit/push/tag/image/Compose/deploy/live evidence。

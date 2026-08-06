@@ -122,21 +122,8 @@ type Config struct {
 	PredictiveAdmissionMode            string
 	PredictiveStartupProbeTimeout      time.Duration
 	PredictiveMetricsRequestTimeout    time.Duration
-	PredictiveLearningMinimumSamples   int
-	PredictiveLearningMaximumSamples   int
-	PredictiveLearningMaximumCells     int
-	PredictiveShadowObservationLimit   int
-	PredictiveLearningMaxAge           time.Duration
-	PredictiveRouterBackpressureHold   time.Duration
-	PredictiveMinimumConfidence        float64
-	PredictiveColdConfidence           float64
-	PredictiveLearnedConfidence        float64
-	PredictiveInputUpperQuantile       float64
-	PredictiveInputSafetyMargin        float64
-	PredictiveInputMinimumMultiplier   float64
-	PredictiveInputMaximumMultiplier   float64
-	PredictiveTPSMinimumMultiplier     float64
-	PredictiveTPSMaximumMultiplier     float64
-	PredictiveLatencyMinimumMultiplier float64
-	PredictiveLatencyMaximumMultiplier float64
+	PredictiveObservationPollInterval  time.Duration
+	PredictiveMaximumMetricsAge        time.Duration
+	PredictiveTPSTarget                float64
+	PredictiveTPSFloor                 float64
 }

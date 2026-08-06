@@ -120,11 +120,6 @@ func TestPredictiveRejectProjectsProtectionIntoRouterConsumedMetrics(t *testing.
 		"pig_predictive_router_backpressure_applied 1",
 		"pig_predictive_router_backpressure_predictive_running 1",
 		`pig_predictive_router_backpressure_state_info{scope="load",reason="existing_tps_at_risk",source="calibrated"} 1`,
-		`pig_predictive_learning_hard_adverse_origin_total{dimension="existing_tps",origin="exploratory"} 1`,
-		`pig_predictive_learning_hard_adverse_origin_total{dimension="new_tps",origin="non_exploratory"} 1`,
-		`pig_predictive_learning_hard_adverse_origin_total{dimension="tpot",origin="exploratory"} 1`,
-		"pig_predictive_existing_prefill_last_user_tps 1.998185",
-		"pig_predictive_existing_prefill_last_exploratory 1",
 		"pig_dynamic_observed_running_raw 0",
 		"pig_dynamic_observed_running 1",
 		"pig_dynamic_global_limit_raw 50",
@@ -405,9 +400,6 @@ func TestSustainedHTTPPredictiveRejectsRenewRouterPublicationWithoutAnExpiryGap(
 		"pig_predictive_router_backpressure_active 1",
 		"pig_predictive_router_backpressure_applied 1",
 		"pig_predictive_router_backpressure_activation 1",
-		"pig_predictive_router_backpressure_extensions_total 2",
-		"pig_predictive_router_backpressure_renewal_logs_total 1",
-		"pig_predictive_router_backpressure_renewal_logs_suppressed_total 1",
 		"pig_dynamic_observed_running 1",
 		"pig_dynamic_global_limit 1",
 	} {
@@ -424,7 +416,8 @@ func TestSustainedHTTPPredictiveRejectsRenewRouterPublicationWithoutAnExpiryGap(
 	srv.writePredictiveAndDynamicMetrics(&recovered)
 	if !strings.Contains(recovered.String(), "pig_predictive_router_backpressure_active 0") ||
 		!strings.Contains(recovered.String(), "pig_predictive_router_backpressure_applied 0") ||
-		!strings.Contains(recovered.String(), "pig_dynamic_global_limit 50") {
+		!strings.Contains(recovered.String(), "pig_dynamic_global_limit_raw 50") ||
+		!strings.Contains(recovered.String(), "pig_dynamic_global_limit 0") {
 		t.Fatalf("finite last reject did not recover after the renewed deadline:\n%s", recovered.String())
 	}
 }
@@ -487,14 +480,15 @@ func TestHTTPUnscannableRequestRejectIsDurableButDoesNotSuppressIdleRouterCapaci
 		"pig_predictive_router_backpressure_active 0",
 		"pig_predictive_router_backpressure_applied 0",
 		"pig_dynamic_observed_running 0",
-		"pig_dynamic_global_limit 50",
+		"pig_dynamic_global_limit_raw 50",
+		"pig_dynamic_global_limit 0",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("unscannable request metrics missing %q:\n%s", want, out.String())
 		}
 	}
 	router := parseRouterConsumedCapacity(t, out.String())
-	if router.running != 0 || router.waiting != 0 || router.limit != 50 || router.fullness() != 0 {
+	if router.running != 0 || router.waiting != 0 || router.limit != 0 || router.fullness() != 0 {
 		t.Fatalf("request-scoped reject incorrectly suppressed idle Router capacity: %+v", router)
 	}
 }
@@ -536,7 +530,8 @@ func TestRequestScopedRejectDoesNotSuppressIdleRouterCapacity(t *testing.T) {
 		"pig_predictive_router_backpressure_active 0",
 		"pig_predictive_router_backpressure_applied 0",
 		"pig_dynamic_observed_running 0",
-		"pig_dynamic_global_limit 50",
+		"pig_dynamic_global_limit_raw 50",
+		"pig_dynamic_global_limit 0",
 	} {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("request-scoped reject metrics missing %q:\n%s", want, out.String())
@@ -599,7 +594,8 @@ func TestLoadProtectionRemainsRouterVisibleUntilFiniteLeaseExpiresAfterDrain(t *
 	srv.writePredictiveAndDynamicMetrics(&expired)
 	if !strings.Contains(expired.String(), "pig_predictive_router_backpressure_active 0") ||
 		!strings.Contains(expired.String(), "pig_predictive_router_backpressure_applied 0") ||
-		!strings.Contains(expired.String(), "pig_dynamic_global_limit 50") {
+		!strings.Contains(expired.String(), "pig_dynamic_global_limit_raw 50") ||
+		!strings.Contains(expired.String(), "pig_dynamic_global_limit 0") {
 		t.Fatalf("drained load lease did not expire without new traffic:\n%s", expired.String())
 	}
 	coordinator.mu.Lock()
@@ -652,7 +648,8 @@ func TestUnavailableProtectionPublishesAndClearsFromCurrentHealth(t *testing.T) 
 	srv.writePredictiveAndDynamicMetrics(&recovered)
 	if !strings.Contains(recovered.String(), "pig_predictive_router_backpressure_active 0") ||
 		!strings.Contains(recovered.String(), "pig_dynamic_observed_running 0") ||
-		!strings.Contains(recovered.String(), "pig_dynamic_global_limit 50") {
+		!strings.Contains(recovered.String(), "pig_dynamic_global_limit_raw 50") ||
+		!strings.Contains(recovered.String(), "pig_dynamic_global_limit 0") {
 		t.Fatalf("current upstream health did not clear availability projection:\n%s", recovered.String())
 	}
 	if reservation := adapter.DecideAndReserve(context.Background(), "recovered", approximateAdapterTestInput()); reservation == nil {
@@ -702,7 +699,8 @@ func TestCoordinatorUnavailableProtectionPublishesAndClearsFromCurrentHealth(t *
 	srv.writePredictiveAndDynamicMetrics(&recovered)
 	if !strings.Contains(recovered.String(), "pig_predictive_router_backpressure_active 0") ||
 		!strings.Contains(recovered.String(), "pig_dynamic_observed_running 0") ||
-		!strings.Contains(recovered.String(), "pig_dynamic_global_limit 50") {
+		!strings.Contains(recovered.String(), "pig_dynamic_global_limit_raw 50") ||
+		!strings.Contains(recovered.String(), "pig_dynamic_global_limit 0") {
 		t.Fatalf("current coordinator health did not clear availability projection:\n%s", recovered.String())
 	}
 }

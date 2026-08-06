@@ -524,6 +524,35 @@ func (m *Manager) InvalidateEpoch() bool {
 	return changed
 }
 
+// RebaseEpoch replaces all resource ownership from a restarted backend epoch
+// with one exact, already-validated observation. It is intentionally separate
+// from InvalidateEpoch: identity/capacity drift remains quarantined, while a
+// same-identity monotonic-counter reset may recover without retaining any old
+// reservation handle or retired materialization.
+func (m *Manager) RebaseEpoch(observed domain.VirtualState) error {
+	if m == nil {
+		return fmt.Errorf("predictive manager is nil")
+	}
+	if observed.PhysicalKVUpper < 0 || observed.ActiveKVUpper < 0 || observed.DecodeSequences < 0 ||
+		observed.PendingPrefillSequences < 0 || observed.PendingPrefillSequences > observed.DecodeSequences ||
+		observed.ActiveContextTokens < 0 || observed.UncachedPrefillTokens < 0 {
+		return fmt.Errorf("predictive epoch base must be non-negative and internally consistent")
+	}
+	m.mu.Lock()
+	m.intakeOpen = false
+	m.eventSequence++
+	m.advancePendingPrefillEpisodeLocked()
+	m.base = domain.VirtualStateInterval{Lower: observed, Upper: observed}
+	clear(m.reservations)
+	m.retired = retiredReservationQueue{}
+	m.lastSampleFinished = m.eventSequence
+	m.hasSample = true
+	m.intakeOpen = true
+	m.mu.Unlock()
+	m.InvalidateLearning()
+	return nil
+}
+
 func (m *Manager) EventSequence() uint64 {
 	if m == nil {
 		return 0

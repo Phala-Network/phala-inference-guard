@@ -8,7 +8,7 @@ import (
 )
 
 func validatePriorityConfig(cfg Config) error {
-	if !cfg.BackendPriorityInjectionEnabled {
+	if !cfg.BackendPriorityInjectionEnabled || cfg.PredictiveAdmissionMode == "enforce" {
 		return nil
 	}
 	switch cfg.BackendPriorityMode {

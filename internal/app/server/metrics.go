@@ -58,20 +58,16 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 
 func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmissionInput {
 	input := metrics.PredictiveAdmissionInput{
-		Mode:                       s.cfg.PredictiveAdmissionMode,
-		EnforcedRejects:            s.predictiveEnforcedRejects.Load(),
-		FailureClose:               s.predictiveShadowFailures.close.Load(),
-		FailureDecide:              s.predictiveShadowFailures.decide.Load(),
-		FailureForward:             s.predictiveShadowFailures.forward.Load(),
-		FailureForwardRejected:     s.predictiveShadowFailures.forwardRejected.Load(),
-		FailureSemantic:            s.predictiveShadowFailures.semantic.Load(),
-		FailureCompletion:          s.predictiveShadowFailures.completion.Load(),
-		FailureResourceRelease:     s.predictiveShadowFailures.resourceRelease.Load(),
-		FailureTerminal:            s.predictiveShadowFailures.terminal.Load(),
-		CompletionObserverAttached: s.predictiveCompletionObserver.attached.Load(),
-		CompletionObserverClaimed:  s.predictiveCompletionObserver.claimed.Load(),
-		CompletionObserverUsage:    s.predictiveCompletionObserver.usage.Load(),
-		CompletionObserverTerminal: s.predictiveCompletionObserver.terminal.Load(),
+		Mode:                   s.cfg.PredictiveAdmissionMode,
+		EnforcedRejects:        s.predictiveEnforcedRejects.Load(),
+		FailureClose:           s.predictiveShadowFailures.close.Load(),
+		FailureDecide:          s.predictiveShadowFailures.decide.Load(),
+		FailureForward:         s.predictiveShadowFailures.forward.Load(),
+		FailureForwardRejected: s.predictiveShadowFailures.forwardRejected.Load(),
+		FailureSemantic:        s.predictiveShadowFailures.semantic.Load(),
+		FailureCompletion:      s.predictiveShadowFailures.completion.Load(),
+		FailureResourceRelease: s.predictiveShadowFailures.resourceRelease.Load(),
+		FailureTerminal:        s.predictiveShadowFailures.terminal.Load(),
 	}
 	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
 	if !ok {
@@ -82,16 +78,11 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.Fits = snapshot.Attempts.Fits
 	input.Risks = snapshot.Attempts.Risks
 	input.Unknown = snapshot.Attempts.Unknown
-	input.ExploratoryFits = snapshot.Attempts.ExploratoryFits
-	input.ExploratoryRisks = snapshot.Attempts.ExploratoryRisks
 	input.LastReason = string(snapshot.Attempts.LastReason)
 	input.LastSource = string(snapshot.Attempts.LastSource)
-	input.LastSamples = snapshot.Attempts.LastSamples
-	input.LastExploratory = snapshot.Attempts.LastExploratory
 	input.LastRejectReason = string(snapshot.Attempts.LastRejectReason)
 	input.LastRejectSource = string(snapshot.Attempts.LastRejectSource)
 	input.LastRejectScope = string(snapshot.Attempts.LastRejectScope)
-	input.LastRejectSamples = snapshot.Attempts.LastRejectSamples
 	input.LastRejectAt = snapshot.Attempts.LastRejectAt
 	input.IntakeOpen = snapshot.Manager.IntakeOpen
 	input.Reservations = snapshot.Manager.Reservations
@@ -99,117 +90,36 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.ForwardedPendingPrefills = snapshot.Manager.ForwardedPendingPrefills
 	input.ForwardedPendingPrefillTokens = snapshot.Manager.ForwardedPendingPrefillTokens
 	input.ForwardedPendingPrefillAttributionValid = snapshot.Manager.ForwardedPendingPrefillFeaturesValid
-	input.ShadowPendingPrefills = snapshot.ShadowPendingPrefills.Count
-	input.ShadowPendingPrefillTokens = snapshot.ShadowPendingPrefills.Tokens
-	shadowPending := observedPredictivePendingPrefills(snapshot.Manager, snapshot.ShadowPendingPrefills)
-	input.ShadowPendingPrefillAttributionValid = shadowPending.FromShadow && shadowPending.FeaturesValid
-	shadowAttributionState := snapshot.ShadowPendingPrefills.AttributionState
-	if snapshot.ShadowPendingPrefills.Count > 0 && !input.ShadowPendingPrefillAttributionValid {
-		shadowAttributionState = predictiveShadowPrefillAttributionIncompatible
-	}
-	input.ShadowPendingPrefillAttributionState = string(shadowAttributionState)
 	input.RetiredReservations = snapshot.Manager.RetiredReservations
 	input.RetiredEvictions = snapshot.Manager.RetiredEvictions
-	input.LearningAccepted = snapshot.Learning.SamplesAccepted
-	input.LearningRejected = snapshot.Learning.SamplesRejected
-	input.LearningInvalidations = snapshot.Learning.Invalidations
-	input.LearningCells = snapshot.Learning.Cells
-	input.LearningGlobalSamples = snapshot.Learning.GlobalSamples
-	input.LearningExistingTPSSamples = snapshot.Learning.ExistingUserTPSSamples
-	input.LearningNewTPSSamples = snapshot.Learning.NewUserTPSSamples
-	input.LearningAggregateThroughputSamples = snapshot.Learning.AggregateThroughputSamples
-	input.LearningAggregateThroughputCells = snapshot.Learning.AggregateThroughputCells
-	input.LearningAdverseEvidenceMaxAge = snapshot.Learning.AdverseEvidenceMaxAge
-	input.LearningExplorationBlockedUntil = snapshot.Learning.ExplorationBlockedUntil
-	input.LearningLastLoadPressureAt = snapshot.Learning.LastLoadPressureAt
-	input.LearningAdverseEvidenceEvents = snapshot.Learning.AdverseEvidenceEvents
-	input.LearningHardExistingTPSAdverse = snapshot.Learning.HardExistingTPSAdverse
-	input.LearningHardNewTPSAdverse = snapshot.Learning.HardNewTPSAdverse
-	input.LearningHardTPOTAdverse = snapshot.Learning.HardTPOTAdverse
-	input.LearningHardExistingTPSExploratory = snapshot.Learning.HardExistingTPSOrigins.Exploratory
-	input.LearningHardExistingTPSNonExploratory = snapshot.Learning.HardExistingTPSOrigins.NonExploratory
-	input.LearningHardNewTPSExploratory = snapshot.Learning.HardNewTPSOrigins.Exploratory
-	input.LearningHardNewTPSNonExploratory = snapshot.Learning.HardNewTPSOrigins.NonExploratory
-	input.LearningHardTPOTExploratory = snapshot.Learning.HardTPOTOrigins.Exploratory
-	input.LearningHardTPOTNonExploratory = snapshot.Learning.HardTPOTOrigins.NonExploratory
-	input.LearningSoftExistingTPSMisses = snapshot.Learning.SoftExistingTPSMisses
-	input.LearningSoftNewTPSMisses = snapshot.Learning.SoftNewTPSMisses
-	input.LearningSoftTPOTMisses = snapshot.Learning.SoftTPOTMisses
-	input.LearningExploratoryPredictions = snapshot.Learning.ExploratoryPredictions
-	input.LearningExploratorySamples = snapshot.Learning.ExploratorySamples
-	input.LearningWaitingPressureEvents = snapshot.Learning.WaitingPressureEvents
-	input.LearningPreemptionPressureEvents = snapshot.Learning.PreemptionPressureEvents
-	input.InputSizeAccepted = snapshot.InputSize.SamplesAccepted
-	input.InputSizeRejected = snapshot.InputSize.SamplesRejected
-	input.InputSizeInvalidations = snapshot.InputSize.Invalidations
-	input.InputSizeStored = snapshot.InputSize.SamplesStored
-	input.InputSizeClasses = snapshot.InputSize.Classes
-	input.InputSizeCold = snapshot.InputSize.EstimatesCold
-	input.InputSizeLearned = snapshot.InputSize.EstimatesLearned
-	input.InputSizeHintSamples = snapshot.InputSize.HintSamplesStored
-	input.InputSizeHintInvalidations = snapshot.InputSize.HintInvalidations
-	input.InputSizeHintUsed = snapshot.InputSize.HintEstimatesUsed
-	input.InputSizeHintFallback = snapshot.InputSize.HintEstimatesFallback
-	input.InputSizeHintMissing = snapshot.InputSize.HintEstimatesMissing
-	input.InputSizeLastSource = string(snapshot.InputSize.LastSource)
-	input.InputSizeLastSamples = snapshot.InputSize.LastSamples
-	input.InputSizeLastRawHigh = snapshot.InputSize.LastRawHigh
-	input.InputSizeLastUpper = snapshot.InputSize.LastUpper
-	input.InputSizeLastHint = snapshot.InputSize.LastHint
-	input.InputSizeLastHintSamples = snapshot.InputSize.LastHintSamples
-	input.InputSizeLastHintKnown = snapshot.InputSize.LastHintKnown
-	input.InputSizeLastHintUsed = snapshot.InputSize.LastHintUsed
-	input.TPSBackend = snapshot.TPSOutcomes.Backend
-	input.TPSLocal = snapshot.TPSOutcomes.Local
-	input.TPSLocalCensored = snapshot.TPSOutcomes.LocalCensored
-	input.TPSMissing = snapshot.TPSOutcomes.Missing
-	input.TPSRejected = snapshot.TPSOutcomes.Rejected
-	input.QualifiedUserTPS = snapshot.QualifiedUserTPS
-	input.QualifiedTPOT = snapshot.QualifiedTPOT
-	input.ShadowObservations = metrics.PredictiveShadowObservationInput{
-		Active:     snapshot.ShadowObservations.Active,
-		Created:    snapshot.ShadowObservations.Created,
-		Terminated: snapshot.ShadowObservations.Terminated,
-		Qualified:  snapshot.ShadowObservations.Qualified,
-		Censored:   snapshot.ShadowObservations.Censored,
-		Dropped:    snapshot.ShadowObservations.Dropped,
-	}
-	input.DeferredOutcomes = metrics.PredictiveDeferredOutcomeInput{
-		Active:     snapshot.DeferredOutcomes.Active,
-		Released:   snapshot.DeferredOutcomes.Released,
-		Terminated: snapshot.DeferredOutcomes.Terminated,
-		Qualified:  snapshot.DeferredOutcomes.Qualified,
-		Censored:   snapshot.DeferredOutcomes.Censored,
-		Dropped:    snapshot.DeferredOutcomes.Dropped,
-	}
-	input.ExistingPrefill = metrics.PredictiveExistingPrefillInput{
-		Accepted:                 snapshot.ExistingPrefill.Accepted,
-		Rejected:                 snapshot.ExistingPrefill.Rejected,
-		Censored:                 snapshot.ExistingPrefill.Censored,
-		Deduplicated:             snapshot.ExistingPrefill.Deduplicated,
-		LastExistingUserTPS:      snapshot.ExistingPrefill.LastExistingUserTPS,
-		LastExistingUserTPSValid: snapshot.ExistingPrefill.LastExistingUserTPSValid,
-		LastExploratory:          snapshot.ExistingPrefill.LastExploratory,
-	}
+	input.RequestAwareAction = string(snapshot.RequestAware.Action)
+	input.RequestAwareReason = string(snapshot.RequestAware.Reason)
+	input.RequestAwarePressureSource = string(snapshot.RequestAware.PressureSource)
+	input.RequestAwarePressure = snapshot.RequestAware.Pressure
+	input.RequestAwareSelectionInputTokens = snapshot.RequestAware.SelectionInputTokens
+	input.RequestAwareReservedTokens = snapshot.RequestAware.ReservedTokens
+	input.RequestAwareAllowanceTokens = snapshot.RequestAware.AllowanceTokens
+	input.RequestAwareEffectiveKV = snapshot.RequestAware.EffectiveKV
+	input.RequestAwarePostAdmitKV = snapshot.RequestAware.PostAdmitKV
+	input.RequestAwareRemainingKV = snapshot.RequestAware.RemainingKV
+	input.RequestAwareRunning = snapshot.RequestAware.Running
+	input.RequestAwareWaiting = snapshot.RequestAware.Waiting
+	input.RequestAwareEffectiveSequences = snapshot.RequestAware.EffectiveSequences
+	input.RequestAwareAggregateTPSProxy = snapshot.RequestAware.AggregateTPSProxy
+	input.RequestAwareMeanActiveTPSProxy = snapshot.RequestAware.MeanActiveTPSProxy
+	input.RequestAwareProjectedTPSProxy = snapshot.RequestAware.ProjectedTPSProxy
+	input.RequestAwareTPSForecastValid = snapshot.RequestAware.TPSForecastValid
 	input.RouterBackpressure = metrics.PredictiveRouterBackpressureInput{
-		Active:                                 snapshot.RouterBackpressure.Active,
-		Activation:                             snapshot.RouterBackpressure.Activation,
-		Scope:                                  string(snapshot.RouterBackpressure.Scope),
-		MinimumRunning:                         snapshot.RouterBackpressure.MinimumRunning,
-		Reason:                                 string(snapshot.RouterBackpressure.Reason),
-		Source:                                 string(snapshot.RouterBackpressure.Source),
-		Samples:                                snapshot.RouterBackpressure.Samples,
-		Exploratory:                            snapshot.RouterBackpressure.Exploratory,
-		AggregateCompletionTPSEstimate:         snapshot.RouterBackpressure.AggregateTPS,
-		PreviousAggregateCompletionTPSEstimate: snapshot.RouterBackpressure.PreviousAggregateTPS,
-		ActivatedAt:                            snapshot.RouterBackpressure.ActivatedAt,
-		Until:                                  snapshot.RouterBackpressure.Until,
-		Hold:                                   snapshot.RouterBackpressure.Hold,
-		Activations:                            snapshot.RouterBackpressure.Activations,
-		Extensions:                             snapshot.RouterBackpressure.Extensions,
-		LatestRejectAt:                         snapshot.RouterBackpressure.LatestRejectAt,
-		RenewalLogs:                            snapshot.RouterBackpressure.RenewalLogs,
-		RenewalsSuppressed:                     snapshot.RouterBackpressure.RenewalsSuppressed,
+		Active:          snapshot.RouterBackpressure.Active,
+		Activation:      snapshot.RouterBackpressure.Activation,
+		Scope:           string(snapshot.RouterBackpressure.Scope),
+		MinimumRunning:  snapshot.RouterBackpressure.MinimumRunning,
+		InspectCapacity: snapshot.RouterBackpressure.InspectCapacity,
+		Reason:          string(snapshot.RouterBackpressure.Reason),
+		Source:          string(snapshot.RouterBackpressure.Source),
+		ActivatedAt:     snapshot.RouterBackpressure.ActivatedAt,
+		Activations:     snapshot.RouterBackpressure.Activations,
+		LatestRejectAt:  snapshot.RouterBackpressure.LatestRejectAt,
 	}
 	input.PredictionDuration = snapshot.PredictionDuration
 	input.EstimatorDuration = &s.kvEstimatorDuration

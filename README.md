@@ -162,109 +162,84 @@ controls:
 /v1/responses
 ```
 
-### v0.10.13 model-agnostic predictive admission
+### v0.11.0 deterministic request-aware admission
 
-PIG v0.10.13 can estimate request size locally and predict the post-admit
-KV/TPS/TPOT/preemption state before forwarding to a vLLM upstream. TTFT is
-still measured and learned for diagnosis, but it is observation-only and can
-never reject a request:
+PIG v0.11.0 makes a deterministic decision before forwarding each supported
+request to one vLLM upstream:
 
 ```text
 PREDICTIVE_ADMISSION_MODE=shadow
 ```
 
 The supported values are `off` (the default), `shadow`, and `enforce`.
-`shadow` records the decision but does not change the client-visible admission
-or response. A shadow request with a complete prediction can retain a bounded,
-payload-free observation record so qualified completion feedback improves only
-later predictions. `enforce` rejects a non-fit or unknown decision before
-upstream forwarding with the normal OpenAI-compatible PIG 429 response.
-Predictive `shadow` and `enforce` require `DYNAMIC_TTFT_ENABLED=false`; this is
-also the v0.10.13 default. Legacy dynamic TTFT limiting remains available only
-as an explicit opt-in while predictive admission is `off`.
+`shadow` computes and reports the request-aware verdict without changing the
+existing client-visible service path. `enforce` either reserves capacity and
+forwards immediately or returns the normal OpenAI-compatible PIG 429 before the
+request reaches vLLM. Enforce does not enter the legacy PIG queue and does not
+apply tier, lane, or backend-priority behavior. Predictive `shadow` and
+`enforce` require `DYNAMIC_TTFT_ENABLED=false`; TTFT does not participate in the
+v0.11 decision.
 
-This path is model-family neutral: it has no exact model tokenizer, chat
-template, model-family branch, native FFI, tokenizer asset, or hot-path
-tokenizer RPC. The bounded O(body bytes) JSON scanner retains its conservative
-interval and adds a fixed-budget, allocation-free lexical input-size hint. A
-bounded online calibrator learns both references from `usage.prompt_tokens`.
-Red TPS/TPOT and resource bounds remain hard; yellow TPS/TPOT is counted soft
-QoS debt. Stable vLLM generation-token windows learn an aggregate-throughput
-curve, continue only for more than 1% mature gain, and otherwise prefer the
-previous lower-debt concurrency bucket. Scheduler feedback affects only future
-predictions. Same-shape healthy evidence can probe exactly one higher decode
-bucket after existing requests grow their context, but evidence from a smaller
-input or decode horizon cannot authorize a larger request. Existing in-flight
-reservations remain immutable until a valid
-upstream terminal signal releases their GPU/KV/TPS accounting. Only bounded
-numeric outcome state may then wait for the final handler result; successful
-qualified outcomes train later predictions, while failure, cancellation,
-timeout, disconnect, or shutdown is censored or dropped without learned
-headroom.
+The request signal is deliberately approximate and model-family neutral. A
+bounded O(body bytes) JSON estimator produces a conservative prompt-cost
+interval and a fast lexical input-size hint. It does not load an exact model
+tokenizer, vocabulary, chat template, model-specific profile, native FFI, or
+remote tokenizer service. PIG also does not inspect prefix-cache hits, route,
+reorder, queue, or retain prompt content.
 
-Qualified hard TPS/TPOT feedback retreats immediately. After that short
-override expires, the hard residual remains in the same bounded 10% TPS or 90%
-TPOT learning quantile until sustained newer healthy evidence, ordinary age,
-epoch invalidation, or bounded eviction removes it. Metrics split every hard
-dimension into exploratory and non-exploratory origin without request, user,
-model, or prompt labels; feedback still changes only later predictions.
+At startup, PIG reads vLLM's served-model identity hash, KV token capacity, KV
+block size, used KV, running/waiting requests, preemption counter, and generation
+token counter. Every fresh snapshot is combined with local reservations that
+vLLM metrics have not yet absorbed. The pure policy then evaluates:
 
-Forwarded-prefill learning uses a bounded, payload-free episode identity.
-Repeated stable metrics polls emit at most one outcome for the same episode,
-while genuinely distinct episodes remain independent evidence. For Manager
-reservations, the latest marginal admission may attribute the complete
-aggregate pending count and approximate uncached-token pressure only when its
-immutable pre-forward feature vector exactly matches the active aggregate. In
-shadow mode, compatible concurrent predicted-risk requests are reconstructed
-as one anonymous latest-marginal aggregate only when their immutable Manager
-sequence and base pressure match exactly. That counterfactual reconstruction is
-always exploratory, trains only later predictions, and never creates a
-reservation or changes a current request. Ambiguous, changed, or overflowed
-materialization is censored instead of guessed. Existing-user TPS keeps
-dimension-specific exploratory provenance, so maturity in another QoS
-dimension cannot relabel a cold existing-user frontier. Adverse aggregate
-prefill evidence applies monotonically to compatible equal-or-higher pressure;
-it does not globally close smaller, lower-pressure traffic. Metrics expose
-accepted, rejected, censored, and deduplicated prefill outcomes plus the fixed
-`empty|single|aggregate|incompatible` shadow attribution state without adding
-request IDs or unbounded labels.
+- a block-aligned post-admit hard-KV fit and preemption cooldown;
+- current KV pressure between configured soft and hard operational ratios;
+- waiting pressure;
+- a post-admit mean-active-TPS proxy derived from the generation-token delta.
 
-Backend-provided response mean-ITL or generation duration is qualified QoS
-feedback after structural validation. When stock vLLM does not return those
-fields, PIG uses local semantic timing only to check the red/safe direction and
-requires a fresh, stable, overlapping vLLM generation-token window to agree.
-The backend window supplies the training magnitude; a disagreement, missing or
-stale window, waiting work, preemption, counter reset, or unstable running set
-censors TPS/TPOT learning without discarding otherwise valid input-size
-feedback. Genuine qualified red evidence still makes only a later pre-forward
-prediction retreat. A single adverse idle request cannot lock later idle
-admission; calibrated hard retreat applies when there is real concurrent work.
+With no pressure, every hard-fit request is admitted without a size threshold.
+Under pressure, one allowance shrinks monotonically and the approximate input
+size decides whether this request can enter, so a small request may be admitted
+where a large request is protected. TPS below its target may degrade toward the
+configured floor; reaching the projected floor makes the allowance zero until a
+fresh snapshot recovers. A missing or zero generation delta remains neutral so
+a cold or prefill-only backend does not self-lock. Every request still sees
+earlier local reservations and must pass the post-admit hard-KV fit; the startup
+probe is the first counter baseline so normal operation can produce a TPS delta
+on the first 500-ms poll.
 
-The predictor discovers vLLM's served-model identity, KV block size, and maximum
-KV token capacity from startup metrics, then watches freshness, waiting work,
-preemptions, running sequences, KV use, and generation timing. It does not
-inspect prefix-cache hits, does not route, and does not change vLLM.
+The v0.11 policy has no online learner, calibrator, cache-aware decision, TTFT or
+TPOT gate, confidence frontier, promotion probe, model profile, or historical
+hold. Feedback only changes the next observer snapshot. A same-identity vLLM
+counter reset atomically discards old-epoch reservations and establishes a new
+baseline; model identity, KV capacity, or block-size drift remains fail-closed
+until PIG is reconstructed.
 
-In `enforce`, a load-dependent predictive reject creates a bounded,
-Router-visible capacity clamp. Every later load-dependent reject renews the same
-activation from the latest reject, so sustained protection cannot expose an
-unprotected capacity gap between Router scrapes. The existing
-`pig_dynamic_observed_running` and `pig_dynamic_global_limit` fields carry the
-effective values consumed by the current Router; `*_raw` metrics preserve the
-backend observation and dynamic limit. For the complete bounded lifetime of an
-active load-scope lease, PIG publishes a minimum effective running count and
-limit of one even if observed and predictive running briefly reach zero between
-scrapes. This prevents an idle instant from exposing unprotected Router
-capacity. The rejected request is not retained as artificial KV or concurrency,
-and the finite sentinel disappears at exact lease expiry, when raw capacity is
-restored immediately without a restart or new traffic. The default publication
-hold is five seconds, independently configurable as
-`PREDICTIVE_ROUTER_BACKPRESSURE_HOLD` within `2s..30s`.
-Request-specific oversized/malformed/unknown failures do not clamp the whole
-node, and expiry must not leave a low-flow, drain, or self-lock state. Bounded
-activation/renewal logs, durable lease metrics, completion-observer
-stage counters, and the periodic `predictive={...}` status suffix expose the
-protection without request content or credentials.
+Important request-aware settings are:
+
+```text
+PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS=500
+PREDICTIVE_MAX_METRICS_AGE_MS=1500
+PREDICTIVE_TPS_TARGET=25
+PREDICTIVE_TPS_FLOOR=20
+KV_ADMISSION_VLLM_TARGET_RATIO=<soft operational ratio>
+KV_ADMISSION_VLLM_HARD_RATIO=<hard operational ratio below 1>
+KV_ADMISSION_PREEMPTION_COOLDOWN_SECONDS=<cooldown>
+```
+
+The TPS values are deployment policy, not model-specific assets; validate them
+for each serving stack before enforce promotion.
+
+In enforce mode, Router-readable capacity is a fresh, side-effect-free
+projection of the same request-aware policy. Raw legacy dynamic running,
+waiting, and limit values remain observable, while effective waiting is zero so
+Router does not turn a selective request-size decision into whole-node blocking.
+OPEN removes the outer clamp, a one-block selective inspect exposes exactly one
+additional check slot, and hard/availability protection exposes none. There is
+no time-based Router lease: every metrics scrape recomputes the projection, and
+recovery does not require a new business request. Last real-request verdicts and
+Router inspect verdicts are reported separately without request IDs, model
+names, prompt content, or other high-cardinality labels.
 
 Backend informational HTTP responses such as `100 Continue` and `103 Early
 Hints` are forwarded but remain provisional. Only the final response status

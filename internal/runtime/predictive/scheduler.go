@@ -150,9 +150,10 @@ func (c ResidualCalibratorConfig) Validate() error {
 type PredictionSource string
 
 const (
-	PredictionSourceStatic      PredictionSource = "static"
-	PredictionSourceCalibrated  PredictionSource = "calibrated"
-	PredictionSourceUnavailable PredictionSource = "unavailable"
+	PredictionSourceStatic        PredictionSource = "static"
+	PredictionSourceCalibrated    PredictionSource = "calibrated"
+	PredictionSourceDeterministic PredictionSource = "deterministic"
+	PredictionSourceUnavailable   PredictionSource = "unavailable"
 )
 
 type SchedulerFeatures struct {

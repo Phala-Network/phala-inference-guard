@@ -76,6 +76,10 @@ type predictiveEpochInvalidator interface {
 	InvalidateEpoch() bool
 }
 
+type predictiveEpochRebaser interface {
+	RebaseEpoch(domainpredictive.VirtualState) error
+}
+
 type predictiveVLLMObserver struct {
 	mu                          sync.Mutex
 	metricsURL                  string
@@ -108,6 +112,12 @@ type predictiveVLLMObserver struct {
 	hasPreemptions              bool
 	generation                  uint64
 	hasGeneration               bool
+	requestAwareInput           runtimepredictive.RequestAwareInput
+	requestAwareObservedAt      time.Time
+	requestAwareGeneration      uint64
+	requestAwareRunning         int
+	requestAwarePreemptions     uint64
+	requestAwareHasBaseline     bool
 	prefillWindow               *predictiveStablePrefillWindow
 	prefillStats                predictiveExistingPrefillObservationSnapshot
 	prefillEpisodes             predictivePrefillEpisodeTracker
@@ -265,6 +275,19 @@ func newPredictiveVLLMObserver(config predictiveVLLMObserverConfig) (*predictive
 		observer.hasPreemptions = true
 		observer.generation = config.Initial.Generation
 		observer.hasGeneration = true
+		observer.requestAwareInput = runtimepredictive.RequestAwareInput{
+			MetricsFresh:   true,
+			IdentityValid:  true,
+			CapacityTokens: config.Initial.CapacityTokens,
+			UsedTokens:     config.Initial.UsedTokens,
+			Running:        config.Initial.Running,
+			Waiting:        config.Initial.Waiting,
+		}
+		observer.requestAwareObservedAt = config.Initial.ObservedAt
+		observer.requestAwareGeneration = config.Initial.Generation
+		observer.requestAwareRunning = config.Initial.Running
+		observer.requestAwarePreemptions = config.Initial.Preemptions
+		observer.requestAwareHasBaseline = true
 	}
 	go observer.run(ctx)
 	return observer, nil
@@ -290,6 +313,41 @@ func (o *predictiveVLLMObserver) Healthy(now time.Time) bool {
 		}
 	}
 	return true
+}
+
+func (o *predictiveVLLMObserver) RequestAwareInput(now time.Time) runtimepredictive.RequestAwareInput {
+	if o == nil {
+		return runtimepredictive.RequestAwareInput{}
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	input := o.requestAwareInput
+	input.MetricsFresh = false
+	input.PreemptionCooldown = false
+	if o.closed || o.epochInvalidated || now.IsZero() || o.requestAwareObservedAt.IsZero() || !input.IdentityValid {
+		input.TPSValid = false
+		input.AggregateTPSProxy = 0
+		input.MeanActiveTPSProxy = 0
+		return input
+	}
+	age := now.Sub(o.requestAwareObservedAt)
+	if age < 0 || age > o.maximumAge {
+		input.TPSValid = false
+		input.AggregateTPSProxy = 0
+		input.MeanActiveTPSProxy = 0
+		return input
+	}
+	input.MetricsFresh = true
+	if !o.lastPreemption.IsZero() {
+		preemptionAge := now.Sub(o.lastPreemption)
+		if preemptionAge < 0 || preemptionAge < o.preemptionCooldown {
+			input.PreemptionCooldown = true
+			input.TPSValid = false
+			input.AggregateTPSProxy = 0
+			input.MeanActiveTPSProxy = 0
+		}
+	}
+	return input
 }
 
 func (o *predictiveVLLMObserver) Close() error {
@@ -389,13 +447,54 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	epochReset := (o.hasPreemptions && sample.Preemptions < o.preemptions) ||
 		(o.hasGeneration && sample.Generation < o.generation)
 	if epochReset {
+		observed := domainpredictive.VirtualState{
+			PhysicalKVUpper:       sample.KVUsedTokens,
+			ActiveKVUpper:         sample.KVUsedTokens,
+			DecodeSequences:       sample.Running + sample.Waiting,
+			ActiveContextTokens:   sample.KVUsedTokens,
+			UncachedPrefillTokens: 0,
+		}
 		o.censorStablePrefillWindowLocked()
+		o.resetRequestAwareInputLocked()
 		o.epochInvalidated = true
 		o.lastSuccess = time.Time{}
 		o.lastPreemption = time.Time{}
 		o.lastWaiting = 0
 		o.mu.Unlock()
-		o.invalidateEpoch()
+		rebaser, canRebase := o.coordinator.(predictiveEpochRebaser)
+		if !canRebase || rebaser.RebaseEpoch(observed) != nil {
+			o.invalidateEpoch()
+			return
+		}
+		o.invalidateLearning()
+		o.mu.Lock()
+		if o.closed {
+			o.mu.Unlock()
+			o.invalidateEpoch()
+			return
+		}
+		o.epochInvalidated = false
+		o.preemptions = sample.Preemptions
+		o.hasPreemptions = true
+		o.generation = sample.Generation
+		o.hasGeneration = true
+		o.lastSuccess = now
+		o.lastPreemption = time.Time{}
+		o.lastWaiting = sample.Waiting
+		o.requestAwareInput = runtimepredictive.RequestAwareInput{
+			MetricsFresh:   true,
+			IdentityValid:  true,
+			CapacityTokens: o.maximumKVTokens,
+			UsedTokens:     sample.KVUsedTokens,
+			Running:        sample.Running,
+			Waiting:        sample.Waiting,
+		}
+		o.requestAwareObservedAt = now
+		o.requestAwareGeneration = sample.Generation
+		o.requestAwareRunning = sample.Running
+		o.requestAwarePreemptions = sample.Preemptions
+		o.requestAwareHasBaseline = true
+		o.mu.Unlock()
 		return
 	}
 	preempted := o.hasPreemptions && sample.Preemptions > o.preemptions
@@ -406,6 +505,7 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	o.lastWaiting = sample.Waiting
 	if preempted {
 		o.censorStablePrefillWindowLocked()
+		o.resetRequestAwareInputLocked()
 		o.lastSuccess = time.Time{}
 		o.lastPreemption = now
 	}
@@ -452,6 +552,7 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 		o.mu.Unlock()
 		return
 	}
+	o.publishRequestAwareInputLocked(current, sample.KVUsedTokens)
 	prefillOutcome, prefillCandidate := o.qualifyStablePrefillOutcomeLocked(current, started, finished, shadowStarted.EventSequence, shadowFinished.EventSequence)
 	aggregateOutcome, aggregateCandidate := o.qualifyStableAggregateThroughputOutcomeLocked(current, started, finished, shadowStarted.EventSequence, shadowFinished.EventSequence)
 	completionQoS, completionQoSValid := o.qualifyCompletionQoSEvidenceLocked(current)
@@ -484,6 +585,46 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	if aggregateCandidate {
 		o.observeStableAggregateThroughputOutcome(aggregateOutcome)
 	}
+}
+
+func (o *predictiveVLLMObserver) publishRequestAwareInputLocked(current predictiveStablePrefillWindow, usedTokens int64) {
+	input := runtimepredictive.RequestAwareInput{
+		MetricsFresh:   true,
+		IdentityValid:  true,
+		CapacityTokens: o.maximumKVTokens,
+		UsedTokens:     usedTokens,
+		Running:        current.Running,
+		Waiting:        current.Waiting,
+	}
+	if o.requestAwareHasBaseline && current.Preemptions == o.requestAwarePreemptions &&
+		current.Generation > o.requestAwareGeneration {
+		elapsed := current.ObservedAt.Sub(o.requestAwareObservedAt)
+		runningDenominator := o.requestAwareRunning
+		if current.Running > runningDenominator {
+			runningDenominator = current.Running
+		}
+		if elapsed > 0 && elapsed <= o.maximumAge && runningDenominator > 0 {
+			aggregateTPS := float64(current.Generation-o.requestAwareGeneration) / elapsed.Seconds()
+			input.AggregateTPSProxy = aggregateTPS
+			input.MeanActiveTPSProxy = aggregateTPS / float64(runningDenominator)
+			input.TPSValid = input.MeanActiveTPSProxy > 0
+		}
+	}
+	o.requestAwareInput = input
+	o.requestAwareObservedAt = current.ObservedAt
+	o.requestAwareGeneration = current.Generation
+	o.requestAwareRunning = current.Running
+	o.requestAwarePreemptions = current.Preemptions
+	o.requestAwareHasBaseline = true
+}
+
+func (o *predictiveVLLMObserver) resetRequestAwareInputLocked() {
+	o.requestAwareInput = runtimepredictive.RequestAwareInput{}
+	o.requestAwareObservedAt = time.Time{}
+	o.requestAwareGeneration = 0
+	o.requestAwareRunning = 0
+	o.requestAwarePreemptions = 0
+	o.requestAwareHasBaseline = false
 }
 
 func (o *predictiveVLLMObserver) qualifyCompletionQoSEvidenceLocked(current predictiveStablePrefillWindow) (predictiveCompletionQoSEvidence, bool) {
@@ -532,7 +673,7 @@ func observePredictiveLoadPressure(observer predictiveLoadPressureObserver, now 
 
 func (o *predictiveVLLMObserver) qualifyStablePrefillOutcomeLocked(current predictiveStablePrefillWindow, started, finished, shadowStarted, shadowFinished uint64) (runtimepredictive.ExistingPrefillOutcome, bool) {
 	previous := o.prefillWindow
-	if previous == nil {
+	if previous == nil || o.existingPrefillLearner == nil {
 		return runtimepredictive.ExistingPrefillOutcome{}, false
 	}
 	previousPending := observedPredictivePendingPrefills(previous.Manager, previous.ShadowPending)
@@ -726,6 +867,7 @@ func (o *predictiveVLLMObserver) rejectObservedIdentity() {
 	o.generation = 0
 	o.hasPreemptions = false
 	o.preemptions = 0
+	o.resetRequestAwareInputLocked()
 	o.lastSuccess = time.Time{}
 	o.lastPreemption = time.Time{}
 	o.lastWaiting = 0

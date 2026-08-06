@@ -51,7 +51,7 @@ func requestClassifierConfig(cfg config) request.Config {
 
 func priorityInjectorConfig(cfg config) request.PriorityConfig {
 	return request.PriorityConfig{
-		Enabled:             cfg.BackendPriorityInjectionEnabled,
+		Enabled:             cfg.BackendPriorityInjectionEnabled && cfg.PredictiveAdmissionMode != "enforce",
 		Mode:                cfg.BackendPriorityMode,
 		Strategy:            cfg.BackendPriorityRewriteStrategy,
 		Field:               cfg.BackendPriorityField,
