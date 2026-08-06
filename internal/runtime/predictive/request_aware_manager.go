@@ -135,6 +135,21 @@ func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) (domain.Vi
 	return state.Upper, pendingPrefillTokens, pendingLong, pendingQuiescent
 }
 
+func (m *Manager) CurrentRequestAwarePending(policy *RequestAwarePolicy) RequestAwarePendingSnapshot {
+	if m == nil || policy == nil {
+		return RequestAwarePendingSnapshot{}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state, tokens, long, quiescent := m.requestAwareStateLocked(policy)
+	return RequestAwarePendingSnapshot{
+		PrefillSequences:          state.PendingPrefillSequences,
+		PrefillTokens:             tokens,
+		LongPrefillSequences:      long,
+		QuiescentPrefillSequences: quiescent,
+	}
+}
+
 func requestAwareManagerFailure(reason RequestAwareReason, sequence uint64) RequestAwareManagerResult {
 	return RequestAwareManagerResult{
 		Decision: RequestAwareDecision{

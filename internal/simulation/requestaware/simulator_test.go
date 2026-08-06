@@ -20,7 +20,7 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		"short-only": false, "large-only": false,
 		"mix-80-20": false, "mix-50-50": false, "mix-20-80": false,
 		"small-then-large": false, "large-then-small": false,
-		"pre-poll-burst": false, "low-flow-first-large": false,
+		"pre-poll-burst": false, "prefill-regular-multimodal-burst": false, "low-flow-first-large": false,
 		"transient-waiting": false, "sustained-waiting": false,
 		"tps-target": false, "tps-floor": false,
 		"kv-low": false, "kv-mid": false, "kv-high": false,

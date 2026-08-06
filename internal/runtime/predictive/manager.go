@@ -100,7 +100,7 @@ type reservation struct {
 	ID      string
 	Created time.Time
 	Cost    domain.RequestCost
-	// PrefillInterferenceTokens is the request-aware lexical work estimate.
+	// PrefillInterferenceTokens is the request-aware Prefill work estimate.
 	// Cost.UncachedPrefillUpper remains the independent hard-KV safety upper.
 	PrefillInterferenceTokens int64
 	Prediction                SchedulerPrediction
@@ -198,6 +198,13 @@ type Snapshot struct {
 	RetiredReservations                  int
 	RetiredEvictions                     uint64
 	Virtual                              domain.VirtualStateInterval
+}
+
+type RequestAwarePendingSnapshot struct {
+	PrefillSequences          int
+	PrefillTokens             int64
+	LongPrefillSequences      int
+	QuiescentPrefillSequences int
 }
 
 type managerAdmissionResult struct {

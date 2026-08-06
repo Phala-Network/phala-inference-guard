@@ -126,7 +126,9 @@ func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testi
 		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
 		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
 		telemetry.RequestAware.PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
-		telemetry.RequestAware.EstimatedPrefillTokens < 16 || telemetry.RequestAware.PostAdmitPendingPrefillTokens < 16 ||
+		telemetry.RequestAware.EstimatedPrefillTokens < 16 ||
+		telemetry.RequestAware.PostAdmitPendingPrefillTokens != 0 ||
+		telemetry.RequestAware.LastDecisionPostAdmitPendingPrefillTokens < 16 ||
 		!telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.InspectCapacity != 0 {
 		t.Fatalf("long-prefill telemetry=%+v", telemetry)
 	}

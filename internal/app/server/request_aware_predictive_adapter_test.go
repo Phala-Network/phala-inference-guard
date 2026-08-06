@@ -173,6 +173,67 @@ func TestRequestAwareAdapterUnknownLexicalHintFallsBackToSafetyUpper(t *testing.
 	}
 }
 
+func TestRequestAwareAdapterChargesKnownMultimodalWorkToPrefillAdmission(t *testing.T) {
+	adapter, manager := newRequestAwareAdapterTestFixture(t, 0, 1)
+	input := requestAwareAdapterInput(8*1024, 0)
+	input.Cost.ApproximateInputTokens = 256
+	input.Cost.ModalityCount = 1
+
+	decision := adapter.Decide(context.Background(), "multimodal-prefill", input)
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if decision.Outcome != predictiveAdmissionOutcomeLoadProtection || decision.Reservation != nil ||
+		decision.Reason != domainpredictive.ReasonRequestSizeAtPressure ||
+		telemetry.RequestAware.SelectionInputTokens != 8*1024 ||
+		telemetry.RequestAware.EstimatedPrefillTokens != 8*1024 ||
+		manager.Snapshot().Reservations != 0 {
+		t.Fatalf("multimodal decision/telemetry/manager=%+v/%+v/%+v, want safety-input prefill protection", decision, telemetry, manager.Snapshot())
+	}
+}
+
+func TestRequestAwareAdapterPendingTelemetryReportsCurrentStateAfterLastDecisionDrains(t *testing.T) {
+	adapter, manager := newRequestAwareAdapterTestFixture(t, 0, 0)
+	snapshot := adapter.snapshot.(staticRequestAwareSnapshot).input
+	snapshot.CapacityTokens = 4 * 1024 * 1024
+	snapshot.TPSValid = false
+	adapter.snapshot = staticRequestAwareSnapshot{input: snapshot}
+	input := requestAwareAdapterInput(8*1024, 0)
+
+	first := adapter.Decide(context.Background(), "telemetry-current-first", input)
+	second := adapter.Decide(context.Background(), "telemetry-current-second", input)
+	if first.Reservation == nil || second.Reservation == nil || manager.Snapshot().Reservations != 2 {
+		t.Fatalf("setup decisions/manager=%+v/%+v/%+v, want two live reservations", first, second, manager.Snapshot())
+	}
+	beforeDrain := adapter.PredictiveAdmissionTelemetry().RequestAware
+	if beforeDrain.PendingPrefillSequences != 2 || beforeDrain.PendingPrefillTokens != 16*1024 ||
+		beforeDrain.PostAdmitPendingPrefillTokens != 16*1024 {
+		t.Fatalf("current pending telemetry before drain=%+v, want 2/16K", beforeDrain)
+	}
+	if beforeDrain.LastDecisionPendingPrefillSequences != 1 ||
+		beforeDrain.LastDecisionPendingPrefillTokens != 8*1024 ||
+		beforeDrain.LastDecisionPostAdmitPendingPrefillTokens != 16*1024 {
+		t.Fatalf("last-decision pending telemetry before drain=%+v, want 1/8K/16K", beforeDrain)
+	}
+
+	if !first.Reservation.Terminate(runtimepredictive.TerminalExpired) ||
+		!second.Reservation.Terminate(runtimepredictive.TerminalExpired) {
+		t.Fatal("pending telemetry setup reservations did not drain")
+	}
+	afterDrain := adapter.PredictiveAdmissionTelemetry().RequestAware
+	if afterDrain.PendingPrefillSequences != 0 || afterDrain.PendingPrefillTokens != 0 ||
+		afterDrain.PostAdmitPendingPrefillTokens != 0 ||
+		afterDrain.PendingLongPrefillSequences != 0 || afterDrain.PendingQuiescentPrefillSequences != 0 ||
+		manager.Snapshot().Reservations != 0 {
+		t.Fatalf("current pending telemetry after drain=%+v manager=%+v, want zero live demand", afterDrain, manager.Snapshot())
+	}
+	if afterDrain.Action != runtimepredictive.RequestAwareAdmit ||
+		afterDrain.EstimatedPrefillTokens != 8*1024 ||
+		afterDrain.LastDecisionPendingPrefillSequences != 1 ||
+		afterDrain.LastDecisionPendingPrefillTokens != 8*1024 ||
+		afterDrain.LastDecisionPostAdmitPendingPrefillTokens != 16*1024 {
+		t.Fatalf("last-decision diagnostics were not preserved after current state drained: %+v", afterDrain)
+	}
+}
+
 func TestRequestAwareAdapterShadowIsSideEffectFree(t *testing.T) {
 	adapter, manager := newRequestAwareAdapterTestFixtureWithMode(t, 5_000, 1, "shadow")
 	before := manager.Snapshot()

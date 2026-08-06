@@ -116,6 +116,11 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 	input.RequestAwarePostAdmitPendingPrefillTokens = snapshot.RequestAware.PostAdmitPendingPrefillTokens
 	input.RequestAwarePendingLongPrefillSequences = snapshot.RequestAware.PendingLongPrefillSequences
 	input.RequestAwarePendingQuiescentPrefillSequences = snapshot.RequestAware.PendingQuiescentPrefillSequences
+	input.RequestAwareLastDecisionPendingPrefillSequences = snapshot.RequestAware.LastDecisionPendingPrefillSequences
+	input.RequestAwareLastDecisionPendingPrefillTokens = snapshot.RequestAware.LastDecisionPendingPrefillTokens
+	input.RequestAwareLastDecisionPostAdmitPendingPrefillTokens = snapshot.RequestAware.LastDecisionPostAdmitPendingPrefillTokens
+	input.RequestAwareLastDecisionPendingLongPrefillSequences = snapshot.RequestAware.LastDecisionPendingLongPrefillSequences
+	input.RequestAwareLastDecisionPendingQuiescentPrefillSequences = snapshot.RequestAware.LastDecisionPendingQuiescentPrefillSequences
 	input.RouterBackpressure = metrics.PredictiveRouterBackpressureInput{
 		Active:          snapshot.RouterBackpressure.Active,
 		Activation:      snapshot.RouterBackpressure.Activation,

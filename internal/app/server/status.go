@@ -98,7 +98,7 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 		requestAwarePrefillClass = "unknown"
 	}
 	return fmt.Sprintf(
-		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s last_reject=%s/%s/%s reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d retired=%d/%d request_aware=%s/%s/%s pressure=%.3f size=%d/%d/%d prefill=%s/%d/%d/%d/%d/%d/%d kv=%d/%d/%d load=%d/%d/%d tps=%.3f/%.3f/%.3f/%d router_bp=%d/%d/%s/%s inspect=%d activation=%d effective=%d/%d raw=%d/%d}",
+		" predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d last=%s/%s last_reject=%s/%s/%s reservations=%d virtual_decode=%d pending_prefill=%d/%d/%d retired=%d/%d request_aware=%s/%s/%s pressure=%.3f size=%d/%d/%d prefill_last=%s/%d/%d/%d/%d/%d/%d prefill_current=%d/%d/%d/%d kv=%d/%d/%d load=%d/%d/%d tps=%.3f/%.3f/%.3f/%d router_bp=%d/%d/%s/%s inspect=%d activation=%d effective=%d/%d raw=%d/%d}",
 		input.Mode,
 		input.Attempts,
 		input.Fits,
@@ -126,9 +126,13 @@ func formatPredictiveStatus(input metrics.PredictiveAdmissionInput) string {
 		input.RequestAwareAllowanceTokens,
 		requestAwarePrefillClass,
 		input.RequestAwareEstimatedPrefillTokens,
+		input.RequestAwareLastDecisionPendingPrefillSequences,
+		input.RequestAwareLastDecisionPendingPrefillTokens,
+		input.RequestAwareLastDecisionPostAdmitPendingPrefillTokens,
+		input.RequestAwareLastDecisionPendingLongPrefillSequences,
+		input.RequestAwareLastDecisionPendingQuiescentPrefillSequences,
 		input.RequestAwarePendingPrefillSequences,
 		input.RequestAwarePendingPrefillTokens,
-		input.RequestAwarePostAdmitPendingPrefillTokens,
 		input.RequestAwarePendingLongPrefillSequences,
 		input.RequestAwarePendingQuiescentPrefillSequences,
 		input.RequestAwareEffectiveKV,

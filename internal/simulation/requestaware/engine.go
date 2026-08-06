@@ -315,7 +315,7 @@ func (r *scenarioRunner) poll(at time.Duration) {
 }
 
 func (r *scenarioRunner) currentWaiting(at time.Duration) int {
-	waiting := r.spec.backgroundRunning + len(r.active) - simulationMaximumNoWait
+	waiting := r.spec.backgroundRunning + len(r.active) - r.maximumNoWait()
 	if waiting < 0 {
 		waiting = 0
 	}
@@ -323,6 +323,13 @@ func (r *scenarioRunner) currentWaiting(at time.Duration) int {
 		waiting++
 	}
 	return waiting
+}
+
+func (r *scenarioRunner) maximumNoWait() int {
+	if r.spec.maximumNoWait > 0 {
+		return r.spec.maximumNoWait
+	}
+	return simulationMaximumNoWait
 }
 
 func (r *scenarioRunner) trueKVTokens() int64 {

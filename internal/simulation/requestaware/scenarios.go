@@ -50,6 +50,7 @@ type scenarioSpec struct {
 	preemptionAt       time.Duration
 	aggregateTPSCap    float64
 	capacityTokens     int64
+	maximumNoWait      int
 }
 
 type requestShape uint8
@@ -76,6 +77,7 @@ func simulationScenarios(seed int64) []scenarioSpec {
 		newOrderedScenario("small-then-large", true),
 		newOrderedScenario("large-then-small", false),
 		newUniformScenario("pre-poll-burst", "burst", 20_000, 2, shapeSmall, 5, 100*time.Millisecond, 0),
+		newRegularMultimodalBurstScenario(),
 		newUniformScenario("low-flow-first-large", "low-flow", 10_000, 0, shapeLarge, 2, 100*time.Millisecond, 6*time.Second),
 		withWaiting(newUniformScenario("transient-waiting", "waiting", 20_000, 2, shapeSmall, 8, 1200*time.Millisecond, 500*time.Millisecond), timeWindow{start: time.Second, end: 2 * time.Second}),
 		withWaiting(newUniformScenario("sustained-waiting", "waiting", 20_000, 2, shapeSmall, 10, 1200*time.Millisecond, 500*time.Millisecond), timeWindow{start: time.Second, end: 5 * time.Second}),
@@ -121,6 +123,25 @@ func simulationScenarios(seed int64) []scenarioSpec {
 			longPrefillRequest("blocked-short", 200*time.Millisecond, 32*1024, 64, 0),
 			longPrefillRequest("blocked-second-650k", 33400*time.Millisecond, 650*1024, 64, 0),
 			longPrefillRequest("post-prefill-short", 33400*time.Millisecond, 32*1024, 64, 0)),
+	}
+}
+
+func newRegularMultimodalBurstScenario() scenarioSpec {
+	requests := make([]requestSpec, 0, 40)
+	for index := 0; index < 40; index++ {
+		requests = append(requests, liveShapedPrefillRequest(
+			fmt.Sprintf("regular-multimodal-%02d", index),
+			100*time.Millisecond,
+			10*1024,
+			8*1024,
+			8*1024,
+			64,
+		))
+	}
+	return scenarioSpec{
+		name: "prefill-regular-multimodal-burst", category: "prefill-burst", duration: 30 * time.Second,
+		initialKVTokens: 100_000, backgroundRunning: 28, aggregateTPSCap: 28 * simulationUncontendedTPS,
+		capacityTokens: 4 * 1024 * 1024, maximumNoWait: 512, requests: requests,
 	}
 }
 

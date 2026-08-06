@@ -345,6 +345,9 @@ func (p *RequestAwarePolicy) prefillProtectionReason(
 		return RequestAwareReasonPrefillExclusive, true
 	}
 	switch class {
+	case RequestAwarePrefillRegular:
+		return RequestAwareReasonPrefillBudget,
+			input.PendingLongPrefillSequences == 0 && postAdmitTokens > p.config.PrefillAggregateBudgetTokens
 	case RequestAwarePrefillWeighted:
 		return RequestAwareReasonPrefillBudget, postAdmitTokens > p.config.PrefillAggregateBudgetTokens
 	case RequestAwarePrefillExclusive:

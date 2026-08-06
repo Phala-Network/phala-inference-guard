@@ -245,6 +245,12 @@ func (a *requestAwarePredictiveAdapter) PredictiveAdmissionTelemetry() predictiv
 	a.routerBackpressure = a.transitionRouterBackpressureLocked(now, router)
 	router = a.routerBackpressure
 	a.mu.Unlock()
+	currentPending := a.manager.CurrentRequestAwarePending(a.policy)
+	lastRequestAware.PendingPrefillSequences = currentPending.PrefillSequences
+	lastRequestAware.PendingPrefillTokens = currentPending.PrefillTokens
+	lastRequestAware.PostAdmitPendingPrefillTokens = currentPending.PrefillTokens
+	lastRequestAware.PendingLongPrefillSequences = currentPending.LongPrefillSequences
+	lastRequestAware.PendingQuiescentPrefillSequences = currentPending.QuiescentPrefillSequences
 	return predictiveAdmissionTelemetrySnapshot{
 		Attempts:           attempts,
 		Manager:            a.manager.Snapshot(),
@@ -265,30 +271,35 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 		return
 	}
 	last := requestAwareTelemetrySnapshot{
-		Action:                           result.Decision.Action,
-		Reason:                           result.Decision.Reason,
-		PressureSource:                   result.Decision.PressureSource,
-		Pressure:                         result.Decision.Pressure,
-		SelectionInputTokens:             selectionInputTokens,
-		ReservedTokens:                   reservedTokens,
-		AllowanceTokens:                  result.Decision.AllowanceTokens,
-		EffectiveKV:                      result.Decision.EffectiveKV,
-		PostAdmitKV:                      result.Decision.PostAdmitKV,
-		RemainingKV:                      result.Decision.RemainingKV,
-		Running:                          input.Running,
-		Waiting:                          input.Waiting,
-		EffectiveSequences:               result.Decision.EffectiveSequences,
-		AggregateTPSProxy:                input.AggregateTPSProxy,
-		MeanActiveTPSProxy:               input.MeanActiveTPSProxy,
-		ProjectedTPSProxy:                result.Decision.ProjectedMeanActiveTPSProxy,
-		TPSForecastValid:                 result.Decision.TPSForecastValid,
-		PrefillClass:                     result.Decision.PrefillClass,
-		EstimatedPrefillTokens:           result.Decision.EstimatedPrefillTokens,
-		PendingPrefillSequences:          result.Decision.PendingPrefillSequences,
-		PendingPrefillTokens:             result.Decision.PendingPrefillTokens,
-		PostAdmitPendingPrefillTokens:    result.Decision.PostAdmitPendingPrefillTokens,
-		PendingLongPrefillSequences:      result.Decision.PendingLongPrefillSequences,
-		PendingQuiescentPrefillSequences: result.Decision.PendingQuiescentPrefillSequences,
+		Action:                              result.Decision.Action,
+		Reason:                              result.Decision.Reason,
+		PressureSource:                      result.Decision.PressureSource,
+		Pressure:                            result.Decision.Pressure,
+		SelectionInputTokens:                selectionInputTokens,
+		ReservedTokens:                      reservedTokens,
+		AllowanceTokens:                     result.Decision.AllowanceTokens,
+		EffectiveKV:                         result.Decision.EffectiveKV,
+		PostAdmitKV:                         result.Decision.PostAdmitKV,
+		RemainingKV:                         result.Decision.RemainingKV,
+		Running:                             input.Running,
+		Waiting:                             input.Waiting,
+		EffectiveSequences:                  result.Decision.EffectiveSequences,
+		AggregateTPSProxy:                   input.AggregateTPSProxy,
+		MeanActiveTPSProxy:                  input.MeanActiveTPSProxy,
+		ProjectedTPSProxy:                   result.Decision.ProjectedMeanActiveTPSProxy,
+		TPSForecastValid:                    result.Decision.TPSForecastValid,
+		PrefillClass:                        result.Decision.PrefillClass,
+		EstimatedPrefillTokens:              result.Decision.EstimatedPrefillTokens,
+		PendingPrefillSequences:             result.Decision.PendingPrefillSequences,
+		PendingPrefillTokens:                result.Decision.PendingPrefillTokens,
+		PostAdmitPendingPrefillTokens:       result.Decision.PostAdmitPendingPrefillTokens,
+		PendingLongPrefillSequences:         result.Decision.PendingLongPrefillSequences,
+		PendingQuiescentPrefillSequences:    result.Decision.PendingQuiescentPrefillSequences,
+		LastDecisionPendingPrefillSequences: result.Decision.PendingPrefillSequences,
+		LastDecisionPendingPrefillTokens:    result.Decision.PendingPrefillTokens,
+		LastDecisionPostAdmitPendingPrefillTokens:    result.Decision.PostAdmitPendingPrefillTokens,
+		LastDecisionPendingLongPrefillSequences:      result.Decision.PendingLongPrefillSequences,
+		LastDecisionPendingQuiescentPrefillSequences: result.Decision.PendingQuiescentPrefillSequences,
 	}
 	a.mu.Lock()
 	a.attempts.Attempts++
@@ -515,7 +526,7 @@ func requestAwareAdapterCost(manifestID string, blockSize int64, input predictiv
 	if !cost.Supported || manifestID == "" || blockSize <= 0 || cost.EstimatedInputHigh <= 0 || cost.BoundedDecodeTokens < 0 {
 		return 0, domainpredictive.RequestCost{}, false
 	}
-	selectionInputTokens, known := cost.ApproximateInputTokenHint()
+	selectionInputTokens, known := cost.ApproximatePrefillTokenHint()
 	if !known {
 		selectionInputTokens = cost.EstimatedInputHigh
 	}

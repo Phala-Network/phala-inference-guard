@@ -115,9 +115,59 @@ func TestApproximateInputTokenHintExcludesTrailingJSONWhitespace(t *testing.T) {
 	}
 }
 
+func TestApproximatePrefillTokenHintChargesRecognizedMultimodalExpansion(t *testing.T) {
+	text := Cost{
+		EstimatedInputHigh:          8 * 1024,
+		ApproximateInputTokens:      256,
+		ApproximateInputTokensKnown: true,
+	}
+	if hint, known := text.ApproximatePrefillTokenHint(); !known || hint != 256 {
+		t.Fatalf("text prefill hint=%d/%t want bounded lexical 256/true", hint, known)
+	}
+
+	multimodal := text
+	multimodal.ModalityCount = 1
+	if hint, known := multimodal.ApproximatePrefillTokenHint(); !known || hint != 8*1024 {
+		t.Fatalf("multimodal prefill hint=%d/%t want safety input 8K/true", hint, known)
+	}
+
+	unknown := text
+	unknown.ApproximateInputTokens = 0
+	unknown.ApproximateInputTokensKnown = false
+	if hint, known := unknown.ApproximatePrefillTokenHint(); known || hint != 0 {
+		t.Fatalf("unknown text prefill hint=%d/%t want 0/false for adapter fallback", hint, known)
+	}
+}
+
 var benchmarkEstimatorCost Cost
 var benchmarkApproximateHintTokens int64
 var benchmarkApproximateHintKnown bool
+
+func BenchmarkCostApproximatePrefillTokenHint(b *testing.B) {
+	for _, fixture := range []struct {
+		name string
+		cost Cost
+	}{
+		{name: "text", cost: Cost{
+			EstimatedInputHigh:          8 * 1024,
+			ApproximateInputTokens:      256,
+			ApproximateInputTokensKnown: true,
+		}},
+		{name: "multimodal", cost: Cost{
+			EstimatedInputHigh:          8 * 1024,
+			ApproximateInputTokens:      256,
+			ApproximateInputTokensKnown: true,
+			ModalityCount:               1,
+		}},
+	} {
+		b.Run(fixture.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for iteration := 0; iteration < b.N; iteration++ {
+				benchmarkApproximateHintTokens, benchmarkApproximateHintKnown = fixture.cost.ApproximatePrefillTokenHint()
+			}
+		})
+	}
+}
 
 func BenchmarkEstimator1KiB(b *testing.B) {
 	benchmarkEstimator(b, 1*1024)

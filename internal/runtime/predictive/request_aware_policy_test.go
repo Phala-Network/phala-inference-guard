@@ -140,6 +140,44 @@ func TestRequestAwarePolicyPrefillBoundaries(t *testing.T) {
 	}
 }
 
+func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstWithoutBlockingShortBehindExclusive(t *testing.T) {
+	policy := newRequestAwareTestPolicy(t)
+	regularBurst := requestAwareTestInput()
+	regularBurst.CapacityTokens = 4 * 1024 * 1024
+	regularBurst.UsedTokens = 0
+	regularBurst.ReservedTokens = 0
+	regularBurst.RequestReservedTokens = 8 * 1024
+	regularBurst.SelectionInputTokens = 8 * 1024
+	regularBurst.EstimatedPrefillTokens = 8 * 1024
+	regularBurst.PendingPrefillSequences = 32
+	regularBurst.PendingPrefillTokens = 256*1024 - 4*1024
+	regularBurst.AggregateTPSProxy = 0
+	regularBurst.MeanActiveTPSProxy = 0
+	regularBurst.TPSValid = false
+
+	atBoundary := regularBurst
+	atBoundary.PendingPrefillTokens = 256*1024 - atBoundary.EstimatedPrefillTokens
+	boundary := policy.Evaluate(atBoundary)
+	if boundary.Action != RequestAwareAdmit || boundary.Reason != RequestAwareReasonOpen {
+		t.Fatalf("regular exact aggregate boundary decision=%+v, want admit/open", boundary)
+	}
+
+	protected := policy.Evaluate(regularBurst)
+	if protected.Action != RequestAwareSizeProtect || protected.Reason != RequestAwareReasonPrefillBudget ||
+		protected.PressureSource != RequestAwarePressurePrefill || protected.PrefillClass != RequestAwarePrefillRegular {
+		t.Fatalf("regular aggregate burst decision=%+v, want pre-forward prefill budget protection", protected)
+	}
+
+	withExclusive := regularBurst
+	withExclusive.PendingPrefillSequences = 1
+	withExclusive.PendingPrefillTokens = 300 * 1024
+	withExclusive.PendingLongPrefillSequences = 1
+	short := policy.Evaluate(withExclusive)
+	if short.Action != RequestAwareAdmit || short.Reason != RequestAwareReasonOpen {
+		t.Fatalf("short behind exclusive decision=%+v, want work-conserving admit/open", short)
+	}
+}
+
 func TestRequestAwarePolicyRejectsInvalidPrefillThresholdOrdering(t *testing.T) {
 	_, err := NewRequestAwarePolicy(RequestAwareConfig{
 		SoftKVRatio: 0.60, HardKVRatio: 0.90, TPSTarget: 20, TPSFloor: 15, BlockSize: 16,

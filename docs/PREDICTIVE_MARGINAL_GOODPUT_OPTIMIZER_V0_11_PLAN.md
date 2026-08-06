@@ -1,6 +1,6 @@
-# PIG v0.11.3 确定性请求感知与长 Prefill 准入计划
+# PIG v0.11.4 确定性请求感知与 Prefill 干扰准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.3 source/tag/image、Router-disabled shadow 与 Router-disabled enforce live gates 已通过；当前保持 use1-cb Router disabled + enforce，Router canary 与 30 分钟实际流量观察尚未执行**
+状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、release identity 与 exact-source builder matrix，尚未完成 commit/tag/image，也未部署或重新启用 use1-cb**
 最后更新：2026-08-06
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -26,9 +26,10 @@ PIG 在请求进入 vLLM 之前，使用：
    floor 时暂不新增 intake，但这仍是随下一 fresh snapshot 自动恢复的逐请求选择性保护，
    不是由一个后反馈样本永久关闭 intake；
 3. 容量有压力时优先拒绝大输入请求，而不是不区分请求地全部拒绝；
-4. KV、waiting、TPS 均无压力时，普通请求保持 work-conserving；但 64K/256K/512K 以上
-   输入还必须通过独立的 pending-prefill 干扰预算，不能因当前 snapshot 尚未出现反馈压力就
-   直接进入；backend 真正 idle 时允许首个 512K/650K 请求进入，避免低流自锁和 GPU 闲置；
+4. KV、waiting、TPS 均无压力时，普通请求保持 work-conserving；但同一 500-ms snapshot 内的
+   `<64K` regular burst 也不得无限累积，未与 long Prefill 重叠时与 weighted 请求共用 256K
+   aggregate pending-prefill 干扰预算；64K/256K/512K 分层继续生效，backend 真正 idle 时允许
+   首个 512K/650K 请求进入，避免低流自锁和 GPU 闲置；
 5. 在上述 QoS 约束下，提高 SLO-compliant completion throughput 和总吞吐。
 
 PIG 不路由、不排队、不重排请求，也不修改 Router/vLLM 源码。因此这是同步、在线、
@@ -36,7 +37,7 @@ work-conserving 的贪心准入，不宣称对未来未知请求实现全局最�
 
 ## 2. 明确不做什么
 
-v0.11.3 不包含：
+v0.11.4 不包含：
 
 - 任何在线学习、回归、校准学习、risk price、置信区间或 exploration/probe；
 - learned KV/decode/concurrency limit、Safe Envelope、pressure bucket、frontier；
@@ -52,7 +53,8 @@ v0.11.3 不包含：
 `estimatedPrefillTokens`；它不是精确的 `uncached_tokens`，日志、metrics 和文档不得混淆两者。
 64K/256K/512K/650K 合同用于通用多卡大模型；当前 `use1-cb` 的 262K max-model-len 不能作为
 删除 512K/650K 分层的理由。
-650K 是 `>=512K` quiescent 档的代表用例，不是第五个阈值。
+650K 是 `>=512K` quiescent 档的代表用例，不是第五个阈值。v0.11.3 在真实 canary 中出现
+约 80 秒 Decode freeze；零 preemption 不等于 QoS green，也不能覆盖生成 TPS 降至零的失败。
 
 旧学习实现最终必须从 v0.11 production factory、HTTP admission、配置和 metrics 的可达路径中
 删除，不能只靠 runtime flag 假装 disabled。若静态 reachability 证明 legacy 源码只被旧模式或
@@ -219,6 +221,22 @@ v0.11.3 不包含：
     `RequestAwareConfig.Validate()` 仍允许 `soft=0` 或 `hard=1`。factory 当前不可达这些值不代表
     domain policy 可以依赖外层偶然校验；pure policy 自身必须拒绝二者，避免未来复用时悄悄
     移除 soft band 或 hard margin。不新增第三个 ratio 或其他配置。
+36. **regular multimodal burst 被 lexical hint 与长 Prefill gate 双重漏计**：estimator 已识别
+    `image_url/input_image/audio_url/input_audio/video_url/input_video` 并把 bounded modality
+    allowance 放进 `EstimatedInputHigh`，但 request-aware adapter 仍只消费 URL/text lexical hint；
+    同时 `<64K regular` 完全绕过 256K aggregate pending-prefill budget。v0.11.3 canary 因而能在
+    同一 observation 周期连续 reserve 大量看似很小的 multimodal regular 请求。v0.11.4 对纯文本
+    继续使用 bounded lexical hint；只要已识别 modality，就使用既有 `EstimatedInputHigh` 作为
+    Prefill interference estimate，hard-KV reservation 语义不变。regular-only aggregate 在
+    post-admit 超过 256K 时 `SIZE_PROTECT/prefill_budget`；已有 exclusive Prefill 时仍允许短请求，
+    避免用一个长请求把 short goodput 全部锁死。
+37. **current gauge 实际发布 last-decision snapshot**：v0.11.3 的
+    `pig_predictive_request_aware_pending_prefill_sequences/tokens` 来自 `lastRequestAware`；请求结束且
+    没有新请求时不会清零。v0.11.4 令这些既有 pending gauges（包括无前缀的
+    `post_admit_pending_prefill_tokens`）从唯一 Manager reservation/base 状态实时派生，并新增显式
+    `last_decision_pending_*` gauges；status 同样拆成
+    `prefill_current` 与 `prefill_last`。Router backpressure 仍只消费独立 current inspect projection，
+    不从 last-decision 或 pending gauge 猜测容量。
 
 ## 4. 输入事实
 
@@ -262,7 +280,8 @@ reset sample 原子 rebase Manager 和 observer baseline，清除旧 epoch reser
 直接复用 bounded JSON estimator：
 
 ```text
-selectionInputTokens = ApproximateInputTokens，已知且 > 0 时
+selectionInputTokens = EstimatedInputHigh，已识别 modality 时
+                     = ApproximateInputTokens，纯文本 hint 已知且 > 0 时
                      = EstimatedInputHigh，hint 不可用时的保守 fallback
 
 estimatedPrefillTokens = selectionInputTokens
@@ -270,9 +289,10 @@ estimatedPrefillTokens = selectionInputTokens
 reservedTokens       = blockRoundUp(EstimatedInputHigh + BoundedDecodeTokens)
 ```
 
-- `selectionInputTokens` 同时用于已有 pressure 下的大/小请求差异，以及 64K/256K/512K
-  pending-prefill 干扰分层；它是快速、模型无关的 lexical estimate，不是 exact tokenizer、
-  exact prompt tokens 或 `uncached_tokens`；
+- `selectionInputTokens` 同时用于已有 pressure 下的大/小请求差异，以及 regular aggregate 和
+  64K/256K/512K pending-prefill 干扰分层；纯文本使用快速、模型无关的 lexical estimate；
+  已识别 multimodal request 使用已有 conservative input estimate，避免把 URL 字符数误当 media
+  expansion 成本。两者都不是 exact tokenizer、exact prompt tokens 或 `uncached_tokens`；
 - hint 不可用时 `estimatedPrefillTokens` 才回退 `EstimatedInputHigh`，不能因缺失近似信号而
   把长 Prefill 风险当成零；
 - `reservedTokens` 用于 post-admit KV operational guard；
@@ -441,15 +461,16 @@ cold prompt 在健康 snapshot 下先进入上游、占用约数十秒 Prefill�
 
 | `estimatedPrefillTokens` | pre-forward 合同 |
 | --- | --- |
-| `<64K` | 普通 request-aware admission；不单独消耗长请求预算，但在 512K+ Prefill 独占阶段仍保护 |
+| `<64K` | 普通 request-aware admission；没有 pending long Prefill 时，post-admit aggregate pending-prefill tokens 不得超过 256K；已有 exclusive Prefill 时短请求仍按原策略进入；在 512K+ quiescent Prefill 独占阶段仍保护 |
 | `64K–<256K` | post-admit aggregate pending-prefill tokens 不得超过 256K；aggregate 包含所有尚未 prefill-complete 的本地 reservation，防止多个 63K/100K 组合绕过成本预算 |
 | `256K–<512K` | 每副本最多一个该级或更大的 pending Prefill；普通 `<64K` 请求仍可按原策略进入，以免用一个长请求把短请求 goodput 全部清零 |
 | `>=512K`（含 650K） | 仅在 observed running=0、waiting=0、本地 effective sequences=0、所有本地 pending Prefill=0 时允许首个请求；从 reserve 到 prefill-complete/terminal 为独占 Prefill 阶段，期间任何新请求都 pre-forward `SIZE_PROTECT` |
 
 关键语义：
 
-- 分层依据快速、模型无关的 lexical `estimatedPrefillTokens`；hint 缺失时才回退保守的
-  `EstimatedInputHigh`。它不宣称知道 exact tokenizer token、cache-cold 或 uncached token 数；
+- 分层依据快速、模型无关的 `estimatedPrefillTokens`：纯文本用 lexical hint，已识别 modality
+  用 existing conservative input estimate，hint 缺失时回退 `EstimatedInputHigh`。它不宣称知道
+  exact tokenizer token、cache-cold 或 uncached token 数；
 - hard KV safety 始终独立使用 `EstimatedInputHigh + BoundedDecodeTokens` 的 block-aligned
   reservation，绝不能用通常更小的 lexical estimate 放松 hard-fit；
 - `pending` 从成功原子 reservation 开始，而不是等 vLLM metrics 看见请求；这样同一 snapshot 的
@@ -460,8 +481,9 @@ cold prompt 在健康 snapshot 下先进入上游、占用约数十秒 Prefill�
   `running=0` 后立即恢复，恢复延迟上界为一个默认 500-ms poll。`MarkPrefillComplete` 已确认
   Prefill 阶段结束，因此后续 `<512K` 请求不等待 poll 即可退出独占阶段；但该请求仍处于
   Decode/local reservation 时，`effective sequences>0` 必须继续阻止第二个 512K+ 请求；
-- 64K–<256K 的 256K aggregate budget 包含普通 pending tokens，但这个新 gate 本身不拒绝 `<64K`
-  请求；这样既防组合绕过，又不把低流 short-only workload 变成固定槽位算法；
+- 没有 pending long Prefill 时，`<64K` regular 与 `64K–<256K` weighted 都受同一个 256K
+  aggregate budget；精确 256K 允许，超过才保护。已有 exclusive Prefill 时仍允许普通短请求，
+  避免低流自锁；512K+ quiescent 阶段继续保护所有新请求；
 - 256K–<512K 的“一次一个”指该级或更大的长 Prefill，不禁止普通短请求；其真实 QoS/goodput
   权衡必须由 simulation 和 shadow/canary 证明，不能仅由规则直觉晋级；
 - 512K+ 独占阶段必须能被 Router inspect 看见，但 inspect 不创建 reservation、不刷新阶段、
@@ -548,6 +570,9 @@ aggregateTPSProxy/projectedMeanActiveTPSProxy
 - 数值用 gauge/histogram，不作为 label；
 - label 只允许低基数 action/reason/source；
 - last-decision HTTP、日志和 metrics 必须来自上述同一个真实请求 verdict，不得各自重算；
+- 名为 `pending_*` 或无前缀 `post_admit_pending_*` 的 operational gauge 必须表示当前 Manager lifecycle state，reservation drain 后
+  无需等待新请求即清零；last-decision pending/post-admit 值使用显式
+  `last_decision_pending_*` 名称保留，不能再次用 current-looking 名称发布 stale value；
 - Router-readable capacity 是单独的当前状态投影：每次 metrics scrape 使用相同 pure policy
   和当前 Manager virtual state 无副作用地评估 one-block inspect，不写 reservation、不增加
   request/attempt 计数，也不覆盖 last-decision metrics；
@@ -597,6 +622,10 @@ Router capacity 的具体既有字段只做适配，不修改 Router 源码。
     `<512K` 立即恢复，但第二个 512K+ 在 local effective sequence/observed running 清零前仍保护；
     terminal 立即释放本地 gate，但另一个 512K+ 仍等待 fresh idle snapshot；
 15. 64K/256K/512K 边界前后各一个 token、650K、overflow 和 invalid threshold ordering 全覆盖。
+16. regular-only aggregate 在精确 256K 仍 ADMIT、超过一个 token 即 pre-forward protect；同一
+    exclusive Prefill 后的普通短请求仍 ADMIT，避免把长请求预算变成全局锁。
+17. 同一 multimodal request 保持 hard-KV safety upper 不变，但把已识别 modality 的 conservative
+    input estimate 送入真实 pre-forward Prefill admission；纯文本 lexical hint 语义不变。
 
 red 必须 compile，并因 stub/旧行为不满足上述语义而失败；不能用缺依赖或语法错误冒充。
 
@@ -620,6 +649,8 @@ red 必须 compile，并因 stub/旧行为不满足上述语义而失败；不�
   真实决策路径误锁下一请求；
 - shadow 无副作用；
 - HTTP/log/metrics/Router action/reason 一致；
+- 当前 pending metrics 在 reservation/prefill/terminal 生命周期中变化，drain 后即为零；显式
+  last-decision metrics 继续保留最后 verdict，二者不能互相覆盖；
 - enforce policy-fit 请求不再被旧 static/dynamic/tier gate 二次拒绝或排队，也不注入 backend
   priority；shadow 仍保持原服务路径；
 - enforce Router projection 在 raw dynamic waiting/limit 改变时仍只由 request-aware
@@ -662,6 +693,9 @@ simulation 必须调用生产 `RequestAwarePolicy`，固定 seed，可重放。�
   独占阶段与恢复；
 - 小后大、大后小；
 - 500-ms poll 前 burst；
+- 28 background Decode 下同一 100-ms tick 的 40 个 regular multimodal Prefill；global-binary
+  baseline 允许 40 个，candidate 在 256K aggregate 边界只允许 32 个并保护 8 个，TPS-floor/
+  waiting 不得比 baseline 更差；
 - low-flow、idle 首个 512K/650K、transient/sustained waiting；
 - 小输入 + 大 `max_tokens`、大输入 + 小 `max_tokens`；
 - KV 低/中/高、TPS target/floor、preemption、stale/recovery；
@@ -724,9 +758,10 @@ truth 脱离的固定 TPS override 覆盖观察值；否则会人为遮蔽 admis
 14. 观察实际流量 30 分钟，与旧版 `use1-4c` 的相近负载窗口分开对照；
 15. 有明显问题则 disable `use1-cb`、更新计划、bump patch version 并重新循环。
 
-当前 v0.11.3 已完成 behavioral red/green、完整 clean-builder matrix、immutable image、
-Router-disabled shadow 与 Router-disabled enforce gates。第 13 步仍必须在启用前只读 preflight
-确认 Compose、Router inventory、节点 idle/no-residue、endpoint/auth、日志与 preemption/fatal 均无漂移。
+v0.11.3 已完成 source/image/shadow/enforce，但 Router canary 发生 Decode freeze，明确失败并回退，
+禁止重新启用。v0.11.4 corrective 当前只完成 source candidate 的 behavioral red/green 与 builder
+matrix；必须完成三轮复查、release identity、commit/tag/image、Router-disabled shadow/enforce 后，
+才可重新讨论 Router canary，不能继承 v0.11.3 的 live promotion 结论。
 
 没有明确 GO 前不得修改其他 CVM、修改 Router/vLLM 源码或引入生产流量。
 
@@ -777,22 +812,26 @@ Router-disabled shadow 与 Router-disabled enforce gates。第 13 步仍必须�
 - [x] v0.11.3 `use1-cb` Router-disabled shadow deployment/readiness/protocol/low-flow/size gates；
 - [x] v0.11.3 `use1-cb` Router-disabled enforce deployment/readiness、weighted aggregate budget、
   low-flow/cancel/burst、约 230K exclusive 与 final-preflight gates；
+- [x] v0.11.3 Router canary 已执行、发现约 80 秒 Decode freeze，并安全 disable `use1-cb`；该版本
+  production promotion 明确失败；
+- [x] v0.11.4 regular multimodal burst、current-vs-last telemetry behavioral red；
+- [x] v0.11.4 source corrective、focused green 与 exact candidate full/vet/build/race/
+  byte-identical simulation/benchmark matrix；
 - [x] exact 512K boundary 与 650K idle/busy/cancel/recovery 继续作为通用多卡合同，由 exact-source
   builder tests 和 deterministic multi-card simulation 覆盖；当前 262K 节点未实发 512K/650K；
-- [ ] Router enable 前 current-state drift recheck；
-- [ ] v0.11.3 Router canary 与 30 分钟实际流量观察。
+- [x] v0.11.4 三遍最终复查；第二遍发现并修正无前缀 post-admit gauge 的 stale 语义，R130
+  behavioral red/focused/full builder matrix 已通过；
+- [x] v0.11.4 runtime/README/OCI release identity 与 exact-source builder matrix；
+- [ ] v0.11.4 commit/push/tag/image；
+- [ ] v0.11.4 Router-disabled shadow/enforce 与 Router enable 前 current-state drift recheck；
+- [ ] v0.11.4 Router canary 与 30 分钟实际流量观察。
 
-截至当前，pure policy、Manager、HTTP adapter、500-ms live observer、deterministic config/factory、
-request-aware telemetry、统一 verdict 日志、真实 proxy HTTP、hard guard、并发 burst、Close/forward
-线性化、same-identity epoch recovery、Router one-block inspect、低流/cancel/recovery 与
-64K/256K/512K 长 Prefill生命周期均已获得适用的 focused/full/race/simulation/builder 证据。当前
-release source 为 annotated `v0.11.3` 对应的
-`0b4da6bf22bc80655eabf977e278eedc34033dad`，immutable image 为
-`ghcr.io/phala-network/phala-inference-guard@sha256:15d827456c56a534d71b03932d5a9a90d2d7984e5cbfec6aec3b2632cfcc0d99`。
-HEAD 相对 tag 仅有本 canonical ledger 文档；live `use1-cb` 已处于同一 image 的 Router-disabled
-enforce，门禁见最新账本。Router enabled set 和实际生产流量尚未改变。R20 的旧 TPS hard-floor
-语义已由 R27/R28 取代；v0.11.0/v0.11.1/v0.11.2 的 source、image 或 live 证据均不得冒充
-v0.11.3 的对应完成层级。
+截至当前，v0.11.3 immutable image 仍是最后一个已发布 runtime，但其 canary 失败，不能再晋级。
+`use1-cb` 已 Router disabled；post-canary final preflight 证明 backend idle、无 live reservation/
+preemption/fatal。v0.11.4 executable source 尚为未提交 candidate：regular aggregate、multimodal
+Prefill estimate 与 current telemetry 已获 builder red/green/full/race/simulation/benchmark 证据，
+但没有 commit/tag/image/Compose/deployment/live 证据。任何 v0.11.3 shadow/enforce green 或零
+preemption 都不得冒充 v0.11.4 production readiness。
 
 ### 13.1 R19 pure-policy behavioral red
 
@@ -3097,9 +3136,337 @@ safety upper。当前 `use1-cb --max-model-len=262144` 只允许实测约 67K we
 exclusive，绝不向它发送 512K/650K actual prompt；超长合同继续由 exact-source builder tests 与
 deterministic multi-card simulation 证明，待真正支持该长度的多卡节点另补 live GPU 证据。
 
-综合上述门禁，v0.11.3 暂时满足 Router canary 前的部署候选条件，但尚无实际生产流量证据。下一步
+（历史结论，已被 R128 的 canary failure 取代。）综合上述门禁，v0.11.3 当时暂时满足 Router canary
+前的部署候选条件，但尚无实际生产流量证据。下一步
 必须重新执行同一只读 preflight；只有 exact Compose 未漂移、Router enabled set 仍精确为
 `use1-19,use1-9b`、`use1-cb=false`、节点 idle/no-residue 且 endpoint/auth/log/preemption/fatal 全绿，
 才允许只把 `use1-cb.enabled` 改为 true。之后完整观察 30 分钟；任一明显 QoS、preemption、低流误锁、
 sticky clamp、fatal/restart 或 goodput 问题，第一动作是 disable `use1-cb` 并保存证据，再决定是否回
 shadow 或 bump patch version 重走 builder/image/shadow/enforce。
+
+### 13.74 R128 v0.11.3 Router canary failure、disable 与证据纠正
+
+R127 的“暂时满足 Router canary 前候选条件”只是一项当时的 promotion gate 结论，已经被本节真实
+canary 结果取代。Router 在 `2026-08-06T12:40:32.3649110Z` 只把 `use1-cb` 加入 enabled set：
+`use1-19,use1-9b -> use1-19,use1-9b,use1-cb`，config digest 从
+`sha256:b8447a719c6fb9d8bf956ae60928d5e857828e7c2874739e7bb8fae8cca5c47a` 变为
+`sha256:1ee61ece6d82d2b14c31ec2747ffb0574b8306a954f152df2c157b0699ef7df1`；除目标
+`enabled` 外 route inventory 未变。发现 QoS failure 后，Router 在
+`2026-08-06T13:15:26.4155613Z` 只移除 `use1-cb`，enabled set 和 digest 精确恢复到原值。
+目标共 enabled 约 `34m54s`。恢复动作没有重建、改名或改写其他 route。
+
+正式 observer 从 `2026-08-06T12:52:22.0443056Z` 到
+`2026-08-06T13:15:52.6308590Z`，共 `65` 个样本、`1410.5865534s`；因 Router enabled set 已按
+stop rule 回退而以 `router_enabled_set_drift` 结束，不得冒充完整 30 分钟 green。summary 与原始 samples
+SHA-256 分别为
+`0aa1f0c7f1fd6b405ed9bdd278343c8d5fa5b3f0516c3449cdefefc8c42b3591` 和
+`f4a892ba6d9e0b002bed90cccaffbf54f9f3a967f9e14041f312dafcc95d542f`。窗口内：
+
+- target processed `+2033`，其中 selected by cache/load 为 `+284/+1749`；
+- PIG attempts/fit/risk/unknown 为 `+2163/+841/+1319/+3`，enforced rejects `+1322`，拒绝率约
+  `61.1%`；
+- generation/prompt/cached-prompt tokens 为
+  `+1,762,184/+2,534,946/+321,664`；
+- predictive failure、vLLM preemption/error/abort 均为 `0`。
+
+窗口前约 20 分钟一度表现正常：running 最大 `52`，waiting 最大 `12` 后恢复，KV 最大
+`83.10%`，低于 target/hard `84%/88%`；completion TPS mean/p10/p50/p95 为
+`1343.5/331.5/1298.3/2701.3`。低流时 running 从 40 以上下降到 `5` 后 PIG 仍保持 intake open，
+没有低流自锁。然而约 `13:13:33Z--13:14:53Z` 出现真实 Decode freeze：vLLM prompt 和 generation
+counter 同时不变，running 固定 `52`、waiting=`0`、KV 约 `77.3%`，PIG attempts/rejects 也不再增长；
+generation TPS 变为 `0`，观测单用户 TPS 最低约 `0.0012`，vLLM logger 约 80 秒没有新的周期输出。
+这已经违反 QoS，不能被“零 preemption、零 fatal”覆盖。
+
+恢复发生在 Router disable **之前**：PIG 状态在 `13:14:47Z` 已报告 generation TPS 约 `2163`，
+vLLM 在 `13:14:53Z` 报告约 `1772`，而 disable 是 `13:15:26Z`。因此不能声称 disable 导致恢复；
+只能确认 stop rule 随后安全移除了目标流量。冻结前可复现的关键 admission 序列为：
+
+```text
+13:12:42Z  running=30, prefill=6,  reservations=31, pending safety≈104K, lexical pending≈72K
+13:12:47Z  running=28, prefill=13, reservations=40, pending prefill=28, safety≈287K, lexical≈180K, gen TPS=0
+13:13:07Z  running=43, waiting=14, reservations=59, pending prefill=47, safety≈304K, lexical≈209K
+13:13:12Z  running=53, waiting=0,  pending prefill=41, safety≈252K
+13:13:22Z  generation TPS=0
+13:13:33Z  prompt TPS=0, generation TPS=0, running=52, KV≈77.3%
+```
+
+`13:12:40Z` 同一秒出现 27 条 `Media cache enabled` connector 日志，但 vLLM 禁用了 uvicorn access
+log，不能把 27 条日志直接宣称为 27 个请求，也不能从现有证据还原 request body。当前最可信且能由
+源码与 behavioral red 复现的 admission 缺口是：estimator 已识别 modality marker，并在
+`EstimatedInputHigh` 中加入已有的 per-marker allowance；真实 request-aware adapter 却仍只消费 URL/text
+lexical hint。同时 `<64K regular` 原先完全绕过 256K aggregate pending-prefill budget，因此同一 500ms
+observation 周期可以连续 reserve 大量“lexical 很小、实际 media Prefill 不小”的 regular 请求。R129 只修
+这一已证实的模型无关缺口，不引入 Gemma/Gemma4 分支、tokenizer asset、cache inspection 或 learner。
+
+post-canary 最终只读采集时间为 `2026-08-06T13:26:27.3570294Z`，summary SHA-256 为
+`b0b669abbb190a19b2c93dfa5c8604addbfdbd245202070cba82f59b64eed9ff`。它确认 Router enabled set 已
+恢复为 `use1-19,use1-9b`、`use1-cb=false`、route running=`0`，PIG/vLLM container 运行，authenticated
+models/metrics/attestation 为 200、unauthenticated metrics 为 401，runtime 仍为
+`PIG-v0.11.3`/enforce/TTFT disabled/intake open；vLLM running/waiting/KV、Manager reservations 与
+forwarded pending Prefills/safety tokens 均为零，且无 PIG failure、preemption、engine/GPU fatal。
+但旧 pending request-aware gauges 仍显示 `33/168940`：它们来自 `lastRequestAware` 的最后一次
+decision feature snapshot，不是 live registry residue。该 summary 的 `all_passed=false` 还包含旧 collector
+只识别 `prefill_budget` protection log 的 false negative；不能将它解释为后端仍繁忙。collector 随后仅做
+只读纠正，SHA-256 为 `c9c6a686df98af0cbc4976750da7f6ffa21e18e683427105cc40090cd1b52acd`：
+区分 current residue 与 last-decision snapshot、识别任意 enforce protection，并把 request-level
+`PIL.UnidentifiedImageError` 与 engine/OOM fatal 分开。旧 `Traceback` 复算为 request traceback `6`、
+invalid-image request `3`、engine fatal `0`。
+
+结论：v0.11.3 canary 明确失败并已回退，禁止用此前 shadow/enforce、零 preemption 或自恢复来重新晋级；
+在 v0.11.4 完成独立 release identity、exact-source builder/image、Router-disabled shadow/enforce 与新的
+promotion review 之前，不得重新部署或 enable `use1-cb`。
+
+### 13.75 R129 v0.11.4 regular multimodal/current telemetry corrective red/green
+
+最终 behavioral red 基于临时 snapshot commit
+`3af7502a8774c5e00c558abe773f994601b70bb8`，tracked-worktree archive SHA-256 为
+`3410a9b898707b13a4c977639525a454ec8fe6f2073aa2b0f68ee7e55b6832a7`，final R4 evidence archive
+SHA-256 为 `fac0544786f77dcb1ba15e636ed2eefdb30b5096f76dc91a2eb857388354c820`。两个旧 untracked
+plan 未进入 archive。`FORMAT_CLEAN=1`，四项 runner 都因预期 behavioral assertion 而失败：
+
+1. pure policy 在 pending=`258,048`、candidate=`8,192`、post-admit=`266,240` 时错误
+   `admit/open`，预期 `size_protect/prefill_budget/prefill`；
+2. multimodal adapter 已得到 `EstimatedInputHigh=8K`、lexical=`256`、`ModalityCount=1`，但在
+   waiting/TPS pressure 下仍按 256 放行，预期按已有 8K conservative upper pre-forward protect；
+3. 两个 8K reservations 后旧 telemetry 仍只报告 last-decision 的 pre-existing `1/8K`，预期 current
+   `2/16K`，drain 后 current 应立即变零且 last-decision 应独立保留；
+4. 28 条 background Decode、同一 100ms tick 的 40 个 regular multimodal request 中，global baseline
+   和旧 request-aware 都 admit 40；预期 candidate admit 32、size-protect 8。
+
+最小 corrective 保持原 admission transaction，不增加另一套 owner 或异步状态：
+
+- `Cost.ApproximatePrefillTokenHint()` 对纯文本继续使用 bounded lexical estimate；已识别 modality 时使用
+  既有 `EstimatedInputHigh`；lexical unknown 时仍回退该 upper。hard-KV reservation 继续独立使用
+  `EstimatedInputHigh + BoundedDecodeTokens`；
+- regular class 仅在 `PendingLongPrefillSequences==0` 时增加 post-admit aggregate 256K budget；精确
+  256K 允许，超过才 `size_protect/prefill_budget/prefill`。已有 300K exclusive Prefill 时普通 short
+  仍可进入，避免把单个长请求变成全局短请求锁；weighted/exclusive/quiescent 合同不变；
+- `Manager.CurrentRequestAwarePending(policy)` 从唯一 base/reservation registry 实时派生 current sequences、
+  tokens、long、quiescent。原 pending metrics（包括无前缀 post-admit gauge）改为 current state；新增显式
+  `last_decision_pending_*`，status 拆成 `prefill_current` 与 `prefill_last`。Router backpressure 仍只消费
+  无副作用 one-block current projection，不消费 last-decision snapshot；
+- deterministic burst fixture 使用 4M capacity、28 background Decode、`maximumNoWait=512`，避免被通用
+  小模型 fixture 的 queue cap 在 request-aware policy 之前错误拒绝全部请求。
+
+focused candidate snapshot commit 为 `543bed3e883b07b53b940e0f1263a7530990a141`，archive 与 focused
+evidence SHA-256 分别为
+`1c35d2c31c07cec0e03336c638280f82c97d2dc1310ebba339ae57ce20000ff8` 和
+`4e3ce05e942dadb29ebab839ab7d2d0ea3743031f49e0de2d3cdd2de5b109654`；format、kvadmission、policy、
+server、metrics、simulation 全部 exit 0。exact full candidate snapshot commit 为
+`d27657ec55f0d8eb70bf5f3bd1ae082a8b44fd7b`，archive SHA-256 为
+`f40e86ce0316cd7c314dcd8463a1b7afd664a6025c00db70331258604b703d70`，full evidence archive
+SHA-256 为 `293478094a63891632f1675dd69329de20a20949e0a62a11e3293d44d63835e0`。
+
+授权 builder 为 CVM `cvm_3e2k83KX`、app
+`app_89811a9add5b20427ee1fbf4dc22a33984e41959`、container `pig-v01011-builder`，Go
+`1.24.13 linux/amd64`；container `running=true`、`OOMKilled=false`、restart=`0`。连接使用严格
+known-hosts，ED25519 fingerprint 为 `SHA256:cL6Yhk0milH+/UJcYwy9ebox+uT6HJfMkAKo26pZO3M`；未使用生成
+`StrictHostKeyChecking=no` 且触发 libuv assertion 的 CLI dry-run 命令。完整 matrix：
+
+```text
+FORMAT_CLEAN=1
+TEST_EXIT=0
+VET_EXIT=0
+BUILD_EXIT=0
+RACE_EXIT=0
+SIMULATION_1_EXIT=0
+SIMULATION_2_EXIT=0
+SIMULATION_IDENTICAL_EXIT=0
+SIMULATION_ACCEPTANCE_EXIT=0
+BENCHMARK_KVADMISSION_EXIT=0
+BENCHMARK_POLICY_MANAGER_EXIT=0
+BENCHMARK_HTTP_EXIT=0
+```
+
+两次 simulation 均为 `53,442` bytes、SHA-256
+`87a4460206e372259e780f634dd4948ed647d47746d67859b65e00bc366c97bb`、byte-identical 且
+acceptance=`passed`。新增 burst 场景中 baseline 为 40 admit/0 reject、TPS-floor violation `16.4s`、
+SLO completion TPS `380.3813`、peak KV `428,476`、max running `68`；candidate 为 32 admit/8
+size-protect、TPS-floor violation `13.2s`、SLO completion TPS `470.0935`、peak KV `362,802`、max
+running `60`。这证明 deterministic model 中候选能阻止同 tick over-admission 并改善 SLO goodput；它不等于
+真实 GPU throughput、真实 multimodal cache 行为或 production readiness。
+
+builder CPU microbenchmark 全部通过且不改变 hot-path 量级：
+
+- `ApproximatePrefillTokenHint`：纯文本约 `7.00--7.03ns/op`，multimodal 约
+  `3.72--3.74ns/op`，均 0 allocation；
+- full estimator：1KiB `268--277ns`、64KiB `1.961--1.977us`、1MiB
+  `27.58--28.39us`、2MiB `64.54--66.47us`，0 allocation；
+- bounded lexical sampling 约 `87.4--94.0ns`，pure policy 约 `17.5--45.4ns`，均 0 allocation；
+- Manager decide active 0/48/256 约 `149ns/4.54--4.57us/24.02--24.17us`，0 allocation；
+- HTTP pre-forward protection fixture 约 `42.10--42.44us`、`39,323--39,324 B/op`、119 allocs。
+
+HTTP 数值包含 `httptest`、JSON、transport 和 telemetry 全路径，不能解释为 pure policy 或端到端服务延迟；
+所有 benchmark 都只是 builder CPU microbenchmark。R129 没有模型名、模型专用 tokenizer、hash-pinned asset、
+cache inspection、learner、TTFT admission、tier/priority、Router/vLLM source change。通用多卡
+`<64K / 64K--<256K / 256K--<512K / >=512K` 与 650K representative case 保持；当前 262K
+`use1-cb` 仍禁止实发 512K/650K。
+
+截至本节，完成层级仅为 v0.11.4 source candidate + behavioral red/focused green/full clean-builder matrix。
+尚未完成三遍 final review、runtime/README/OCI release identity、commit/push/tag、image build/publish、Compose、
+部署、readiness 或生产流量。R129 full matrix 不能继承 v0.11.3 image/live evidence，也不能授权重新 enable
+`use1-cb`。
+
+### 13.77 R131 v0.11.4 release identity 与 exact-source matrix
+
+R130 三遍 final review 后只执行 release 收口：runtime constant 改为 `PIG-v0.11.4`，Dockerfile OCI label
+改为 `0.11.4`，README 标题和 active behavior 改为 v0.11.4。README 同时纠正三项会误导部署者的旧说明：
+
+- text-only 使用 bounded lexical hint；recognized multimodal 使用已有 conservative input upper，且 hard-KV
+  safety upper 独立；
+- `<64K regular` 在没有 pending exclusive-or-larger 时也参与 256K aggregate regular/weighted budget，已有
+  exclusive 时 short 仍可继续；
+- operational pending 与无前缀 post-admit metrics 是 current，只有显式 `last_decision_*` 保留历史。
+
+README 不声称精确 tokenizer、cached/uncached token、cache-aware 或 GPU production result；旧 v0.10 plan 链接
+改为本 canonical plan，Compose 示例的旧固定 `v0.10.13` 改为 `<version>` 占位，避免把历史 tag 冒充当前
+recommendation。除上述 identity/说明和 R130 ledger 外，算法、threshold、defaults 与 simulation fixture 均不变。
+
+exact release candidate 为：
+
+```text
+snapshot commit: 3df72de3c2f4c0900bbe66fa550d2fdd0008030b
+tree:            3d2984a9a28233cd3ebb3c13a30ab88d9b30969f
+archive SHA-256: eb23c25504401db336655ef7dd515333c2bb10a3e4d701054af9bb0e04e8e487
+evidence SHA-256:c11b25505a9fd0998040ba0c251f49e89cb3906040bfabff32fe7770a62f64af
+```
+
+archive 创建时与当前 tracked worktree 精确一致，两个旧 untracked plan 未进入。授权 builder/container/Go 与
+R129/R130 相同且 `running=true`、`OOMKilled=false`、restart=`0`。完整结果：
+
+```text
+FORMAT_CLEAN=1
+TEST_EXIT=0
+VET_EXIT=0
+BUILD_EXIT=0
+RACE_EXIT=0
+SIMULATION_1_EXIT=0
+SIMULATION_2_EXIT=0
+SIMULATION_IDENTICAL_EXIT=0
+SIMULATION_ACCEPTANCE_EXIT=0
+BENCHMARK_KVADMISSION_EXIT=0
+BENCHMARK_POLICY_MANAGER_EXIT=0
+BENCHMARK_HTTP_EXIT=0
+```
+
+两次 simulation 继续为 `53,442` bytes、SHA-256
+`87a4460206e372259e780f634dd4948ed647d47746d67859b65e00bc366c97bb`、byte-identical 且
+acceptance=`passed`，证明 release identity/README 没有改变 deterministic verdict、regular multimodal burst、
+exact 512K boundary 或 650K idle/busy/cancel/recovery。go test/race log SHA-256 为
+`5d7f38ed10bfca84552b094efca88928ec089881a6219809d4120e992c1f2ee2` 和
+`7daaa990c85fe10d10d0c8de3f8eaaeeaa5dd2695a87296d2096ec7669adb9dc`；gofmt/vet/build 仍为空文件
+SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`。
+
+R131 benchmark 仍在 R130 noise range：hint text `6.929--7.010ns`、multimodal `3.708--3.740ns`；
+Manager active 0/48/256 为 `148.9--149.1ns / 4.550--4.558us / 23.985--24.205us`，0 allocation；
+HTTP fixture 为 `41.202--42.334us`、`39,323 B/op`、119 allocs。三组 benchmark log SHA-256 为
+`1fc5403c935649675b68214cde425e778eddb977ce42260cd03d7dc223a37c5f`、
+`78036e52b39d36135c3fbd9366981d8493787b5df1fa1987c6baba4872d96d60`、
+`3ada922abba06662683cf33764a2ad6361b41d93e17844446fbdc50ab4365301`。这些仍是 builder CPU
+microbenchmark，不是 GPU 服务延迟。
+
+截至本节，完成层级为 v0.11.4 exact release source candidate + complete clean-builder matrix；尚未创建真实
+source commit、push branch、annotated tag、builder-local/published image、Compose 或部署。追加本节后，下一步
+必须证明相对 R131 tested tree 唯一变化为本 canonical ledger，审计 staged paths 只包含本 release 的 tracked
+files，然后才可 commit/push/tag。image 必须从 clean pushed tag 构建并通过 OCI label、binary status 与
+production image contract；当前仍禁止部署或 enable `use1-cb`。
+
+### 13.76 R130 三遍 final review、post-admit telemetry corrective 与 exact matrix
+
+本轮按 release gate 完成三遍复查，并在第二遍发现 executable 问题，因此没有直接继承 R129 full green：
+
+1. **模型与因果。** `Cost.ApproximatePrefillTokenHint()` 在真实
+   `requestAwareAdapterCost -> DecideRequestAwareAndReserve -> RequestAwarePolicy.Evaluate` 路径中使用；
+   同一 snapshot 下，recognized modality 将 selection/prefill estimate 从 lexical marker/URL 尺度提升到
+   已有 `EstimatedInputHigh`，能在 upstream forward 之前改变 verdict。hard-KV 仍用独立 safety upper。
+   regular gate 计算 post-admit aggregate demand，严格 `>256K` 才保护；local pending exclusive 时短请求
+   bypass regular aggregate gate。没有 cache、learner、模型名、tokenizer asset 或 Router/vLLM source 依赖。
+2. **安全、生命周期与低流。** Manager 仍是唯一 reservation owner，check+reserve 位于同一 mutex；
+   overflow/invalid/stale/preemption 先于 admit fail closed，prefill-complete/terminal/cancel/timeout/error 的
+   既有 exact-once 生命周期不变。current pending 从同一 base/reservation registry 派生，不创建第二套计数器；
+   regular 预算在无 pending demand 时不动作，exact 256K 允许，已有 exclusive 后的 short 允许，quiescent
+   独占仍优先。第二遍发现原 R129 只覆盖 current sequence/token/long/quiescent，旧的无前缀
+   `post_admit_pending_prefill_tokens` 在 drain 后仍保留 last decision 值，会继续造成“节点仍有 pending”的
+   误读。R130 将该 gauge 也映射为 current registry tokens；历史 post-admit 只保存在显式
+   `last_decision_post_admit_pending_prefill_tokens`。rejected request 不创建 reservation，因此 current
+   post-admit 为 0，而 last-decision post-admit 仍保留本次反事实值。
+3. **SOLID、效率、证据与发布。** estimator 只负责成本事实，pure policy 只负责 verdict，Manager 只负责
+   原子 state/lifecycle，adapter 负责 transport mapping，metrics/status 只负责显式 current/last 发布；没有把
+   CVM、Router 或模型逻辑塞进 domain policy。新增 current telemetry scan 只发生在 metrics/status scrape，
+   不进入逐请求 decision hot path；为节省一次低频 O(n) scan 而合并 Manager ownership 与 transport snapshot
+   会扩大接口和锁范围，当前没有 benchmark 证据支持该复杂化。完整 builder benchmark 证明 hot path 仍为
+   0 allocation，R130 相对 R129 无可见回退。证据层严格停在 exact source candidate/full clean-builder
+   matrix；没有把 deterministic simulation、microbenchmark 或旧 v0.11.3 image/live 证据外推为 v0.11.4
+   production readiness。
+
+R130 的最小 behavioral red 只把 adapter 恢复为 R129 的旧 post-admit 发布逻辑，同时保留新断言：
+
+```text
+snapshot commit: aa51497762bda0d2f7ab6b912670dfad024bea26
+tree:            0768dbd76825ad695d375163ad4ebaae255ef3e5
+archive SHA-256: 0e45446a97f1b6573bd6d0a623c3a2f8683bddb63cf65ef5bc2765f10787f171
+evidence SHA-256:5388d1f1d1978d82ea7851b04436a84a14039556081103926f7b77ef58e17a03
+
+FORMAT_CLEAN=1
+POLICY_EXIT=0
+ADAPTER_EXIT=0
+TELEMETRY_EXIT=1
+SIMULATION_EXIT=0
+```
+
+唯一失败断言显示 Manager reservations=`0`、current pending sequences/tokens=`0/0`，但旧无前缀
+post-admit 仍为 `16,384`；failure log SHA-256 为
+`30aa9b442cfd38e1836822f32b25be723870028275b3c96db16b2a5dd8a39dc6`。这证明 red 不是编译、fixture、
+format、policy 或 simulation failure。
+
+当前 exact candidate 为：
+
+```text
+snapshot commit: a0acdee25c7a3ccda318af57f88883eb4aac5ffc
+tree:            b4b12cf176ac76dc10a5072641a960c73fdc5c3f
+archive SHA-256: 72b19fb3ccb66f36023c961a39df77a4935108c9154bbbbb438845eedbf39a76
+focused evidence:3ef9b4790bcd0084a191f75dccce3f11d68f30c2073ecea08fc43de4f983a7d1
+full evidence:   2bbfc32f7f54b6cfd108abbbf62760af3c552964e3ce622288b3e903ac8614ce
+```
+
+focused format/kvadmission/policy/server/metrics/simulation 全为 exit 0。full matrix 同样全部通过：
+
+```text
+FORMAT_CLEAN=1
+TEST_EXIT=0
+VET_EXIT=0
+BUILD_EXIT=0
+RACE_EXIT=0
+SIMULATION_1_EXIT=0
+SIMULATION_2_EXIT=0
+SIMULATION_IDENTICAL_EXIT=0
+SIMULATION_ACCEPTANCE_EXIT=0
+BENCHMARK_KVADMISSION_EXIT=0
+BENCHMARK_POLICY_MANAGER_EXIT=0
+BENCHMARK_HTTP_EXIT=0
+```
+
+两次 simulation 继续为 `53,442` bytes、SHA-256
+`87a4460206e372259e780f634dd4948ed647d47746d67859b65e00bc366c97bb`、byte-identical 且
+acceptance=`passed`；因此 telemetry corrective 没有改变任何 deterministic verdict 或 512K/650K 合同。
+主要 material log SHA-256 为：go test
+`e4162164b140b8e6ca7947c4db8dbb249db066c8e5c868e50a15964390b57d1e`，race
+`fc83d1b79abd8ccee7160af804362596b5ac6806da9d1505840ac262e6fc22b4`，gofmt/vet/build 均为 empty-file
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`。
+
+R130 builder CPU benchmark（全部 applicable pure/Manager 项 0 allocation）：hint text
+`6.921--6.975ns`、multimodal `3.709--3.737ns`；full estimator 1KiB/64KiB/1MiB/2MiB 为
+`269.4--275.8ns / 1.960--1.978us / 28.411--28.740us / 62.957--64.051us`；bounded lexical
+`87.25--90.91ns`；pure policy `17.48--47.75ns`；Manager active 0/48/256 为
+`149.0--149.2ns / 4.541--4.641us / 24.079--24.103us`。HTTP fixture 为
+`41.259--41.927us`、`39,322--39,323 B/op`、119 allocs。benchmark log SHA-256 分别为
+`ae3bde5ab2eb66797ab688f24277e3af260f8d562bc40c29d3380384f6a691b7`、
+`07d340923aba0dce6a84dbdf59ee29c86a93a6c966fe79628f9e5194f5770649`、
+`883870e3af9e4aff30fa22f77adbca1fb90d338fdee0e9d682c62ddacd53e484`。HTTP 仍是测试 transport
+全路径，不是 pure policy 或 GPU latency。
+
+R130 archive 只包含 tracked files，两个旧 untracked plan 未进入；archive 时当前 tracked worktree 与
+`a0acdee...` byte-for-byte Git-clean。随后只追加本 ledger 和 review 结论，因此下一步必须先证明相对 R130
+唯一 drift 为 canonical plan，再管理 runtime/README/OCI `v0.11.4` identity，并对新 exact source 重新跑
+适用 builder/release/image contract。当前仍未 commit/push/tag/image、未修改 Compose、未部署或重新 enable
+`use1-cb`。

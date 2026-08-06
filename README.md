@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.11.3 deterministic request-aware admission
+### v0.11.4 deterministic request-aware admission
 
-PIG v0.11.3 makes a deterministic decision before forwarding each supported
+PIG v0.11.4 makes a deterministic decision before forwarding each supported
 request to one vLLM upstream:
 
 ```text
@@ -182,10 +182,14 @@ v0.11 decision.
 
 The request signal is deliberately approximate and model-family neutral. A
 bounded O(body bytes) JSON estimator produces a conservative prompt-cost
-interval and a fast lexical input-size hint. It does not load an exact model
-tokenizer, vocabulary, chat template, model-specific profile, native FFI, or
-remote tokenizer service. PIG also does not inspect prefix-cache hits, route,
-reorder, queue, or retain prompt content.
+interval and a fast lexical input-size hint. Text-only Prefill prediction uses
+the lexical hint. For a recognized multimodal request, a URL or marker is not a
+representative measure of backend media expansion, so Prefill prediction uses
+the estimator's existing conservative input upper bound. Hard-KV accounting
+remains independent and conservative. PIG does not load an exact model
+tokenizer, vocabulary, chat template, model-specific profile or asset, native
+FFI, or remote tokenizer service. It also does not inspect prefix-cache hits,
+route, reorder, queue, or retain prompt content.
 
 At startup, PIG reads vLLM's served-model identity hash, KV token capacity, KV
 block size, used KV, running/waiting requests, preemption counter, and generation
@@ -197,18 +201,20 @@ vLLM metrics have not yet absorbed. The pure policy then evaluates:
 - waiting pressure;
 - a post-admit mean-active-TPS proxy derived from the generation-token delta.
 
-With no pressure, ordinary hard-fit requests remain work-conserving. Long
-prefills also pass an independent token-weighted gate before they can reach
-vLLM: below 64K uses ordinary admission, 64K--256K shares a 256K pending-token
-budget, 256K--512K allows one concurrent long prefill, and 512K or larger
-(including 650K) requires an idle backend and owns the prefill phase until the
-first semantic response or terminal release. These thresholds are defaults,
-not model-name checks, so the same policy covers multi-card large-context
-models even when one canary has a smaller max-model-len. Hard KV fit keeps the
-conservative prompt safety upper. Prefill interference class and weighted
-budget use the bounded lexical point estimate, falling back to the safety upper
-when that estimate is unavailable. Neither value is reported as exact uncached
-tokens.
+With no pressure, ordinary hard-fit requests remain work-conserving. Prefills
+also pass an independent token-weighted gate before they can reach vLLM. Below
+64K is the regular class; when no exclusive-or-larger Prefill is pending, the
+post-admit aggregate regular/weighted demand must stay at or below 256K.
+64K--256K is weighted and shares the same 256K pending-token budget.
+256K--512K allows one concurrent long Prefill while ordinary short requests may
+continue, and 512K or larger (including 650K) requires an idle backend and owns
+the Prefill phase until the first semantic response or terminal release. These
+thresholds are defaults, not model-name checks, so the same policy covers
+multi-card large-context models even when one canary has a smaller
+max-model-len. Hard KV fit keeps the conservative prompt safety upper. Prefill
+interference class and budget use the model-neutral estimate described above,
+falling back to the safety upper when the hint is unavailable. Neither value is
+reported as exact cached or uncached tokens.
 
 While a 512K-or-larger request is still prefilling, all later requests are
 protected. After its first semantic response, ordinary requests can resume
@@ -265,6 +271,14 @@ recovery does not require a new business request. Last real-request verdicts and
 Router inspect verdicts are reported separately without request IDs, model
 names, prompt content, or other high-cardinality labels.
 
+Operational `pending_prefill_*` metrics, including the unprefixed
+`post_admit_pending_prefill_tokens`, are derived from the current Manager
+reservation/base state and clear as soon as that state drains. Explicit
+`last_decision_pending_*` metrics preserve the most recent decision's
+counterfactual diagnostics. Status logs likewise separate `prefill_current`
+from `prefill_last`, so a historical rejection cannot masquerade as current
+node load.
+
 Backend informational HTTP responses such as `100 Continue` and `103 Early
 Hints` are forwarded but remain provisional. Only the final response status
 (with `101 Switching Protocols` as the protocol-switch exception) drives
@@ -275,7 +289,7 @@ Use `shadow` first. Promote the same immutable image to `enforce` only after the
 documented builder, simulation, latency, lifecycle, low-flow recovery, and live
 shadow gates pass. Configuration, observability, release criteria, and the
 authorized single-node canary loop are documented in
-[MODEL_AGNOSTIC_APPROXIMATE_ADMISSION_V0_10_PLAN.md](docs/MODEL_AGNOSTIC_APPROXIMATE_ADMISSION_V0_10_PLAN.md).
+[PREDICTIVE_MARGINAL_GOODPUT_OPTIMIZER_V0_11_PLAN.md](docs/PREDICTIVE_MARGINAL_GOODPUT_OPTIMIZER_V0_11_PLAN.md).
 
 The earlier v0.9.0 KV-only simulation design remains available as historical
 documentation in [KV_ADMISSION_V0_9_PLAN.md](docs/KV_ADMISSION_V0_9_PLAN.md).
@@ -309,7 +323,7 @@ Add this service next to the serving backend:
 ```yaml
 services:
   phala-inference-guard:
-    image: ghcr.io/phala-network/phala-inference-guard:v0.10.13
+    image: ghcr.io/phala-network/phala-inference-guard:<version>
     container_name: phala-inference-guard
     restart: always
     runtime: nvidia

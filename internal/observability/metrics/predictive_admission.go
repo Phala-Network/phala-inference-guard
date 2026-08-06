@@ -18,56 +18,61 @@ type PredictiveAdmissionInput struct {
 	// EnforcedRejects counts HTTP requests for which the proxy emitted an
 	// enforced predictive rejection. Router protection is published earlier
 	// from RouterBackpressure and must never be inferred from this counter.
-	EnforcedRejects                              uint64
-	LastReason                                   string
-	LastSource                                   string
-	LastRejectReason                             string
-	LastRejectSource                             string
-	LastRejectScope                              string
-	LastRejectAt                                 time.Time
-	IntakeOpen                                   bool
-	Reservations                                 int
-	VirtualDecodeSequences                       int
-	ForwardedPendingPrefills                     int
-	ForwardedPendingPrefillTokens                int64
-	ForwardedPendingPrefillAttributionValid      bool
-	RetiredReservations                          int
-	RetiredEvictions                             uint64
-	FailureClose                                 uint64
-	FailureDecide                                uint64
-	FailureForward                               uint64
-	FailureForwardRejected                       uint64
-	FailureSemantic                              uint64
-	FailureCompletion                            uint64
-	FailureResourceRelease                       uint64
-	FailureTerminal                              uint64
-	PredictionDuration                           *histogram.DurationHistogram
-	EstimatorDuration                            *histogram.DurationHistogram
-	RouterBackpressure                           PredictiveRouterBackpressureInput
-	RequestAwareAction                           string
-	RequestAwareReason                           string
-	RequestAwarePressureSource                   string
-	RequestAwarePressure                         float64
-	RequestAwareSelectionInputTokens             int64
-	RequestAwareReservedTokens                   int64
-	RequestAwareAllowanceTokens                  int64
-	RequestAwareEffectiveKV                      int64
-	RequestAwarePostAdmitKV                      int64
-	RequestAwareRemainingKV                      int64
-	RequestAwareRunning                          int
-	RequestAwareWaiting                          int
-	RequestAwareEffectiveSequences               int
-	RequestAwareAggregateTPSProxy                float64
-	RequestAwareMeanActiveTPSProxy               float64
-	RequestAwareProjectedTPSProxy                float64
-	RequestAwareTPSForecastValid                 bool
-	RequestAwarePrefillClass                     string
-	RequestAwareEstimatedPrefillTokens           int64
-	RequestAwarePendingPrefillSequences          int
-	RequestAwarePendingPrefillTokens             int64
-	RequestAwarePostAdmitPendingPrefillTokens    int64
-	RequestAwarePendingLongPrefillSequences      int
-	RequestAwarePendingQuiescentPrefillSequences int
+	EnforcedRejects                                          uint64
+	LastReason                                               string
+	LastSource                                               string
+	LastRejectReason                                         string
+	LastRejectSource                                         string
+	LastRejectScope                                          string
+	LastRejectAt                                             time.Time
+	IntakeOpen                                               bool
+	Reservations                                             int
+	VirtualDecodeSequences                                   int
+	ForwardedPendingPrefills                                 int
+	ForwardedPendingPrefillTokens                            int64
+	ForwardedPendingPrefillAttributionValid                  bool
+	RetiredReservations                                      int
+	RetiredEvictions                                         uint64
+	FailureClose                                             uint64
+	FailureDecide                                            uint64
+	FailureForward                                           uint64
+	FailureForwardRejected                                   uint64
+	FailureSemantic                                          uint64
+	FailureCompletion                                        uint64
+	FailureResourceRelease                                   uint64
+	FailureTerminal                                          uint64
+	PredictionDuration                                       *histogram.DurationHistogram
+	EstimatorDuration                                        *histogram.DurationHistogram
+	RouterBackpressure                                       PredictiveRouterBackpressureInput
+	RequestAwareAction                                       string
+	RequestAwareReason                                       string
+	RequestAwarePressureSource                               string
+	RequestAwarePressure                                     float64
+	RequestAwareSelectionInputTokens                         int64
+	RequestAwareReservedTokens                               int64
+	RequestAwareAllowanceTokens                              int64
+	RequestAwareEffectiveKV                                  int64
+	RequestAwarePostAdmitKV                                  int64
+	RequestAwareRemainingKV                                  int64
+	RequestAwareRunning                                      int
+	RequestAwareWaiting                                      int
+	RequestAwareEffectiveSequences                           int
+	RequestAwareAggregateTPSProxy                            float64
+	RequestAwareMeanActiveTPSProxy                           float64
+	RequestAwareProjectedTPSProxy                            float64
+	RequestAwareTPSForecastValid                             bool
+	RequestAwarePrefillClass                                 string
+	RequestAwareEstimatedPrefillTokens                       int64
+	RequestAwarePendingPrefillSequences                      int
+	RequestAwarePendingPrefillTokens                         int64
+	RequestAwarePostAdmitPendingPrefillTokens                int64
+	RequestAwarePendingLongPrefillSequences                  int
+	RequestAwarePendingQuiescentPrefillSequences             int
+	RequestAwareLastDecisionPendingPrefillSequences          int
+	RequestAwareLastDecisionPendingPrefillTokens             int64
+	RequestAwareLastDecisionPostAdmitPendingPrefillTokens    int64
+	RequestAwareLastDecisionPendingLongPrefillSequences      int
+	RequestAwareLastDecisionPendingQuiescentPrefillSequences int
 }
 
 type PredictiveRouterBackpressureInput struct {
@@ -174,6 +179,11 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_request_aware_post_admit_pending_prefill_tokens %d\n", input.RequestAwarePostAdmitPendingPrefillTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_pending_long_prefill_sequences %d\n", input.RequestAwarePendingLongPrefillSequences)
 	fmt.Fprintf(w, "pig_predictive_request_aware_pending_quiescent_prefill_sequences %d\n", input.RequestAwarePendingQuiescentPrefillSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_prefill_sequences %d\n", input.RequestAwareLastDecisionPendingPrefillSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_prefill_tokens %d\n", input.RequestAwareLastDecisionPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_post_admit_pending_prefill_tokens %d\n", input.RequestAwareLastDecisionPostAdmitPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_long_prefill_sequences %d\n", input.RequestAwareLastDecisionPendingLongPrefillSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_quiescent_prefill_sequences %d\n", input.RequestAwareLastDecisionPendingQuiescentPrefillSequences)
 	fmt.Fprintf(w, "pig_predictive_router_inspect_capacity %d\n", input.RouterBackpressure.InspectCapacity)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "decide", input.FailureDecide)

@@ -49,6 +49,11 @@ func ValidateAcceptance(suite Suite) error {
 				return err
 			}
 		}
+		if scenario.Category == "prefill-burst" {
+			if err := validatePrefillBurstContract(scenario.Name, baseline, candidate); err != nil {
+				return err
+			}
+		}
 	}
 	baseline := suite.Aggregate(PolicyGlobalBinary)
 	candidate := suite.Aggregate(PolicyRequestAware)
@@ -65,6 +70,25 @@ func ValidateAcceptance(suite Suite) error {
 			candidate.WaitingSeconds,
 			baseline.WaitingSeconds,
 		)
+	}
+	return nil
+}
+
+func validatePrefillBurstContract(name string, baseline, candidate Metrics) error {
+	if name != "prefill-regular-multimodal-burst" {
+		return fmt.Errorf("scenario %s has no registered prefill-burst contract", name)
+	}
+	if baseline.Admitted != 40 || candidate.Admitted != 32 || candidate.Rejected != 8 || candidate.SizeProtects != 8 {
+		return fmt.Errorf(
+			"scenario %s regular multimodal burst baseline/candidate=%+v/%+v, want 40 admits vs 32 admits plus 8 size protections",
+			name,
+			baseline,
+			candidate,
+		)
+	}
+	if candidate.TPSFloorViolationSeconds > baseline.TPSFloorViolationSeconds+simulationDurationEpsilon ||
+		candidate.WaitingSeconds > baseline.WaitingSeconds+simulationDurationEpsilon {
+		return fmt.Errorf("scenario %s did not reduce burst QoS pressure: baseline/candidate=%+v/%+v", name, baseline, candidate)
 	}
 	return nil
 }

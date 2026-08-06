@@ -96,31 +96,38 @@ type predictiveAdmissionTelemetrySnapshot struct {
 	RequestAware          requestAwareTelemetrySnapshot
 }
 
+// requestAwareTelemetrySnapshot keeps current Manager pending state separate
+// from the last admission decision snapshot.
 type requestAwareTelemetrySnapshot struct {
-	Action                           runtimepredictive.RequestAwareAction
-	Reason                           runtimepredictive.RequestAwareReason
-	PressureSource                   runtimepredictive.RequestAwarePressureSource
-	Pressure                         float64
-	SelectionInputTokens             int64
-	ReservedTokens                   int64
-	AllowanceTokens                  int64
-	EffectiveKV                      int64
-	PostAdmitKV                      int64
-	RemainingKV                      int64
-	Running                          int
-	Waiting                          int
-	EffectiveSequences               int
-	AggregateTPSProxy                float64
-	MeanActiveTPSProxy               float64
-	ProjectedTPSProxy                float64
-	TPSForecastValid                 bool
-	PrefillClass                     runtimepredictive.RequestAwarePrefillClass
-	EstimatedPrefillTokens           int64
-	PendingPrefillSequences          int
-	PendingPrefillTokens             int64
-	PostAdmitPendingPrefillTokens    int64
-	PendingLongPrefillSequences      int
-	PendingQuiescentPrefillSequences int
+	Action                                       runtimepredictive.RequestAwareAction
+	Reason                                       runtimepredictive.RequestAwareReason
+	PressureSource                               runtimepredictive.RequestAwarePressureSource
+	Pressure                                     float64
+	SelectionInputTokens                         int64
+	ReservedTokens                               int64
+	AllowanceTokens                              int64
+	EffectiveKV                                  int64
+	PostAdmitKV                                  int64
+	RemainingKV                                  int64
+	Running                                      int
+	Waiting                                      int
+	EffectiveSequences                           int
+	AggregateTPSProxy                            float64
+	MeanActiveTPSProxy                           float64
+	ProjectedTPSProxy                            float64
+	TPSForecastValid                             bool
+	PrefillClass                                 runtimepredictive.RequestAwarePrefillClass
+	EstimatedPrefillTokens                       int64
+	PendingPrefillSequences                      int
+	PendingPrefillTokens                         int64
+	PostAdmitPendingPrefillTokens                int64
+	PendingLongPrefillSequences                  int
+	PendingQuiescentPrefillSequences             int
+	LastDecisionPendingPrefillSequences          int
+	LastDecisionPendingPrefillTokens             int64
+	LastDecisionPostAdmitPendingPrefillTokens    int64
+	LastDecisionPendingLongPrefillSequences      int
+	LastDecisionPendingQuiescentPrefillSequences int
 }
 
 type predictiveExistingPrefillObservationSnapshot struct {
