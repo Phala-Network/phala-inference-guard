@@ -1,6 +1,6 @@
 # PIG v0.11.4 确定性请求感知与 Prefill 干扰准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source commit/push/annotated tag 与 clean-tag builder-local/registry immutable image provenance；registry artifact 已验证，但 GitHub Publish Image #26 为发布后 manifest HEAD denied 的红状态，尚未关闭；未部署或重新启用 use1-cb**
+状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source commit/push/annotated tag、clean-tag builder-local/registry immutable image provenance、部署前 live baseline/候选和 Router-disabled 专用验证 harness 三遍静态复查；registry artifact 已验证，但 GitHub Publish Image #26 为发布后 manifest HEAD denied 的红状态，尚未关闭；v0.11.4 harness 尚未运行，未部署或重新启用 use1-cb**
 最后更新：2026-08-06
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -828,6 +828,8 @@ matrix；必须完成三轮复查、release identity、commit/tag/image、Router
   关闭前不进入部署；
 - [x] v0.11.4 部署前只读 live drift audit、精确 rollback 与 shadow/enforce candidate；未部署、未改
   Router、未发送推理请求；
+- [x] v0.11.4 Router-disabled preflight/shadow/enforce 专用 harness 编写、三遍复查与 PowerShell
+  静态语法/无生产写命令审计；harness 尚未运行，不构成 deployment/readiness 证据；
 - [ ] v0.11.4 Router-disabled shadow/enforce 与 Router enable 前 current-state drift recheck；
 - [ ] v0.11.4 Router canary 与 30 分钟实际流量观察。
 
@@ -3651,3 +3653,65 @@ shadow mode 外不存在服务、vLLM 参数、TPS、500ms poll、1500ms age、T
 Compose drift。候选 secret scan 未发现 Router token；summary 显式记录 `deployed=false`、
 `router_changed=false`、`inference_requests_sent=0`。GitHub workflow #26 红状态 gate 仍未关闭，因此 R134
 只完成 live baseline 和 candidate preparation，不授权部署。
+
+### 13.80 R135 v0.11.4 Router-disabled live harness 与三遍静态复查
+
+R135 只在 root checkout 的 local-exclude-covered `tmp/pig-v0114-use1-cb-live-20260806/` 编写未来部署阶段的验证
+harness，没有执行其中任何一个脚本，没有部署 Compose、重启容器、修改 Router 或发送推理请求。公共
+模块把 token、HTTP、Prometheus snapshot、current/last telemetry、日志计数和 secret scan 分开；各 runner
+只负责一个 gate，避免继续复制 v0.11.3 中已失效的 gauge 语义。执行顺序与 stop rule 记录在：
+
+```text
+tmp/pig-v0114-use1-cb-live-20260806/HARNESS_PLAN.md
+SHA-256: 1c1ee0047ce777b2b379ba2ee8c365c8b25743b46d8f209d321269de8df018cc
+```
+
+当前 harness identity：
+
+```text
+v0114-live-common.ps1
+  c8fb48a302aed5908e3ff678830fa54f687a03cfdb36e07b0b793a52cc5422c9
+capture-v0114-preflight.ps1
+  9b563e4f6ef3ac7a28ab7dbe57dd5d645f7201cbadf005b636e0d5c93cced637
+run-v0114-protocol.ps1
+  10e482e6a937ca24fdef41935a096db2d56795b8a6b7f876db9ff7d2f51fa1bf
+run-v0114-lowflow.ps1
+  aa70e1c1a7d6e62f2399e01dcafc13e3712a88a4980dff80810a105a025de269
+run-v0114-shadow-size-tiers.ps1
+  9c16b93120fe7c16815e996ae7ece52938b8e14a3004c709f54bdd4b44612a6a
+run-v0114-enforce-weighted-budget.ps1
+  527bceec4609fcc9b4925f0af7d2dd9b1c0cb691f4ad75193bc3956b442df569
+run-v0114-enforce-exclusive.ps1
+  a00b53967def59ba44034f721da9d4d52b888a7e458aeae7df26331f5400ac9b
+```
+
+三遍复查均在不执行 live runner 的边界内完成，并在发现问题后先修正再进入下一遍：
+
+1. **模型与因果。** 首版 weighted runner 继承了“第三个并发 Task 必然先返回 429”的隐含假设；真实
+   调度不保证完成顺序。现改为 `Task.WaitAny` 接受任意最先完成的 causal 429，并在两个 weighted
+   reservation 仍存在的同一压力窗口发送一个小请求，要求“大请求 429、小请求 200”、Router projection
+   仍 open、429 counter 和 unified protection log 各精确增加一。v0.11.4 operational
+   `post_admit_pending_prefill_tokens` 只按 current Manager registry 验收；超过 256K 的第三请求
+   counterfactual 只从显式 `last_decision_post_admit_pending_prefill_tokens` 验收，不能恢复 v0.11.3 stale
+   读法。
+2. **安全与生命周期。** 首版 preflight 错误假设 `/v1/upstream-status` 返回详细 status string；源码合同实际
+   只返回 `0/1/2/3`。现要求 endpoint 为 green=`0`，另从最新周期状态日志独立验证
+   `prefill_current=0/0/0/0` 和 `prefill_last` 拆分。所有 request runner 都要求 pre/post current
+   reservation、forwarded pending、五个 current Prefill gauges、vLLM running/waiting/KV 清零；低流覆盖
+   首请求、串行、completion window、取消恢复和 12 请求 burst。shadow size runner 只发送约 80K、230K
+   text 和一个可解码的 1x1 PNG，不复制 40-request simulation burst；最大实际 word-count 为 230000，
+   没有向 262K 节点构造 512K/650K prompt。
+3. **证据与发布。** PowerShell AST parse 对上述七个 runner/module 全为 0 error；静态 command audit 未发现
+   `deploy`、CVM update/delete/create、Router 或 Compose-up 写命令。candidate hashes 仍为 shadow
+   `92d55f...`、enforce `711f205...`、summary `ffda4a...`，未发生漂移。`2026-08-06T15:47:06Z`
+   只读 GitHub API 复查确认 workflow `31113029042` 仍为 attempt `1`、`completed/failure`、head
+   `c6e8ac37...`；远端 branch 仍为 `66a2932...`，annotated tag object/dereference 仍为
+   `28b0697...`/`c6e8ac3...`。没有重跑 workflow，也没有把 registry artifact green 解释为 workflow 或
+   deployment green。该遍还发现 root `tmp/` 默认并未 ignore；只在本地 `.git/info/exclude` 增加精确
+   `/tmp/pig-v0114-use1-cb-live-20260806/`，没有改共享 `.gitignore` 或隐藏其他路径，随后
+   `git check-ignore -v` 对 common/preflight/plan 三个代表文件均命中该精确规则。
+
+R135 只达到 **live validation design/static readiness**，不增加 Compose integration、deployed runtime、
+readiness 或 production evidence。下一步 gate 不变：必须先关闭 workflow 红状态，或由用户显式接受该发布后
+校验异常；随后重新读取 live CVM/Compose/Router drift，才可部署 exact shadow candidate。shadow 与 enforce
+各阶段必须使用新 harness 的全新 evidence directory，任何失败立即停止，禁止直接 enable Router。
