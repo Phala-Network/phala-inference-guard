@@ -758,7 +758,9 @@ red/green、完整 clean-builder matrix、新 immutable image、重新 shadow/en
   `0.11.0`，因此该 tag 明确禁止构建、发布或部署；
 - [x] v0.11.2 version/OCI-label corrective、exact-source builder matrix 与 builder-local
   production-image contract；
-- [ ] v0.11.2 commit/push/tag、registry immutable image、重新 shadow/enforce；
+- [x] v0.11.2 commit/push/annotated tag、clean-tag builder image、registry immutable image 与
+  digest/binary provenance；
+- [ ] v0.11.2 `use1-cb` Router-disabled shadow/enforce；
 - [ ] v0.11.2 Router canary 与 30 分钟实际流量观察。
 
 截至当前已完成 pure policy、Manager、server adapter、live observer、deterministic
@@ -2533,3 +2535,60 @@ byte-identical。持久化 evidence 位于 builder
 candidate。本节自身仍只是 non-executable ledger append；最终 Git 审计必须确认此后没有任何
 非账本 source 变化，并继续排除两个历史 untracked plans。当前仍没有 v0.11.2 commit/push/tag、
 registry digest、Compose、deployment 或 live evidence。
+
+### 13.64 R117-R119 v0.11.2 clean tag 与 immutable registry image green
+
+最终 Git 审计确认 R116 后没有非账本 source 变化，两个历史 untracked plans 仍未 stage。corrective
+commit、branch push 和 annotated tag 均完成：
+
+```text
+source commit:
+  533106b869c15b9199124c3fb2fbd5d2c1a78dc8
+source tree:
+  14f488d98d1ee8b9922da5a35ad2c962888c3593
+branch:
+  pig-origin/codex/pig-v0.11.0-request-aware
+annotated tag object:
+  70107aea3f23ff99e451abe1535a8749afc07080
+tag dereference:
+  v0.11.2^{} -> 533106b869c15b9199124c3fb2fbd5d2c1a78dc8
+```
+
+builder host 不含 `git`，R117 首次 clean-clone 脚本在任何 clone/image build 前停止；没有生成 image
+或覆盖已有路径。R118 改为由同一授权 Go container clone 公开 `v0.11.2` tag 到持久化 `/work`，
+验证 detached HEAD 精确等于上述 commit、tree 正确、exact tag 为 `v0.11.2`、porcelain status
+为 0 行；host Docker 再从这一份 source 构建。clean-tag builder image ID 与 R115 candidate 一致：
+`sha256:2323d54212de804dd6964b0c6236f3ffa10002b87d16d3343c7a68fa933ca085`；
+production-image contract 再次通过，提取 binary 与 R115 candidate byte-identical，SHA-256 均为
+`18e13bb65bf2ca4681eed6138b824ea09d79b5fdab4da3d66a86802466d06cb2`。R118 clone/source/build/
+contract/image-inspect/binary-hash logs SHA-256 分别为
+`1f9cd2b08257534d7ae7aa1d412c11f4df2efc1aedf2fa8795410641b0137ac6`、
+`1741bc4c330fe23eef1dc7325f18f35318f5d21a37f5f3e8bb23a64090c75c89`、
+`6b99f385dd75a8bfd9b92412929f896cf717c45fb3253c6bb708ac3236e548d0`、
+`9556d7a3d2ec35a9de37064bdb48802b1273b19e38b531280b548236c61544d7`、
+`799fa6b1b41f72649968ec0f11b1b7463c8f0a258b86a002d63d368b3a676d19`、
+`8d0f8407428aea78ebcdea91ab54b1029adb52fb7b6198de634758f3ca6e40a2`。
+
+GitHub `Publish Image` run `31079638436` 对 `v0.11.2` 成功完成 contract 与 build-push。R119 从
+registry tag pull 后锁定 immutable image：
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:30d99d9e19a7640a40b093aca5ab7727c67c57eba8fbf97d8d23a00e0090a7d1
+```
+
+按 digest 再次 pull、执行 `EXPECTED_VERSION=v0.11.2` production-image contract 均通过；pulled
+registry image ID 为
+`sha256:86f8a9ea12b52a2805d53eb511cbe0c16a0dc09e8942acb164ba44aedae5ac55`。registry
+binary 与 clean-tag builder binary byte-identical，SHA-256 同为
+`18e13bb65bf2ca4681eed6138b824ea09d79b5fdab4da3d66a86802466d06cb2`。R119 tag-pull/
+digest-pull/contract/image-inspect/binary-hash logs SHA-256 分别为
+`a893931dbb58e0d8dac0fdf10ee04e5d26153656ee45fb7810b2e5c5ef303e5c`、
+`0b07f02ec8c2423677590ecdd26ba8a82bd543040f8627a19229f94b4533ade3`、
+`3cf3c74a20063c2d0edea5fbf9e43fbacb79ba0d2e28f332906c8385823ca354`、
+`f900b24c88eff11594af0882fb865c0e4051d11f605cbdf4087925e0d6df43f6`、
+`9087c12b2ea385aa538c29eded6359883569f6c3ae1fa94115c3a9ad91decb95`。
+
+R119 已达到 source tag、builder-local image、registry publication、immutable digest 与 binary
+provenance 层；尚未修改 `use1-cb` Compose、CVM、Router 或生产流量。下一步必须重新查询当前 live
+Compose/hash、Router enabled set 和节点 readiness，再仅以 Router disabled shadow 部署该 digest；
+不得由 registry green 直接 enable Router。
