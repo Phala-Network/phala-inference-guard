@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.11.1 deterministic request-aware admission
+### v0.11.2 deterministic request-aware admission
 
-PIG v0.11.1 makes a deterministic decision before forwarding each supported
+PIG v0.11.2 makes a deterministic decision before forwarding each supported
 request to one vLLM upstream:
 
 ```text

@@ -1,6 +1,6 @@
-# PIG v0.11.1 确定性请求感知与长 Prefill 准入计划
+# PIG v0.11.2 确定性请求感知与长 Prefill 准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.0 Router-disabled shadow/enforce readiness 已验证，但因长 Prefill 预测盲点暂停 canary；v0.11.1 开发中**
+状态：**唯一 canonical 执行规范；v0.11.0 Router-disabled shadow/enforce readiness 已验证，但因长 Prefill 预测盲点暂停 canary；v0.11.1 仅有 source tag 且因错误 OCI version label 禁止部署；v0.11.2 corrective release 开发中**
 最后更新：2026-08-06
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -36,7 +36,7 @@ work-conserving 的贪心准入，不宣称对未来未知请求实现全局最�
 
 ## 2. 明确不做什么
 
-v0.11.1 不包含：
+v0.11.2 不包含：
 
 - 任何在线学习、回归、校准学习、risk price、置信区间或 exploration/probe；
 - learned KV/decode/concurrency limit、Safe Envelope、pressure bucket、frontier；
@@ -75,7 +75,7 @@ v0.11.1 不包含：
 5. **虚构 sequence hard capacity**：当前启动指标能确认 KV token capacity/block size，
    不能确认 vLLM `max_num_seqs`。第一版不增加 guessed sequence hard limit；
 6. **参数过多**：删除 minimum intake、minimum selective KV、minimum selective input 和
-   waiting emergency；v0.11.1 仅恢复有 64K/256K/512K 行为合同与 simulation 证据的四个
+   waiting emergency；v0.11.2 仅恢复有 64K/256K/512K 行为合同与 simulation 证据的四个
    bounded Prefill threshold/budget，不恢复旧 generic prefill maximum；
 7. **组件过多**：不预先建立八个接口；只保留 estimator、observer、pure policy、
    manager/reporting 四个实际职责；
@@ -701,8 +701,8 @@ truth 脱离的固定 TPS override 覆盖观察值；否则会人为遮蔽 admis
    learner/calibrator/TTFT config/metrics 消费；保留其他模式仍使用的公共 dynamic/KV 配置；
 7. 上述审计不再产生源码变更后，封存唯一 exact-source archive，在同一 archive 上执行
    full/vet/race/build/benchmark/simulation 最终矩阵；
-9. executable source bump 为 `v0.11.1` 后 commit/push/tag；v0.11.0 的 source/image evidence 不得
-   冒充 v0.11.1 executable evidence；
+9. executable source bump 为 `v0.11.2` 后 commit/push/tag；v0.11.0 的 source/image evidence 与
+   v0.11.1 的 source-only tag 均不得冒充 v0.11.2 executable/image evidence；
 10. builder 构建并发布 immutable digest 镜像；
 11. 仅 `use1-cb`、Router disabled shadow；
 12. 仅 `use1-cb`、Router disabled 短时 enforce；
@@ -711,7 +711,7 @@ truth 脱离的固定 TPS override 覆盖观察值；否则会人为遮蔽 admis
 14. 观察实际流量 30 分钟，与旧版 `use1-4c` 的相近负载窗口分开对照；
 15. 有明显问题则 disable `use1-cb`、更新计划、bump patch version 并重新循环。
 
-当前 v0.11.0 enforce 仅保留为 Router-disabled 隔离环境。第 13 步在 v0.11.1 完成 behavioral
+当前 v0.11.0 enforce 仅保留为 Router-disabled 隔离环境。第 13 步在 v0.11.2 完成 behavioral
 red/green、完整 clean-builder matrix、新 immutable image、重新 shadow/enforce 之前暂停。
 
 没有明确 GO 前不得修改其他 CVM、修改 Router/vLLM 源码或引入生产流量。
@@ -754,8 +754,12 @@ red/green、完整 clean-builder matrix、新 immutable image、重新 shadow/en
 - [x] v0.11.0 `use1-cb` Router-disabled enforce deployment/readiness（仅隔离环境，不晋级）；
 - [x] v0.11.1 64K/256K/512K/650K behavioral red/green、lifecycle、telemetry 与 simulation；
 - [x] v0.11.1 exact-source clean-builder matrix；
-- [ ] v0.11.1 source commit/push/tag、immutable image、重新 shadow/enforce；
-- [ ] v0.11.1 Router canary 与 30 分钟实际流量观察。
+- [x] v0.11.1 source commit/push/annotated tag，但发布前发现 Dockerfile OCI label 仍为
+  `0.11.0`，因此该 tag 明确禁止构建、发布或部署；
+- [x] v0.11.2 version/OCI-label corrective、exact-source builder matrix 与 builder-local
+  production-image contract；
+- [ ] v0.11.2 commit/push/tag、registry immutable image、重新 shadow/enforce；
+- [ ] v0.11.2 Router canary 与 30 分钟实际流量观察。
 
 截至当前已完成 pure policy、Manager、server adapter、live observer、deterministic
 config/factory、request-aware telemetry、统一 verdict 日志、真实 proxy HTTP、hard guard、并发
@@ -772,8 +776,9 @@ R95 后新增并发 rebase 测试与文档修正，因此最终 executable-sourc
 R103 已验证 registry immutable image。R104/R105 已完成 `use1-cb` Router-disabled shadow Compose
 部署、全链 readiness、协议/低流/取消/burst 验证；R106 完成 v0.11.0 Router-disabled enforce
 deployment/readiness，但源码审计确认 healthy snapshot 会让 512K/650K 直接 OPEN，因此停止
-promotion。Router enabled set 与实际生产流量尚未改变；v0.11.1 长 Prefill corrective 和全部
-release/live gates 尚未完成，R102/R103 不能作为新 executable source 的证据。
+promotion。Router enabled set 与实际生产流量尚未改变；v0.11.1 已实现长 Prefill corrective，
+但其 source tag 的 Dockerfile OCI label 仍为 `0.11.0`，因此不能进入 image/deploy 层；当前发布
+目标已 bump 为 v0.11.2，R102/R103 仍不能作为新 executable source/image 的证据。
 R20 的旧 TPS hard-floor 语义已由 R27/R28 取代。
 
 ### 13.1 R19 pure-policy behavioral red
@@ -2423,3 +2428,108 @@ non-executable plan ledger。当前完成层仍是 source implementation + compl
 尚无 v0.11.1 commit/push/tag、image、Compose、deployment 或 live-traffic 证据。下一步只能先完成
 Git 目标文件审计、commit/push/annotated tag，再从 clean pushed tag 构建和验证 immutable image；
 仍不得直接部署或 enable Router。
+
+### 13.61 R113 v0.11.1 production-image contract red 与 v0.11.2 corrective
+
+R112 后完成目标文件审计、secret-like pattern scan、commit/push 和 annotated tag：
+
+```text
+source commit:
+  4ee38783d515f7598d0e3f9e26ef9b9acd22b467
+source tree:
+  851880bf279379b621f781782f14545d3245f5d5
+branch:
+  pig-origin/codex/pig-v0.11.0-request-aware
+annotated tag object:
+  03191ac190fa8c92c36674c96124017b573d6206
+tag dereference:
+  v0.11.1^{} -> 4ee38783d515f7598d0e3f9e26ef9b9acd22b467
+```
+
+发布镜像前复查发现该 commit 的 runtime binary version 已是 `PIG-v0.11.1`，但 Dockerfile OCI
+label 仍是 `org.opencontainers.image.version="0.11.0"`。这会让 source tag、runtime version 和
+image identity 不一致，不能部署。已经公开的 annotated tag 不移动、不覆盖；`v0.11.1` 明确降级为
+source-only tag，禁止构建、发布和部署。
+
+GitHub `Publish Image` run `31078583638` 对该 tag 的 checkout/login 成功，但
+`Validate production image contract` 失败，后续 `docker/build-push-action` 被跳过；builder 对
+`ghcr.io/phala-network/phala-inference-guard:v0.11.1` 的 manifest inspect 也返回不存在。因此没有
+错误标识的 v0.11.1 registry image，更没有 Compose、deployment 或 live evidence。
+
+corrective release 自主管理为 `v0.11.2`，同时修改 runtime version、README release heading 和
+Dockerfile OCI label；长 Prefill 算法、64K/256K/512K/650K 合同与所有默认阈值不变。下一步必须把
+这四个 tracked-file 变更封存为新的 exact-source candidate，在授权 builder 上重新执行
+full/vet/build/race/simulation 以及 `EXPECTED_VERSION=v0.11.2` production-image contract；通过后
+才能 commit/push/tag `v0.11.2`，不能移动 `v0.11.1` 或直接部署。
+
+### 13.62 R114/R115 v0.11.2 exact-source matrix 与 builder-local image contract green
+
+v0.11.2 corrective 的 staged index tree 为
+`6ec862486a496eb09aec6db8e49fbe0e760ec071`，封存 archive SHA-256 为
+`e0c71374f3f8c2707031f01689f8f648d05e972de8c4d64bcea86fc9363e0dec`。archive 从 Git index
+生成，只含 tracked files；两个历史 untracked plans 仍未 stage。host 和 builder container 两层均
+重新验证 archive hash。在 `pig-v01011-builder`、Go `1.24.13 linux/amd64` 上：
+
+- whole-repo `gofmt -d` 为空；
+- `go test ./... -count=1`、`go vet ./...`、`go build ./...`、
+  `go test -race ./... -count=1` 全通过；对应 full-test/full-race logs SHA-256 为
+  `f7cb000d9637abc01ee57f96ca03b1718ffb89e88c9ab28f86ec74091a6b5737`、
+  `9e9bbbfacb0ad366fcff98f5d7ad4b34f0491e07be9a816c9d729eb563458ecc`，vet/build/gofmt 均为空文件
+  hash `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`；
+- `go build -trimpath -buildvcs=false` binary 为 11,744,728 bytes，包含 `PIG-v0.11.2`，SHA-256
+  `478bea65988e7cedfd4cb03d3e1696d4fbc4d0b3b663c10fb726f0764cf35c33`；
+- 两次 request-aware simulation 均为 46,911 bytes、acceptance=`passed`、byte-identical
+  SHA-256 `182c23680a7902c67e54e1543558efb74ee96451fda375623bbfb1c6736b205b`；
+- estimator、policy/Manager、HTTP benchmark logs SHA-256 分别为
+  `a4bfaa2bbd4b081b68c7b8247cfcdcaae3c60a217d8777b3555b3bdcd806bc15`、
+  `fac7a84595cc4ff73d6392d85a843367eba34ea5115ba0a7bd4efaa149dae6c4`、
+  `03a7c1055987266d1da5b4e9b8c9988e6ad4dae1853b2bf128432c22a47399df`。
+
+本轮性能与 R111 一致且所有 pure estimator/policy/Manager 为 0 alloc：Estimator 1 KiB
+`271.7--273.9 ns`、64 KiB `1.968--2.001 us`、1 MiB `27.543--27.944 us`、2 MiB
+`63.206--63.435 us`；bounded lexical hint `88.34--92.20 ns`；pure policy
+`18.18--45.51 ns`；Manager 0/48/256 active 约 `0.164 us / 4.865--4.873 us /
+25.688--25.904 us`；HTTP pre-forward 429 fixture `41.686--41.911 us`、39,324 B/119 alloc。
+它们仍只证明 CPU hot path，不是 GPU throughput 或网络端到端延迟。
+
+同一 exact source 随后在 builder host 构建
+`ghcr.io/phala-network/phala-inference-guard:v0.11.2-candidate-r10`，builder-local image ID 为
+`sha256:2323d54212de804dd6964b0c6236f3ffa10002b87d16d3343c7a68fa933ca085`。以
+`EXPECTED_VERSION=v0.11.2` 执行 `tools/validate-production-image-contract.sh` 通过：linux/amd64、
+OCI label `0.11.2`、`NVIDIA_VISIBLE_DEVICES=all`、distroless entrypoint
+`/phala-inference-guard`、native NVML path 均符合合同。提取 binary SHA-256 为
+`18e13bb65bf2ca4681eed6138b824ea09d79b5fdab4da3d66a86802466d06cb2`；build/contract/image-inspect
+logs SHA-256 分别为
+`7489b3d05eba2628597241580c69b74e1622ccdd2d33c8ce7acde0ac70ba9497`、
+`6490172f26faa2b16146a927edc59d384068f374eb9e910cbc9be3680fe43f7a`、
+`d8d38afc52740e1bee9bf64cc24618fb06d043e1259811be9448305a78982136`。
+
+R114/R115 只达到 v0.11.2 complete clean-builder matrix 与 builder-local image contract，尚未
+commit/push/tag，也没有 registry immutable digest、Compose、deployment 或 live evidence。追加本节
+只修改 non-executable plan ledger；提交前仍需证明本节前后的非账本 source 和 release binary
+byte-identical，再进行最终 Git 审计。
+
+### 13.63 R116 v0.11.2 最终 ledger-only 等价证明 green
+
+R114/R115 前的 exact-source archive 为
+`e0c71374f3f8c2707031f01689f8f648d05e972de8c4d64bcea86fc9363e0dec`；追加两节证据账本后的
+commit candidate archive 为
+`7cfc3b0599d4b56961f18b86b8bd8db169160c18556ddadf9efd61de2ccbbe50`、Git index tree
+`70f70cf6f4fbfeae854c245a5786222a7b3b0dce`。本地预审和授权 builder 均分别解压两份 archive；
+排除唯一 canonical plan 后各有 296 个文件，path/content manifest byte-identical，两个 manifest
+SHA-256 均为 `d1396568ca1c4674aa54e196c760c2c8f40fdc755a9e20d4f85a65373eef2873`。
+账本自身的 SHA-256 分别为
+`dfeaae5f9b61fcdee32a6caaa5c8dea40a02cba1b4de235c99a64ef1fd02046b` 和
+`bd0dc5d4511d8d6faa365df16e3d7f4c2b08cfe6a0969230addf22af34323ec5`。
+
+在两份 source 上分别执行 `go build -trimpath -buildvcs=false`，两个 11,744,728-byte binary
+SHA-256 都是 `478bea65988e7cedfd4cb03d3e1696d4fbc4d0b3b663c10fb726f0764cf35c33`，并通过 `cmp`
+byte-identical。持久化 evidence 位于 builder
+`/work/pig-v0112-r116-ledger-equivalence-20260806`；最终 `run.log` SHA-256 为
+`13b662b576469512a588a4a103443437ce737a502b0ca914e957b92a59964247`，binary hash 文件 SHA-256 为
+`b3fbcb60fb9a453e9f5571c2e77490ae52f98be17ae219f066738f7db66042f3`。
+
+因此 R114 exact-source matrix 和 R115 builder-local image contract 可严格继承到最终 executable
+candidate。本节自身仍只是 non-executable ledger append；最终 Git 审计必须确认此后没有任何
+非账本 source 变化，并继续排除两个历史 untracked plans。当前仍没有 v0.11.2 commit/push/tag、
+registry digest、Compose、deployment 或 live evidence。
