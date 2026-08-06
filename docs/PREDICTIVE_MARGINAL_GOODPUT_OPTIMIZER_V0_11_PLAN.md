@@ -826,6 +826,8 @@ matrix；必须完成三轮复查、release identity、commit/tag/image、Router
   digest、production image contract、runtime version 与 local/registry binary provenance；
 - [ ] 关闭或显式接受 GitHub Publish Image #26 的红状态异常；artifact 已发布并逐项验证，但在此 gate
   关闭前不进入部署；
+- [x] v0.11.4 部署前只读 live drift audit、精确 rollback 与 shadow/enforce candidate；未部署、未改
+  Router、未发送推理请求；
 - [ ] v0.11.4 Router-disabled shadow/enforce 与 Router enable 前 current-state drift recheck；
 - [ ] v0.11.4 Router canary 与 30 分钟实际流量观察。
 
@@ -3563,3 +3565,89 @@ manifest 均通过复核。
 tag、builder-local image、published registry immutable image 与 binary provenance。尚未完成 workflow 红状态
 关闭/例外、Compose integration、`use1-cb` Router-disabled deployment/readiness、Router canary 或 30 分钟生产
 流量观察；在下一 gate 前继续禁止部署、发送实际推理请求或重新 enable Router。
+
+### 13.79 R134 v0.11.4 部署前只读 live drift audit 与精确候选
+
+在未重跑 GitHub workflow、未部署、未修改 Router、未发送 chat/completions 的前提下，于
+`2026-08-06T15:15:46.2400540Z` 对 `use1-cb` 执行当前 live 只读采集。collector 只调用
+Router/CVM/container logs、authenticated `/v1/models`、PIG/vLLM metrics、attestation 与对应未认证 metrics
+边界；证据目录与 summary 为：
+
+```text
+tmp/pig-v0113-use1-cb-live-20260806/pre-v0114-readonly-20260806T151545Z
+summary SHA-256: b39a50c0894e0d8438d238113888512172582fe07688ef38c366148981743fad
+```
+
+当前 live identity 和 drift baseline：
+
+```text
+CVM: gemma4-31b-it-use1-cb
+status/in_progress: running / false
+live Compose SHA-256: 0c6debae711a56c45117f4d3f951e2ab0cdd58be7630721d8bdea21a5f3a6775
+PIG image: ghcr.io/phala-network/phala-inference-guard@sha256:15d827456c56a534d71b03932d5a9a90d2d7984e5cbfec6aec3b2632cfcc0d99
+vLLM image: ghcr.io/phala-network/vllm-openai:v0.24.0-cu129-ubuntu2404-phala.8@sha256:485ec89ea08e6b4ead55f4721b01c053264d747bde685de04cd7d5b114d219fe
+PIG/vLLM container: running / running, both Up 5 hours
+Router enabled set: use1-19,use1-9b
+use1-cb upstream/route enabled: false / false
+use1-cb route running: 0
+```
+
+authenticated models/PIG metrics/vLLM metrics/attestation 均为 HTTP 200，PIG/vLLM metrics 未认证均为 401。
+PIG runtime 为 `PIG-v0.11.3`、predictive mode=`enforce`、intake open=`1`、TTFT enabled=`0`；Manager
+reservations=`0`、forwarded pending=`0/0 tokens`，vLLM running/waiting/KV=`0/0/0`，PIG failure、vLLM
+preemption/error 和 30 分钟 PIG/vLLM engine/GPU fatal log match 全为 0。当前 live 配置继续为：
+
+```text
+DYNAMIC_TTFT_ENABLED=false
+PIG_QUEUE_WAIT_SECONDS=0
+PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS=500
+PREDICTIVE_MAX_METRICS_AGE_MS=1500
+PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS=500
+PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS=300000
+PREDICTIVE_TPS_TARGET/FLOOR=25/20
+KV_ADMISSION_MODE=off
+KV_ADMISSION_VLLM_TARGET/HARD_RATIO=0.84/0.88
+vLLM max-model-len/max-num-seqs/max-num-batched-tokens/gpu-memory-utilization=262144/512/8192/0.91
+```
+
+collector 的 `all_passed=false` 不能概括为 live unhealthy。两个 false 分别是：
+
+1. v0.11.3 旧无前缀 request-aware pending gauge 仍显示最后一次 decision snapshot
+   sequences/tokens=`33/168940`，但唯一 Manager reservations、forwarded pending 和 vLLM running/waiting
+   都是 0；这正是 v0.11.4 R130 已用 current registry telemetry 修复的语义问题；
+2. 节点 Router disabled 且最近 30 分钟 idle，因此该窗口没有新的 enforced protection log；这不是 failure、
+   preemption、fatal 或 intake closed。
+
+以该 exact live Compose 为 rollback source，R134 在本地 `tmp/` 机械生成两个未部署 candidate。生成器：
+
+```text
+tmp/pig-v0114-use1-cb-live-20260806/prepare-v0114-candidates.ps1
+SHA-256: aa2f8e92c49919a70ce0ba9c899baa2713911c4c87cbc287a5424a53a05f9b6f
+```
+
+候选结果：
+
+```text
+rollback source:
+  tmp/pig-v0113-use1-cb-live-20260806/pre-v0114-readonly-20260806T151545Z/live-compose.yaml
+  SHA-256: 0c6debae711a56c45117f4d3f951e2ab0cdd58be7630721d8bdea21a5f3a6775
+
+shadow candidate:
+  tmp/pig-v0114-use1-cb-live-20260806/predeploy-r1/use1-cb.v0114.shadow.candidate.yaml
+  SHA-256: 92d55f600970b0c3f95dd465756012243816bfd032805e7a34952eeff890e196
+  exact changes: PIG digest 15d827... -> b8756c...; predictive mode enforce -> shadow
+
+enforce candidate:
+  tmp/pig-v0114-use1-cb-live-20260806/predeploy-r1/use1-cb.v0114.enforce.candidate.yaml
+  SHA-256: 711f20570159c82666fd9e0827ac7c8de8aaa5d0aaba880e95734e93d3f5a3c7
+  exact changes: PIG digest 15d827... -> b8756c...
+
+candidate summary SHA-256:
+  ffda4a145c19360bac41da282fcab1af990745b42fa63e690b54b2f2f6f60ff5
+```
+
+`git diff --no-index` 证明 shadow 只有四条加减行、enforce 只有两条加减行；除 immutable digest 和
+shadow mode 外不存在服务、vLLM 参数、TPS、500ms poll、1500ms age、TTFT、prefill contract 或其他
+Compose drift。候选 secret scan 未发现 Router token；summary 显式记录 `deployed=false`、
+`router_changed=false`、`inference_requests_sent=0`。GitHub workflow #26 红状态 gate 仍未关闭，因此 R134
+只完成 live baseline 和 candidate preparation，不授权部署。
