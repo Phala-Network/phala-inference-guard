@@ -1,6 +1,6 @@
 # PIG v0.11.4 确定性请求感知与 Prefill 干扰准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、release identity 与 exact-source builder matrix，尚未完成 commit/tag/image，也未部署或重新启用 use1-cb**
+状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source commit/push/annotated tag 与 clean-tag builder-local/registry immutable image provenance；registry artifact 已验证，但 GitHub Publish Image #26 为发布后 manifest HEAD denied 的红状态，尚未关闭；未部署或重新启用 use1-cb**
 最后更新：2026-08-06
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -822,16 +822,20 @@ matrix；必须完成三轮复查、release identity、commit/tag/image、Router
 - [x] v0.11.4 三遍最终复查；第二遍发现并修正无前缀 post-admit gauge 的 stale 语义，R130
   behavioral red/focused/full builder matrix 已通过；
 - [x] v0.11.4 runtime/README/OCI release identity 与 exact-source builder matrix；
-- [ ] v0.11.4 commit/push/tag/image；
+- [x] v0.11.4 source commit/push/annotated tag、clean-tag builder-local image、registry immutable
+  digest、production image contract、runtime version 与 local/registry binary provenance；
+- [ ] 关闭或显式接受 GitHub Publish Image #26 的红状态异常；artifact 已发布并逐项验证，但在此 gate
+  关闭前不进入部署；
 - [ ] v0.11.4 Router-disabled shadow/enforce 与 Router enable 前 current-state drift recheck；
 - [ ] v0.11.4 Router canary 与 30 分钟实际流量观察。
 
-截至当前，v0.11.3 immutable image 仍是最后一个已发布 runtime，但其 canary 失败，不能再晋级。
-`use1-cb` 已 Router disabled；post-canary final preflight 证明 backend idle、无 live reservation/
-preemption/fatal。v0.11.4 executable source 尚为未提交 candidate：regular aggregate、multimodal
-Prefill estimate 与 current telemetry 已获 builder red/green/full/race/simulation/benchmark 证据，
-但没有 commit/tag/image/Compose/deployment/live 证据。任何 v0.11.3 shadow/enforce green 或零
-preemption 都不得冒充 v0.11.4 production readiness。
+截至当前，v0.11.4 已发布为 immutable registry image
+`ghcr.io/phala-network/phala-inference-guard@sha256:b8756c49271d7ac0c42f46cd0201db571cd02bce1c08e3721fafe8ae0a2e016e`；
+clean-tag source、builder-local binary 与 registry binary provenance 已闭合。GitHub workflow #26 在完成
+production contract、build、layer/manifest push 后因 manifest HEAD `denied` 被标红，虽不否定已验证 artifact，
+仍是发布流程异常，部署前必须关闭或记录显式例外。`use1-cb` 已 Router disabled；v0.11.4 没有
+Compose、部署、readiness 或实际流量证据。任何 v0.11.3 shadow/enforce green、零 preemption，或 v0.11.4
+builder/image green 都不得冒充 v0.11.4 production readiness。
 
 ### 13.1 R19 pure-policy behavioral red
 
@@ -3470,3 +3474,92 @@ R130 archive 只包含 tracked files，两个旧 untracked plan 未进入；arch
 唯一 drift 为 canonical plan，再管理 runtime/README/OCI `v0.11.4` identity，并对新 exact source 重新跑
 适用 builder/release/image contract。当前仍未 commit/push/tag/image、未修改 Compose、未部署或重新 enable
 `use1-cb`。
+
+### 13.78 R132/R133 v0.11.4 source tag、builder-local 与 registry immutable image provenance
+
+提交前对全部 tracked release changes 执行 staged-path、`git diff --cached --check`、secret scan 与远端
+drift audit；两个旧 untracked plan 继续保持 `??`，未进入 index。prospective index tree 相对 R131 tested
+tree 除本 canonical ledger 外无差异：
+
+```text
+R131 tested tree: 3d2984a9a28233cd3ebb3c13a30ab88d9b30969f
+source commit:     c6e8ac37f3e490d12eef06e08bc1908b69078ee1
+source tree:       3e308b4d111675d2c6a7ca49a01ae5123bb6839d
+branch:            codex/pig-v0.11.0-request-aware
+annotated tag:     v0.11.4
+tag object:        28b06970ef463836ddd16f1c3c723d856f798b61
+tag dereference:   c6e8ac37f3e490d12eef06e08bc1908b69078ee1
+```
+
+branch push 后用 `ls-remote` 重新证明远端 branch 与 local HEAD 精确一致；tag push 成功，GitHub API 也证明
+`refs/tags/v0.11.4` 是上述 annotated tag object。tag 不会移动；本节是 tag 发布后的 docs-only ledger。
+
+GitHub `Publish Image` run #26（run ID `31113029042`，job `92655438941`）绑定
+`head_branch=v0.11.4`、`head_sha=c6e8ac37...`。checkout、GHCR login 与
+`EXPECTED_VERSION=v0.11.4 tools/validate-production-image-contract.sh` 均成功。buildx 完成 build、上传所有
+layers，并打印 `#16 DONE 5.6s`，随后对
+`https://ghcr.io/v2/phala-network/phala-inference-guard/manifests/v0.11.4` 执行 HEAD 时得到
+`denied: denied`，因此 run conclusion=`failure`。这不是 Go build 或 image-contract failure；但红 workflow
+仍是必须显式关闭的发布流程异常，不能因 artifact 后续可拉取就隐藏。
+
+授权 builder preflight：container `pig-v01011-builder` 为 `running=true`、`OOMKilled=false`、restart=`0`，
+Go `1.24.13 linux/amd64`，builder host Docker `25.0.3`。R132 从远端 `v0.11.4` 在 builder container
+内 clean clone，证明：
+
+```text
+head=c6e8ac37f3e490d12eef06e08bc1908b69078ee1
+tree=3e308b4d111675d2c6a7ca49a01ae5123bb6839d
+tag_object=28b06970ef463836ddd16f1c3c723d856f798b61
+tag=v0.11.4
+status_lines=0
+```
+
+builder-local image 结果：
+
+```text
+image:       pig-v0114-clean-tag-r132:local
+image ID:    sha256:105e9f91710fdd1414aae6e58d821531449da5ec926f0e57eddb414a04c7b9f6
+size/arch:   29,262,543 bytes / amd64
+OCI version: 0.11.4
+entrypoint:  ["/phala-inference-guard"]
+binary:      b598d85c50d197b961a8366fbc34c00628acf381d4eb64ea5f1f09b22b0dadab
+contract:    PIG_PRODUCTION_IMAGE_CONTRACT_OK
+startup:     PIG-v0.11.4 / running=true / exit=0 / restart=0
+archive:     tmp/v0114-release-20260806-r1/pig-v0114-r132-local-image-provenance-slim.tar.gz
+archive SHA-256: 90df3c658f6fedc2f872be4b53fda07bf816d59a29a8691b3c6280ae4f35a810
+```
+
+R132 原 harness 在所有 image/contract/startup gates 完成后，因 builder host BusyBox `xargs` 不支持 `-0`
+而只在证据 manifest 封存处退出 1。它没有否定前置结果；corrective seal 在逐项验证既有 source/image/log/
+binary preconditions 后，以兼容的 shell loop 生成 `SHA256SUMS` 并封存，未重建或改写镜像。原 runner 与
+corrective seal SHA-256 分别为
+`8c0461a19ab7a8d128e16fbb57b3ce1bfb17e2d8037e1f902fd812be974c6c52`、
+`ce0ee1a649fa91e513e31797a59525a82c5101b29364913e393358ec172300bc`；下载后的 archive 与内部 manifest
+均重新验证通过。
+
+尽管 workflow status 为 red，R133 在同一授权 builder 实际 pull `v0.11.4` 成功，并将 tag 锁定为：
+
+```text
+immutable digest:
+  ghcr.io/phala-network/phala-inference-guard@sha256:b8756c49271d7ac0c42f46cd0201db571cd02bce1c08e3721fafe8ae0a2e016e
+registry image ID:
+  sha256:6bfc9e7aecd14501eb2660cf29bc359ed98d698e43990c19ad89a0a8a65531d6
+size/arch:   29,262,543 bytes / amd64
+OCI version: 0.11.4
+entrypoint:  ["/phala-inference-guard"]
+contract:    PIG_PRODUCTION_IMAGE_CONTRACT_OK
+startup:     PIG-v0.11.4 / running=true / exit=0 / restart=0
+```
+
+registry binary SHA-256 同样为
+`b598d85c50d197b961a8366fbc34c00628acf381d4eb64ea5f1f09b22b0dadab`，与 clean-tag builder-local
+binary `cmp=0`。R133 runner SHA-256 为
+`3441d645d6312a5f116d202b6f52b99fb8c2a53bd0cb20073ecbf3d28c0d9383`；registry evidence archive 为
+`tmp/v0114-release-20260806-r1/pig-v0114-r133-registry-image-provenance-slim.tar.gz`，SHA-256
+`77d8a80ffe3426ee11db7a6edadf7dddeacdf0d5caf2e2e193d9349b99e93fe0`，下载后 archive 和内部
+manifest 均通过复核。
+
+因此 v0.11.4 当前完成层级为 source implementation、完整 clean-builder matrix、commit/push/annotated
+tag、builder-local image、published registry immutable image 与 binary provenance。尚未完成 workflow 红状态
+关闭/例外、Compose integration、`use1-cb` Router-disabled deployment/readiness、Router canary 或 30 分钟生产
+流量观察；在下一 gate 前继续禁止部署、发送实际推理请求或重新 enable Router。
