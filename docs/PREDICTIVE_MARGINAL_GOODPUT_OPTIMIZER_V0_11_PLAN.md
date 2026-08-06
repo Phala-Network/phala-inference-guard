@@ -1,7 +1,7 @@
 # PIG v0.11.4 确定性请求感知与 Prefill 干扰准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source commit/push/annotated tag、clean-tag builder-local/registry immutable image provenance、部署前 live baseline/候选、Router-disabled 专用验证 harness 和 30 分钟 canary observer 三遍静态复查；registry artifact 已验证，但 GitHub Publish Image #26 为发布后 manifest HEAD denied 的红状态，尚未关闭；v0.11.4 harness/observer 尚未运行，未部署或重新启用 use1-cb**
-最后更新：2026-08-06
+状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source commit/push/annotated tag、clean-tag builder-local/registry immutable image provenance、部署前 live baseline/候选、Router-disabled 专用验证 harness 和 30 分钟 canary observer 三遍静态复查；GitHub Publish Image #26 仍为 terminal manifest HEAD denied 的红状态，但 raw job log、BuildKit build record、registry image/config/binary 已形成 exact cross-provenance，支持请求一次性显式例外而不支持擅自重跑；例外尚未获用户接受，v0.11.4 harness/observer 尚未运行，未部署或重新启用 use1-cb**
+最后更新：2026-08-07
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
 
@@ -826,6 +826,8 @@ matrix；必须完成三轮复查、release identity、commit/tag/image、Router
   digest、production image contract、runtime version 与 local/registry binary provenance；
 - [ ] 关闭或显式接受 GitHub Publish Image #26 的红状态异常；artifact 已发布并逐项验证，但在此 gate
   关闭前不进入部署；
+- [x] Publish Image #26 raw job log、`.dockerbuild` artifact 与 R133 registry image/config/binary
+  exact cross-provenance；重跑会重新构造含 build timestamp 的 image config，禁止把重跑当无副作用读操作；
 - [x] v0.11.4 部署前只读 live drift audit、精确 rollback 与 shadow/enforce candidate；未部署、未改
   Router、未发送推理请求；
 - [x] v0.11.4 Router-disabled preflight/shadow/enforce 专用 harness 编写、三遍复查与 PowerShell
@@ -3794,3 +3796,54 @@ integration、deployed runtime、endpoint readiness、Router canary 或 30 分�
 把 mean-active TPS proxy 冒充真实逐请求 TPS。发布 workflow 红状态 gate 仍必须先关闭或获得显式例外；
 之后仍从 fresh CVM/Compose/Router drift recheck、Router-disabled shadow/enforce 和 final preflight 开始，
 不能直接 enable `use1-cb`。
+
+### 13.82 R137 Publish Image #26 原始记录、根因边界与一次性例外建议
+
+R137 只进行 GitHub/GHCR 发布证据的只读复核并更新 canonical ledger。没有修改 workflow、tag 或 registry，
+没有重跑/dispatch workflow，没有部署 Compose、重启容器、修改 Router 或发送推理请求。公开 GitHub API
+确认 run `31113029042`、job `92655438941` 仍为 attempt `1`、`completed/failure`，tag/source 仍为
+`v0.11.4`/`c6e8ac37...`；authenticated job-log/artifact download 只复用本机已能 push 该仓库的 credential，
+token 仅存在于进程内，未写文件或回显。
+
+原始证据 identity：
+
+```text
+job log:
+  bytes:   47215
+  SHA-256: c59dcd047bd2ce054780fc3a305b8ea1be2ccbdd7802ef9e4c975c0ae13f0cb9
+
+GitHub artifact 8972511190 / Phala-Network~phala-inference-guard~29OVRC.dockerbuild:
+  encoded bytes:   11565
+  encoded SHA-256: 93c4b03474c39d7c5ef4d8fe9975cf80d53d307e3cd0ec710227e646e95a3a6b
+  decoded bytes:   105472
+  decoded SHA-256: dd03a09a3b60b2dabd571652bfd13c4acb1ab8cc0f926e58445c0bc5db9bbcc9
+```
+
+三遍复查结论：
+
+1. **构建/发布因果。** workflow source 在 tag 与当前 branch 完全相同：checkout、GHCR login、production
+   image contract 均先成功；失败发生在 `docker/build-push-action@v6` 内部。raw log 显示 BuildKit 完成 image
+   export、以 `v0.11.4` 命名、上传全部 layer，最后由 Docker daemon 对该 tag manifest 做 HEAD 时得到
+   `denied: denied`。这不是 workflow 中另写的一条 post-validation command，也不是 Go build、contract、
+   checkout 或 login failure。相同 workflow/credential path 在约五小时前的 v0.11.3、此前的 v0.11.2 与多数
+   历史版本均成功，现有证据不支持把它归类为稳定可复现的 YAML 或永久 package-ACL 缺陷。
+2. **artifact identity 与安全。** `.dockerbuild` record 内 `writing image` config digest 为
+   `sha256:6bfc9e7aecd14501eb2660cf29bc359ed98d698e43990c19ad89a0a8a65531d6`；R133 从 registry
+   immutable digest 拉取后的 image ID 也是同一 digest，二者 exact match。R133 又证明 registry binary
+   SHA-256 `b598d85c...` 与 clean-tag builder-local binary `cmp=0`，OCI version、entrypoint、production
+   contract 和 startup 均一致。因此 registry artifact 不是“只看到 layer 就推测发布成功”，而与 run #26
+   构造的 exact image config 和已测试 binary 双重闭合。build record 同时显示 config `created` 为
+   `2026-08-06T14:53:10.565235018Z`；workflow 没有固定 `SOURCE_DATE_EPOCH`。擅自重跑会重新构造带新
+   timestamp 的 config，可能改变 image/manifest digest 并移动已锁定的 v0.11.4 tag，因此重跑不是无副作用
+   的验证动作，也不是当前首选修复。
+3. **发布边界。** workflow conclusion 仍客观为 red，不能篡改成 success；但 source/tag、contract、run
+   build record、registry immutable image、image config、binary 和 startup 已形成足够强的 exact
+   cross-provenance。本计划因此把最小且不破坏 immutable provenance 的下一步收敛为：由用户显式接受
+   “run #26 terminal GHCR HEAD anomaly”作为 **v0.11.4 一次性发布例外**。这只关闭进入 Router-disabled
+   deployment 的 release-process gate，不把 image 证明外推为 deployment/readiness/canary green。未来版本
+   是否增加 reproducible timestamp、OCI revision/source labels 与 authenticated digest verification 属于独立
+   CI hardening，不能为了消除旧 run 的红色外观临时改 workflow 后移动 v0.11.4 tag。
+
+截至 R137，仍未获得该一次性例外的用户授权，所以不进入 actual deployment。授权后也必须重新读取 live
+CVM/Compose/Router state，从 exact v0.11.4 shadow candidate 的 Router-disabled 部署和全套 harness 开始；
+任何 drift 或 gate failure 都立即停止，不能跳过 shadow/enforce/final-preflight 直接 enable Router。
