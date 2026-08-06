@@ -1,6 +1,6 @@
-# PIG v0.11.2 确定性请求感知与长 Prefill 准入计划
+# PIG v0.11.3 确定性请求感知与长 Prefill 准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.0 Router-disabled shadow/enforce readiness 已验证，但因长 Prefill 预测盲点暂停 canary；v0.11.1 仅有 source tag 且因错误 OCI version label 禁止部署；v0.11.2 corrective release 开发中**
+状态：**唯一 canonical 执行规范；v0.11.3 source/tag/image 与 Router-disabled shadow live gates 已通过；当前保持 use1-cb Router disabled + shadow，enforce 候选与 Router canary 尚未执行**
 最后更新：2026-08-06
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -36,7 +36,7 @@ work-conserving 的贪心准入，不宣称对未来未知请求实现全局最�
 
 ## 2. 明确不做什么
 
-v0.11.2 不包含：
+v0.11.3 不包含：
 
 - 任何在线学习、回归、校准学习、risk price、置信区间或 exploration/probe；
 - learned KV/decode/concurrency limit、Safe Envelope、pressure bucket、frontier；
@@ -2912,3 +2912,82 @@ digest、clean-tag/local-to-registry binary provenance 和 image startup；尚�
 发送 live probe 或 enable Router。下一步必须切换到 live-serving 运维流程，重新查询 CVM、exact Compose、当前
 Router inventory/enabled 状态和 v0.11.2 baseline；只有确认 `use1-cb` 仍 Router disabled，才可仅把 PIG digest
 替换为上述 v0.11.3 digest并保持 shadow。image green 不能直接外推为部署或实际流量 green。
+
+### 13.72 R126 v0.11.3 Router-disabled shadow live green
+
+2026-08-06 live preflight 与 deploy drift check 均确认目标
+`a0f0bfb3-e46f-4b22-814e-24872f251193`（`gemma4-31b-it-use1-cb`）仍为
+`use1-cb=false`，Router enabled set 为 `use1-9b,use1-19`、config digest 为
+`sha256:b8447a719c6fb9d8bf956ae60928d5e857828e7c2874739e7bb8fae8cca5c47a`。shadow candidate
+只把 PIG image 从 v0.11.2 immutable digest替换为 R125 v0.11.3 digest；vLLM、HAProxy、ingress、
+`PREDICTIVE_ADMISSION_MODE=shadow`、`DYNAMIC_TTFT_ENABLED=false`、500-ms predictive observation poll、
+1500-ms maximum metrics age 和四档 Prefill 合同均未改变。candidate Compose SHA-256 为
+`ad22fb658bb72ad01f17ccde00960029bf49a8a89f9e7fdfe38adc175a956b99`，rollback Compose SHA-256 为
+`0ab72ecc4e878de900466d2e320385d6357694c676b797253b69503501bbe89d`。
+
+`phala deploy --wait` 从 `2026-08-06T10:01:51.5335291Z` 到
+`2026-08-06T10:06:41.3171094Z`、exit 0；deploy summary SHA-256 为
+`e0e68b8251e7b46607541e157a198b730b250aa2a34ba70682e54289f3cfcdeb`。平台随后精确返回上述
+Compose SHA、v0.11.3 digest 与 registry image ID
+`sha256:a5f1f711ef0aa66d5ba3d58064c429035b77e1a915cab3389f7ecadcd65128a3`；vLLM image/digest 未变。
+
+第一次 post-deploy readiness 在 `10:08:28Z` 正确失败：CVM 和容器已 running，但 authenticated
+models/metrics/attestation 仍为 503，summary SHA-256 为
+`97afcec83c2843765755b3070e25c31a25e8d5823f3c2ddf1e0c2421f8abeb47`。没有重复 deploy 或把
+`running` 冒充 ready。current-boot logs 随后证明 vLLM 直到 `10:12:16.980748162Z` 才出现
+`Application startup complete`，PIG 在 `10:12:17Z` 启动并于下一状态周期从 backend unavailable
+恢复 green。完整 readiness 复采 SHA-256 为
+`d078d7f5d1a839f5db3862dd874fecf66ad3268414e5ce8071ae801726b49bd5`：authenticated
+`/v1/models`、PIG metrics、vLLM metrics、attestation 全部 200，unauthenticated metrics 为 401，
+NVIDIA attestation 非空，runtime metric 为 `PIG-v0.11.3`、mode `shadow`、TTFT gate disabled、intake open，
+running/waiting/KV/preemption/reservation 均为零。15-min current-boot fatal scan 三类均为 0，summary
+SHA-256 为 `895980581f8ab4937645fe3bda6a45a5f0c7aae17774af37f5440d511e6f799c`。启动日志中的
+`poll=100ms` 是 `QoSQueuePoll`，不是 predictive observation cadence；exact Compose 与 factory wiring
+共同确认 observer 使用 `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS=500`。
+
+Router-disabled direct shadow protocol、低流/取消/burst 与输入尺度 gates 随后依次通过：
+
+- protocol summary SHA-256
+  `e1e03c456e6c97146d73281178255c4cb0ffdbe866e676c5775636061f4e6ffc`：普通 chat、stream、tool call、
+  JSON Schema、`/v1/responses` 和 CJK 共 6 个请求全部 200，attempts 精确 `0 -> 6`；enforced reject、
+  Router clamp、reservation 和 pending Prefill 为零；
+- low-flow summary SHA-256
+  `0fe81d2cf744a8f01ec4d6a0ca1e8c03b4dd470ebf0194c0ee7058ae6b0e338c`：首个低流请求未自锁，
+  11 个普通/恢复请求与 12 并发短 burst 全部 200；2 秒 streaming client cancel 得到 curl exit 28 且已
+  接收 body，随后 recovery 200；attempts 精确 `6 -> 30`，最终无 running/waiting/reservation/pending/
+  failure/preemption/clamp 残留；
+- strict v0.11.3 size summary SHA-256
+  `8d27a2bdfa327a4f6a44a1937fa10e5d26a10122bb10337709ff976b04b8c9d1`：80,013 actual prompt
+  tokens 得到 lexical/interference estimate `99,389`、hard safety reserved tokens `240,128`，分类
+  `weighted`；230,013 actual prompt tokens 得到 estimate `285,718`、hard safety reserved tokens
+  `690,112`，严格分类 `exclusive` 且不是 `quiescent`。这证明 v0.11.2 的三倍提前分层错误已在 live
+  request path 修正，同时 hard-KV safety upper 没有被 lexical estimate 放松。两个请求均 200，最终无
+  residue、failure、preemption 或 clamp。当前 262K 节点没有发送 512K/650K actual prompt；通用多卡
+  `<64K / 64K–<256K / 256K–<512K / >=512K` 合同、exact 512K boundary 与 650K representative
+  case 继续由 R124 builder tests 和 deterministic multi-card simulation 证明。
+
+shadow 最终复采 summary SHA-256 为
+`ddc6bd4c6d8a35d27bedfb89629a82d60918dbb2134119d713760391a78b4558`：CVM/progress、exact
+Compose/image、全部 authenticated endpoints、401 auth boundary、attestation、idle/no-residue 与 Router disabled
+保持 green；25-min current-boot fatal scan 三类仍为 0，summary SHA-256 为
+`4e7b2982e3f3f3c0f76f9542ed8d4d5bbbf2a1393b50c1c62625f4e85b0a6f08`。final metrics 为
+attempts `32`、fit/risk/unknown `28/4/0`、enforced rejects `0`。四个 shadow risk 来自 12 并发短 burst
+期间的 TPS selective pressure，不是 long-tier 错分；rate-limited decision log明确记录
+`mode=shadow enforced=false action=size_protect pressure_source=tps`。因此 enforce 验收不能错误要求压力 burst
+全部 200：允许选择性 429，但必须同时证明普通低流不误锁、429 无 upstream forward、保护在日志/metrics 与
+Router projection 中可见、取消/terminal exact release、pressure 消失后不超过 fresh poll 自动恢复，以及无
+preemption/restart/OOM。
+
+一个 protocol harness 首次仅在 metrics precondition 阶段因 PowerShell regex 缺少多行模式退出，没有发送任何
+推理请求；补上 `(?m)` 后上述 final protocol green。另一个本地 5 秒 wrapper timeout 之后原 capture 进程仍完成，
+没有被当作新的 product gate。final protocol/low-flow/size harness SHA-256 分别为
+`9939f2e12ca52d62558219153af5d46537bbabaac7b27b5537ba5b65a4df213c`、
+`dd7c7928ddc1ba972e18dcc41c0e8f776c1f1fcccf00289803d0cf120bac1139`、
+`1e7fbd96fdf05f16cbc5a337f933549d8d3fdce504e7727742a5c56c0c3ce30d`；所有 summary
+均不保留 request/response body，artifact secret scan clean。
+
+当前完成层级为 v0.11.3 source/tag/image + Router-disabled shadow deployment/readiness/protocol/low-flow/
+cancel/burst/live-sized classification。`use1-cb` 仍保持 Router disabled + shadow；尚未部署 enforce、尚未证明
+enforce 429/Router projection/recovery，也未 enable Router 或开始 30 分钟实际流量观察。下一步只能从当前 live
+Compose 生成单行 `shadow -> enforce` candidate，重新执行 drift check、deploy、readiness、enforce-specific gates；
+这些全绿后才允许 Router enable。
