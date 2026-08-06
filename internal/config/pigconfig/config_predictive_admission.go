@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/env"
 )
 
@@ -41,6 +42,22 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	prefillRegularTokens, err := env.Int("PREDICTIVE_PREFILL_REGULAR_TOKENS", int(domainpredictive.DefaultPrefillRegularTokens))
+	if err != nil {
+		return err
+	}
+	prefillExclusiveTokens, err := env.Int("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", int(domainpredictive.DefaultPrefillExclusiveTokens))
+	if err != nil {
+		return err
+	}
+	prefillQuiescentTokens, err := env.Int("PREDICTIVE_PREFILL_QUIESCENT_TOKENS", int(domainpredictive.DefaultPrefillQuiescentTokens))
+	if err != nil {
+		return err
+	}
+	prefillAggregateBudgetTokens, err := env.Int("PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", int(domainpredictive.DefaultPrefillAggregateBudgetTokens))
+	if err != nil {
+		return err
+	}
 	integerBounds := []struct {
 		name    string
 		value   int
@@ -57,6 +74,20 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 			return fmt.Errorf("%s must be in [%d, %d]", bound.name, bound.minimum, bound.maximum)
 		}
 	}
+	prefillBounds := []struct {
+		name  string
+		value int
+	}{
+		{name: "PREDICTIVE_PREFILL_REGULAR_TOKENS", value: prefillRegularTokens},
+		{name: "PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", value: prefillExclusiveTokens},
+		{name: "PREDICTIVE_PREFILL_QUIESCENT_TOKENS", value: prefillQuiescentTokens},
+		{name: "PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", value: prefillAggregateBudgetTokens},
+	}
+	for _, bound := range prefillBounds {
+		if bound.value <= 0 {
+			return fmt.Errorf("%s must be > 0", bound.name)
+		}
+	}
 	if requestTimeoutMS > startupTimeoutMS {
 		return fmt.Errorf("PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS must not exceed PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS")
 	}
@@ -66,5 +97,9 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveMaximumMetricsAge = time.Duration(maximumMetricsAgeMS) * time.Millisecond
 	cfg.PredictiveTPSTarget = predictiveTPSTarget
 	cfg.PredictiveTPSFloor = predictiveTPSFloor
+	cfg.PredictivePrefillRegularTokens = int64(prefillRegularTokens)
+	cfg.PredictivePrefillExclusiveTokens = int64(prefillExclusiveTokens)
+	cfg.PredictivePrefillQuiescentTokens = int64(prefillQuiescentTokens)
+	cfg.PredictivePrefillAggregateBudgetTokens = int64(prefillAggregateBudgetTokens)
 	return nil
 }

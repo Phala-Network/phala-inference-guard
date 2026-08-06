@@ -708,25 +708,29 @@ func pendingPrefillFeatures(prediction SchedulerPrediction, cost domain.RequestC
 func (m *Manager) virtualStateIntervalLocked() domain.VirtualStateInterval {
 	state := m.base
 	for _, item := range m.reservations {
-		switch item.Assimilation {
-		case assimilationUnabsorbed:
-			cost := fullReservationStateCost(item)
-			state.Lower = addState(state.Lower, cost)
-			state.Upper = addState(state.Upper, cost)
-			if !item.PrefillComplete {
-				state.Lower.PendingPrefillSequences = addIntSaturating(state.Lower.PendingPrefillSequences, 1)
-				state.Upper.PendingPrefillSequences = addIntSaturating(state.Upper.PendingPrefillSequences, 1)
-			}
-		case assimilationAmbiguous:
-			state.Lower = addState(state.Lower, futureReservationStateCost(item))
-			state.Upper = addState(state.Upper, fullReservationStateCost(item))
-		case assimilationAbsorbed:
-			cost := futureReservationStateCost(item)
-			state.Lower = addState(state.Lower, cost)
-			state.Upper = addState(state.Upper, cost)
-		}
+		addReservationToStateInterval(&state, item)
 	}
 	return state
+}
+
+func addReservationToStateInterval(state *domain.VirtualStateInterval, item reservation) {
+	switch item.Assimilation {
+	case assimilationUnabsorbed:
+		cost := fullReservationStateCost(item)
+		state.Lower = addState(state.Lower, cost)
+		state.Upper = addState(state.Upper, cost)
+		if !item.PrefillComplete {
+			state.Lower.PendingPrefillSequences = addIntSaturating(state.Lower.PendingPrefillSequences, 1)
+			state.Upper.PendingPrefillSequences = addIntSaturating(state.Upper.PendingPrefillSequences, 1)
+		}
+	case assimilationAmbiguous:
+		state.Lower = addState(state.Lower, futureReservationStateCost(item))
+		state.Upper = addState(state.Upper, fullReservationStateCost(item))
+	case assimilationAbsorbed:
+		cost := futureReservationStateCost(item)
+		state.Lower = addState(state.Lower, cost)
+		state.Upper = addState(state.Upper, cost)
+	}
 }
 
 func fullReservationStateCost(item reservation) domain.RequestCost {

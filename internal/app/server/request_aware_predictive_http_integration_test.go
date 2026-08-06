@@ -51,7 +51,7 @@ func TestRequestAwareHTTPEnforceDifferentiatesSmallAndLargeBeforeUpstream(t *tes
 	var metrics strings.Builder
 	srv.writePredictiveAndDynamicMetrics(&metrics)
 	for _, want := range []string{
-		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="request_size",pressure_source="tps"} 1`,
+		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="request_size",pressure_source="tps",prefill_class="regular"} 1`,
 		"pig_predictive_router_inspect_capacity 1",
 		"pig_predictive_admission_attempts_total 2",
 		`pig_predictive_admission_decisions_total{decision="fit"} 1`,
@@ -90,6 +90,68 @@ func TestRequestAwareHTTPShadowWouldProtectButStillForwards(t *testing.T) {
 	}
 	if len(decisionLogs) != 1 || decisionLogs[0].Enforced || decisionLogs[0].Action != runtimepredictive.RequestAwareSizeProtect {
 		t.Fatalf("shadow HTTP decision logs=%+v, want one non-enforced would-protect", decisionLogs)
+	}
+}
+
+func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testing.T) {
+	adapter, _ := newRequestAwareHTTPAdapter(t, "enforce")
+	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
+		SoftKVRatio: 0.60, HardKVRatio: 0.90, TPSTarget: 20, TPSFloor: 15, BlockSize: 16,
+		PrefillRegularTokens: 4, PrefillExclusiveTokens: 8,
+		PrefillQuiescentTokens: 16, PrefillAggregateBudgetTokens: 8,
+	})
+	if err != nil {
+		t.Fatalf("new long-prefill policy: %v", err)
+	}
+	adapter.policy = policy
+	var decisionLogs []requestAwareDecisionLogEvent
+	adapter.onDecision = func(event requestAwareDecisionLogEvent) {
+		decisionLogs = append(decisionLogs, event)
+	}
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		backendCalls++
+	}))
+	defer backend.Close()
+	srv := newRequestAwareHTTPTestServer(t, backend.URL, adapter, "enforce")
+	defer srv.Close()
+
+	response := serveRequestAwareHTTP(t, srv, strings.Repeat("a", 256))
+	if response.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("long-prefill response/backend=%d/%d body=%q, want pre-forward 429/0", response.Code, backendCalls, response.Body.String())
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
+		telemetry.RequestAware.PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
+		telemetry.RequestAware.EstimatedPrefillTokens < 16 || telemetry.RequestAware.PostAdmitPendingPrefillTokens < 16 ||
+		!telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.InspectCapacity != 0 {
+		t.Fatalf("long-prefill telemetry=%+v", telemetry)
+	}
+	if len(decisionLogs) != 1 || !decisionLogs[0].Enforced ||
+		decisionLogs[0].Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		decisionLogs[0].PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
+		decisionLogs[0].EstimatedPrefillTokens < 16 {
+		t.Fatalf("long-prefill decision logs=%+v", decisionLogs)
+	}
+	line := requestAwareDecisionLogLine(decisionLogs[0])
+	for _, want := range []string{"reason=prefill_busy", "pressure_source=prefill", "prefill_class=quiescent", "estimated_prefill_tokens="} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("long-prefill log missing %q: %s", want, line)
+		}
+	}
+	var rendered strings.Builder
+	srv.writePredictiveAndDynamicMetrics(&rendered)
+	for _, want := range []string{
+		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="quiescent"} 1`,
+		"pig_predictive_request_aware_estimated_prefill_tokens ",
+		"pig_predictive_request_aware_post_admit_pending_prefill_tokens ",
+		"pig_predictive_router_inspect_capacity 0",
+	} {
+		if !strings.Contains(rendered.String(), want) {
+			t.Fatalf("long-prefill metrics missing %q\n%s", want, rendered.String())
+		}
 	}
 }
 

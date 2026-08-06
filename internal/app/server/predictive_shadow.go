@@ -97,23 +97,30 @@ type predictiveAdmissionTelemetrySnapshot struct {
 }
 
 type requestAwareTelemetrySnapshot struct {
-	Action               runtimepredictive.RequestAwareAction
-	Reason               runtimepredictive.RequestAwareReason
-	PressureSource       runtimepredictive.RequestAwarePressureSource
-	Pressure             float64
-	SelectionInputTokens int64
-	ReservedTokens       int64
-	AllowanceTokens      int64
-	EffectiveKV          int64
-	PostAdmitKV          int64
-	RemainingKV          int64
-	Running              int
-	Waiting              int
-	EffectiveSequences   int
-	AggregateTPSProxy    float64
-	MeanActiveTPSProxy   float64
-	ProjectedTPSProxy    float64
-	TPSForecastValid     bool
+	Action                           runtimepredictive.RequestAwareAction
+	Reason                           runtimepredictive.RequestAwareReason
+	PressureSource                   runtimepredictive.RequestAwarePressureSource
+	Pressure                         float64
+	SelectionInputTokens             int64
+	ReservedTokens                   int64
+	AllowanceTokens                  int64
+	EffectiveKV                      int64
+	PostAdmitKV                      int64
+	RemainingKV                      int64
+	Running                          int
+	Waiting                          int
+	EffectiveSequences               int
+	AggregateTPSProxy                float64
+	MeanActiveTPSProxy               float64
+	ProjectedTPSProxy                float64
+	TPSForecastValid                 bool
+	PrefillClass                     runtimepredictive.RequestAwarePrefillClass
+	EstimatedPrefillTokens           int64
+	PendingPrefillSequences          int
+	PendingPrefillTokens             int64
+	PostAdmitPendingPrefillTokens    int64
+	PendingLongPrefillSequences      int
+	PendingQuiescentPrefillSequences int
 }
 
 type predictiveExistingPrefillObservationSnapshot struct {

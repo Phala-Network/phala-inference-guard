@@ -27,6 +27,9 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		"preemption": false, "stale-recovery": false,
 		"small-large-output": false, "large-small-output": false,
 		"cancel": false, "short-completion": false, "long-streaming": false,
+		"prefill-weighted-budget": false, "prefill-long-singleton": false,
+		"prefill-quiescent-idle-650k": false, "prefill-quiescent-busy-650k": false,
+		"prefill-quiescent-cancel-recovery": false, "prefill-quiescent-exclusive-recovery": false,
 	}
 	for _, scenario := range suite.Scenarios {
 		if _, ok := required[scenario.Name]; ok {

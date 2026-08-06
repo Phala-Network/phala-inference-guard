@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 func TestV011ObservationDefaultsAre500MillisecondsAndThreePollsFresh(t *testing.T) {
@@ -89,6 +91,59 @@ func TestValidateV011DeterministicTPSRejectsInvalidBounds(t *testing.T) {
 	err = Validate(cfg)
 	if err == nil || !strings.Contains(err.Error(), "PREDICTIVE_TPS") {
 		t.Fatalf("Validate error = %v, want deterministic TPS bounds rejection", err)
+	}
+}
+
+func TestV011PrefillAdmissionDefaultsAndCanonicalOverrides(t *testing.T) {
+	for _, name := range []string{
+		"PREDICTIVE_PREFILL_REGULAR_TOKENS",
+		"PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS",
+		"PREDICTIVE_PREFILL_QUIESCENT_TOKENS",
+		"PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS",
+	} {
+		t.Setenv(name, "")
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load defaults: %v", err)
+	}
+	if cfg.PredictivePrefillRegularTokens != domainpredictive.DefaultPrefillRegularTokens ||
+		cfg.PredictivePrefillExclusiveTokens != domainpredictive.DefaultPrefillExclusiveTokens ||
+		cfg.PredictivePrefillQuiescentTokens != domainpredictive.DefaultPrefillQuiescentTokens ||
+		cfg.PredictivePrefillAggregateBudgetTokens != domainpredictive.DefaultPrefillAggregateBudgetTokens {
+		t.Fatalf("prefill defaults=%d/%d/%d/%d", cfg.PredictivePrefillRegularTokens,
+			cfg.PredictivePrefillExclusiveTokens, cfg.PredictivePrefillQuiescentTokens,
+			cfg.PredictivePrefillAggregateBudgetTokens)
+	}
+
+	t.Setenv("PREDICTIVE_PREFILL_REGULAR_TOKENS", "1024")
+	t.Setenv("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", "2048")
+	t.Setenv("PREDICTIVE_PREFILL_QUIESCENT_TOKENS", "4096")
+	t.Setenv("PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", "3072")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load overrides: %v", err)
+	}
+	if cfg.PredictivePrefillRegularTokens != 1024 || cfg.PredictivePrefillExclusiveTokens != 2048 ||
+		cfg.PredictivePrefillQuiescentTokens != 4096 || cfg.PredictivePrefillAggregateBudgetTokens != 3072 {
+		t.Fatalf("prefill overrides=%d/%d/%d/%d, want 1024/2048/4096/3072",
+			cfg.PredictivePrefillRegularTokens, cfg.PredictivePrefillExclusiveTokens,
+			cfg.PredictivePrefillQuiescentTokens, cfg.PredictivePrefillAggregateBudgetTokens)
+	}
+}
+
+func TestValidateV011PrefillAdmissionRejectsInvalidOrdering(t *testing.T) {
+	t.Setenv("PREDICTIVE_ADMISSION_MODE", "enforce")
+	t.Setenv("PREDICTIVE_PREFILL_REGULAR_TOKENS", "65536")
+	t.Setenv("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", "262144")
+	t.Setenv("PREDICTIVE_PREFILL_QUIESCENT_TOKENS", "524288")
+	t.Setenv("PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", "131072")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "prefill tokens") {
+		t.Fatalf("Validate error=%v, want invalid prefill ordering", err)
 	}
 }
 

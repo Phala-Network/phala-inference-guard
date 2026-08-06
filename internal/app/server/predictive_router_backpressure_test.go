@@ -709,6 +709,9 @@ func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) 
 		RequestAwareAllowanceTokens: 1333, RequestAwareEffectiveKV: 7000, RequestAwarePostAdmitKV: 8600, RequestAwareRemainingKV: 2000,
 		RequestAwareRunning: 4, RequestAwareWaiting: 1, RequestAwareEffectiveSequences: 4,
 		RequestAwareAggregateTPSProxy: 80, RequestAwareMeanActiveTPSProxy: 20, RequestAwareProjectedTPSProxy: 16, RequestAwareTPSForecastValid: true,
+		RequestAwarePrefillClass: "weighted", RequestAwareEstimatedPrefillTokens: 1500,
+		RequestAwarePendingPrefillSequences: 2, RequestAwarePendingPrefillTokens: 2000,
+		RequestAwarePostAdmitPendingPrefillTokens: 3500, RequestAwarePendingLongPrefillSequences: 1,
 		RouterBackpressure: metrics.PredictiveRouterBackpressureInput{
 			Active: true, Applied: true, Scope: "load", Reason: "request_size", InspectCapacity: 1,
 			Activation: 2, LatestRejectAt: time.Unix(84_000, 0),
@@ -718,7 +721,7 @@ func TestFormatPredictiveStatusExposesProtectionAndRouterCapacity(t *testing.T) 
 	for _, want := range []string{
 		"predictive={mode=enforce", "attempts=12", "risk=8", "last=request_size/deterministic",
 		"last_reject=none/unknown/none", "reservations=1", "virtual_decode=3", "pending_prefill=1/300/1", "retired=2/1",
-		"request_aware=size_protect/request_size/tps", "pressure=0.600", "size=1500/1600/1333", "kv=7000/8600/2000", "load=4/1/4", "tps=80.000/20.000/16.000/1",
+		"request_aware=size_protect/request_size/tps", "pressure=0.600", "size=1500/1600/1333", "prefill=weighted/1500/2/2000/3500/1/0", "kv=7000/8600/2000", "load=4/1/4", "tps=80.000/20.000/16.000/1",
 		"router_bp=1/1/load/request_size", "inspect=1", "activation=2", "effective=1/1", "raw=1/50",
 	} {
 		if !strings.Contains(line, want) {

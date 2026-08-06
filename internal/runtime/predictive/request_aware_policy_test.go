@@ -63,6 +63,94 @@ func TestRequestAwarePolicyOpenAdmitsHardFitLargeRequest(t *testing.T) {
 	}
 }
 
+func TestRequestAwarePolicyProtectsQuiescentPrefillBeforeFeedback(t *testing.T) {
+	policy := newRequestAwareTestPolicy(t)
+	input := requestAwareTestInput()
+	input.CapacityTokens = 4 * 1024 * 1024
+	input.UsedTokens = 128 * 1024
+	input.ReservedTokens = 0
+	input.RequestReservedTokens = 650 * 1024
+	input.SelectionInputTokens = 650 * 1024
+	input.Waiting = 0
+	input.AggregateTPSProxy = 0
+	input.MeanActiveTPSProxy = 0
+	input.TPSValid = false
+
+	idle := input
+	idle.Running = 0
+	idle.EffectiveSequences = 0
+	idleDecision := policy.Evaluate(idle)
+	if idleDecision.Action != RequestAwareAdmit {
+		t.Fatalf("idle 650K decision=%+v, want first quiescent prefill admitted", idleDecision)
+	}
+	localDecode := idle
+	localDecode.EffectiveSequences = 1
+	localDecodeDecision := policy.Evaluate(localDecode)
+	if localDecodeDecision.Action != RequestAwareSizeProtect ||
+		localDecodeDecision.Reason != RequestAwareReasonPrefillBusy {
+		t.Fatalf("local decode plus 650K decision=%+v, want pre-forward busy protection", localDecodeDecision)
+	}
+
+	busy := input
+	busy.Running = 20
+	busy.EffectiveSequences = 20
+	busyDecision := policy.Evaluate(busy)
+	if busyDecision.Action != RequestAwareSizeProtect {
+		t.Fatalf("busy 650K decision=%+v, want pre-forward size protection before TPS feedback", busyDecision)
+	}
+}
+
+func TestRequestAwarePolicyPrefillBoundaries(t *testing.T) {
+	policy := newRequestAwareTestPolicy(t)
+	base := requestAwareTestInput()
+	base.CapacityTokens = 4 * 1024 * 1024
+	base.UsedTokens = 0
+	base.ReservedTokens = 0
+	base.Running = 20
+	base.Waiting = 0
+	base.EffectiveSequences = 20
+	base.AggregateTPSProxy = 0
+	base.MeanActiveTPSProxy = 0
+	base.TPSValid = false
+
+	for _, test := range []struct {
+		name       string
+		tokens     int64
+		wantClass  RequestAwarePrefillClass
+		wantAction RequestAwareAction
+	}{
+		{name: "below 64K", tokens: 64*1024 - 1, wantClass: RequestAwarePrefillRegular, wantAction: RequestAwareAdmit},
+		{name: "at 64K", tokens: 64 * 1024, wantClass: RequestAwarePrefillWeighted, wantAction: RequestAwareAdmit},
+		{name: "below 256K", tokens: 256*1024 - 1, wantClass: RequestAwarePrefillWeighted, wantAction: RequestAwareAdmit},
+		{name: "at 256K", tokens: 256 * 1024, wantClass: RequestAwarePrefillExclusive, wantAction: RequestAwareAdmit},
+		{name: "below 512K", tokens: 512*1024 - 1, wantClass: RequestAwarePrefillExclusive, wantAction: RequestAwareAdmit},
+		{name: "at 512K", tokens: 512 * 1024, wantClass: RequestAwarePrefillQuiescent, wantAction: RequestAwareSizeProtect},
+		{name: "at 650K", tokens: 650 * 1024, wantClass: RequestAwarePrefillQuiescent, wantAction: RequestAwareSizeProtect},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := base
+			input.SelectionInputTokens = test.tokens
+			input.EstimatedPrefillTokens = test.tokens
+			input.RequestReservedTokens = test.tokens
+			decision := policy.Evaluate(input)
+			if decision.PrefillClass != test.wantClass || decision.Action != test.wantAction {
+				t.Fatalf("boundary decision=%+v, want class/action %s/%s", decision, test.wantClass, test.wantAction)
+			}
+		})
+	}
+}
+
+func TestRequestAwarePolicyRejectsInvalidPrefillThresholdOrdering(t *testing.T) {
+	_, err := NewRequestAwarePolicy(RequestAwareConfig{
+		SoftKVRatio: 0.60, HardKVRatio: 0.90, TPSTarget: 20, TPSFloor: 15, BlockSize: 16,
+		PrefillRegularTokens: 64 * 1024, PrefillExclusiveTokens: 256 * 1024,
+		PrefillQuiescentTokens: 512 * 1024, PrefillAggregateBudgetTokens: 128 * 1024,
+	})
+	if err == nil {
+		t.Fatal("NewRequestAwarePolicy accepted aggregate prefill budget below exclusive threshold")
+	}
+}
+
 func TestRequestAwarePolicyFreshCompletionWindowDoesNotMislockIdleBackend(t *testing.T) {
 	policy := newRequestAwareTestPolicy(t)
 	input := requestAwareTestInput()

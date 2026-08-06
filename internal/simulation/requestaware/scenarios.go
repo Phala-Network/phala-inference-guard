@@ -27,13 +27,14 @@ func (w timeWindow) contains(at time.Duration) bool {
 }
 
 type requestSpec struct {
-	id             string
-	at             time.Duration
-	selectionInput int64
-	reservedTokens int64
-	actualInput    int64
-	actualOutput   float64
-	cancelAfter    time.Duration
+	id               string
+	at               time.Duration
+	selectionInput   int64
+	estimatedPrefill int64
+	reservedTokens   int64
+	actualInput      int64
+	actualOutput     float64
+	cancelAfter      time.Duration
 }
 
 type scenarioSpec struct {
@@ -48,6 +49,7 @@ type scenarioSpec struct {
 	preemptionCooldown []timeWindow
 	preemptionAt       time.Duration
 	aggregateTPSCap    float64
+	capacityTokens     int64
 }
 
 type requestShape uint8
@@ -89,6 +91,42 @@ func simulationScenarios(seed int64) []scenarioSpec {
 		newUniformScenario("cancel", "terminal", 20_000, 1, shapeCancel, 6, 500*time.Millisecond, time.Second),
 		newUniformScenario("short-completion", "terminal", 20_000, 1, shapeShortCompletion, 10, 500*time.Millisecond, 700*time.Millisecond),
 		newUniformScenario("long-streaming", "terminal", 20_000, 1, shapeLongStreaming, 4, 500*time.Millisecond, 2*time.Second),
+		newLongPrefillScenario("prefill-weighted-budget", 0, 22*time.Second,
+			longPrefillRequest("weighted-200k", 100*time.Millisecond, 200*1024, 64, 0),
+			longPrefillRequest("weighted-100k", 100*time.Millisecond, 100*1024, 64, 0)),
+		newLongPrefillScenario("prefill-long-singleton", 0, 36*time.Second,
+			longPrefillRequest("long-300k-a", 100*time.Millisecond, 300*1024, 64, 0),
+			longPrefillRequest("long-300k-b", 100*time.Millisecond, 300*1024, 64, 0),
+			longPrefillRequest("short-32k", 200*time.Millisecond, 32*1024, 64, 0)),
+		newLongPrefillScenario("prefill-quiescent-idle-650k", 0, 45*time.Second,
+			longPrefillRequest("idle-650k", 100*time.Millisecond, 650*1024, 128, 0)),
+		newLongPrefillScenario("prefill-quiescent-busy-650k", 4, 36*time.Second,
+			longPrefillRequest("busy-650k", 100*time.Millisecond, 650*1024, 128, 0)),
+		newLongPrefillScenario("prefill-quiescent-cancel-recovery", 0, 40*time.Second,
+			longPrefillRequest("cancelled-650k", 100*time.Millisecond, 650*1024, 64, time.Second),
+			longPrefillRequest("before-idle-poll-650k", 1200*time.Millisecond, 650*1024, 64, 0),
+			longPrefillRequest("after-idle-poll-650k", 1600*time.Millisecond, 650*1024, 64, 0)),
+		newLongPrefillScenario("prefill-quiescent-exclusive-recovery", 0, 40*time.Second,
+			longPrefillRequest("exclusive-650k", 100*time.Millisecond, 650*1024, 64, 0),
+			longPrefillRequest("blocked-short", 200*time.Millisecond, 32*1024, 64, 0),
+			longPrefillRequest("blocked-second-650k", 33400*time.Millisecond, 650*1024, 64, 0),
+			longPrefillRequest("post-prefill-short", 33400*time.Millisecond, 32*1024, 64, 0)),
+	}
+}
+
+func newLongPrefillScenario(name string, background int, duration time.Duration, requests ...requestSpec) scenarioSpec {
+	return scenarioSpec{
+		name: name, category: "long-prefill", duration: duration,
+		initialKVTokens: 100_000, backgroundRunning: background,
+		capacityTokens: 4 * 1024 * 1024, requests: requests,
+	}
+}
+
+func longPrefillRequest(id string, at time.Duration, input int64, output float64, cancelAfter time.Duration) requestSpec {
+	return requestSpec{
+		id: id, at: at, selectionInput: input, estimatedPrefill: input,
+		reservedTokens: blockRoundUp(input + 1024), actualInput: input,
+		actualOutput: output, cancelAfter: cancelAfter,
 	}
 }
 

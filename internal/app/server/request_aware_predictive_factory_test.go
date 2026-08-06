@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -51,6 +52,11 @@ vllm:generation_tokens_total{model_name="vendor/arbitrary-model-v17",engine="0"}
 				_ = adapter.Close()
 				t.Fatalf("deterministic adapter is incomplete: mode=%q manager=%p policy=%p", adapter.mode, adapter.manager, adapter.policy)
 			}
+			decision := adapter.Decide(context.Background(), "factory-prefill-"+mode, requestAwareAdapterInput(4*1024, 0))
+			if decision.Outcome != predictiveAdmissionOutcomeLoadProtection || decision.Reservation != nil {
+				_ = adapter.Close()
+				t.Fatalf("factory did not wire custom quiescent prefill threshold: %+v", decision)
+			}
 			if err := adapter.Close(); err != nil {
 				t.Fatalf("close deterministic adapter: %v", err)
 			}
@@ -67,6 +73,10 @@ func requestAwareFactoryTestConfig(metricsURL, mode string) config {
 	cfg.PredictiveMaximumMetricsAge = 100 * time.Millisecond
 	cfg.PredictiveTPSTarget = 25
 	cfg.PredictiveTPSFloor = 20
+	cfg.PredictivePrefillRegularTokens = 1024
+	cfg.PredictivePrefillExclusiveTokens = 2 * 1024
+	cfg.PredictivePrefillQuiescentTokens = 3 * 1024
+	cfg.PredictivePrefillAggregateBudgetTokens = 2 * 1024
 	cfg.KVAdmissionPolicy.PreemptionCooldown = 0
 
 	// These old predictive-learning inputs are deliberately unusable. The

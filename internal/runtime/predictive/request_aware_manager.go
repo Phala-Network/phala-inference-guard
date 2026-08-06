@@ -60,7 +60,7 @@ func (m *Manager) decideRequestAware(
 		return requestAwareManagerFailure(RequestAwareReasonDuplicate, m.eventSequence)
 	}
 
-	state := m.virtualStateIntervalLocked().Upper
+	state, pendingLong, pendingQuiescent := m.requestAwareStateLocked(policy)
 	effectiveKV := state.ActiveKVUpper
 	if state.PhysicalKVUpper > effectiveKV {
 		effectiveKV = state.PhysicalKVUpper
@@ -77,6 +77,11 @@ func (m *Manager) decideRequestAware(
 	}
 	input.RequestReservedTokens = requestReservedTokens
 	input.SelectionInputTokens = selectionInputTokens
+	input.EstimatedPrefillTokens = cost.UncachedPrefillUpper
+	input.PendingPrefillSequences = state.PendingPrefillSequences
+	input.PendingPrefillTokens = state.UncachedPrefillTokens
+	input.PendingLongPrefillSequences = pendingLong
+	input.PendingQuiescentPrefillSequences = pendingQuiescent
 	decision := policy.Evaluate(input)
 	if decision.Action != RequestAwareAdmit || !reserve {
 		return RequestAwareManagerResult{
@@ -98,6 +103,26 @@ func (m *Manager) decideRequestAware(
 		Reserved:                true,
 		DecisionManagerSequence: m.eventSequence,
 	}
+}
+
+func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) (domain.VirtualState, int, int) {
+	state := m.base
+	pendingLong := 0
+	pendingQuiescent := 0
+	for _, item := range m.reservations {
+		addReservationToStateInterval(&state, item)
+		if item.PrefillComplete {
+			continue
+		}
+		switch policy.prefillClass(item.Cost.UncachedPrefillUpper) {
+		case RequestAwarePrefillQuiescent:
+			pendingQuiescent = addIntSaturating(pendingQuiescent, 1)
+			pendingLong = addIntSaturating(pendingLong, 1)
+		case RequestAwarePrefillExclusive:
+			pendingLong = addIntSaturating(pendingLong, 1)
+		}
+	}
+	return state.Upper, pendingLong, pendingQuiescent
 }
 
 func requestAwareManagerFailure(reason RequestAwareReason, sequence uint64) RequestAwareManagerResult {

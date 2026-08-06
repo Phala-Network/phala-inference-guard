@@ -53,7 +53,11 @@ type scenarioRunner struct {
 }
 
 func runScenario(spec scenarioSpec, policyName PolicyName, policy *runtimepredictive.RequestAwarePolicy) (Metrics, int, error) {
-	if spec.duration <= 0 || spec.initialKVTokens < 0 || spec.initialKVTokens >= simulationCapacityTokens || spec.backgroundRunning < 0 {
+	capacity := spec.capacityTokens
+	if capacity <= 0 {
+		capacity = simulationCapacityTokens
+	}
+	if spec.duration <= 0 || spec.initialKVTokens < 0 || spec.initialKVTokens >= capacity || spec.backgroundRunning < 0 {
 		return Metrics{}, 0, fmt.Errorf("invalid scenario")
 	}
 	runner := &scenarioRunner{
@@ -100,7 +104,7 @@ func runScenario(spec scenarioSpec, policyName PolicyName, policy *runtimepredic
 func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
 	r.metrics.Arrivals++
 	effectiveKV := r.observed.usedTokens + r.unabsorbedReservations()
-	hardLimit := int64(math.Floor(float64(simulationCapacityTokens) * simulationHardKVRatio))
+	hardLimit := int64(math.Floor(float64(r.capacityTokens()) * simulationHardKVRatio))
 	hardFit := effectiveKV >= 0 && request.reservedTokens > 0 && request.reservedTokens <= hardLimit-effectiveKV
 	admit, hardProtect := r.decide(at, request, effectiveKV, hardFit)
 	if !admit {
@@ -145,7 +149,7 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 		if !metricsFresh || preemptionCooldown || !hardFit {
 			return false, true
 		}
-		if float64(effectiveKV)/float64(simulationCapacityTokens) >= simulationSoftKVRatio ||
+		if float64(effectiveKV)/float64(r.capacityTokens()) >= simulationSoftKVRatio ||
 			r.observed.waiting > 0 ||
 			(r.observed.tpsValid && r.observed.tps < simulationTPSTarget) {
 			return false, false
@@ -156,21 +160,31 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 		return false, true
 	}
 	r.productionPolicyCalls++
+	pendingSequences, pendingTokens, pendingLong, pendingQuiescent := r.pendingPrefillSummary()
+	estimatedPrefill := request.estimatedPrefill
+	if estimatedPrefill <= 0 {
+		estimatedPrefill = request.selectionInput
+	}
 	decision := r.policy.Evaluate(runtimepredictive.RequestAwareInput{
-		MetricsFresh:          metricsFresh,
-		IdentityValid:         true,
-		CapacityTokens:        simulationCapacityTokens,
-		UsedTokens:            r.observed.usedTokens,
-		ReservedTokens:        r.unabsorbedReservations(),
-		RequestReservedTokens: request.reservedTokens,
-		SelectionInputTokens:  request.selectionInput,
-		Running:               r.observed.running,
-		Waiting:               r.observed.waiting,
-		EffectiveSequences:    r.observed.running + r.unabsorbedSequenceCount(),
-		AggregateTPSProxy:     r.observed.aggregateTPS,
-		MeanActiveTPSProxy:    r.observed.tps,
-		TPSValid:              r.observed.tpsValid,
-		PreemptionCooldown:    preemptionCooldown,
+		MetricsFresh:                     metricsFresh,
+		IdentityValid:                    true,
+		CapacityTokens:                   r.capacityTokens(),
+		UsedTokens:                       r.observed.usedTokens,
+		ReservedTokens:                   r.unabsorbedReservations(),
+		RequestReservedTokens:            request.reservedTokens,
+		SelectionInputTokens:             request.selectionInput,
+		Running:                          r.observed.running,
+		Waiting:                          r.observed.waiting,
+		EffectiveSequences:               r.observed.running + r.unabsorbedSequenceCount(),
+		AggregateTPSProxy:                r.observed.aggregateTPS,
+		MeanActiveTPSProxy:               r.observed.tps,
+		TPSValid:                         r.observed.tpsValid,
+		PreemptionCooldown:               preemptionCooldown,
+		EstimatedPrefillTokens:           estimatedPrefill,
+		PendingPrefillSequences:          pendingSequences,
+		PendingPrefillTokens:             pendingTokens,
+		PendingLongPrefillSequences:      pendingLong,
+		PendingQuiescentPrefillSequences: pendingQuiescent,
 	})
 	switch decision.Action {
 	case runtimepredictive.RequestAwareAdmit:
@@ -194,9 +208,13 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		}
 	}
 	prefillAtStart := 0
+	prefillExcessAtStart := 0.0
 	for _, id := range r.order {
 		if active := r.active[id]; active != nil && active.prefillRemaining > 0 {
 			prefillAtStart++
+			if excess := active.prefillRemaining - float64(runtimepredictive.DefaultRequestAwarePrefillRegularTokens); excess > 0 {
+				prefillExcessAtStart += excess
+			}
 		}
 	}
 	prefillBudget := simulationPrefillTokensPS * seconds
@@ -222,7 +240,8 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	}
 	aggregateTPS := math.Min(aggregateTPSCap, simulationUncontendedTPS*float64(decodeSequences))
 	if prefillAtStart > 0 {
-		aggregateTPS /= 1 + 0.08*float64(prefillAtStart)
+		aggregateTPS /= 1 + 0.08*float64(prefillAtStart) +
+			0.9*prefillExcessAtStart/float64(runtimepredictive.DefaultRequestAwarePrefillRegularTokens)
 	}
 	perUserTPS := 0.0
 	if decodeSequences > 0 {
@@ -339,6 +358,38 @@ func (r *scenarioRunner) unabsorbedSequenceCount() int {
 	return count
 }
 
+func (r *scenarioRunner) pendingPrefillSummary() (sequences int, tokens int64, long, quiescent int) {
+	for _, active := range r.active {
+		if active == nil || active.prefillRemaining <= simulationFloatTolerance {
+			continue
+		}
+		estimated := active.spec.estimatedPrefill
+		if estimated <= 0 {
+			estimated = active.spec.selectionInput
+		}
+		sequences++
+		if tokens <= math.MaxInt64-estimated {
+			tokens += estimated
+		} else {
+			tokens = math.MaxInt64
+		}
+		if estimated >= runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens {
+			quiescent++
+			long++
+		} else if estimated >= runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens {
+			long++
+		}
+	}
+	return sequences, tokens, long, quiescent
+}
+
+func (r *scenarioRunner) capacityTokens() int64 {
+	if r.spec.capacityTokens > 0 {
+		return r.spec.capacityTokens
+	}
+	return simulationCapacityTokens
+}
+
 func (r *scenarioRunner) updatePeaks(at time.Duration) {
 	kv := r.trueKVTokens()
 	if kv > r.metrics.PeakKVTokens {
@@ -351,7 +402,7 @@ func (r *scenarioRunner) updatePeaks(at time.Duration) {
 }
 
 func (r *scenarioRunner) enforceHardKV() {
-	hardLimit := int64(math.Floor(float64(simulationCapacityTokens) * simulationHardKVRatio))
+	hardLimit := int64(math.Floor(float64(r.capacityTokens()) * simulationHardKVRatio))
 	for r.trueKVTokens() > hardLimit && len(r.active) > 0 {
 		ids := make([]string, 0, len(r.active))
 		for id := range r.active {

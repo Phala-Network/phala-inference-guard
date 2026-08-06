@@ -265,23 +265,30 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 		return
 	}
 	last := requestAwareTelemetrySnapshot{
-		Action:               result.Decision.Action,
-		Reason:               result.Decision.Reason,
-		PressureSource:       result.Decision.PressureSource,
-		Pressure:             result.Decision.Pressure,
-		SelectionInputTokens: selectionInputTokens,
-		ReservedTokens:       reservedTokens,
-		AllowanceTokens:      result.Decision.AllowanceTokens,
-		EffectiveKV:          result.Decision.EffectiveKV,
-		PostAdmitKV:          result.Decision.PostAdmitKV,
-		RemainingKV:          result.Decision.RemainingKV,
-		Running:              input.Running,
-		Waiting:              input.Waiting,
-		EffectiveSequences:   result.Decision.EffectiveSequences,
-		AggregateTPSProxy:    input.AggregateTPSProxy,
-		MeanActiveTPSProxy:   input.MeanActiveTPSProxy,
-		ProjectedTPSProxy:    result.Decision.ProjectedMeanActiveTPSProxy,
-		TPSForecastValid:     result.Decision.TPSForecastValid,
+		Action:                           result.Decision.Action,
+		Reason:                           result.Decision.Reason,
+		PressureSource:                   result.Decision.PressureSource,
+		Pressure:                         result.Decision.Pressure,
+		SelectionInputTokens:             selectionInputTokens,
+		ReservedTokens:                   reservedTokens,
+		AllowanceTokens:                  result.Decision.AllowanceTokens,
+		EffectiveKV:                      result.Decision.EffectiveKV,
+		PostAdmitKV:                      result.Decision.PostAdmitKV,
+		RemainingKV:                      result.Decision.RemainingKV,
+		Running:                          input.Running,
+		Waiting:                          input.Waiting,
+		EffectiveSequences:               result.Decision.EffectiveSequences,
+		AggregateTPSProxy:                input.AggregateTPSProxy,
+		MeanActiveTPSProxy:               input.MeanActiveTPSProxy,
+		ProjectedTPSProxy:                result.Decision.ProjectedMeanActiveTPSProxy,
+		TPSForecastValid:                 result.Decision.TPSForecastValid,
+		PrefillClass:                     result.Decision.PrefillClass,
+		EstimatedPrefillTokens:           result.Decision.EstimatedPrefillTokens,
+		PendingPrefillSequences:          result.Decision.PendingPrefillSequences,
+		PendingPrefillTokens:             result.Decision.PendingPrefillTokens,
+		PostAdmitPendingPrefillTokens:    result.Decision.PostAdmitPendingPrefillTokens,
+		PendingLongPrefillSequences:      result.Decision.PendingLongPrefillSequences,
+		PendingQuiescentPrefillSequences: result.Decision.PendingQuiescentPrefillSequences,
 	}
 	a.mu.Lock()
 	a.attempts.Attempts++
@@ -307,27 +314,34 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 	var logEvent *requestAwareDecisionLogEvent
 	if a.onDecision != nil {
 		logEvent = a.decisionLogs.Claim(now, a.decisionLogInterval, requestAwareDecisionLogEvent{
-			Mode:                 a.mode,
-			Enforced:             a.mode == "enforce" && decision.rejectsForward(),
-			Action:               result.Decision.Action,
-			Reason:               result.Decision.Reason,
-			HTTPReason:           decision.Reason,
-			Scope:                requestAwareProtectionScope(decision.Outcome),
-			PressureSource:       result.Decision.PressureSource,
-			Pressure:             result.Decision.Pressure,
-			SelectionInputTokens: selectionInputTokens,
-			ReservedTokens:       reservedTokens,
-			AllowanceTokens:      result.Decision.AllowanceTokens,
-			EffectiveKV:          result.Decision.EffectiveKV,
-			PostAdmitKV:          result.Decision.PostAdmitKV,
-			RemainingKV:          result.Decision.RemainingKV,
-			Running:              input.Running,
-			Waiting:              input.Waiting,
-			EffectiveSequences:   result.Decision.EffectiveSequences,
-			AggregateTPSProxy:    input.AggregateTPSProxy,
-			MeanActiveTPSProxy:   input.MeanActiveTPSProxy,
-			ProjectedTPSProxy:    result.Decision.ProjectedMeanActiveTPSProxy,
-			TPSForecastValid:     result.Decision.TPSForecastValid,
+			Mode:                             a.mode,
+			Enforced:                         a.mode == "enforce" && decision.rejectsForward(),
+			Action:                           result.Decision.Action,
+			Reason:                           result.Decision.Reason,
+			HTTPReason:                       decision.Reason,
+			Scope:                            requestAwareProtectionScope(decision.Outcome),
+			PressureSource:                   result.Decision.PressureSource,
+			Pressure:                         result.Decision.Pressure,
+			SelectionInputTokens:             selectionInputTokens,
+			ReservedTokens:                   reservedTokens,
+			AllowanceTokens:                  result.Decision.AllowanceTokens,
+			EffectiveKV:                      result.Decision.EffectiveKV,
+			PostAdmitKV:                      result.Decision.PostAdmitKV,
+			RemainingKV:                      result.Decision.RemainingKV,
+			Running:                          input.Running,
+			Waiting:                          input.Waiting,
+			EffectiveSequences:               result.Decision.EffectiveSequences,
+			AggregateTPSProxy:                input.AggregateTPSProxy,
+			MeanActiveTPSProxy:               input.MeanActiveTPSProxy,
+			ProjectedTPSProxy:                result.Decision.ProjectedMeanActiveTPSProxy,
+			TPSForecastValid:                 result.Decision.TPSForecastValid,
+			PrefillClass:                     result.Decision.PrefillClass,
+			EstimatedPrefillTokens:           result.Decision.EstimatedPrefillTokens,
+			PendingPrefillSequences:          result.Decision.PendingPrefillSequences,
+			PendingPrefillTokens:             result.Decision.PendingPrefillTokens,
+			PostAdmitPendingPrefillTokens:    result.Decision.PostAdmitPendingPrefillTokens,
+			PendingLongPrefillSequences:      result.Decision.PendingLongPrefillSequences,
+			PendingQuiescentPrefillSequences: result.Decision.PendingQuiescentPrefillSequences,
 		})
 	}
 	reporter := a.onDecision
@@ -566,6 +580,11 @@ func requestAwareAdapterProtectedDecision(decision runtimepredictive.RequestAwar
 	source := runtimepredictive.PredictionSourceDeterministic
 	switch decision.Reason {
 	case runtimepredictive.RequestAwareReasonRequestSize:
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonRequestSizeAtPressure, source)
+	case runtimepredictive.RequestAwareReasonPrefillBudget,
+		runtimepredictive.RequestAwareReasonPrefillConcurrency,
+		runtimepredictive.RequestAwareReasonPrefillExclusive,
+		runtimepredictive.RequestAwareReasonPrefillBusy:
 		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonRequestSizeAtPressure, source)
 	case runtimepredictive.RequestAwareReasonKV:
 		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonKVOverBudget, source)

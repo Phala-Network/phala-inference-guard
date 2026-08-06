@@ -44,6 +44,11 @@ func ValidateAcceptance(suite Suite) error {
 				return err
 			}
 		}
+		if scenario.Category == "long-prefill" {
+			if err := validateLongPrefillContract(scenario.Name, baseline, candidate); err != nil {
+				return err
+			}
+		}
 	}
 	baseline := suite.Aggregate(PolicyGlobalBinary)
 	candidate := suite.Aggregate(PolicyRequestAware)
@@ -60,6 +65,45 @@ func ValidateAcceptance(suite Suite) error {
 			candidate.WaitingSeconds,
 			baseline.WaitingSeconds,
 		)
+	}
+	return nil
+}
+
+func validateLongPrefillContract(name string, baseline, candidate Metrics) error {
+	fail := func(format string, args ...any) error {
+		return fmt.Errorf("scenario %s long-prefill contract: %s", name, fmt.Sprintf(format, args...))
+	}
+	switch name {
+	case "prefill-weighted-budget":
+		if baseline.Admitted != 2 || candidate.Admitted != 1 || candidate.Rejected != 1 || candidate.SizeProtects != 1 {
+			return fail("baseline/candidate=%+v/%+v, want 2 admits vs one admit plus one size protection", baseline, candidate)
+		}
+	case "prefill-long-singleton":
+		if candidate.Admitted != 2 || candidate.Rejected != 1 || candidate.SizeProtects != 1 {
+			return fail("candidate=%+v, want one 300K plus one short admitted and second 300K protected", candidate)
+		}
+	case "prefill-quiescent-idle-650k":
+		if candidate.Admitted != 1 || candidate.Rejected != 0 || candidate.HardFitIdleRejects != 0 || candidate.Completed != 1 {
+			return fail("candidate=%+v, want idle first 650K admitted and completed without self-lock", candidate)
+		}
+	case "prefill-quiescent-busy-650k":
+		if baseline.Admitted != 1 || candidate.Admitted != 0 || candidate.Rejected != 1 || candidate.SizeProtects != 1 {
+			return fail("baseline/candidate=%+v/%+v, want busy 650K pre-forward size protection", baseline, candidate)
+		}
+		if candidate.TPSFloorViolationSeconds > baseline.TPSFloorViolationSeconds+simulationDurationEpsilon ||
+			candidate.SLOCompletionTokens+simulationGoodputEpsilon < baseline.SLOCompletionTokens {
+			return fail("candidate did not protect decode QoS: baseline/candidate=%+v/%+v", baseline, candidate)
+		}
+	case "prefill-quiescent-cancel-recovery":
+		if candidate.Admitted != 2 || candidate.Rejected != 1 || candidate.SizeProtects != 1 || candidate.Completed != 1 {
+			return fail("candidate=%+v, want cancellation to keep stale busy snapshot protected and recover after one idle poll", candidate)
+		}
+	case "prefill-quiescent-exclusive-recovery":
+		if candidate.Admitted != 2 || candidate.Rejected != 2 || candidate.SizeProtects != 2 || candidate.Completed != 2 {
+			return fail("candidate=%+v, want small blocked during 650K prefill, second 650K blocked during local decode, and small admitted after prefill before next poll", candidate)
+		}
+	default:
+		return fail("unregistered long-prefill scenario")
 	}
 	return nil
 }

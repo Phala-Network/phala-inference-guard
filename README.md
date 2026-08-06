@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.11.0 deterministic request-aware admission
+### v0.11.1 deterministic request-aware admission
 
-PIG v0.11.0 makes a deterministic decision before forwarding each supported
+PIG v0.11.1 makes a deterministic decision before forwarding each supported
 request to one vLLM upstream:
 
 ```text
@@ -197,8 +197,26 @@ vLLM metrics have not yet absorbed. The pure policy then evaluates:
 - waiting pressure;
 - a post-admit mean-active-TPS proxy derived from the generation-token delta.
 
-With no pressure, every hard-fit request is admitted without a size threshold.
-Under pressure, one allowance shrinks monotonically and the approximate input
+With no pressure, ordinary hard-fit requests remain work-conserving. Long
+prefills also pass an independent token-weighted gate before they can reach
+vLLM: below 64K uses ordinary admission, 64K--256K shares a 256K pending-token
+budget, 256K--512K allows one concurrent long prefill, and 512K or larger
+(including 650K) requires an idle backend and owns the prefill phase until the
+first semantic response or terminal release. These thresholds are defaults,
+not model-name checks, so the same policy covers multi-card large-context
+models even when one canary has a smaller max-model-len. Without trusted cache
+information the conservative total prompt estimate is used; it is not reported
+as exact uncached tokens.
+
+While a 512K-or-larger request is still prefilling, all later requests are
+protected. After its first semantic response, ordinary requests can resume
+immediately, but another 512K-or-larger request still requires both the
+observed backend and every local effective sequence to be idle. A terminal
+event releases local ownership immediately; if the previous vLLM snapshot is
+still busy, a later 512K-or-larger request waits for the next fresh poll rather
+than assuming that upstream cancellation has already completed.
+
+Under ordinary KV/waiting/TPS pressure, one allowance shrinks monotonically and the approximate input
 size decides whether this request can enter, so a small request may be admitted
 where a large request is protected. TPS below its target may degrade toward the
 configured floor; reaching the projected floor makes the allowance zero until a
@@ -222,6 +240,10 @@ PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS=500
 PREDICTIVE_MAX_METRICS_AGE_MS=1500
 PREDICTIVE_TPS_TARGET=25
 PREDICTIVE_TPS_FLOOR=20
+PREDICTIVE_PREFILL_REGULAR_TOKENS=65536
+PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS=262144
+PREDICTIVE_PREFILL_QUIESCENT_TOKENS=524288
+PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS=262144
 KV_ADMISSION_VLLM_TARGET_RATIO=<soft operational ratio>
 KV_ADMISSION_VLLM_HARD_RATIO=<hard operational ratio below 1>
 KV_ADMISSION_PREEMPTION_COOLDOWN_SECONDS=<cooldown>

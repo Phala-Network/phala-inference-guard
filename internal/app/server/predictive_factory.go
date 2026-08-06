@@ -35,11 +35,15 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		return nil, err
 	}
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVRatio: cfg.KVAdmissionPolicy.VLLM.TargetRatio,
-		HardKVRatio: cfg.KVAdmissionPolicy.VLLM.HardRatio,
-		TPSTarget:   cfg.PredictiveTPSTarget,
-		TPSFloor:    cfg.PredictiveTPSFloor,
-		BlockSize:   int64(startup.BlockSize),
+		SoftKVRatio:                  cfg.KVAdmissionPolicy.VLLM.TargetRatio,
+		HardKVRatio:                  cfg.KVAdmissionPolicy.VLLM.HardRatio,
+		TPSTarget:                    cfg.PredictiveTPSTarget,
+		TPSFloor:                     cfg.PredictiveTPSFloor,
+		BlockSize:                    int64(startup.BlockSize),
+		PrefillRegularTokens:         cfg.PredictivePrefillRegularTokens,
+		PrefillExclusiveTokens:       cfg.PredictivePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       cfg.PredictivePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: cfg.PredictivePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct deterministic request-aware policy: %w", err)

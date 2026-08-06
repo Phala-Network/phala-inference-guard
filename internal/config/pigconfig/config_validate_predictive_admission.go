@@ -1,6 +1,10 @@
 package pigconfig
 
-import "fmt"
+import (
+	"fmt"
+
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
+)
 
 func validatePredictiveAdmissionConfig(cfg Config) error {
 	if cfg.PredictiveAdmissionMode == "" {
@@ -39,6 +43,25 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 			cfg.PredictiveTPSFloor >= cfg.PredictiveTPSTarget {
 			return fmt.Errorf("PREDICTIVE_TPS_FLOOR must be > 0 and < PREDICTIVE_TPS_TARGET")
 		}
+		regular, exclusive, quiescent, aggregate := predictivePrefillBounds(cfg)
+		if regular <= 0 || exclusive <= regular || quiescent <= exclusive ||
+			aggregate < exclusive || aggregate > quiescent {
+			return fmt.Errorf("predictive prefill tokens must satisfy 0 < regular < exclusive < quiescent and exclusive <= aggregate budget <= quiescent")
+		}
 	}
 	return nil
+}
+
+func predictivePrefillBounds(cfg Config) (regular, exclusive, quiescent, aggregate int64) {
+	regular = cfg.PredictivePrefillRegularTokens
+	exclusive = cfg.PredictivePrefillExclusiveTokens
+	quiescent = cfg.PredictivePrefillQuiescentTokens
+	aggregate = cfg.PredictivePrefillAggregateBudgetTokens
+	if regular == 0 && exclusive == 0 && quiescent == 0 && aggregate == 0 {
+		return domainpredictive.DefaultPrefillRegularTokens,
+			domainpredictive.DefaultPrefillExclusiveTokens,
+			domainpredictive.DefaultPrefillQuiescentTokens,
+			domainpredictive.DefaultPrefillAggregateBudgetTokens
+	}
+	return regular, exclusive, quiescent, aggregate
 }
