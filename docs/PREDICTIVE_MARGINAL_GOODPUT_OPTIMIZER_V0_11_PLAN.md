@@ -1,6 +1,6 @@
 # PIG v0.11.4 确定性请求感知与 Prefill 干扰准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source commit/push/annotated tag、clean-tag builder-local/registry immutable image provenance、部署前 live baseline/候选和 Router-disabled 专用验证 harness 三遍静态复查；registry artifact 已验证，但 GitHub Publish Image #26 为发布后 manifest HEAD denied 的红状态，尚未关闭；v0.11.4 harness 尚未运行，未部署或重新启用 use1-cb**
+状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source commit/push/annotated tag、clean-tag builder-local/registry immutable image provenance、部署前 live baseline/候选、Router-disabled 专用验证 harness 和 30 分钟 canary observer 三遍静态复查；registry artifact 已验证，但 GitHub Publish Image #26 为发布后 manifest HEAD denied 的红状态，尚未关闭；v0.11.4 harness/observer 尚未运行，未部署或重新启用 use1-cb**
 最后更新：2026-08-06
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -830,6 +830,8 @@ matrix；必须完成三轮复查、release identity、commit/tag/image、Router
   Router、未发送推理请求；
 - [x] v0.11.4 Router-disabled preflight/shadow/enforce 专用 harness 编写、三遍复查与 PowerShell
   静态语法/无生产写命令审计；harness 尚未运行，不构成 deployment/readiness 证据；
+- [x] v0.11.4 30 分钟 canary observer、只摘 `use1-cb` 的 exact-once stop rollback、drain 与
+  只读 progress reader 三遍静态复查；observer 尚未运行，不构成 canary/production 证据；
 - [ ] v0.11.4 Router-disabled shadow/enforce 与 Router enable 前 current-state drift recheck；
 - [ ] v0.11.4 Router canary 与 30 分钟实际流量观察。
 
@@ -3715,3 +3717,80 @@ R135 只达到 **live validation design/static readiness**，不增加 Compose i
 readiness 或 production evidence。下一步 gate 不变：必须先关闭 workflow 红状态，或由用户显式接受该发布后
 校验异常；随后重新读取 live CVM/Compose/Router drift，才可部署 exact shadow candidate。shadow 与 enforce
 各阶段必须使用新 harness 的全新 evidence directory，任何失败立即停止，禁止直接 enable Router。
+
+### 13.81 R136 v0.11.4 canary observer、即时回退与三遍静态复查
+
+R136 仍只修改 root checkout 中被精确 local exclude 的
+`tmp/pig-v0114-use1-cb-live-20260806/` harness，并把审计结果追加到本 canonical plan。没有运行任何
+PowerShell runner，没有部署 Compose、重启容器、修改 Router 或发送推理请求。R135 后又确认 PIG 同签名
+protection log 会在 1 秒窗口节流并以 `suppressed=N` 表示被折叠事件，因此 physical log line 不能与 429
+counter 一一对应：精确事件数只读
+`pig_predictive_admission_enforced_rejects_total`；日志验收只要求 counter 增长后至少出现一条新的 unified
+`enforced=true` 行，并把 `1 + suppressed` 作为独立的 represented-event 诊断量。该修正使 R135 的 common、
+low-flow 和 weighted runner 哈希成为历史值，本节的哈希取代它们。
+
+当前完整 harness identity：
+
+```text
+HARNESS_PLAN.md
+  1c1ee0047ce777b2b379ba2ee8c365c8b25743b46d8f209d321269de8df018cc
+CANARY_PLAN.md
+  117526cfa64a2295e6ad6246ca168a596c86faa5ffda11e32a25b4365544fc0d
+v0114-live-common.ps1
+  448a7b0fdcdb776a7c2bb1a795df95c30f35319ff78c6b35798a405e5c1142da
+capture-v0114-preflight.ps1
+  9b563e4f6ef3ac7a28ab7dbe57dd5d645f7201cbadf005b636e0d5c93cced637
+run-v0114-protocol.ps1
+  10e482e6a937ca24fdef41935a096db2d56795b8a6b7f876db9ff7d2f51fa1bf
+run-v0114-lowflow.ps1
+  8a5582c1b5e9b23e323b21f1b29fe0906ab292aea49f2a43f6972677990a6d3b
+run-v0114-shadow-size-tiers.ps1
+  9c16b93120fe7c16815e996ae7ece52938b8e14a3004c709f54bdd4b44612a6a
+run-v0114-enforce-weighted-budget.ps1
+  a79dc0fb40245dde9ac94d8f250db4b8887cde8048014a6394cfd7793bc2b24d
+run-v0114-enforce-exclusive.ps1
+  a00b53967def59ba44034f721da9d4d52b888a7e458aeae7df26331f5400ac9b
+observe-v0114-canary.ps1
+  2604ef894e2c3edfee00a0975c4f8e892ece99b0ac2ab6757d7ba66452d62646
+read-v0114-canary-progress.ps1
+  3d7eea7a0feb14442977f5bb9cb503a5802b4b62d01af4503054fb90b97f795b
+```
+
+三遍复查发现问题后均先修改 harness，再从头执行 PowerShell AST parse；最终十个 `.ps1` 文件均为
+`0` parse error：
+
+1. **模型与因果。** R128 失败形状 `running=52、pending Prefill≈41` 在 observer 中产生约 `11`
+   个 estimated Decode sequences；prompt/generation counter 同时冻结且 generation TPS 近零时，30 秒
+   Decode-freeze stop 可触发。单个纯 Prefill 的 `running=1、pending=1` 则得到 `0` Decode，不会由该规则
+   误停；短 TPS 下降仍分别需要连续 30/120 秒。复查发现初版直接把
+   `pig_dynamic_observed_single_user_tokens_per_second` 当逐请求 TPS 且没有 validity gate，会把启动/低流的
+   无效 `0` 样本误作 QoS failure。源码确认它是 aggregate generation capacity 除以 Decode concurrency；
+   现明确命名为 mean-active TPS proxy，只有 predictive forecast valid、dynamic Decode active 且无 Prefill
+   transition 时才进入 TPS stop，真实 request-level TPS 保留为独立 live-analysis 证据。completion goodput、
+   prompt/uncached-prompt、cache-token/prefix-block mix、Router share 和 estimator/prediction 平均微秒数分别
+   记录；TTFT 只观测，不是 stop/admission gate。PIG、vLLM 或 target-route cumulative counter 回退会立即
+   stop，避免 runtime restart 后用跨 epoch 差值伪造 green。
+2. **安全与生命周期。** 初版在 stop 后先抓完整 PIG/vLLM logs、随后才 disable，可能延迟真实故障回退。
+   现有 live stop 或 interruption 在进入 `finally` 后先执行唯一允许的
+   `PATCH /v1/admin/upstreams/use1-cb {"enabled":false}`，再抓日志/保护证据；只有 post-window evidence gate
+   首次产生 stop 时才在采集后回退，`rollbackHandled` 保证不重复 PATCH。初始 protection-log 失败也进入
+   stop/finally，不再在回退保护之外直接 throw；log collector 异常被转换为 post-window failure，不能跳过
+   late rollback。disable 后同时验证 upstream/route false、其他 enabled state 与 route inventory 保留；
+   drain 新增 forwarded pending safety-token gauge，并只读 current Manager gauges，不读取
+   `last_decision_*`。只有 confirmed-disabled 才等待最多 10 分钟的 Router/PIG/vLLM/KV drain；回退不确定时
+   立即记录失败供 operator 处理，不用十分钟假装仍在 drain。
+3. **证据与发布。** 静态 command audit 对十个脚本得到 `PATCH=1`、`enabled=false payload=1`、
+   `enabled=true=0`、deploy/Compose-up=`0`、TTFT stop reason=`0`；两个 rollback call site 分别属于
+   live-stop 和 post-window-stop，均受同一 exact-once state 保护。secret-literal scan 对 harness 顶层十二个
+   文件无命中；root `.git/info/exclude` 仍只精确覆盖该 harness 目录。shadow/enforce/summary candidate
+   SHA-256 继续为 `92d55f600970...`、`711f20570159...`、`ffda4a145c19...`，最大实际构造仍为 230000
+   words，不向 262K `use1-cb` 发送 512K/650K actual prompt。nested branch/remote branch 为
+   `88c963bf...`，annotated tag object/dereference 保持 `28b06970...`/`c6e8ac37...`，tag 未移动。
+   `2026-08-06` 只读 GitHub API 再确认 Publish Image run `31113029042` 仍为 attempt `1`、
+   `completed/failure`、head `c6e8ac37...`；没有重跑 workflow。
+
+R136 只达到 **canary observation/rollback harness static readiness**。它不增加 v0.11.4 Compose
+integration、deployed runtime、endpoint readiness、Router canary 或 30 分钟 production evidence，也不能
+把 mean-active TPS proxy 冒充真实逐请求 TPS。发布 workflow 红状态 gate 仍必须先关闭或获得显式例外；
+之后仍从 fresh CVM/Compose/Router drift recheck、Router-disabled shadow/enforce 和 final preflight 开始，
+不能直接 enable `use1-cb`。
