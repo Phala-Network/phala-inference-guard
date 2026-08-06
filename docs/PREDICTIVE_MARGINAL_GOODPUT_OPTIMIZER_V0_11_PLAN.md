@@ -1,6 +1,6 @@
 # PIG v0.11.0 确定性请求感知准入计划
 
-状态：**唯一 canonical 执行规范；第六轮三轮复查与完整 builder matrix 完成，待提交/发布**
+状态：**唯一 canonical 执行规范；源码、tag 与 immutable image 已验证，待 `use1-cb` 分阶段部署**
 最后更新：2026-08-06
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -664,7 +664,8 @@ truth 脱离的固定 TPS override 覆盖观察值；否则会人为遮蔽 admis
   变化 supersede，不能作最终 release evidence）；
 - [x] 第六轮三轮实现复查完成；
 - [x] R102 exact executable-source deterministic simulation/replay；
-- [ ] commit/push/tag/image；
+- [x] commit/push/tag；
+- [x] R103 builder-local image、registry immutable digest 与 production image contract；
 - [ ] `use1-cb` shadow/enforce/canary。
 
 截至当前已完成 pure policy、Manager、server adapter、live observer、deterministic
@@ -677,8 +678,9 @@ production learning metrics 已删除。第五轮复查中的 startup baseline�
 recovery 和 dead Router-hold config 已获 R92 focused green；unknown-TPS single-speculation 虽获
 focused green，却因 R93 暴露约 31% burst goodput 退化而被否决；R94 已补齐 burst acceptance
 red，当前源码已回退该规则，R95 corrected deterministic simulation 已恢复 burst non-regression。
-R95 后新增并发 rebase 测试与文档修正，因此仍须创建新的 exact-source release archive。当前仍
-没有 commit、push、镜像、Compose、部署或流量变更。
+R95 后新增并发 rebase 测试与文档修正，因此最终 executable-source 证据以 R102 为准。源码已由
+`d88b598f9bc57af2ca71eab1879a56d6e1406422` commit/push，并由 annotated `v0.11.0` tag 锁定；
+R103 已验证 registry immutable image。当前仍没有 Compose、CVM、Router 或实际流量变更。
 R20 的旧 TPS hard-floor 语义已由 R27/R28 取代。
 
 ### 13.1 R19 pure-policy behavioral red
@@ -1986,3 +1988,53 @@ simulation 仍为 candidate aggregate `98.485/98.398` completion/SLO tokens/s �
 acceptance passed。R102 后只追加了本节 non-executable ledger；Go source、Dockerfile、go.mod/go.sum
 未改变，R102 executable-source manifest 仍适用。当前完成层级为 source implementation + complete
 builder matrix；尚无 commit/push/tag/image/Compose/deploy/live evidence。
+
+### 13.51 R103 source tag 与 immutable production image green
+
+```text
+source commit:
+  d88b598f9bc57af2ca71eab1879a56d6e1406422
+branch:
+  pig-origin/codex/pig-v0.11.0-request-aware
+annotated tag object:
+  fa7e54188693f245183c3b80f276087a96a946f9
+tag dereference:
+  v0.11.0^{} -> d88b598f9bc57af2ca71eab1879a56d6e1406422
+builder:
+  cvm_3e2k83KX / app 89811a9add5b20427ee1fbf4dc22a33984e41959
+  pig-v01011-builder / Go 1.24.13 linux/amd64 / restart=0 / OOMKilled=false
+R103 builder directory:
+  /var/volatile/dstack/persistent/pig-builder-work/pig-v011-release-r103-d88b598f
+builder-local image ID:
+  sha256:fbf8b104364e73ee7cc8feb3098c1fe6dc9197a9c4b38c8d38f4ddbf804dda93
+registry immutable image:
+  ghcr.io/phala-network/phala-inference-guard@sha256:6fa3b1dde11ab3ccbd4e88df9e5c7abf76a7fb255703da5ebc03cec01e0eb110
+pulled registry image ID:
+  sha256:e5f38b5dcbad99323b5dfbb43304355eb8cc00f1200bd3375994b631b8618952
+builder-local / registry binary SHA-256:
+  202af72781badf854ac0dca41c1c0e6a0e055a3a730e2768d121ac8343028385
+local image contract log SHA-256:
+  61345da72ae62e76aaa512649df4c9a5dd42e2ce926e3088fb27ca58c9c9cd7c
+immutable pull log SHA-256:
+  895cb40bbe7fae350c54fb3917e7d66172c43bd524980da7b87cacba94bb7b85
+immutable image contract log SHA-256:
+  b9373f8cf77218436ee60b2782117ec4069e65dd769fdc684987ffa91e7616a7
+immutable binary evidence SHA-256:
+  f75c1d759ea11ca90c4350f9629a227f6b71b4a2b902589967656c34fcd6e566
+```
+
+R103 从公开 `v0.11.0` tag 重新 clone，验证 clean HEAD 精确等于 R102 后提交的 commit，再独立构建
+production image。builder-local image 通过 `validate-production-image-contract.sh`，为 linux/amd64、
+label `0.11.0`、`NVIDIA_VISIBLE_DEVICES=all`、distroless entrypoint `/phala-inference-guard`，二进制包含
+native NVML collector 与 `PIG-v0.11.0`。
+
+准备 push 前的 authenticated manifest guard 发现 registry tag `v0.11.0` 已存在，因此 R103 没有
+覆盖 tag。现有 tag pull 得到 immutable digest `6fa3b1dd...`；按 digest 再次 pull、执行 production
+image contract 并提取二进制，结果与 R103 从精确 source commit 构建的二进制 SHA-256 完全相同。
+两次构建的 Docker image ID 不同不作为源码差异证据；生产可执行文件 identity、version、label、
+entrypoint、NVML contract 与 immutable digest 均已独立验证。用于 GHCR 的临时 Docker config 已
+logout 并删除；一次错误把 `--version` 当作退出型子命令启动的临时容器也已精确删除。
+
+R103 只完成 source tag、builder-local image 和 registry immutable image 层，没有修改 Compose、
+CVM、Router 或生产流量。下一步必须重新读取 `use1-cb` live Compose 与 route state，再执行
+Router-disabled shadow；不能由本节推断 deployment readiness 或 live goodput。
