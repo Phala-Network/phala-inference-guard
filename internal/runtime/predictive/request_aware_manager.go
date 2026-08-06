@@ -60,7 +60,7 @@ func (m *Manager) decideRequestAware(
 		return requestAwareManagerFailure(RequestAwareReasonDuplicate, m.eventSequence)
 	}
 
-	state, pendingLong, pendingQuiescent := m.requestAwareStateLocked(policy)
+	state, pendingPrefillTokens, pendingLong, pendingQuiescent := m.requestAwareStateLocked(policy)
 	effectiveKV := state.ActiveKVUpper
 	if state.PhysicalKVUpper > effectiveKV {
 		effectiveKV = state.PhysicalKVUpper
@@ -77,9 +77,9 @@ func (m *Manager) decideRequestAware(
 	}
 	input.RequestReservedTokens = requestReservedTokens
 	input.SelectionInputTokens = selectionInputTokens
-	input.EstimatedPrefillTokens = cost.UncachedPrefillUpper
+	input.EstimatedPrefillTokens = selectionInputTokens
 	input.PendingPrefillSequences = state.PendingPrefillSequences
-	input.PendingPrefillTokens = state.UncachedPrefillTokens
+	input.PendingPrefillTokens = pendingPrefillTokens
 	input.PendingLongPrefillSequences = pendingLong
 	input.PendingQuiescentPrefillSequences = pendingQuiescent
 	decision := policy.Evaluate(input)
@@ -92,11 +92,12 @@ func (m *Manager) decideRequestAware(
 
 	m.eventSequence++
 	m.reservations[requestID] = reservation{
-		ID:               requestID,
-		Created:          now,
-		Cost:             cost,
-		AdmittedSequence: m.eventSequence,
-		Assimilation:     assimilationUnabsorbed,
+		ID:                        requestID,
+		Created:                   now,
+		Cost:                      cost,
+		PrefillInterferenceTokens: selectionInputTokens,
+		AdmittedSequence:          m.eventSequence,
+		Assimilation:              assimilationUnabsorbed,
 	}
 	return RequestAwareManagerResult{
 		Decision:                decision,
@@ -105,16 +106,25 @@ func (m *Manager) decideRequestAware(
 	}
 }
 
-func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) (domain.VirtualState, int, int) {
+func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) (domain.VirtualState, int64, int, int) {
 	state := m.base
+	// Existing backend work has no attributable lexical estimate, so preserve
+	// its observed safety upper. Local reservations replace only their own
+	// upper with the request-aware interference estimate below.
+	pendingPrefillTokens := state.Upper.UncachedPrefillTokens
 	pendingLong := 0
 	pendingQuiescent := 0
 	for _, item := range m.reservations {
-		addReservationToStateInterval(&state, item)
+		addReservationToStateInterval(&state, &item)
 		if item.PrefillComplete {
 			continue
 		}
-		switch policy.prefillClass(item.Cost.UncachedPrefillUpper) {
+		prefillInterferenceTokens := item.PrefillInterferenceTokens
+		if prefillInterferenceTokens <= 0 {
+			prefillInterferenceTokens = item.Cost.UncachedPrefillUpper
+		}
+		pendingPrefillTokens = addInt64Saturating(pendingPrefillTokens, prefillInterferenceTokens)
+		switch policy.prefillClass(prefillInterferenceTokens) {
 		case RequestAwarePrefillQuiescent:
 			pendingQuiescent = addIntSaturating(pendingQuiescent, 1)
 			pendingLong = addIntSaturating(pendingLong, 1)
@@ -122,7 +132,7 @@ func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) (domain.Vi
 			pendingLong = addIntSaturating(pendingLong, 1)
 		}
 	}
-	return state.Upper, pendingLong, pendingQuiescent
+	return state.Upper, pendingPrefillTokens, pendingLong, pendingQuiescent
 }
 
 func requestAwareManagerFailure(reason RequestAwareReason, sequence uint64) RequestAwareManagerResult {

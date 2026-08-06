@@ -2592,3 +2592,275 @@ R119 已达到 source tag、builder-local image、registry publication、immutab
 provenance 层；尚未修改 `use1-cb` Compose、CVM、Router 或生产流量。下一步必须重新查询当前 live
 Compose/hash、Router enabled set 和节点 readiness，再仅以 Router disabled shadow 部署该 digest；
 不得由 registry green 直接 enable Router。
+
+### 13.65 R120 v0.11.2 Router-disabled shadow 与分层尺度错误
+
+2026-08-06 实时 authenticated preflight 确认 `use1-cb=false`，Router enabled set 仍为
+`use1-9b,use1-19`，Router config digest 为
+`sha256:b8447a719c6fb9d8bf956ae60928d5e857828e7c2874739e7bb8fae8cca5c47a`；目标 route
+`running=0`，直连 PIG/vLLM running、waiting、KV、preemption 和 reservation 均为 0。live Docker
+Compose UTF-8 SHA-256 为
+`d6458ac3baf8d46f59a3ad6789708b63c2fa4602fc6ef96ab4e09509c763192e`。从该 snapshot 生成 rollback、
+v0.11.2 shadow 和 enforce candidates；normalized diff 只包含 PIG immutable digest、shadow mode 和
+四个显式 Prefill defaults。shadow/enforce candidate SHA-256 分别为
+`0ab72ecc4e878de900466d2e320385d6357694c676b797253b69503501bbe89d`、
+`264fd63469defd4779333923807e315bb8fe30b781a33b82b41a161c7c6763aa`，candidate summary SHA-256 为
+`d1cfc4ab96a9d28b7ca5b4560916d6ceab2e7c63b6641552ff4bd018026bb541`。
+
+predeploy drift check 再次得到相同 live Compose SHA-256、Router digest、enabled set、
+`use1-cb=false` 和 route `running=0`。随后只部署上述 shadow candidate，不传 `.env`，deploy 从
+`2026-08-06T07:33:06Z` 到 `07:37:30Z`、exit 0；deploy summary SHA-256 为
+`c5c94e1f1b97be0896d04f32f2a6d47caa9f99203231adbd420121bf958ced62`。更新后的平台 Compose hash 为
+`0cc84bd448797bf00f9d607e6106fa47471b151c0eca42447a264eff7ecf00b4`，Docker Compose SHA-256 精确等于
+shadow candidate；PIG image digest/image ID 分别为 R119 immutable digest 和
+`sha256:86f8a9ea12b52a2805d53eb511cbe0c16a0dc09e8942acb164ba44aedae5ac55`。
+
+readiness 期间 `/v1/models` 从 503/偶发 connect timeout 恢复为 200；最终 PIG/vLLM metrics 和
+attestation authenticated 200，未认证 metrics 401，NVIDIA payload 非空，endpoint status evidence
+SHA-256 为 `6c9813d4fba493817abdd4d044c6d032cd5500c160349650b036b416caeb14e4`。
+runtime metrics 明确为 `PIG-v0.11.2`、`shadow`、intake open、reservation/pending Prefill/Router
+backpressure 均为 0；vLLM 启动确认 max-model-len 262,144、KV capacity 862,437 tokens、模型加载、
+CUDA graph capture 和 server start，当前 boot 未出现 CUDA OOM、NVRM Xid、EngineDead、host OOM 或
+panic。vLLM/serial evidence SHA-256 分别为
+`dc18a56dbf2916ba150479ed13f94d56e571fb33b6be16129a314cb49e0291df`、
+`e88c8820e1fe9a55505ca5cfd069aeb268c68a312e68d7f0b924b13d35de2e7d`。
+
+Router-disabled chat、stream、required tool、strict JSON Schema、Responses API 和 CJK 六项均为 200，
+protocol summary SHA-256 为
+`b129aef9ebfd6d61acc52e1d07e41a7acdaa757ae7ff8b45e6fb68bb89a21d65`；请求后 PIG attempts=6、fit=6、
+enforced rejects=0、reservation/pending/backpressure/failures=0，vLLM success=6 且再次 idle。低流、
+completion-window、mid-stream cancel、post-cancel recovery 和 12 并发 burst 首轮只因测试器错误要求
+取消后的 HTTP status 必须为 `000` 而 red；实际已收到 200 response headers 和 6,004 bytes 后 curl
+按 2 秒退出 28。修正该判据后，r2 唯一失败是一个请求在 connect 阶段 20 秒 `HTTP 000`，PIG
+attempt delta 也精确少一，证明未进入 PIG；普通请求增加最多两次 transport-only retry、取消不重试的
+r3 全绿。三份 summary SHA-256 依次为
+`29e84fbed1bfc39bd4979de5686db7e356feb659cfc895d26dc52c87d75a6561`、
+`0fec0c6a0a046905a5d94b23929d73fecc0eaed27492229e54e4ceff7b96b95e`、
+`00b3e7761592ae2e1679d78e80e9ba604aacb0f28791dd2f36a60db3d21ac603`。r3 结束时
+running/waiting/KV/reservation/pending/preemption/backpressure/failures 全为 0；连接抖动必须作为
+ingress/transport 观察项保留，不能伪装成 PIG admission 结果。
+
+随后执行当前节点范围内的 token-size shadow probe，summary SHA-256 为
+`fe3e56a7782c081b5392ec985022ab9f9e98d98d7e03295db0130e6c146e7778`：
+
+- 80,013 actual prompt tokens、480,121-byte request 成功，但 `selection_input_tokens=99,389`、
+  `estimated_prefill_tokens=240,069`，分类为 `weighted`；
+- 230,013 actual prompt tokens、1,380,121-byte request 成功，但
+  `selection_input_tokens=285,718`、`estimated_prefill_tokens=690,069`，分类为 `quiescent`；
+- 两者结束后均无 reservation/pending/preemption/Router clamp；没有向 262K 节点发送 512K 或 650K
+  actual prompt。
+
+源码因果追踪确认 3 倍提前触发来自信号复用：`selectionInputTokens` 已是 bounded lexical hint 的
+模型无关点估计；`EstimatedInputHigh` 是用于 hard KV safety 的保守输入上界。adapter 把后者写入
+`RequestCost.UncachedPrefillUpper`，Manager 又把同一 upper 同时用于 Prefill class、aggregate budget
+和 pending long/quiescent count。64K/256K/512K/650K 原建议针对 `estimated_uncached_tokens` 或近似
+实际 Prefill 工作量，不是 JSON byte-derived safety upper。继续用 upper 会让当前 live shape 在约
+实际 170K 时就进入 512K+ quiescent，明显过度保护总吞吐。因此 v0.11.2 **停止 promotion**：保持
+Router disabled + shadow，不部署已生成的 enforce candidate，也不 enable `use1-cb`。
+
+### 13.66 v0.11.3 safety upper 与 Prefill interference estimate 分离计划
+
+corrective release 自主管理为 `v0.11.3`，不改变通用
+`65,536 / 262,144 / 524,288 / 262,144` 默认值，也不增加模型名、tokenizer asset、cache、Router、
+learner、TTFT、tier 或新配置。修复只分离两个已有信号：
+
+1. `EstimatedInputHigh`/`UncachedPrefillUpper` 继续用于 hard KV fit、block-aligned reservation 和通用
+   safety telemetry；它仍不是精确 cache-cold tokens；
+2. bounded lexical `selectionInputTokens` 用作长 Prefill interference 的
+   `EstimatedPrefillTokens`、64K/256K/512K class 和 256K aggregate pending budget；缺失或 invalid
+   时仍 fail closed/回退 safety upper；
+3. request-aware reservation 必须原子保存该 interference estimate；pending estimate、long count、
+   quiescent count 从唯一 reservation registry 同一次扫描派生，不增加第二套可泄漏 counter；
+4. generic `ForwardedPendingPrefillTokens` 可继续表达 safety upper；request-aware
+   `pending_prefill_tokens` 明确表达 interference estimate，日志/metrics/计划不得混淆；
+5. hard KV 决策必须在 point estimate 很小但 safety upper 超限时仍保护；信号分离不能牺牲 KV QoS。
+
+先增加能 compile 且因 v0.11.2 行为失败的 behavioral red：
+
+- safety upper 690K、interference estimate 285K 时 class 必须是 `exclusive` 而不是 `quiescent`；
+- safety upper 240K、estimate 99K 的两个 pending request 应按 198K aggregate admit，第三个按 297K
+  触发 budget；不能用 480K safety upper 错拒第二个；
+- 690K safety upper 仍参与 hard KV post-admit fit，不能因 class 使用 285K 而放松；
+- divergent estimate 的 reservation 在 prefill complete、terminal、cancel、rebase、Close 和 race
+  下 exact-once 释放；small request 不得因 exclusive request 的 safety upper 超过 512K 而被错误
+  当成 quiescent 独占保护；
+- HTTP integration 必须证明相同 backend snapshot、相同 safety upper、只改变 interference estimate
+  会改变 pre-forward class/verdict/telemetry；source fallback 和 invalid case 保守。
+
+最小实现后只在授权 builder 运行 focused/full/race/vet/build、两次 deterministic simulation 和
+hot-path benchmark；本地 Windows 不运行 Go executable gates。所有 executable source 变化都使
+v0.11.2 的 matrix/image evidence 失效。通过三轮复查后 bump runtime/README/OCI identity、发布新的
+annotated tag 和 immutable digest，再以当前 Router-disabled shadow Compose 只替换 PIG digest，重做
+readiness、协议、低流和 size probe。v0.11.3 live acceptance 要求：80K case 仍为 weighted；230K
+case 应以约 285K interference estimate 落入 exclusive、不能再以 690K safety upper 落入 quiescent；
+hard KV safety upper 和无 preemption/residue 证据同时保留。当前 262K 节点仍不发送 512K/650K actual
+prompt；这两个边界由 corrected source、生命周期测试和 multi-card deterministic simulation 证明。
+
+### 13.67 R121 多卡 512K/650K 合同确认与 v0.11.3 三轮复查修正
+
+用户再次确认 512K/650K 分层对多卡大模型有效。active contract 因此继续使用四档
+`<64K / 64K–<256K / 256K–<512K / >=512K`；650K 是 `>=512K` quiescent 档的代表性压力用例，
+不是需要第五个阈值的新档。当前 262K `use1-cb` 只限制 live actual-prompt 验证范围，不能删除 exact
+512K boundary、650K idle/busy/cancel/recovery 或多卡 simulation。
+
+本轮按 source archive 之前的三轮 review 执行，并在 review 中继续修改源码，因此 R120 focused green
+不能外推到当前工作树：
+
+1. **模型与因果。** hard KV fit、block-aligned reservation 和 generic pending telemetry 继续使用
+   `EstimatedInputHigh`/`UncachedPrefillUpper`；Prefill class、aggregate interference budget 和本地
+   long/quiescent count 使用 bounded lexical estimate。没有增加模型名、tokenizer asset、cache、Router、
+   learner 或第五个 650K class。HTTP behavioral test 使用两个精确相同 body-byte safety envelope：低 lexical
+   work 必须 regular/admit，高 lexical work 必须 >=512K quiescent/pre-forward protect；两者 reserved safety
+   tokens 必须相同。另一个 hard-KV case 证明低 estimate 不会放松 safety upper。
+2. **安全、生命周期与 SOLID。** interference estimate 只作为唯一 Manager reservation 的一个原子字段，
+   pending estimate、long count、quiescent count 仍由同一次 registry scan 派生，没有第二套 lifecycle
+   counter。新增 divergent estimate 的 Prefill-complete、terminal、client cancel、rebase race 和 adapter
+   Close-before-forward 测试。`Close` 的真实合同是先关闭 intake、禁止旧句柄再 commit forward，再由 terminal
+   路径 exact-once 回收；不得为迎合测试直接清空仍可能在执行的 reservation。Prefill complete 只释放
+   interference budget，不能提前释放 KV ownership。
+3. **evidence 与 release。** review 发现初版修复把 `PendingPrefillSequences` 取自 observed base 加本地
+   reservation，却只从本地 reservation 累加 pending interference tokens；存在 observed pending sequence
+   非零而 tokens 为零的 invalid/误锁缺口。现改为：无法归属 lexical estimate 的 observed pending work 从
+   observed `UncachedPrefillTokens` safety upper 保守起算，本地 reservation 再按 interference estimate
+   累加；缺失的 reservation metadata 同样回退自己的 safety upper。新增两项因果测试，防止该缺口回归。
+
+deterministic simulation 当前新增：
+
+- live-shaped safety upper 240K / estimate 99K：两个请求按 198K admit，第三个按 297K budget protect；
+- live-shaped safety upper 690K / estimate 285K：在已有 Decode 时允许一个 exclusive 和一个 short，第二个
+  exclusive pre-forward protect，不能因 690K safety upper 把首个请求误判成 quiescent；
+- exact 512K busy boundary：必须进入 quiescent protection；
+- 既有 idle/busy/cancel/recovery 650K 场景保持不变。
+
+截至本节只完成 source/test/simulation 修改与本地 `git diff --check`；未在本地 Windows 运行 Go executable。
+下一步必须从当前 exact source 重新封存 archive，并仅在授权 builder 执行 whole-repo gofmt、focused、full、
+race、vet、build、两次 byte-identical simulation 和 benchmark。当前仍不得 bump/tag/publish/deploy v0.11.3，
+不得部署 v0.11.2 enforce candidate，`use1-cb` 必须继续 Router disabled + v0.11.2 shadow。
+
+### 13.68 R121/R122 性能复查与 R123 单次扫描优化
+
+R121 exact candidate archive SHA-256 为
+`c3eb78c50c0575bc8d2db83fa563f08acdc4ebac17d35e83dd9fa4efae41af05`；focused evidence archive
+SHA-256 为 `6ebabcb6096fa4c3b09637440f3f91c99f8da5d3a6999a3886f2f7262a4c7b37`。R121 full evidence
+archive SHA-256 为 `a4341b7b83f23c4e6b4bdaff204ac97a866f114500c26284c72081bfd90b5017`，所有
+test/vet/build/race/simulation/acceptance gate 均为 0。两次 deterministic simulation byte-identical，report
+SHA-256 为 `3e4e29c32b7dfed28326d916f01d39e642b2edabc492358b43d354ce2777208f`；aggregate
+completion TPS 为 `50.3645 -> 68.2720`，SLO completion TPS 为 `46.2056 -> 67.5911`，preemption
+保持 `1 -> 1`，TPS-floor violation 为 `89.7s -> 7.5s`。这些只属于 deterministic model evidence，
+不是实际 GPU throughput 证据。
+
+R121 没有直接接受为 performance green：相对 exact v0.11.2 baseline，Manager 48/256 active reservation
+约慢 `12.7%/12.9%`，虽然绝对增加仅约 `0.62us/3.3us` 且保持 0 allocation。R122 尝试把 lexical
+interference estimate 临时写入 map-value copy 的 `Cost.UncachedPrefillUpper` 再复用 interval helper，archive
+SHA-256 `6554a732586ae5531ac6c9d0f12ae428c652794d5b906312035f1a07b29c5567`、focused evidence
+SHA-256 `280b629829311026a6258b8eb1912ed4e203716313d1e629dfb9944673fa23d7`；功能和 race 仍通过，
+但 48/256 active regression 恶化到约 `14.8%/14.9%`，因此明确拒绝 R122，并恢复显式、独立的
+`pendingPrefillTokens` saturating sum。`RequestCost` 的 safety invariant 没有被修改。
+
+源码复查定位到真正的额外成本：`reservation` 同时包含 `RequestCost`、完整 scheduler prediction 和 lifecycle
+metadata；map range 已产生一个局部 value，而 `addReservationToStateInterval` 又按值接收整个 reservation。
+R123 只把该 helper 及两个 cost projection helper 改为读取局部 value 的指针，仍然：
+
+- 扫描唯一 `reservations` registry 一次，不增加 aggregate counter、第二张 map 或 pointer-valued ownership；
+- generic virtual KV/state 继续使用原始 safety upper；request-aware pending interference 继续独立使用 lexical
+  estimate，missing metadata 和 observed base 继续回退 safety upper；
+- helper 不修改 reservation；map ownership、锁、terminal、cancel、prefill-complete、rebase 和 Close 生命周期
+  均不变；
+- exact 512K boundary 和 650K idle/busy/cancel/recovery 仍属于同一个 `>=512K` quiescent 档。
+
+R123 candidate archive SHA-256 为
+`339431da8acd23e782b8fed412d7acb9518f092021a11c8605e708e0c067ce38`，只包含 297 个 tracked
+files；两个历史 untracked plans 未进入 archive。授权 builder 仍为 `cvm_3e2k83KX` / `pig-v01011-builder` /
+Go `1.24.13 linux/amd64`，container `running=true`、`OOMKilled=false`、restart count `0`。CVM 重启后的
+ED25519 host key 使用独立 known-hosts 锁定并复核为既有指纹
+`SHA256:cL6Yhk0milH+/UJcYwy9ebox+uT6HJfMkAKo26pZO3M`，没有关闭 host-key 校验。
+
+R123 focused evidence archive SHA-256 为
+`5423bb5c499e453c5a04203dc08006f5bf1ae5e75d19fc8e82ac0d7e06e36cfb`：whole-repo gofmt
+为空，focused tests/race 和 required simulation acceptance 均通过。Go compiler optimization log SHA-256
+`09d41fda40e8c3e4aa2ac98cd0b6cd5744fa198966552649d7d2300073e2ca8f` 明确报告 local
+`item does not escape`，helper 参数不 escape；Manager benchmark 仍为 `0 B/op / 0 allocs/op`。
+
+R123 full evidence archive SHA-256 为
+`8b317c58914468d612ded6ac111463fcf016cbb7ebd223cf3fa36190b983d548`。以下 gate 的 exit 均为
+0：`go test ./...`、`go vet ./...`、`go build ./...`、`go test -race ./...`、两次 simulation、byte replay、
+acceptance、policy/Manager/HTTP benchmark。full-test、full-race 和 executable source manifest log SHA-256
+分别为 `f3fb13e2780c338568499a29684620999b5dfcca26358c73f466699b1089cae6`、
+`cbdfaa9ebf7296f1c923f8dd9acb1a7c8127f1b66ab2b7f4ed502e9a9c537886`、
+`7b2973f040f8ab189b2c37300ab353668d630d470bc9eb497111b4ae2cbedcbd`。两次 51,772-byte
+simulation 仍 byte-identical，SHA-256 与 R121 相同，证明该性能重构没有改变任何 deterministic verdict 或
+aggregate result。
+
+交错 500ms、每档 10 个样本的 median 如下；全部为 0 allocation：
+
+| Manager active reservations | v0.11.2 baseline | R123 | delta |
+|---:|---:|---:|---:|
+| 0 | 163.4ns | 149.3ns | -8.63% |
+| 48 | 4,869.5ns | 4,544ns | -6.68% |
+| 256 | 25,705.5ns | 24,039.5ns | -6.48% |
+
+HTTP pre-forward fixture median 为 `36,317ns -> 36,074ns`，双方均为 `39,290 B/op / 119 allocs/op`。
+因此 R123 接受为当前 performance green：它消除了 R121/R122 的相对回退，且没有用语义 hack、第二套
+lifecycle state 或 allocation 换取速度。
+
+### 13.69 R123 三轮 final review 与当前 promotion 边界
+
+1. **模型与因果。** 四档仍为 `<64K / 64K–<256K / 256K–<512K / >=512K`；650K 是最后一档
+   的多卡代表用例，不是第五档。hard KV/block-aligned reservation 使用 safety upper，Prefill interference
+   class/budget 使用 bounded lexical estimate。相同 body safety envelope 的 HTTP 因果测试、690K upper/
+   285K estimate hard-KV 与 exclusive 测试均通过；没有模型名、tokenizer asset、cache、Router 或 learner 分支。
+2. **安全、生命周期与 SOLID。** Manager 仍是唯一 reservation owner；state projection helper 只负责把
+   reservation 投影到 virtual state，request-aware manager 只负责组合 observed base、local interference 和
+   policy input。传入局部 copy 指针消除重复大对象复制，但不把 map 改为 pointer map；编译器和 benchmark 共同
+   证明不 escape、0 allocation。terminal/cancel/rebase/Close/race、observed fallback 和 exact-once release 测试
+   全部保持 green。
+3. **evidence 与 release。** R123 exact tracked-file archive 已完成 focused 和 full clean-builder matrix；
+   simulation 只证明确定性模型合同，不冒充真实 GPU goodput。当前完成层级为 source implementation + focused
+   tests/race + complete builder matrix；尚未 bump v0.11.3 runtime/README/OCI identity，尚未 commit/push/tag，
+   尚未构建或发布 image，也未修改 Compose、部署 CVM、发送 live probe 或 enable Router。
+
+下一步先做 v0.11.3 identity-only bump，并证明除 version/ledger 外 executable source 与 R123 等价；随后
+commit/push、annotated tag、从 clean tag 构建 immutable image及验证 source/tag/tree/binary/image provenance。
+只有完成这些 release gates 后，才重新读取 live Router/CVM/Compose，并在 `use1-cb` Router-disabled 条件下仅部署
+v0.11.3 shadow。当前仍禁止 v0.11.2 enforce promotion、Router enable 和向 262K 节点发送 512K/650K actual
+prompt；512K/650K 的通用多卡合同继续由 source、lifecycle tests 和 deterministic multi-card simulation 保证。
+
+### 13.70 R124 v0.11.3 release identity 与完整 builder matrix
+
+R123 final review 之后只执行 release identity 和说明收口：runtime status constant 改为 `PIG-v0.11.3`，
+Dockerfile OCI version label 改为 `0.11.3`，README 标题和行为说明改为 v0.11.3，并明确 hard KV 使用
+safety upper、Prefill class/budget 使用 lexical estimate、缺失时才回退 safety upper。64K/256K/512K/650K
+算法、默认阈值、reservation lifecycle、policy 和 simulation scenario 均未改变。
+
+12 个 task-owned tracked paths 明确 stage；两个历史 untracked plans 仍未 stage。staged index tree 为
+`72cc7a8795f9d629383b954976d6332213b791b4`，从该 tree 直接生成的 297-file release archive SHA-256
+为 `949d0020d32691f2c3686172db900147a12be36ec192a151f6434a28c932d64e`。授权 builder/container/
+Go 环境与 R123 相同且 `running=true`、`OOMKilled=false`、restart count `0`。
+
+R124 release evidence archive SHA-256 为
+`7e9b352964a1518e02bb9e2f1b3b36cc180229e2246fa025259092e6c6c71ea7`；为避免通过慢速 SSH
+重复传输 12MB binary，另生成排除 binary 本体、但保留 binary hash/version log 和全部 gate log 的 slim evidence
+archive，SHA-256 为 `4eb0f3dacca705cb9809cd6eaa13d3086b42905f1d1a530b60f9a924fe919d53`。
+两者都来自同一个 builder evidence 目录，slim archive 不作为新的执行结果。
+
+所有 release gate exit 均为 0：whole-repo gofmt 为空，`go test ./...`、`go vet ./...`、`go build ./...`、
+`go test -race ./...`、独立 release binary build、两次 simulation、byte replay、acceptance 和全部 benchmark
+通过。full-test、full-race 和 executable source manifest log SHA-256 分别为
+`504b3289c9d78e0292eb8e91b40b31456fe3d049b8658755621bfec14fe18e46`、
+`a42ff7b06659a9b6a547ba26b26ff4cb7ad460ca75696c9f8c616ecc316cf118`、
+`ed20bb77129ba1f7144cfd0a55611523224926f6bd0b7efa6f4936522777d419`。release binary SHA-256
+为 `d5f8b709e65f1e316a5dd20a9a2a3a7eaa280e33f674aea8bad9d2a832d88b7e`，strings gate 确认包含
+`PIG-v0.11.3`。该 binary 仅是 release identity 证据，不作为待部署 registry image。
+
+两次 51,772-byte simulation 再次 byte-identical，SHA-256 仍为
+`3e4e29c32b7dfed28326d916f01d39e642b2edabc492358b43d354ce2777208f`、acceptance=`passed`，
+因此 identity bump 没有改变 exact 512K boundary、650K idle/busy/cancel/recovery、690K upper/285K estimate
+或 aggregate deterministic result。R124 交错 benchmark median（全部 0 allocation）为：Manager active
+0/48/256 从 `163.75ns / 4,871ns / 25,712.5ns` 变为
+`149.3ns / 4,538.5ns / 24,015ns`，即 `-8.82% / -6.83% / -6.60%`；HTTP median 从
+`36,342ns` 变为 `36,265ns`，两边仍为 `39,290 B/op / 119 allocs/op`。
+
+截至本节，v0.11.3 已达到 staged source + exact release archive + complete clean-builder matrix；仍未 commit、
+push、tag、build/publish registry image、修改 Compose、部署或 enable Router。本节只是 canonical ledger 追加，
+下一步必须证明相对 tested index tree 唯一变化为本计划文档，再创建 source commit 和 annotated tag；image 必须
+从 clean pushed tag 构建并重新验证 OCI label、binary status、tag/tree/image digest 对应关系。

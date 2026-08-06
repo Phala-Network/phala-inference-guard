@@ -82,6 +82,18 @@ func validateLongPrefillContract(name string, baseline, candidate Metrics) error
 		if candidate.Admitted != 2 || candidate.Rejected != 1 || candidate.SizeProtects != 1 {
 			return fail("candidate=%+v, want one 300K plus one short admitted and second 300K protected", candidate)
 		}
+	case "prefill-live-weighted-upper-240k-estimate-99k":
+		if baseline.Admitted != 3 || candidate.Admitted != 2 || candidate.Rejected != 1 || candidate.SizeProtects != 1 {
+			return fail("baseline/candidate=%+v/%+v, want 240K safety upper to preserve two 99K interference admits before the 256K budget protects", baseline, candidate)
+		}
+	case "prefill-live-exclusive-upper-690k-estimate-285k":
+		if baseline.Admitted != 3 || candidate.Admitted != 2 || candidate.Rejected != 1 || candidate.SizeProtects != 1 {
+			return fail("baseline/candidate=%+v/%+v, want 690K safety upper with 285K interference estimate to admit one exclusive plus one short", baseline, candidate)
+		}
+	case "prefill-quiescent-boundary-busy-512k":
+		if baseline.Admitted != 1 || candidate.Admitted != 0 || candidate.Rejected != 1 || candidate.SizeProtects != 1 {
+			return fail("baseline/candidate=%+v/%+v, want exact 512K busy request protected as quiescent", baseline, candidate)
+		}
 	case "prefill-quiescent-idle-650k":
 		if candidate.Admitted != 1 || candidate.Rejected != 0 || candidate.HardFitIdleRejects != 0 || candidate.Completed != 1 {
 			return fail("candidate=%+v, want idle first 650K admitted and completed without self-lock", candidate)

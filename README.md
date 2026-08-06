@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.11.2 deterministic request-aware admission
+### v0.11.3 deterministic request-aware admission
 
-PIG v0.11.2 makes a deterministic decision before forwarding each supported
+PIG v0.11.3 makes a deterministic decision before forwarding each supported
 request to one vLLM upstream:
 
 ```text
@@ -204,9 +204,11 @@ budget, 256K--512K allows one concurrent long prefill, and 512K or larger
 (including 650K) requires an idle backend and owns the prefill phase until the
 first semantic response or terminal release. These thresholds are defaults,
 not model-name checks, so the same policy covers multi-card large-context
-models even when one canary has a smaller max-model-len. Without trusted cache
-information the conservative total prompt estimate is used; it is not reported
-as exact uncached tokens.
+models even when one canary has a smaller max-model-len. Hard KV fit keeps the
+conservative prompt safety upper. Prefill interference class and weighted
+budget use the bounded lexical point estimate, falling back to the safety upper
+when that estimate is unavailable. Neither value is reported as exact uncached
+tokens.
 
 While a 512K-or-larger request is still prefilling, all later requests are
 protected. After its first semantic response, ordinary requests can resume

@@ -98,6 +98,16 @@ func simulationScenarios(seed int64) []scenarioSpec {
 			longPrefillRequest("long-300k-a", 100*time.Millisecond, 300*1024, 64, 0),
 			longPrefillRequest("long-300k-b", 100*time.Millisecond, 300*1024, 64, 0),
 			longPrefillRequest("short-32k", 200*time.Millisecond, 32*1024, 64, 0)),
+		newLongPrefillScenario("prefill-live-weighted-upper-240k-estimate-99k", 0, 18*time.Second,
+			liveShapedPrefillRequest("weighted-live-a", 100*time.Millisecond, 240*1024, 99*1024, 80*1024, 64),
+			liveShapedPrefillRequest("weighted-live-b", 100*time.Millisecond, 240*1024, 99*1024, 80*1024, 64),
+			liveShapedPrefillRequest("weighted-live-c", 100*time.Millisecond, 240*1024, 99*1024, 80*1024, 64)),
+		newLongPrefillScenario("prefill-live-exclusive-upper-690k-estimate-285k", 4, 36*time.Second,
+			liveShapedPrefillRequest("exclusive-live-a", 100*time.Millisecond, 690*1024, 285*1024, 230*1024, 64),
+			liveShapedPrefillRequest("exclusive-live-b", 100*time.Millisecond, 690*1024, 285*1024, 230*1024, 64),
+			longPrefillRequest("exclusive-live-short", 200*time.Millisecond, 32*1024, 64, 0)),
+		newLongPrefillScenario("prefill-quiescent-boundary-busy-512k", 4, 30*time.Second,
+			longPrefillRequest("busy-512k", 100*time.Millisecond, 512*1024, 128, 0)),
 		newLongPrefillScenario("prefill-quiescent-idle-650k", 0, 45*time.Second,
 			longPrefillRequest("idle-650k", 100*time.Millisecond, 650*1024, 128, 0)),
 		newLongPrefillScenario("prefill-quiescent-busy-650k", 4, 36*time.Second,
@@ -127,6 +137,18 @@ func longPrefillRequest(id string, at time.Duration, input int64, output float64
 		id: id, at: at, selectionInput: input, estimatedPrefill: input,
 		reservedTokens: blockRoundUp(input + 1024), actualInput: input,
 		actualOutput: output, cancelAfter: cancelAfter,
+	}
+}
+
+func liveShapedPrefillRequest(
+	id string,
+	at time.Duration,
+	safetyUpper, interferenceEstimate, actualInput int64,
+	output float64,
+) requestSpec {
+	return requestSpec{
+		id: id, at: at, selectionInput: interferenceEstimate, estimatedPrefill: interferenceEstimate,
+		reservedTokens: blockRoundUp(safetyUpper + 1024), actualInput: actualInput, actualOutput: output,
 	}
 }
 

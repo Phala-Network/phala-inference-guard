@@ -97,19 +97,22 @@ func (c TerminalCause) allowsOutcome(forwarded bool, outcome SchedulerOutcome) b
 }
 
 type reservation struct {
-	ID                       string
-	Created                  time.Time
-	Cost                     domain.RequestCost
-	Prediction               SchedulerPrediction
-	OutcomeObserved          bool
-	OutcomeInterfered        bool
-	Forwarded                bool
-	PrefillComplete          bool
-	TerminalCause            TerminalCause
-	AdmittedSequence         uint64
-	ForwardedSequence        uint64
-	PrefillCompletedSequence uint64
-	Assimilation             assimilationState
+	ID      string
+	Created time.Time
+	Cost    domain.RequestCost
+	// PrefillInterferenceTokens is the request-aware lexical work estimate.
+	// Cost.UncachedPrefillUpper remains the independent hard-KV safety upper.
+	PrefillInterferenceTokens int64
+	Prediction                SchedulerPrediction
+	OutcomeObserved           bool
+	OutcomeInterfered         bool
+	Forwarded                 bool
+	PrefillComplete           bool
+	TerminalCause             TerminalCause
+	AdmittedSequence          uint64
+	ForwardedSequence         uint64
+	PrefillCompletedSequence  uint64
+	Assimilation              assimilationState
 }
 
 const maximumRetiredReservations = 4_096
@@ -708,12 +711,12 @@ func pendingPrefillFeatures(prediction SchedulerPrediction, cost domain.RequestC
 func (m *Manager) virtualStateIntervalLocked() domain.VirtualStateInterval {
 	state := m.base
 	for _, item := range m.reservations {
-		addReservationToStateInterval(&state, item)
+		addReservationToStateInterval(&state, &item)
 	}
 	return state
 }
 
-func addReservationToStateInterval(state *domain.VirtualStateInterval, item reservation) {
+func addReservationToStateInterval(state *domain.VirtualStateInterval, item *reservation) {
 	switch item.Assimilation {
 	case assimilationUnabsorbed:
 		cost := fullReservationStateCost(item)
@@ -733,7 +736,7 @@ func addReservationToStateInterval(state *domain.VirtualStateInterval, item rese
 	}
 }
 
-func fullReservationStateCost(item reservation) domain.RequestCost {
+func fullReservationStateCost(item *reservation) domain.RequestCost {
 	cost := item.Cost
 	if item.PrefillComplete {
 		cost.UncachedPrefillUpper = 0
@@ -741,7 +744,7 @@ func fullReservationStateCost(item reservation) domain.RequestCost {
 	return cost
 }
 
-func futureReservationStateCost(item reservation) domain.RequestCost {
+func futureReservationStateCost(item *reservation) domain.RequestCost {
 	return domain.RequestCost{
 		KV:                       item.Cost.FutureKV,
 		UncachedPrefillUpper:     0,

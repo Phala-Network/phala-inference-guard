@@ -28,7 +28,10 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		"small-large-output": false, "large-small-output": false,
 		"cancel": false, "short-completion": false, "long-streaming": false,
 		"prefill-weighted-budget": false, "prefill-long-singleton": false,
-		"prefill-quiescent-idle-650k": false, "prefill-quiescent-busy-650k": false,
+		"prefill-live-weighted-upper-240k-estimate-99k":   false,
+		"prefill-live-exclusive-upper-690k-estimate-285k": false,
+		"prefill-quiescent-boundary-busy-512k":            false,
+		"prefill-quiescent-idle-650k":                     false, "prefill-quiescent-busy-650k": false,
 		"prefill-quiescent-cancel-recovery": false, "prefill-quiescent-exclusive-recovery": false,
 	}
 	for _, scenario := range suite.Scenarios {

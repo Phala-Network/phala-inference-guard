@@ -124,7 +124,13 @@ func TestRequestAwareAdapterFreshCompletionSnapshotDoesNotMislockIdleBackend(t *
 
 func TestRequestAwareAdapterCloseBeforeForwardCommitRejectsAndReleasesReservation(t *testing.T) {
 	adapter, manager := newRequestAwareAdapterTestFixture(t, 5_000, 0)
-	decision := adapter.Decide(context.Background(), "close-before-forward", requestAwareAdapterInput(500, 100))
+	snapshot := adapter.snapshot.(staticRequestAwareSnapshot).input
+	snapshot.CapacityTokens = 4 * 1024 * 1024
+	snapshot.TPSValid = false
+	adapter.snapshot = staticRequestAwareSnapshot{input: snapshot}
+	input := requestAwareAdapterInput(690*1024, 0)
+	input.Cost.ApproximateInputTokens = 285 * 1024
+	decision := adapter.Decide(context.Background(), "close-before-forward", input)
 	if decision.Reservation == nil || manager.Snapshot().Reservations != 1 {
 		t.Fatalf("setup decision=%+v manager=%+v", decision, manager.Snapshot())
 	}
@@ -134,12 +140,36 @@ func TestRequestAwareAdapterCloseBeforeForwardCommitRejectsAndReleasesReservatio
 	if decision.Reservation.MarkForwarded() {
 		t.Fatal("reservation committed forward after adapter Close linearized first")
 	}
-	if !decision.Reservation.Terminate(runtimepredictive.TerminalExpired) {
-		t.Fatal("close-rejected reservation did not release through terminal lifecycle")
+	if !decision.Reservation.Terminate(runtimepredictive.TerminalExpired) ||
+		decision.Reservation.Terminate(runtimepredictive.TerminalExpired) {
+		t.Fatal("close-rejected divergent reservation did not release exact once through terminal lifecycle")
 	}
-	snapshot := manager.Snapshot()
-	if snapshot.IntakeOpen || snapshot.Reservations != 0 {
-		t.Fatalf("close-before-forward lifecycle leaked or reopened intake: %+v", snapshot)
+	managerSnapshot := manager.Snapshot()
+	if managerSnapshot.IntakeOpen || managerSnapshot.Reservations != 0 {
+		t.Fatalf("close-before-forward lifecycle leaked or reopened intake: %+v", managerSnapshot)
+	}
+}
+
+func TestRequestAwareAdapterUnknownLexicalHintFallsBackToSafetyUpper(t *testing.T) {
+	adapter, manager := newRequestAwareAdapterTestFixture(t, 0, 0)
+	snapshot := adapter.snapshot.(staticRequestAwareSnapshot).input
+	snapshot.CapacityTokens = 4 * 1024 * 1024
+	snapshot.TPSValid = false
+	adapter.snapshot = staticRequestAwareSnapshot{input: snapshot}
+	input := requestAwareAdapterInput(650*1024, 0)
+	input.Cost.ApproximateInputTokens = 0
+	input.Cost.ApproximateInputTokensKnown = false
+
+	decision := adapter.Decide(context.Background(), "unknown-lexical-hint", input)
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if decision.Outcome != predictiveAdmissionOutcomeLoadProtection || decision.Reservation != nil ||
+		telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		telemetry.RequestAware.PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
+		telemetry.RequestAware.SelectionInputTokens != 650*1024 ||
+		telemetry.RequestAware.EstimatedPrefillTokens != 650*1024 ||
+		manager.Snapshot().Reservations != 0 {
+		t.Fatalf("unknown lexical fallback decision/telemetry/manager=%+v/%+v/%+v", decision, telemetry, manager.Snapshot())
 	}
 }
 
