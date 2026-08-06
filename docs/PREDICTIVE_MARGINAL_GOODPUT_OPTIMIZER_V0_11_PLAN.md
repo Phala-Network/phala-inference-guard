@@ -1,6 +1,6 @@
 # PIG v0.11.3 确定性请求感知与长 Prefill 准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.3 source/tag/image 与 Router-disabled shadow live gates 已通过；当前保持 use1-cb Router disabled + shadow，enforce 候选与 Router canary 尚未执行**
+状态：**唯一 canonical 执行规范；v0.11.3 source/tag/image、Router-disabled shadow 与 Router-disabled enforce live gates 已通过；当前保持 use1-cb Router disabled + enforce，Router canary 与 30 分钟实际流量观察尚未执行**
 最后更新：2026-08-06
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -52,6 +52,7 @@ v0.11.3 不包含：
 `estimatedPrefillTokens`；它不是精确的 `uncached_tokens`，日志、metrics 和文档不得混淆两者。
 64K/256K/512K/650K 合同用于通用多卡大模型；当前 `use1-cb` 的 262K max-model-len 不能作为
 删除 512K/650K 分层的理由。
+650K 是 `>=512K` quiescent 档的代表用例，不是第五个阈值。
 
 旧学习实现最终必须从 v0.11 production factory、HTTP admission、配置和 metrics 的可达路径中
 删除，不能只靠 runtime flag 假装 disabled。若静态 reachability 证明 legacy 源码只被旧模式或
@@ -75,7 +76,7 @@ v0.11.3 不包含：
 5. **虚构 sequence hard capacity**：当前启动指标能确认 KV token capacity/block size，
    不能确认 vLLM `max_num_seqs`。第一版不增加 guessed sequence hard limit；
 6. **参数过多**：删除 minimum intake、minimum selective KV、minimum selective input 和
-   waiting emergency；v0.11.2 仅恢复有 64K/256K/512K 行为合同与 simulation 证据的四个
+   waiting emergency；当前方案仅保留有 64K/256K/512K 行为合同与 simulation 证据的四个
    bounded Prefill threshold/budget，不恢复旧 generic prefill maximum；
 7. **组件过多**：不预先建立八个接口；只保留 estimator、observer、pure policy、
    manager/reporting 四个实际职责；
@@ -264,10 +265,16 @@ reset sample 原子 rebase Manager 和 observer baseline，清除旧 epoch reser
 selectionInputTokens = ApproximateInputTokens，已知且 > 0 时
                      = EstimatedInputHigh，hint 不可用时的保守 fallback
 
+estimatedPrefillTokens = selectionInputTokens
+
 reservedTokens       = blockRoundUp(EstimatedInputHigh + BoundedDecodeTokens)
 ```
 
-- `selectionInputTokens` 只在有压力时决定大/小请求差异；不用于声称 exact tokenizer；
+- `selectionInputTokens` 同时用于已有 pressure 下的大/小请求差异，以及 64K/256K/512K
+  pending-prefill 干扰分层；它是快速、模型无关的 lexical estimate，不是 exact tokenizer、
+  exact prompt tokens 或 `uncached_tokens`；
+- hint 不可用时 `estimatedPrefillTokens` 才回退 `EstimatedInputHigh`，不能因缺失近似信号而
+  把长 Prefill 风险当成零；
 - `reservedTokens` 用于 post-admit KV operational guard；
 - 所有加法和 block rounding 检查 overflow；
 - malformed/unsupported 且无法给出 fallback 时 protect；
@@ -441,8 +448,10 @@ cold prompt 在健康 snapshot 下先进入上游、占用约数十秒 Prefill�
 
 关键语义：
 
-- 分层依据 `RequestCost` 中保守的总输入估计，不使用较小的 lexical selection hint，也不宣称已知
-  cache-cold token 数；selection hint 继续只用于已有 pressure 下的小/大请求选择；
+- 分层依据快速、模型无关的 lexical `estimatedPrefillTokens`；hint 缺失时才回退保守的
+  `EstimatedInputHigh`。它不宣称知道 exact tokenizer token、cache-cold 或 uncached token 数；
+- hard KV safety 始终独立使用 `EstimatedInputHigh + BoundedDecodeTokens` 的 block-aligned
+  reservation，绝不能用通常更小的 lexical estimate 放松 hard-fit；
 - `pending` 从成功原子 reservation 开始，而不是等 vLLM metrics 看见请求；这样同一 snapshot 的
   并发 burst 不能穿透；forward failure、cancel、disconnect、timeout、error 和 terminal 删除，
   首个有效 semantic response 调用 `MarkPrefillComplete`，均复用同一 exact-once 生命周期；
@@ -476,7 +485,7 @@ request parse/estimate
   -> fresh snapshot + existing reservations
   -> pure policy verdict
   -> atomic reserve on ADMIT
-  -> enforce 直接选择 upstream 并原子 mark-forwarded；不进入旧 QoS queue/tier/priority
+  -> enforce 转发到已配置的单一 upstream 并原子 mark-forwarded；不路由、不进入旧 QoS queue/tier/priority
   -> prefill/reconcile or terminal exact-once release
 ```
 
@@ -524,6 +533,9 @@ reason
 pressureSource
 pressureValue
 selectionInputTokens
+estimatedPrefillTokens/prefillClass
+pendingPrefillSequences/pendingPrefillTokens/postAdmitPendingPrefillTokens
+pendingLongPrefillSequences/pendingQuiescentPrefillSequences
 reservedTokens
 allowanceTokens
 effectiveKV
@@ -701,8 +713,9 @@ truth 脱离的固定 TPS override 覆盖观察值；否则会人为遮蔽 admis
    learner/calibrator/TTFT config/metrics 消费；保留其他模式仍使用的公共 dynamic/KV 配置；
 7. 上述审计不再产生源码变更后，封存唯一 exact-source archive，在同一 archive 上执行
    full/vet/race/build/benchmark/simulation 最终矩阵；
-9. executable source bump 为 `v0.11.2` 后 commit/push/tag；v0.11.0 的 source/image evidence 与
-   v0.11.1 的 source-only tag 均不得冒充 v0.11.2 executable/image evidence；
+8. 自主管理 patch version，完成 runtime/README/OCI release identity 后证明除 release identity 与
+   ledger 外没有 executable drift；
+9. commit/push/annotated tag；任何旧版本 source/image evidence 均不得冒充当前 release evidence；
 10. builder 构建并发布 immutable digest 镜像；
 11. 仅 `use1-cb`、Router disabled shadow；
 12. 仅 `use1-cb`、Router disabled 短时 enforce；
@@ -711,8 +724,9 @@ truth 脱离的固定 TPS override 覆盖观察值；否则会人为遮蔽 admis
 14. 观察实际流量 30 分钟，与旧版 `use1-4c` 的相近负载窗口分开对照；
 15. 有明显问题则 disable `use1-cb`、更新计划、bump patch version 并重新循环。
 
-当前 v0.11.0 enforce 仅保留为 Router-disabled 隔离环境。第 13 步在 v0.11.2 完成 behavioral
-red/green、完整 clean-builder matrix、新 immutable image、重新 shadow/enforce 之前暂停。
+当前 v0.11.3 已完成 behavioral red/green、完整 clean-builder matrix、immutable image、
+Router-disabled shadow 与 Router-disabled enforce gates。第 13 步仍必须在启用前只读 preflight
+确认 Compose、Router inventory、节点 idle/no-residue、endpoint/auth、日志与 preemption/fatal 均无漂移。
 
 没有明确 GO 前不得修改其他 CVM、修改 Router/vLLM 源码或引入生产流量。
 
@@ -756,32 +770,29 @@ red/green、完整 clean-builder matrix、新 immutable image、重新 shadow/en
 - [x] v0.11.1 exact-source clean-builder matrix；
 - [x] v0.11.1 source commit/push/annotated tag，但发布前发现 Dockerfile OCI label 仍为
   `0.11.0`，因此该 tag 明确禁止构建、发布或部署；
-- [x] v0.11.2 version/OCI-label corrective、exact-source builder matrix 与 builder-local
-  production-image contract；
-- [x] v0.11.2 commit/push/annotated tag、clean-tag builder image、registry immutable image 与
-  digest/binary provenance；
-- [ ] v0.11.2 `use1-cb` Router-disabled shadow/enforce；
-- [ ] v0.11.2 Router canary 与 30 分钟实际流量观察。
+- [x] v0.11.2 version/OCI-label corrective、exact-source builder matrix、tag/image 与
+  Router-disabled shadow；其 live 分层尺度错误已由 v0.11.3 corrective 取代，不得晋级；
+- [x] v0.11.3 lexical Prefill interference estimate 与 hard-KV safety upper 分离、三轮代码复查、
+  exact-source builder matrix、commit/push/annotated tag、clean-tag immutable image 与 provenance；
+- [x] v0.11.3 `use1-cb` Router-disabled shadow deployment/readiness/protocol/low-flow/size gates；
+- [x] v0.11.3 `use1-cb` Router-disabled enforce deployment/readiness、weighted aggregate budget、
+  low-flow/cancel/burst、约 230K exclusive 与 final-preflight gates；
+- [x] exact 512K boundary 与 650K idle/busy/cancel/recovery 继续作为通用多卡合同，由 exact-source
+  builder tests 和 deterministic multi-card simulation 覆盖；当前 262K 节点未实发 512K/650K；
+- [ ] Router enable 前 current-state drift recheck；
+- [ ] v0.11.3 Router canary 与 30 分钟实际流量观察。
 
-截至当前已完成 pure policy、Manager、server adapter、live observer、deterministic
-config/factory、request-aware telemetry、统一 verdict 日志、真实 proxy HTTP、hard guard、并发
-burst、Close/forward 线性化、enforce 旧 QoS/tier/priority 热路径移除、Router 唯一 effective
-authority、priority-only validator 解耦、advisory scrape race 边界和 predictive coarse status 的
-focused builder red/green；适用 package 与 focused race 证据见账本尾部。dirty v0.11
-learning/Safe-Envelope/pressure-bucket 实验、dead legacy factory、legacy config fields 和
-production learning metrics 已删除。第五轮复查中的 startup baseline、same-identity counter-reset
-recovery 和 dead Router-hold config 已获 R92 focused green；unknown-TPS single-speculation 虽获
-focused green，却因 R93 暴露约 31% burst goodput 退化而被否决；R94 已补齐 burst acceptance
-red，当前源码已回退该规则，R95 corrected deterministic simulation 已恢复 burst non-regression。
-R95 后新增并发 rebase 测试与文档修正，因此最终 executable-source 证据以 R102 为准。源码已由
-`d88b598f9bc57af2ca71eab1879a56d6e1406422` commit/push，并由 annotated `v0.11.0` tag 锁定；
-R103 已验证 registry immutable image。R104/R105 已完成 `use1-cb` Router-disabled shadow Compose
-部署、全链 readiness、协议/低流/取消/burst 验证；R106 完成 v0.11.0 Router-disabled enforce
-deployment/readiness，但源码审计确认 healthy snapshot 会让 512K/650K 直接 OPEN，因此停止
-promotion。Router enabled set 与实际生产流量尚未改变；v0.11.1 已实现长 Prefill corrective，
-但其 source tag 的 Dockerfile OCI label 仍为 `0.11.0`，因此不能进入 image/deploy 层；当前发布
-目标已 bump 为 v0.11.2，R102/R103 仍不能作为新 executable source/image 的证据。
-R20 的旧 TPS hard-floor 语义已由 R27/R28 取代。
+截至当前，pure policy、Manager、HTTP adapter、500-ms live observer、deterministic config/factory、
+request-aware telemetry、统一 verdict 日志、真实 proxy HTTP、hard guard、并发 burst、Close/forward
+线性化、same-identity epoch recovery、Router one-block inspect、低流/cancel/recovery 与
+64K/256K/512K 长 Prefill生命周期均已获得适用的 focused/full/race/simulation/builder 证据。当前
+release source 为 annotated `v0.11.3` 对应的
+`0b4da6bf22bc80655eabf977e278eedc34033dad`，immutable image 为
+`ghcr.io/phala-network/phala-inference-guard@sha256:15d827456c56a534d71b03932d5a9a90d2d7984e5cbfec6aec3b2632cfcc0d99`。
+HEAD 相对 tag 仅有本 canonical ledger 文档；live `use1-cb` 已处于同一 image 的 Router-disabled
+enforce，门禁见最新账本。Router enabled set 和实际生产流量尚未改变。R20 的旧 TPS hard-floor
+语义已由 R27/R28 取代；v0.11.0/v0.11.1/v0.11.2 的 source、image 或 live 证据均不得冒充
+v0.11.3 的对应完成层级。
 
 ### 13.1 R19 pure-policy behavioral red
 
@@ -2991,3 +3002,104 @@ cancel/burst/live-sized classification。`use1-cb` 仍保持 Router disabled + s
 enforce 429/Router projection/recovery，也未 enable Router 或开始 30 分钟实际流量观察。下一步只能从当前 live
 Compose 生成单行 `shadow -> enforce` candidate，重新执行 drift check、deploy、readiness、enforce-specific gates；
 这些全绿后才允许 Router enable。
+
+### 13.73 R127 v0.11.3 Router-disabled enforce、三轮 final review 与多卡合同确认
+
+R126 之后已按预注册边界只把 `PREDICTIVE_ADMISSION_MODE=shadow` 改为 `enforce`，当前 live
+Compose SHA-256 为
+`0c6debae711a56c45117f4d3f951e2ab0cdd58be7630721d8bdea21a5f3a6775`；可回退 shadow Compose
+SHA-256 为 `ad22fb658bb72ad01f17ccde00960029bf49a8a89f9e7fdfe38adc175a956b99`。PIG image 仍精确为
+`ghcr.io/phala-network/phala-inference-guard@sha256:15d827456c56a534d71b03932d5a9a90d2d7984e5cbfec6aec3b2632cfcc0d99`，
+registry image ID 仍为
+`sha256:a5f1f711ef0aa66d5ba3d58064c429035b77e1a915cab3389f7ecadcd65128a3`。Router 始终未参与
+enforce direct gates：`use1-cb=false`，enabled set 精确为 `use1-19,use1-9b`，config digest 为
+`sha256:b8447a719c6fb9d8bf956ae60928d5e857828e7c2874739e7bb8fae8cca5c47a`。
+
+Router-disabled enforce 证据如下，所有路径均位于 root checkout 的
+`tmp/pig-v0113-use1-cb-live-20260806/enforce-r1/`：
+
+1. **64K–<256K weighted aggregate budget green。** `enforce-weighted-budget-v0113-r8/summary.json`
+   SHA-256 为 `80c8a3df3a83461c2d54f3ccf5578c1f6eb556254236ff2ddb17d0024b193531`，
+   `all_passed=true`。三条 cache-cold 并发请求的 actual prompt 约 67K，lexical/interference
+   estimate 均约 `87,959`，hard-KV safety upper 约 `201,088`。任意且仅两条得到 200，任意且仅
+   一条在 forward 前得到 429；被拒 verdict 为 `action=size_protect`、`reason=prefill_budget`、
+   `pressure_source=prefill`、`prefill_class=weighted`，HTTP/last-reject reason 为
+   `request_size_at_pressure`。拒绝时 pending 为 `175,918`，post-admit 为 `263,877`，超过
+   `262,144` budget；与此同时 effective hard-KV 为 `485,943`，候选 post-admit hard-KV 为
+   `687,031`，仍低于 `758,912` hard limit。因此因果是 Prefill aggregate budget，而不是 hard KV。
+   attempts `+4`、enforced reject `+1`、upstream success `+3`，结束后 recovery 200、无 reservation/
+   pending/failure/preemption 残留。
+2. **weighted harness r1--r8 只修夹具，不改产品算法。** r1 的重复 prefix 形成 cache hit；r2 把
+   last-decision 当 live registry；r3 同步慢抓 metrics；r4 受 PowerShell/.NET 每主机默认 2 连接限制；
+   r5 第三 body 到达过晚；r6 实际触发 hard KV；r7 错误固定要求本地命名的第三条必须拒绝。r8
+   改为验收并发集合中任意且仅一条 causal 429、任意且仅两条 200 后全绿。不得据这些 harness
+   red 修改 policy。
+3. **低流、completion window、取消和 burst green。** `enforce-lowflow-v0113-r1/summary.json`
+   SHA-256 为 `d30581956994c195172d1d8717f7a0252e7d9ef803d096386aceb1a45c57191a`，
+   `all_passed=true`。首个低流请求及全部普通/恢复请求为 200；2 秒 streaming cancel 为 curl exit 28，
+   已接收 `14,809` bytes，随后 recovery 200；`MaxConnectionsPerServer=32` 下 12 条真实并发短请求
+   全部 200。attempts 精确 `+25`，enforced reject `+0`，最终 intake open、running/waiting/KV/
+   reservation/pending/Router backpressure/failure/preemption 全为零，没有低流自锁或 sticky clamp。
+4. **约 230K exclusive 产品 green，原夹具数值预期无效。**
+   `enforce-exclusive-v0113-r1/summary.json` SHA-256 为
+   `bb246cebc3fa94051518e5a30b7eacf6f31c376fd87f07fd0afc2cfe106c01d0`。请求 body
+   `1,380,154` bytes、actual prompt `230,044` tokens、cache-cold、80.620 秒、HTTP 200；verdict
+   `admit/open`、class `exclusive`，lexical/interference estimate `301,897` 严格位于
+   `[256K,512K)`，hard safety upper `690,112` 且 hard-fit。attempts/upstream success 各 `+1`，无
+   reject/failure/preemption/residue。summary 的 `all_passed=false` 唯一来自夹具把随机 GUID nonce
+   下的 lexical estimate 固定要求为 `280K--292K`；正确产品验收是 `[256K,512K)`，因此这是
+   harness false negative，不是算法 failure，也不再重复一次 80 秒 Prefill。
+5. **最终只读 preflight green。** `final-preflight-20260806-r2/summary.json` SHA-256 为
+   `d13d2ae78daeff050054e5782e868a0e5f27ca1ff416e6540152a8426f5fd071`，采集时间
+   `2026-08-06T12:14:08.4648576Z`，`all_passed=true`。CVM running/no operation/no boot error、exact
+   Compose/image、PIG/vLLM containers running、Router disabled/enabled set exact；authenticated
+   models/PIG metrics/vLLM metrics/attestation 全 200，unauthenticated metrics 全 401，NVIDIA
+   attestation 非空；runtime 为 `PIG-v0.11.3`/enforce/TTFT disabled/intake open。attempts/fit/risk/
+   unknown=`64/61/3/0`，enforced rejects=`3`，vLLM success/error=`60/0`，reservation/pending/running/
+   waiting/KV/failure/preemption 均为零。PIG/vLLM fatal/OOM/EngineDead/Xid scan clean，统一保护日志
+   存在。只读 collector `capture-v0113-final-preflight.ps1` SHA-256 为
+   `3dc4a8ea81c6c658b14a1a343e0c93ebd1d26338d8907212ba22724606221282`；r1 使用了不存在的旧
+   pending metric 且漏接 native stderr，r2 改为实际 metric 并合并 stdout/stderr 后 green，未改产品。
+
+保护可见性与 Router 语义不能混为“最后一次 429 就全局关闭”：weighted 429 已同时出现在 HTTP、
+enforced-reject counter、last decision、last reject 与统一日志中；其 last-reject telemetry 为 load scope，
+但每次 metrics scrape 的无副作用 one-block inspect 仍证明小请求可进入，所以
+`router_backpressure_active/applied=0`、effective waiting=0、effective global-limit 为 neutral sentinel。
+这是刻意的 request-selective capacity projection，不是保护漏报。若 512K+ quiescent Prefill 正在进行，
+one-block inspect 也会因 pending-quiescent gate 被保护，Router-readable capacity 才应关闭；阶段结束后
+下一次 scrape 自动恢复。这样既不会让 Router 绕过真实的节点级 QoS 保护，也不会因一个大请求 429
+阻断所有短请求而损害 goodput。
+
+本轮再次按 release 要求完成三遍代码/证据复查：
+
+1. **模型与因果。** `ApproximateInputTokenHint()` 确实进入真实 pre-forward adapter；可用时成为
+   `selectionInputTokens/estimatedPrefillTokens`，缺失时回退 `EstimatedInputHigh`。policy 在
+   `pressure==0 -> open` 之前执行四档 gate；同一 snapshot 下改变 lexical estimate 能改变真实
+   verdict。hard KV 独立使用 safety upper，没有模型名、tokenizer asset、cache、Router 或 650K
+   第五档分支。
+2. **安全、生命周期与 SOLID。** Manager 是唯一 reservation owner，同一 mutex 内 check+reserve；
+   forward/prefill-complete/terminal exact-once，completion/error/cancel/disconnect/timeout/forward
+   failure 统一收口；snapshot reconcile 不提前复用 ambiguous capacity，same-identity epoch rebase
+   清旧状态。pending long/quiescent 状态从唯一 reservation map 单次扫描派生，不维护第二套易漂移
+   counter。policy、observer、manager、transport/reporting 职责分离，未发现需要 executable 修复的
+   问题。
+3. **证据、发布与 Router。** annotated `v0.11.3^{}` 精确为
+   `0b4da6bf22bc80655eabf977e278eedc34033dad`；当前 HEAD 相对 tag 只有本 canonical ledger，
+   无 executable source drift。R124 exact-source builder `go test/vet/build/race`、双次 byte-identical
+   simulation、exact 512K boundary 与 650K idle/busy/cancel/recovery 均 green；registry digest/image
+   provenance、shadow 与 enforce 证据分层一致。weighted/exclusive harness false starts 已逐项归因，
+   没有把夹具错误冒充 product red，也没有把 deterministic simulation 冒充真实 GPU throughput。
+
+用户再次明确确认 512K/650K 分层对多卡大模型有效。因此 active contract 固定为
+`<64K regular / 64K–<256K weighted / 256K–<512K exclusive / >=512K quiescent`；650K 是最后一档
+代表用例，不是第五个阈值。阈值作用于快速、模型无关的 `estimatedPrefillTokens`；hard KV 使用独立
+safety upper。当前 `use1-cb --max-model-len=262144` 只允许实测约 67K weighted 和约 230K
+exclusive，绝不向它发送 512K/650K actual prompt；超长合同继续由 exact-source builder tests 与
+deterministic multi-card simulation 证明，待真正支持该长度的多卡节点另补 live GPU 证据。
+
+综合上述门禁，v0.11.3 暂时满足 Router canary 前的部署候选条件，但尚无实际生产流量证据。下一步
+必须重新执行同一只读 preflight；只有 exact Compose 未漂移、Router enabled set 仍精确为
+`use1-19,use1-9b`、`use1-cb=false`、节点 idle/no-residue 且 endpoint/auth/log/preemption/fatal 全绿，
+才允许只把 `use1-cb.enabled` 改为 true。之后完整观察 30 分钟；任一明显 QoS、preemption、低流误锁、
+sticky clamp、fatal/restart 或 goodput 问题，第一动作是 disable `use1-cb` 并保存证据，再决定是否回
+shadow 或 bump patch version 重走 builder/image/shadow/enforce。
