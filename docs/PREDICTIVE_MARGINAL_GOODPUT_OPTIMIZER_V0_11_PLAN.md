@@ -2864,3 +2864,51 @@ archive，SHA-256 为 `4eb0f3dacca705cb9809cd6eaa13d3086b42905f1d1a530b60f9a924f
 push、tag、build/publish registry image、修改 Compose、部署或 enable Router。本节只是 canonical ledger 追加，
 下一步必须证明相对 tested index tree 唯一变化为本计划文档，再创建 source commit 和 annotated tag；image 必须
 从 clean pushed tag 构建并重新验证 OCI label、binary status、tag/tree/image digest 对应关系。
+
+### 13.71 R125 clean tag 与 immutable registry image green
+
+v0.11.3 source release 已完成：
+
+```text
+source commit:
+  0b4da6bf22bc80655eabf977e278eedc34033dad
+source tree:
+  33e15126def41beb427b22caa945db965925fb55
+branch:
+  pig-origin/codex/pig-v0.11.0-request-aware
+annotated tag object:
+  77e93b4dc5049ff8880b4afa8058019b3e51213e
+tag dereference:
+  v0.11.3^{} -> 0b4da6bf22bc80655eabf977e278eedc34033dad
+```
+
+GitHub `Publish Image` run `31090558312` 对 `v0.11.3`、上述 exact head commit 成功完成 contract 和
+build-push。授权 builder 随后由 `pig-v01011-builder` clean clone public annotated tag；source identity 为
+head `0b4da6b...`、tree `33e1512...`、exact tag `v0.11.3`、porcelain status 0 行。host Docker 从该
+clean source 构建 local image，并从 registry tag pull 后锁定 immutable digest：
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:15d827456c56a534d71b03932d5a9a90d2d7984e5cbfec6aec3b2632cfcc0d99
+```
+
+local clean-tag image 和 registry digest image 均为 linux/amd64、OCI label `0.11.3`、29,258,447 bytes、
+distroless entrypoint `/phala-inference-guard`，并分别通过
+`EXPECTED_VERSION=v0.11.3 tools/validate-production-image-contract.sh`。local image ID 为
+`sha256:267fec1c36d147e58b4f6fea993a66965bf01349a814376829098233c8d689bb`，registry image ID 为
+`sha256:a5f1f711ef0aa66d5ba3d58064c429035b77e1a915cab3389f7ecadcd65128a3`；image config identity 可不同，
+但二者提取的 runtime binary byte-identical，SHA-256 均为
+`3fdb3e3240854c120740f4fbec82155c174015a43490997771a1cf15e313262f`、`cmp=0`。local 和 registry
+image 的无流量 startup 均保持 `running=true`、exit code 0，日志包含 `PIG-v0.11.3`。
+
+首个 image harness 已完成 clone/build/contracts/pull/binary cmp，随后因 BusyBox `test` precondition 写法收到
+空整数而退出；resume 已完成两个 startup gate，又因 BusyBox `xargs` 不支持 `-0` 在 evidence sealing 处退出。
+两项均为 harness-only、发生在对应 product gate 成功之后。最终使用 POSIX `for` 仅封存既有证据，不重跑或
+掩盖任何 product gate。slim evidence archive SHA-256 为
+`57b86f71005d901d9677ed400502152bd36481bf45bce7017affbb056e001446`；clean source identity、local/
+registry contract、binary hash、startup logs/state 和 image inspect 均在 archive 的 `SHA256SUMS` 中。
+
+当前完成层级为 committed/pushed source、annotated tag、successful registry workflow、immutable registry
+digest、clean-tag/local-to-registry binary provenance 和 image startup；尚未修改 `use1-cb` Compose、部署 CVM、
+发送 live probe 或 enable Router。下一步必须切换到 live-serving 运维流程，重新查询 CVM、exact Compose、当前
+Router inventory/enabled 状态和 v0.11.2 baseline；只有确认 `use1-cb` 仍 Router disabled，才可仅把 PIG digest
+替换为上述 v0.11.3 digest并保持 shadow。image green 不能直接外推为部署或实际流量 green。
