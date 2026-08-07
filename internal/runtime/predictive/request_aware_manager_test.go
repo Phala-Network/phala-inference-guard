@@ -104,7 +104,7 @@ func TestRequestAwareManagerUsesExistingTerminalLifecycle(t *testing.T) {
 
 func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(t *testing.T) {
 	const kib = int64(1024)
-	policy := newRequestAwareTestPolicy(t)
+	policy := newPrefillRequestAwareTestPolicy(t)
 	idle := RequestAwareInput{
 		MetricsFresh:   true,
 		IdentityValid:  true,
@@ -171,6 +171,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 	})
 
 	t.Run("hard KV still charges safety upper", func(t *testing.T) {
+		hardKVPolicy := newRequestAwareTestPolicyWithLimits(t, 819_200, 983_040)
 		manager := NewManager("request-aware-test", domain.VirtualState{
 			PhysicalKVUpper:     300 * kib,
 			ActiveKVUpper:       300 * kib,
@@ -182,7 +183,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 		input.Running = 1
 		input.EffectiveSequences = 1
 		result := manager.DecideRequestAwareAndReserve(
-			time.Unix(4, 0), "divergent-hard-kv", requestAwareManagerCost(690*kib, 0), 99*kib, policy, input,
+			time.Unix(4, 0), "divergent-hard-kv", requestAwareManagerCost(690*kib, 0), 99*kib, hardKVPolicy, input,
 		)
 		if result.Reserved || result.Decision.Action != RequestAwareHardProtect ||
 			result.Decision.Reason != RequestAwareReasonKV {
@@ -409,7 +410,7 @@ func TestRequestAwareManagerRebaseEpochClearsOldOwnershipAndReopens(t *testing.T
 
 func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testing.T) {
 	const kib = int64(1024)
-	policy := newRequestAwareTestPolicy(t)
+	policy := newPrefillRequestAwareTestPolicy(t)
 	input := RequestAwareInput{
 		MetricsFresh:   true,
 		IdentityValid:  true,
@@ -642,6 +643,11 @@ func newRequestAwareTestManager(usedTokens int64) *Manager {
 		DecodeSequences:     4,
 		ActiveContextTokens: usedTokens,
 	}, domain.Constraints{}, nil)
+}
+
+func newPrefillRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {
+	t.Helper()
+	return newRequestAwareTestPolicyWithLimits(t, 2_516_576, 3_774_864)
 }
 
 func requestAwareManagerInput() RequestAwareInput {

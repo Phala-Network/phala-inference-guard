@@ -19,6 +19,8 @@ type requestAwareSnapshotProvider interface {
 type requestAwarePredictiveAdapterConfig struct {
 	Manager             *runtimepredictive.Manager
 	Policy              *runtimepredictive.RequestAwarePolicy
+	CapabilityProfile   runtimepredictive.BackendCapabilityProfile
+	CapabilityReason    string
 	Snapshot            requestAwareSnapshotProvider
 	ManifestID          string
 	BlockSize           int64
@@ -32,6 +34,8 @@ type requestAwarePredictiveAdapter struct {
 	mu                      sync.Mutex
 	manager                 *runtimepredictive.Manager
 	policy                  *runtimepredictive.RequestAwarePolicy
+	capabilityProfile       runtimepredictive.BackendCapabilityProfile
+	capabilityReason        string
 	snapshot                requestAwareSnapshotProvider
 	manifestID              string
 	blockSize               int64
@@ -56,7 +60,9 @@ func newRequestAwarePredictiveAdapter(config requestAwarePredictiveAdapterConfig
 	mode := strings.ToLower(strings.TrimSpace(config.Mode))
 	if config.Manager == nil || config.Policy == nil || config.Snapshot == nil ||
 		strings.TrimSpace(config.ManifestID) == "" || config.BlockSize <= 0 ||
-		(mode != "shadow" && mode != "enforce") {
+		(mode != "shadow" && mode != "enforce") ||
+		!config.Policy.MatchesCapability(config.CapabilityProfile) ||
+		config.BlockSize != config.CapabilityProfile.KVBlockSize {
 		return nil, fmt.Errorf("request-aware predictive adapter configuration is invalid")
 	}
 	if config.Now == nil {
@@ -68,6 +74,8 @@ func newRequestAwarePredictiveAdapter(config requestAwarePredictiveAdapterConfig
 	return &requestAwarePredictiveAdapter{
 		manager:             config.Manager,
 		policy:              config.Policy,
+		capabilityProfile:   config.CapabilityProfile,
+		capabilityReason:    config.CapabilityReason,
 		snapshot:            config.Snapshot,
 		manifestID:          strings.TrimSpace(config.ManifestID),
 		blockSize:           config.BlockSize,
@@ -241,6 +249,8 @@ func (a *requestAwarePredictiveAdapter) PredictiveAdmissionTelemetry() predictiv
 	router := a.inspectRouterBackpressure(now)
 	a.mu.Lock()
 	attempts := a.attempts
+	profile := a.capabilityProfile
+	capabilityReason := a.capabilityReason
 	lastRequestAware := a.lastRequestAware
 	a.routerBackpressure = a.transitionRouterBackpressureLocked(now, router)
 	router = a.routerBackpressure
@@ -252,6 +262,8 @@ func (a *requestAwarePredictiveAdapter) PredictiveAdmissionTelemetry() predictiv
 	lastRequestAware.PendingLongPrefillSequences = currentPending.LongPrefillSequences
 	lastRequestAware.PendingQuiescentPrefillSequences = currentPending.QuiescentPrefillSequences
 	return predictiveAdmissionTelemetrySnapshot{
+		CapabilityProfile:  profile,
+		CapabilityReason:   capabilityReason,
 		Attempts:           attempts,
 		Manager:            a.manager.Snapshot(),
 		RouterBackpressure: router,

@@ -361,7 +361,7 @@ func (m *Manager) MarkForwarded(requestID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	item, exists := m.reservations[requestID]
-	if !exists || item.Forwarded {
+	if !m.intakeOpen || !exists || item.Forwarded {
 		return false
 	}
 	m.eventSequence++

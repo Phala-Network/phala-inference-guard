@@ -138,7 +138,7 @@ func TestRequestAwareObserverPublishesCooldownAndFreshness(t *testing.T) {
 	}
 }
 
-func TestRequestAwareObserverSameIdentityCounterResetRebasesAndReopens(t *testing.T) {
+func TestRequestAwareObserverSameIdentityCounterResetInvalidatesCapabilityEpoch(t *testing.T) {
 	clock := &adapterTestClock{now: time.Unix(103_000, 0)}
 	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 1, 0, 0, 500, true)}
 	server := httptest.NewServer(fixture)
@@ -157,11 +157,15 @@ func TestRequestAwareObserverSameIdentityCounterResetRebasesAndReopens(t *testin
 	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, manager, clock.Now)
 	observer.poll(context.Background())
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVRatio: 0.60,
-		HardKVRatio: 0.90,
-		TPSTarget:   20,
-		TPSFloor:    15,
-		BlockSize:   4,
+		SoftKVLimitTokens:            600,
+		HardKVLimitTokens:            900,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    4,
+		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
 		t.Fatalf("new policy: %v", err)
@@ -201,14 +205,13 @@ func TestRequestAwareObserverSameIdentityCounterResetRebasesAndReopens(t *testin
 	observer.poll(context.Background())
 	input := observer.RequestAwareInput(clock.Now())
 	snapshot := manager.Snapshot()
-	if !input.MetricsFresh || !input.IdentityValid || input.TPSValid || input.UsedTokens != 200 || input.Running != 0 {
-		t.Fatalf("rebased request-aware input=%+v, want fresh reset baseline without TPS", input)
+	if input.MetricsFresh || input.IdentityValid || input.TPSValid {
+		t.Fatalf("counter-reset request-aware input=%+v, want invalid capability epoch", input)
 	}
-	if !snapshot.IntakeOpen || snapshot.Reservations != 0 || snapshot.RetiredReservations != 0 ||
-		snapshot.Virtual.Lower.PhysicalKVUpper != 200 || snapshot.Virtual.Upper.PhysicalKVUpper != 200 {
-		t.Fatalf("rebased manager snapshot=%+v, want open exact reset base without old state", snapshot)
+	if snapshot.IntakeOpen || snapshot.Reservations != 1 {
+		t.Fatalf("counter-reset manager snapshot=%+v, want closed intake with owned old reservation", snapshot)
 	}
 	if manager.MarkForwarded("old-epoch-request") {
-		t.Fatal("old-epoch reservation forwarded after reset rebase")
+		t.Fatal("old-epoch reservation forwarded after capability invalidation")
 	}
 }

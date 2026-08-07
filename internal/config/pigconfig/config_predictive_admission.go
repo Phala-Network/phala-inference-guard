@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/env"
 )
 
@@ -42,19 +41,19 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	prefillRegularTokens, err := env.Int("PREDICTIVE_PREFILL_REGULAR_TOKENS", int(domainpredictive.DefaultPrefillRegularTokens))
+	prefillRegularTokens, err := env.Int("PREDICTIVE_PREFILL_REGULAR_TOKENS", 0)
 	if err != nil {
 		return err
 	}
-	prefillExclusiveTokens, err := env.Int("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", int(domainpredictive.DefaultPrefillExclusiveTokens))
+	prefillExclusiveTokens, err := env.Int("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", 0)
 	if err != nil {
 		return err
 	}
-	prefillQuiescentTokens, err := env.Int("PREDICTIVE_PREFILL_QUIESCENT_TOKENS", int(domainpredictive.DefaultPrefillQuiescentTokens))
+	prefillQuiescentTokens, err := env.Int("PREDICTIVE_PREFILL_QUIESCENT_TOKENS", 0)
 	if err != nil {
 		return err
 	}
-	prefillAggregateBudgetTokens, err := env.Int("PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", int(domainpredictive.DefaultPrefillAggregateBudgetTokens))
+	prefillAggregateBudgetTokens, err := env.Int("PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", 0)
 	if err != nil {
 		return err
 	}
@@ -83,10 +82,17 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 		{name: "PREDICTIVE_PREFILL_QUIESCENT_TOKENS", value: prefillQuiescentTokens},
 		{name: "PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", value: prefillAggregateBudgetTokens},
 	}
+	configuredPrefillBounds := 0
 	for _, bound := range prefillBounds {
-		if bound.value <= 0 {
-			return fmt.Errorf("%s must be > 0", bound.name)
+		if bound.value < 0 {
+			return fmt.Errorf("%s must be >= 0", bound.name)
 		}
+		if bound.value > 0 {
+			configuredPrefillBounds++
+		}
+	}
+	if configuredPrefillBounds != 0 && configuredPrefillBounds != len(prefillBounds) {
+		return fmt.Errorf("predictive Prefill overrides must all be set or all be omitted")
 	}
 	if requestTimeoutMS > startupTimeoutMS {
 		return fmt.Errorf("PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS must not exceed PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS")

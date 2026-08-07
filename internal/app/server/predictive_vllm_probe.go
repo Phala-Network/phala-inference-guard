@@ -21,6 +21,7 @@ type predictiveVLLMStartupProbeConfig struct {
 }
 
 type predictiveVLLMStartup struct {
+	modelName           string
 	ModelIdentitySHA256 string
 	CapacityTokens      int64
 	BlockSize           int
@@ -29,6 +30,11 @@ type predictiveVLLMStartup struct {
 	Waiting             int
 	Preemptions         uint64
 	Generation          uint64
+	PromptLocalCompute  uint64
+	PromptLocalCacheHit uint64
+	PrefillRequests     uint64
+	PrefillSeconds      float64
+	CapabilityMetricsOK bool
 	ObservedAt          time.Time
 }
 
@@ -102,6 +108,7 @@ func predictiveVLLMStartupFromSample(sample telemetry.Sample, observedAt time.Ti
 		return predictiveVLLMStartup{}, fmt.Errorf("predictive startup observation time is invalid")
 	}
 	return predictiveVLLMStartup{
+		modelName:           sample.ModelName,
 		ModelIdentitySHA256: predictiveModelIdentitySHA256(sample.ModelName),
 		CapacityTokens:      sample.KVCapacityTokens,
 		BlockSize:           sample.KVBlockSize,
@@ -110,6 +117,11 @@ func predictiveVLLMStartupFromSample(sample telemetry.Sample, observedAt time.Ti
 		Waiting:             sample.Waiting,
 		Preemptions:         sample.Preemptions,
 		Generation:          sample.Generation,
+		PromptLocalCompute:  sample.PromptLocalCompute,
+		PromptLocalCacheHit: sample.PromptLocalCacheHit,
+		PrefillRequests:     sample.PrefillRequests,
+		PrefillSeconds:      sample.PrefillSeconds,
+		CapabilityMetricsOK: sample.PromptLocalComputeOK && sample.PromptLocalCacheHitOK && sample.PrefillMetricsOK,
 		ObservedAt:          observedAt,
 	}, nil
 }

@@ -76,10 +76,6 @@ type predictiveEpochInvalidator interface {
 	InvalidateEpoch() bool
 }
 
-type predictiveEpochRebaser interface {
-	RebaseEpoch(domainpredictive.VirtualState) error
-}
-
 type predictiveVLLMObserver struct {
 	mu                          sync.Mutex
 	metricsURL                  string
@@ -447,13 +443,6 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	epochReset := (o.hasPreemptions && sample.Preemptions < o.preemptions) ||
 		(o.hasGeneration && sample.Generation < o.generation)
 	if epochReset {
-		observed := domainpredictive.VirtualState{
-			PhysicalKVUpper:       sample.KVUsedTokens,
-			ActiveKVUpper:         sample.KVUsedTokens,
-			DecodeSequences:       sample.Running + sample.Waiting,
-			ActiveContextTokens:   sample.KVUsedTokens,
-			UncachedPrefillTokens: 0,
-		}
 		o.censorStablePrefillWindowLocked()
 		o.resetRequestAwareInputLocked()
 		o.epochInvalidated = true
@@ -461,40 +450,11 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 		o.lastPreemption = time.Time{}
 		o.lastWaiting = 0
 		o.mu.Unlock()
-		rebaser, canRebase := o.coordinator.(predictiveEpochRebaser)
-		if !canRebase || rebaser.RebaseEpoch(observed) != nil {
-			o.invalidateEpoch()
-			return
-		}
-		o.invalidateLearning()
-		o.mu.Lock()
-		if o.closed {
-			o.mu.Unlock()
-			o.invalidateEpoch()
-			return
-		}
-		o.epochInvalidated = false
-		o.preemptions = sample.Preemptions
-		o.hasPreemptions = true
-		o.generation = sample.Generation
-		o.hasGeneration = true
-		o.lastSuccess = now
-		o.lastPreemption = time.Time{}
-		o.lastWaiting = sample.Waiting
-		o.requestAwareInput = runtimepredictive.RequestAwareInput{
-			MetricsFresh:   true,
-			IdentityValid:  true,
-			CapacityTokens: o.maximumKVTokens,
-			UsedTokens:     sample.KVUsedTokens,
-			Running:        sample.Running,
-			Waiting:        sample.Waiting,
-		}
-		o.requestAwareObservedAt = now
-		o.requestAwareGeneration = sample.Generation
-		o.requestAwareRunning = sample.Running
-		o.requestAwarePreemptions = sample.Preemptions
-		o.requestAwareHasBaseline = true
-		o.mu.Unlock()
+		// A counter reset proves a new backend incarnation, but the exported
+		// metrics do not prove that scheduler or model execution settings are
+		// unchanged. Reusing an initialization-calibrated profile would be
+		// unsafe; process reconstruction must build a new immutable profile.
+		o.invalidateEpoch()
 		return
 	}
 	preempted := o.hasPreemptions && sample.Preemptions > o.preemptions

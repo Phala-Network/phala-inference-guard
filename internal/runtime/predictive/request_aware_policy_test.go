@@ -5,25 +5,26 @@ import (
 	"testing"
 )
 
-func TestRequestAwarePolicyRejectsMissingKVElasticBandOrHardMargin(t *testing.T) {
+func TestRequestAwarePolicyRejectsInvalidFrozenKVLimits(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		softKV float64
-		hardKV float64
+		softKV int64
+		hardKV int64
 	}{
-		{name: "zero soft boundary", softKV: 0, hardKV: 0.90},
-		{name: "no hard margin", softKV: 0.60, hardKV: 1},
+		{name: "zero soft boundary", softKV: 0, hardKV: 9_000},
+		{name: "no elastic band", softKV: 9_000, hardKV: 9_000},
+		{name: "unaligned soft boundary", softKV: 6_001, hardKV: 9_008},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := NewRequestAwarePolicy(RequestAwareConfig{
-				SoftKVRatio: test.softKV,
-				HardKVRatio: test.hardKV,
-				TPSTarget:   20,
-				TPSFloor:    15,
-				BlockSize:   16,
+				SoftKVLimitTokens: test.softKV,
+				HardKVLimitTokens: test.hardKV,
+				TPSTarget:         20,
+				TPSFloor:          15,
+				BlockSize:         16,
 			})
 			if err == nil {
-				t.Fatalf("NewRequestAwarePolicy accepted soft/hard %.2f/%.2f without required band and margin", test.softKV, test.hardKV)
+				t.Fatalf("NewRequestAwarePolicy accepted frozen soft/hard %d/%d without a valid aligned band", test.softKV, test.hardKV)
 			}
 		})
 	}
@@ -64,7 +65,7 @@ func TestRequestAwarePolicyOpenAdmitsHardFitLargeRequest(t *testing.T) {
 }
 
 func TestRequestAwarePolicyProtectsQuiescentPrefillBeforeFeedback(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
+	policy := newLargeRequestAwareTestPolicy(t)
 	input := requestAwareTestInput()
 	input.CapacityTokens = 4 * 1024 * 1024
 	input.UsedTokens = 128 * 1024
@@ -101,7 +102,7 @@ func TestRequestAwarePolicyProtectsQuiescentPrefillBeforeFeedback(t *testing.T) 
 }
 
 func TestRequestAwarePolicyPrefillBoundaries(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
+	policy := newLargeRequestAwareTestPolicy(t)
 	base := requestAwareTestInput()
 	base.CapacityTokens = 4 * 1024 * 1024
 	base.UsedTokens = 0
@@ -141,7 +142,7 @@ func TestRequestAwarePolicyPrefillBoundaries(t *testing.T) {
 }
 
 func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstWithoutBlockingShortBehindExclusive(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
+	policy := newLargeRequestAwareTestPolicy(t)
 	regularBurst := requestAwareTestInput()
 	regularBurst.CapacityTokens = 4 * 1024 * 1024
 	regularBurst.UsedTokens = 0
@@ -180,12 +181,25 @@ func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstWithoutBlockingShortB
 
 func TestRequestAwarePolicyRejectsInvalidPrefillThresholdOrdering(t *testing.T) {
 	_, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVRatio: 0.60, HardKVRatio: 0.90, TPSTarget: 20, TPSFloor: 15, BlockSize: 16,
+		SoftKVLimitTokens: 6_000, HardKVLimitTokens: 9_008, TPSTarget: 20, TPSFloor: 15, BlockSize: 16,
 		PrefillRegularTokens: 64 * 1024, PrefillExclusiveTokens: 256 * 1024,
 		PrefillQuiescentTokens: 512 * 1024, PrefillAggregateBudgetTokens: 128 * 1024,
 	})
 	if err == nil {
 		t.Fatal("NewRequestAwarePolicy accepted aggregate prefill budget below exclusive threshold")
+	}
+}
+
+func TestRequestAwarePolicyRequiresInitializedPrefillProfile(t *testing.T) {
+	_, err := NewRequestAwarePolicy(RequestAwareConfig{
+		SoftKVLimitTokens: 6_000,
+		HardKVLimitTokens: 9_008,
+		TPSTarget:         20,
+		TPSFloor:          15,
+		BlockSize:         16,
+	})
+	if err == nil {
+		t.Fatal("policy accepted missing initialized Prefill profile")
 	}
 }
 
@@ -334,7 +348,20 @@ func TestRequestAwarePolicyHealthySnapshotDoesNotReuseOptimisticTPSAfterReservat
 }
 
 func TestRequestAwarePolicyBlockAlignsOperationalKVLimits(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
+	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
+		SoftKVLimitTokens:            576,
+		HardKVLimitTokens:            896,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    16,
+		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
+	})
+	if err != nil {
+		t.Fatalf("construct block-aligned policy: %v", err)
+	}
 	input := requestAwareTestInput()
 	input.CapacityTokens = 1_000
 	input.UsedTokens = 576
@@ -347,6 +374,32 @@ func TestRequestAwarePolicyBlockAlignsOperationalKVLimits(t *testing.T) {
 	}
 	if decision.Pressure != 0 || decision.Action != RequestAwareAdmit {
 		t.Fatalf("soft boundary decision=%+v, want open at block-aligned soft limit", decision)
+	}
+}
+
+func TestRequestAwarePolicyUsesFrozenAbsoluteKVLimits(t *testing.T) {
+	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
+		SoftKVLimitTokens:            700_032,
+		HardKVLimitTokens:            800_000,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    64,
+		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
+	})
+	if err != nil {
+		t.Fatalf("construct absolute-limit policy: %v", err)
+	}
+	input := requestAwareTestInput()
+	input.CapacityTokens = 2_000_000
+	input.RequestReservedTokens = 850_000
+	input.SelectionInputTokens = 1
+	input.EstimatedPrefillTokens = 1
+	decision := policy.Evaluate(input)
+	if decision.Reason != RequestAwareReasonKV || decision.HardKVLimit != 800_000 {
+		t.Fatalf("absolute-limit decision = %+v, want frozen hard limit 800000", decision)
 	}
 }
 
@@ -423,13 +476,25 @@ func TestRequestAwarePolicyIsHistoryIndependent(t *testing.T) {
 }
 
 func newRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {
+	return newRequestAwareTestPolicyWithLimits(t, 6_000, 8_992)
+}
+
+func newLargeRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {
+	return newRequestAwareTestPolicyWithLimits(t, 2_516_576, 3_774_864)
+}
+
+func newRequestAwareTestPolicyWithLimits(t *testing.T, soft, hard int64) *RequestAwarePolicy {
 	t.Helper()
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVRatio: 0.60,
-		HardKVRatio: 0.90,
-		TPSTarget:   20,
-		TPSFloor:    15,
-		BlockSize:   16,
+		SoftKVLimitTokens:            soft,
+		HardKVLimitTokens:            hard,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    16,
+		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
 		t.Fatalf("NewRequestAwarePolicy: %v", err)

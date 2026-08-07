@@ -77,18 +77,24 @@ func TestRequestAwareAdapterFreshCompletionSnapshotDoesNotMislockIdleBackend(t *
 		ActiveContextTokens: 2_000,
 	}, domainpredictive.Constraints{}, nil)
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVRatio: 0.60,
-		HardKVRatio: 0.90,
-		TPSTarget:   20,
-		TPSFloor:    15,
-		BlockSize:   16,
+		SoftKVLimitTokens:            6_000,
+		HardKVLimitTokens:            8_992,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    16,
+		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
 		t.Fatalf("NewRequestAwarePolicy: %v", err)
 	}
 	adapter, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
-		Manager: manager,
-		Policy:  policy,
+		Manager:           manager,
+		Policy:            policy,
+		CapabilityProfile: requestAwareTestCapabilityProfile(10_000, 16, 6_000, 8_992),
+		CapabilityReason:  "test",
 		Snapshot: staticRequestAwareSnapshot{input: runtimepredictive.RequestAwareInput{
 			MetricsFresh:       true,
 			IdentityValid:      true,
@@ -122,12 +128,33 @@ func TestRequestAwareAdapterFreshCompletionSnapshotDoesNotMislockIdleBackend(t *
 	}
 }
 
+func TestRequestAwareAdapterRejectsPolicyCapabilityMismatch(t *testing.T) {
+	manager := runtimepredictive.NewManager("request-aware-http-test", domainpredictive.VirtualState{}, domainpredictive.Constraints{}, nil)
+	policy := newLargeRequestAwareServerTestPolicy(t)
+	_, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
+		Manager:           manager,
+		Policy:            policy,
+		CapabilityProfile: requestAwareTestCapabilityProfile(10_000, 16, 6_000, 8_992),
+		Snapshot: staticRequestAwareSnapshot{input: runtimepredictive.RequestAwareInput{
+			MetricsFresh:  true,
+			IdentityValid: true,
+		}},
+		ManifestID: "request-aware-http-test",
+		BlockSize:  16,
+		Mode:       "enforce",
+	})
+	if err == nil {
+		t.Fatal("adapter accepted policy/profile mismatch")
+	}
+}
+
 func TestRequestAwareAdapterCloseBeforeForwardCommitRejectsAndReleasesReservation(t *testing.T) {
 	adapter, manager := newRequestAwareAdapterTestFixture(t, 5_000, 0)
 	snapshot := adapter.snapshot.(staticRequestAwareSnapshot).input
 	snapshot.CapacityTokens = 4 * 1024 * 1024
 	snapshot.TPSValid = false
 	adapter.snapshot = staticRequestAwareSnapshot{input: snapshot}
+	adapter.policy = newLargeRequestAwareServerTestPolicy(t)
 	input := requestAwareAdapterInput(690*1024, 0)
 	input.Cost.ApproximateInputTokens = 285 * 1024
 	decision := adapter.Decide(context.Background(), "close-before-forward", input)
@@ -156,6 +183,7 @@ func TestRequestAwareAdapterUnknownLexicalHintFallsBackToSafetyUpper(t *testing.
 	snapshot.CapacityTokens = 4 * 1024 * 1024
 	snapshot.TPSValid = false
 	adapter.snapshot = staticRequestAwareSnapshot{input: snapshot}
+	adapter.policy = newLargeRequestAwareServerTestPolicy(t)
 	input := requestAwareAdapterInput(650*1024, 0)
 	input.Cost.ApproximateInputTokens = 0
 	input.Cost.ApproximateInputTokensKnown = false
@@ -196,6 +224,7 @@ func TestRequestAwareAdapterPendingTelemetryReportsCurrentStateAfterLastDecision
 	snapshot.CapacityTokens = 4 * 1024 * 1024
 	snapshot.TPSValid = false
 	adapter.snapshot = staticRequestAwareSnapshot{input: snapshot}
+	adapter.policy = newLargeRequestAwareServerTestPolicy(t)
 	input := requestAwareAdapterInput(8*1024, 0)
 
 	first := adapter.Decide(context.Background(), "telemetry-current-first", input)
@@ -489,18 +518,24 @@ func newRequestAwareAdapterTestFixtureWithMode(t testing.TB, usedTokens int64, w
 		ActiveContextTokens: usedTokens,
 	}, domainpredictive.Constraints{}, nil)
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVRatio: 0.60,
-		HardKVRatio: 0.90,
-		TPSTarget:   20,
-		TPSFloor:    15,
-		BlockSize:   16,
+		SoftKVLimitTokens:            6_000,
+		HardKVLimitTokens:            8_992,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    16,
+		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
 		t.Fatalf("NewRequestAwarePolicy: %v", err)
 	}
 	adapter, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
-		Manager: manager,
-		Policy:  policy,
+		Manager:           manager,
+		Policy:            policy,
+		CapabilityProfile: requestAwareTestCapabilityProfile(10_000, 16, 6_000, 8_992),
+		CapabilityReason:  "test",
 		Snapshot: staticRequestAwareSnapshot{input: runtimepredictive.RequestAwareInput{
 			MetricsFresh:       true,
 			IdentityValid:      true,
@@ -520,6 +555,41 @@ func newRequestAwareAdapterTestFixtureWithMode(t testing.TB, usedTokens int64, w
 		t.Fatalf("newRequestAwarePredictiveAdapter: %v", err)
 	}
 	return adapter, manager
+}
+
+func newLargeRequestAwareServerTestPolicy(t testing.TB) *runtimepredictive.RequestAwarePolicy {
+	t.Helper()
+	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
+		SoftKVLimitTokens:            2_516_576,
+		HardKVLimitTokens:            3_774_864,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    16,
+		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
+	})
+	if err != nil {
+		t.Fatalf("NewRequestAwarePolicy for large capability: %v", err)
+	}
+	return policy
+}
+
+func requestAwareTestCapabilityProfile(capacity, blockSize, soft, hard int64) runtimepredictive.BackendCapabilityProfile {
+	return runtimepredictive.BackendCapabilityProfile{
+		SchemaVersion:                runtimepredictive.CapabilityProfileSchema,
+		ModelIdentitySHA256:          "request-aware-test-model",
+		KVCapacityTokens:             capacity,
+		KVBlockSize:                  blockSize,
+		KVSoftLimitTokens:            soft,
+		KVHardLimitTokens:            hard,
+		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
+		Source:                       runtimepredictive.CapabilityProfileFallback,
+	}
 }
 
 func requestAwareAdapterInput(inputTokens, decodeTokens int64) predictiveShadowInput {

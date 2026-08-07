@@ -11,11 +11,15 @@ var benchmarkRequestAwareManagerResult RequestAwareManagerResult
 
 func BenchmarkRequestAwarePolicyEvaluate(b *testing.B) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVRatio: 0.60,
-		HardKVRatio: 0.90,
-		TPSTarget:   20,
-		TPSFloor:    15,
-		BlockSize:   16,
+		SoftKVLimitTokens:            2_516_576,
+		HardKVLimitTokens:            3_774_864,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    16,
+		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
 		b.Fatalf("NewRequestAwarePolicy: %v", err)
@@ -92,11 +96,15 @@ func BenchmarkRequestAwarePolicyEvaluate(b *testing.B) {
 
 func BenchmarkRequestAwareManagerDecide(b *testing.B) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVRatio: 0.60,
-		HardKVRatio: 0.90,
-		TPSTarget:   20,
-		TPSFloor:    15,
-		BlockSize:   16,
+		SoftKVLimitTokens:            10_066_320,
+		HardKVLimitTokens:            15_099_488,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    16,
+		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
 		b.Fatalf("NewRequestAwarePolicy: %v", err)

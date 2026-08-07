@@ -97,7 +97,7 @@ func TestRequestAwareHTTPShadowWouldProtectButStillForwards(t *testing.T) {
 func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testing.T) {
 	adapter, _ := newRequestAwareHTTPAdapter(t, "enforce")
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVRatio: 0.60, HardKVRatio: 0.90, TPSTarget: 20, TPSFloor: 15, BlockSize: 16,
+		SoftKVLimitTokens: 6_000, HardKVLimitTokens: 8_992, TPSTarget: 20, TPSFloor: 15, BlockSize: 16,
 		PrefillRegularTokens: 4, PrefillExclusiveTokens: 8,
 		PrefillQuiescentTokens: 16, PrefillAggregateBudgetTokens: 8,
 	})
@@ -171,6 +171,7 @@ func TestRequestAwareHTTPSeparatesPrefillInterferenceEstimateFromKVUpper(t *test
 		input.EffectiveSequences = 1
 		input.TPSValid = false
 		adapter.snapshot = staticRequestAwareSnapshot{input: input}
+		adapter.policy = newLargeRequestAwareServerTestPolicy(t)
 
 		backendCalls := 0
 		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

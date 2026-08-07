@@ -4,8 +4,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 func TestV011ObservationDefaultsAre500MillisecondsAndThreePollsFresh(t *testing.T) {
@@ -94,7 +92,7 @@ func TestValidateV011DeterministicTPSRejectsInvalidBounds(t *testing.T) {
 	}
 }
 
-func TestV011PrefillAdmissionDefaultsAndCanonicalOverrides(t *testing.T) {
+func TestV012PrefillAdmissionAutoSentinelAndCanonicalOverrides(t *testing.T) {
 	for _, name := range []string{
 		"PREDICTIVE_PREFILL_REGULAR_TOKENS",
 		"PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS",
@@ -107,11 +105,9 @@ func TestV011PrefillAdmissionDefaultsAndCanonicalOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load defaults: %v", err)
 	}
-	if cfg.PredictivePrefillRegularTokens != domainpredictive.DefaultPrefillRegularTokens ||
-		cfg.PredictivePrefillExclusiveTokens != domainpredictive.DefaultPrefillExclusiveTokens ||
-		cfg.PredictivePrefillQuiescentTokens != domainpredictive.DefaultPrefillQuiescentTokens ||
-		cfg.PredictivePrefillAggregateBudgetTokens != domainpredictive.DefaultPrefillAggregateBudgetTokens {
-		t.Fatalf("prefill defaults=%d/%d/%d/%d", cfg.PredictivePrefillRegularTokens,
+	if cfg.PredictivePrefillRegularTokens != 0 || cfg.PredictivePrefillExclusiveTokens != 0 ||
+		cfg.PredictivePrefillQuiescentTokens != 0 || cfg.PredictivePrefillAggregateBudgetTokens != 0 {
+		t.Fatalf("prefill automatic sentinel=%d/%d/%d/%d", cfg.PredictivePrefillRegularTokens,
 			cfg.PredictivePrefillExclusiveTokens, cfg.PredictivePrefillQuiescentTokens,
 			cfg.PredictivePrefillAggregateBudgetTokens)
 	}

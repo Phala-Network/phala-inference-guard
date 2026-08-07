@@ -80,6 +80,8 @@ type predictiveAdmissionTelemetryProvider interface {
 }
 
 type predictiveAdmissionTelemetrySnapshot struct {
+	CapabilityProfile     runtimepredictive.BackendCapabilityProfile
+	CapabilityReason      string
 	Attempts              predictiveAttemptSnapshot
 	Manager               runtimepredictive.Snapshot
 	Learning              runtimepredictive.LearnedSchedulerSnapshot

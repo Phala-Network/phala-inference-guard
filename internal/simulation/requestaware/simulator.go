@@ -36,10 +36,11 @@ type Metrics struct {
 }
 
 type ScenarioResult struct {
-	Name            string                 `json:"name"`
-	Category        string                 `json:"category"`
-	DurationSeconds float64                `json:"duration_seconds"`
-	Policies        map[PolicyName]Metrics `json:"policies"`
+	Name              string                                     `json:"name"`
+	Category          string                                     `json:"category"`
+	DurationSeconds   float64                                    `json:"duration_seconds"`
+	CapabilityProfile runtimepredictive.BackendCapabilityProfile `json:"candidate_capability_profile"`
+	Policies          map[PolicyName]Metrics                     `json:"policies"`
 }
 
 type Suite struct {
@@ -49,23 +50,18 @@ type Suite struct {
 }
 
 func RunSuite() (Suite, error) {
-	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVRatio: simulationSoftKVRatio,
-		HardKVRatio: simulationHardKVRatio,
-		TPSTarget:   simulationTPSTarget,
-		TPSFloor:    simulationTPSFloor,
-		BlockSize:   simulationBlockSize,
-	})
-	if err != nil {
-		return Suite{}, fmt.Errorf("construct production request-aware policy: %w", err)
-	}
 	suite := Suite{Seed: SimulationSeed}
 	for _, scenario := range simulationScenarios(SimulationSeed) {
+		profile, policy, err := simulationCapabilityPolicy(scenario, simulationPrefillTokensPS)
+		if err != nil {
+			return Suite{}, fmt.Errorf("construct scenario %s capability policy: %w", scenario.name, err)
+		}
 		result := ScenarioResult{
-			Name:            scenario.name,
-			Category:        scenario.category,
-			DurationSeconds: scenario.duration.Seconds(),
-			Policies:        make(map[PolicyName]Metrics, 2),
+			Name:              scenario.name,
+			Category:          scenario.category,
+			DurationSeconds:   scenario.duration.Seconds(),
+			CapabilityProfile: profile,
+			Policies:          make(map[PolicyName]Metrics, 2),
 		}
 		for _, policyName := range []PolicyName{PolicyGlobalBinary, PolicyRequestAware} {
 			metrics, calls, runErr := runScenario(scenario, policyName, policy)
@@ -78,6 +74,43 @@ func RunSuite() (Suite, error) {
 		suite.Scenarios = append(suite.Scenarios, result)
 	}
 	return suite, nil
+}
+
+func simulationCapabilityPolicy(
+	scenario scenarioSpec,
+	observedColdPrefillTokensPerSecond float64,
+) (runtimepredictive.BackendCapabilityProfile, *runtimepredictive.RequestAwarePolicy, error) {
+	capacity := scenario.capacityTokens
+	if capacity <= 0 {
+		capacity = simulationCapacityTokens
+	}
+	profile, err := runtimepredictive.NewBackendCapabilityProfile(runtimepredictive.CapabilityProfileInput{
+		ModelIdentitySHA256:             "deterministic-request-aware-simulation",
+		KVCapacityTokens:                capacity,
+		KVBlockSize:                     simulationBlockSize,
+		KVTargetRatio:                   simulationSoftKVRatio,
+		KVHardRatio:                     simulationHardKVRatio,
+		ObservedColdPrefillTokensPerSec: observedColdPrefillTokensPerSecond,
+		Source:                          runtimepredictive.CapabilityProfileCalibrated,
+	})
+	if err != nil {
+		return runtimepredictive.BackendCapabilityProfile{}, nil, err
+	}
+	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
+		SoftKVLimitTokens:            profile.KVSoftLimitTokens,
+		HardKVLimitTokens:            profile.KVHardLimitTokens,
+		TPSTarget:                    simulationTPSTarget,
+		TPSFloor:                     simulationTPSFloor,
+		BlockSize:                    profile.KVBlockSize,
+		PrefillRegularTokens:         profile.PrefillRegularTokens,
+		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
+		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
+	})
+	if err != nil {
+		return runtimepredictive.BackendCapabilityProfile{}, nil, err
+	}
+	return profile, policy, nil
 }
 
 func (s Suite) Aggregate(policy PolicyName) Metrics {

@@ -3,6 +3,8 @@ package requestaware
 import (
 	"reflect"
 	"testing"
+
+	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMatrix(t *testing.T) {
@@ -62,6 +64,43 @@ func TestDeterministicRequestAwareGoodputSuiteIsReplayable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(first, second) {
 		t.Fatal("fixed-seed request-aware simulation is not replayable")
+	}
+}
+
+func TestCapabilityProfilesChangePreForwardPrefillDecisionUnderSameLiveState(t *testing.T) {
+	scenario := scenarioSpec{capacityTokens: 4 * 1024 * 1024}
+	slowProfile, slowPolicy, err := simulationCapabilityPolicy(scenario, 10_000)
+	if err != nil {
+		t.Fatalf("construct slow capability policy: %v", err)
+	}
+	fastProfile, fastPolicy, err := simulationCapabilityPolicy(scenario, 40_000)
+	if err != nil {
+		t.Fatalf("construct fast capability policy: %v", err)
+	}
+	input := runtimepredictive.RequestAwareInput{
+		MetricsFresh:                true,
+		IdentityValid:               true,
+		CapacityTokens:              scenario.capacityTokens,
+		UsedTokens:                  100_000,
+		RequestReservedTokens:       200 * 1024,
+		SelectionInputTokens:        200 * 1024,
+		EstimatedPrefillTokens:      200 * 1024,
+		Running:                     4,
+		EffectiveSequences:          4,
+		PendingPrefillSequences:     1,
+		PendingPrefillTokens:        32 * 1024,
+		PendingLongPrefillSequences: 1,
+	}
+	slow := slowPolicy.Evaluate(input)
+	fast := fastPolicy.Evaluate(input)
+	if slowProfile.PrefillExclusiveTokens >= input.EstimatedPrefillTokens ||
+		slow.Action != runtimepredictive.RequestAwareSizeProtect ||
+		slow.Reason != runtimepredictive.RequestAwareReasonPrefillConcurrency {
+		t.Fatalf("slow profile/decision = %+v/%+v, want exclusive-concurrency protection", slowProfile, slow)
+	}
+	if fastProfile.PrefillExclusiveTokens <= input.EstimatedPrefillTokens ||
+		fast.Action != runtimepredictive.RequestAwareAdmit {
+		t.Fatalf("fast profile/decision = %+v/%+v, want work-conserving admit", fastProfile, fast)
 	}
 }
 

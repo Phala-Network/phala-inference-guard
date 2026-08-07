@@ -74,6 +74,18 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() metrics.PredictiveAdmiss
 		return input
 	}
 	snapshot := provider.PredictiveAdmissionTelemetry()
+	input.CapabilityProfileSource = string(snapshot.CapabilityProfile.Source)
+	input.CapabilityProfileSchema = snapshot.CapabilityProfile.SchemaVersion
+	input.CapabilityInitializationReason = snapshot.CapabilityReason
+	input.CapabilityKVCapacityTokens = snapshot.CapabilityProfile.KVCapacityTokens
+	input.CapabilityKVBlockSize = snapshot.CapabilityProfile.KVBlockSize
+	input.CapabilityKVSoftLimitTokens = snapshot.CapabilityProfile.KVSoftLimitTokens
+	input.CapabilityKVHardLimitTokens = snapshot.CapabilityProfile.KVHardLimitTokens
+	input.CapabilitySafeColdPrefillTokensPerSecond = snapshot.CapabilityProfile.SafeColdPrefillTokensPerSec
+	input.CapabilityPrefillRegularTokens = snapshot.CapabilityProfile.PrefillRegularTokens
+	input.CapabilityPrefillExclusiveTokens = snapshot.CapabilityProfile.PrefillExclusiveTokens
+	input.CapabilityPrefillQuiescentTokens = snapshot.CapabilityProfile.PrefillQuiescentTokens
+	input.CapabilityPrefillAggregateBudgetTokens = snapshot.CapabilityProfile.PrefillAggregateBudgetTokens
 	input.Attempts = snapshot.Attempts.Attempts
 	input.Fits = snapshot.Attempts.Fits
 	input.Risks = snapshot.Attempts.Risks

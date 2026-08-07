@@ -10,11 +10,23 @@ import (
 )
 
 type PredictiveAdmissionInput struct {
-	Mode     string
-	Attempts uint64
-	Fits     uint64
-	Risks    uint64
-	Unknown  uint64
+	Mode                                     string
+	CapabilityProfileSource                  string
+	CapabilityProfileSchema                  string
+	CapabilityInitializationReason           string
+	CapabilityKVCapacityTokens               int64
+	CapabilityKVBlockSize                    int64
+	CapabilityKVSoftLimitTokens              int64
+	CapabilityKVHardLimitTokens              int64
+	CapabilitySafeColdPrefillTokensPerSecond float64
+	CapabilityPrefillRegularTokens           int64
+	CapabilityPrefillExclusiveTokens         int64
+	CapabilityPrefillQuiescentTokens         int64
+	CapabilityPrefillAggregateBudgetTokens   int64
+	Attempts                                 uint64
+	Fits                                     uint64
+	Risks                                    uint64
+	Unknown                                  uint64
 	// EnforcedRejects counts HTTP requests for which the proxy emitted an
 	// enforced predictive rejection. Router protection is published earlier
 	// from RouterBackpressure and must never be inferred from this counter.
@@ -127,7 +139,23 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	requestAwareReason := normalizeRequestAwareReason(input.RequestAwareReason)
 	requestAwarePressureSource := normalizeRequestAwarePressureSource(input.RequestAwarePressureSource)
 	requestAwarePrefillClass := normalizeRequestAwarePrefillClass(input.RequestAwarePrefillClass)
+	capabilitySource := normalizeCapabilityProfileSource(input.CapabilityProfileSource)
+	capabilityReason := normalizeCapabilityInitializationReason(input.CapabilityInitializationReason)
+	capabilitySchema := input.CapabilityProfileSchema
+	if capabilitySchema == "" {
+		capabilitySchema = "unknown"
+	}
 	fmt.Fprintf(w, "pig_predictive_admission_mode_info{mode=%q} 1\n", mode)
+	fmt.Fprintf(w, "pig_predictive_capability_profile_info{schema=%q,source=%q,reason=%q} 1\n", capabilitySchema, capabilitySource, capabilityReason)
+	fmt.Fprintf(w, "pig_predictive_capability_kv_capacity_tokens %d\n", input.CapabilityKVCapacityTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_kv_block_size %d\n", input.CapabilityKVBlockSize)
+	fmt.Fprintf(w, "pig_predictive_capability_kv_soft_limit_tokens %d\n", input.CapabilityKVSoftLimitTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_kv_hard_limit_tokens %d\n", input.CapabilityKVHardLimitTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_safe_cold_prefill_tokens_per_second %.6f\n", input.CapabilitySafeColdPrefillTokensPerSecond)
+	fmt.Fprintf(w, "pig_predictive_capability_prefill_regular_tokens %d\n", input.CapabilityPrefillRegularTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_prefill_exclusive_tokens %d\n", input.CapabilityPrefillExclusiveTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_prefill_quiescent_tokens %d\n", input.CapabilityPrefillQuiescentTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_prefill_aggregate_budget_tokens %d\n", input.CapabilityPrefillAggregateBudgetTokens)
 	fmt.Fprintf(w, "pig_predictive_admission_enabled %d\n", num.BoolAsInt(mode != "off"))
 	fmt.Fprintf(w, "pig_predictive_admission_enforce %d\n", num.BoolAsInt(mode == "enforce"))
 	fmt.Fprintf(w, "pig_predictive_admission_attempts_total %d\n", input.Attempts)
@@ -195,6 +223,24 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "terminal", input.FailureTerminal)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_prediction_duration_seconds", input.PredictionDuration)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_estimator_duration_seconds", input.EstimatorDuration)
+}
+
+func normalizeCapabilityProfileSource(value string) string {
+	switch value {
+	case "explicit", "startup_calibration", "fallback":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeCapabilityInitializationReason(value string) string {
+	switch value {
+	case "explicit_override", "busy_fallback", "metrics_fallback", "metadata_fallback", "geometry_fallback", "probe_fallback", "scale_fallback", "calibrated":
+		return value
+	default:
+		return "unknown"
+	}
 }
 
 func normalizeRequestAwareAction(value string) string {

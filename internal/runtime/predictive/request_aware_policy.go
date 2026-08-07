@@ -58,8 +58,8 @@ const (
 )
 
 type RequestAwareConfig struct {
-	SoftKVRatio                  float64
-	HardKVRatio                  float64
+	SoftKVLimitTokens            int64
+	HardKVLimitTokens            int64
 	TPSTarget                    float64
 	TPSFloor                     float64
 	BlockSize                    int64
@@ -70,11 +70,12 @@ type RequestAwareConfig struct {
 }
 
 func (c RequestAwareConfig) Validate() error {
-	if !requestAwareFinite(c.SoftKVRatio) || c.SoftKVRatio <= 0 ||
-		!requestAwareFinite(c.HardKVRatio) || c.HardKVRatio <= c.SoftKVRatio || c.HardKVRatio >= 1 ||
+	validKVLimits := c.BlockSize > 0 && c.SoftKVLimitTokens > 0 &&
+		c.HardKVLimitTokens > c.SoftKVLimitTokens &&
+		c.SoftKVLimitTokens%c.BlockSize == 0 && c.HardKVLimitTokens%c.BlockSize == 0
+	if !validKVLimits ||
 		!requestAwareFinite(c.TPSTarget) || c.TPSTarget <= 0 ||
 		!requestAwareFinite(c.TPSFloor) || c.TPSFloor <= 0 || c.TPSFloor >= c.TPSTarget ||
-		c.BlockSize <= 0 ||
 		c.PrefillRegularTokens <= 0 || c.PrefillExclusiveTokens <= c.PrefillRegularTokens ||
 		c.PrefillQuiescentTokens <= c.PrefillExclusiveTokens ||
 		c.PrefillAggregateBudgetTokens < c.PrefillExclusiveTokens ||
@@ -82,22 +83,6 @@ func (c RequestAwareConfig) Validate() error {
 		return fmt.Errorf("request-aware policy configuration is invalid")
 	}
 	return nil
-}
-
-func (c RequestAwareConfig) withPrefillDefaults() RequestAwareConfig {
-	if c.PrefillRegularTokens == 0 {
-		c.PrefillRegularTokens = DefaultRequestAwarePrefillRegularTokens
-	}
-	if c.PrefillExclusiveTokens == 0 {
-		c.PrefillExclusiveTokens = DefaultRequestAwarePrefillExclusiveTokens
-	}
-	if c.PrefillQuiescentTokens == 0 {
-		c.PrefillQuiescentTokens = DefaultRequestAwarePrefillQuiescentTokens
-	}
-	if c.PrefillAggregateBudgetTokens == 0 {
-		c.PrefillAggregateBudgetTokens = DefaultRequestAwarePrefillAggregateBudgetTokens
-	}
-	return c
 }
 
 type RequestAwareInput struct {
@@ -149,11 +134,23 @@ type RequestAwarePolicy struct {
 }
 
 func NewRequestAwarePolicy(config RequestAwareConfig) (*RequestAwarePolicy, error) {
-	config = config.withPrefillDefaults()
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
 	return &RequestAwarePolicy{config: config}, nil
+}
+
+func (p *RequestAwarePolicy) MatchesCapability(profile BackendCapabilityProfile) bool {
+	if p == nil || profile.Validate() != nil {
+		return false
+	}
+	return p.config.SoftKVLimitTokens == profile.KVSoftLimitTokens &&
+		p.config.HardKVLimitTokens == profile.KVHardLimitTokens &&
+		p.config.BlockSize == profile.KVBlockSize &&
+		p.config.PrefillRegularTokens == profile.PrefillRegularTokens &&
+		p.config.PrefillExclusiveTokens == profile.PrefillExclusiveTokens &&
+		p.config.PrefillQuiescentTokens == profile.PrefillQuiescentTokens &&
+		p.config.PrefillAggregateBudgetTokens == profile.PrefillAggregateBudgetTokens
 }
 
 func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecision {
@@ -176,14 +173,8 @@ func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecis
 		return RequestAwareDecision{Action: RequestAwareHardProtect, Reason: RequestAwareReasonInvalid}
 	}
 
-	softKVLimit := requestAwareBlockRoundDown(
-		int64(math.Floor(float64(input.CapacityTokens)*p.config.SoftKVRatio)),
-		p.config.BlockSize,
-	)
-	hardKVLimit := requestAwareBlockRoundDown(
-		int64(math.Floor(float64(input.CapacityTokens)*p.config.HardKVRatio)),
-		p.config.BlockSize,
-	)
+	softKVLimit := p.config.SoftKVLimitTokens
+	hardKVLimit := p.config.HardKVLimitTokens
 	effectiveKV, ok := requestAwareAdd(input.UsedTokens, input.ReservedTokens)
 	if !ok {
 		return RequestAwareDecision{
@@ -237,7 +228,7 @@ func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecis
 		return decision
 	}
 	selectiveWindowTokens := hardKVLimit - softKVLimit
-	if hardKVLimit <= 0 || selectiveWindowTokens <= 0 {
+	if hardKVLimit <= 0 || hardKVLimit >= input.CapacityTokens || selectiveWindowTokens <= 0 {
 		decision.Reason = RequestAwareReasonInvalid
 		return decision
 	}
@@ -369,13 +360,6 @@ func requestAwareAdd(left, right int64) (int64, bool) {
 		return 0, false
 	}
 	return left + right, true
-}
-
-func requestAwareBlockRoundDown(value, blockSize int64) int64 {
-	if value <= 0 || blockSize <= 0 {
-		return 0
-	}
-	return value - value%blockSize
 }
 
 func requestAwareNormalizedPressure(value, soft, hard float64) float64 {

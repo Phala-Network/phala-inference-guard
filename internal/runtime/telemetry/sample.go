@@ -37,6 +37,13 @@ type Sample struct {
 	GenerationValid       bool
 	GenerationTPS         float64
 	GenerationTPSDirect   bool
+	PromptLocalCompute    uint64
+	PromptLocalComputeOK  bool
+	PromptLocalCacheHit   uint64
+	PromptLocalCacheHitOK bool
+	PrefillRequests       uint64
+	PrefillSeconds        float64
+	PrefillMetricsOK      bool
 	TTFT                  HistogramSample
 }
 

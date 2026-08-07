@@ -2,6 +2,8 @@ package prometheus
 
 import (
 	"math"
+	"strconv"
+	"strings"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
@@ -110,8 +112,78 @@ func ParseSample(metricsText string) telemetry.Sample {
 		GenerationTPSDirect: generationTPSDirect,
 		TTFT:                ttft,
 	}
+	adaptVLLMCapabilityCounters(metricsText, &sample)
 	adaptKVTokenMetrics(metricsText, values, &sample)
 	return sample
+}
+
+func adaptVLLMCapabilityCounters(metricsText string, sample *telemetry.Sample) {
+	if sample == nil || !sample.ModelNameValid || sample.ModelName == "" {
+		return
+	}
+	var localCompute float64
+	var localCacheHit float64
+	var prefillCount float64
+	var prefillSeconds float64
+	var localComputeFound bool
+	var localCacheHitFound bool
+	var prefillCountFound bool
+	var prefillSecondsFound bool
+	for _, rawLine := range strings.Split(metricsText, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) < 2 {
+			continue
+		}
+		metric := strings.SplitN(parts[0], "{", 2)[0]
+		if metric != "vllm:prompt_tokens_by_source_total" &&
+			metric != "vllm:request_prefill_time_seconds_count" &&
+			metric != "vllm:request_prefill_time_seconds_sum" {
+			continue
+		}
+		open := strings.IndexByte(parts[0], '{')
+		close := strings.LastIndexByte(parts[0], '}')
+		if open < 0 || close <= open {
+			continue
+		}
+		labels, ok := parseLabelSet(parts[0][open+1 : close])
+		if !ok || labels["model_name"] != sample.ModelName {
+			continue
+		}
+		value, err := strconv.ParseFloat(parts[1], 64)
+		if err != nil {
+			continue
+		}
+		switch metric {
+		case "vllm:prompt_tokens_by_source_total":
+			switch labels["source"] {
+			case "local_compute":
+				localCompute += value
+				localComputeFound = true
+			case "local_cache_hit":
+				localCacheHit += value
+				localCacheHitFound = true
+			}
+		case "vllm:request_prefill_time_seconds_count":
+			prefillCount += value
+			prefillCountFound = true
+		case "vllm:request_prefill_time_seconds_sum":
+			prefillSeconds += value
+			prefillSecondsFound = true
+		}
+	}
+	sample.PromptLocalCompute, sample.PromptLocalComputeOK = exactNonNegativeMetricUint64(localCompute, localComputeFound)
+	sample.PromptLocalCacheHit, sample.PromptLocalCacheHitOK = exactNonNegativeMetricUint64(localCacheHit, localCacheHitFound)
+	sample.PrefillRequests, prefillCountFound = exactNonNegativeMetricUint64(prefillCount, prefillCountFound)
+	sample.PrefillSeconds = prefillSeconds
+	sample.PrefillMetricsOK = prefillCountFound && prefillSecondsFound && finiteNonNegative(prefillSeconds)
+	if !sample.PrefillMetricsOK {
+		sample.PrefillRequests = 0
+		sample.PrefillSeconds = 0
+	}
 }
 
 func adaptKVTokenMetrics(metricsText string, values map[string]float64, sample *telemetry.Sample) {

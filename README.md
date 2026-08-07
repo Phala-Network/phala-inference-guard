@@ -162,9 +162,9 @@ controls:
 /v1/responses
 ```
 
-### v0.11.4 deterministic request-aware admission
+### v0.12.0 initialization-adaptive request-aware admission
 
-PIG v0.11.4 makes a deterministic decision before forwarding each supported
+PIG v0.12.0 makes a deterministic decision before forwarding each supported
 request to one vLLM upstream:
 
 ```text
@@ -178,7 +178,7 @@ forwards immediately or returns the normal OpenAI-compatible PIG 429 before the
 request reaches vLLM. Enforce does not enter the legacy PIG queue and does not
 apply tier, lane, or backend-priority behavior. Predictive `shadow` and
 `enforce` require `DYNAMIC_TTFT_ENABLED=false`; TTFT does not participate in the
-v0.11 decision.
+v0.12 decision.
 
 The request signal is deliberately approximate and model-family neutral. A
 bounded O(body bytes) JSON estimator produces a conservative prompt-cost
@@ -191,10 +191,36 @@ tokenizer, vocabulary, chat template, model-specific profile or asset, native
 FFI, or remote tokenizer service. It also does not inspect prefix-cache hits,
 route, reorder, queue, or retain prompt content.
 
-At startup, PIG reads vLLM's served-model identity hash, KV token capacity, KV
-block size, used KV, running/waiting requests, preemption counter, and generation
-token counter. Every fresh snapshot is combined with local reservations that
-vLLM metrics have not yet absorbed. The pure policy then evaluates:
+At startup, PIG reads vLLM's served-model identity, KV token capacity, KV block
+size, used KV, running/waiting requests, preemption counter, and generation
+token counter. It constructs one immutable capability profile for that backend
+epoch. KV soft/hard token limits are calculated once from the reported capacity,
+block geometry, and the configured safety ratios; business traffic and later
+preemptions cannot rewrite them.
+
+When the four Prefill overrides are omitted and the upstream is idle, PIG reads
+`max_model_len` from `/v1/models` and submits two bounded, unique-prefix,
+one-output-token `/v1/completions` probes. Exact vLLM deltas for
+`prompt_tokens_by_source{source="local_compute"}` and
+`request_prefill_time_seconds` produce a conservative cold-Prefill rate. PIG
+freezes one-sided token thresholds no larger than the built-in
+64K/256K/512K/256K ceilings and, for a slower backend, equivalent to 5, 20, and
+40 seconds of safe measured work plus a 20-second aggregate budget. An idle
+probe may tighten these limits, but it cannot prove that wider Prefill/Decode
+overlap preserves QoS. A cache-hit delta, concurrent request,
+preemption, identity/capacity drift, malformed response, timeout, or ambiguous
+counter delta invalidates calibration.
+
+PIG does not wait for business traffic to become quiet. A busy startup, missing
+capability metric, incompatible `/v1/models`, or cleanly rejected calibration
+uses the conservative 64K/256K/512K/256K fallback immediately. If PIG submitted
+a probe, it must obtain a coherent post-probe snapshot before opening intake;
+that snapshot, rather than the pre-probe state, initializes reservations and the
+observer. A complete four-value explicit override skips calibration. Partial
+overrides are configuration errors.
+
+Every fresh 500-ms snapshot is combined with local reservations that vLLM
+metrics have not yet absorbed. The pure policy then evaluates:
 
 - a block-aligned post-admit hard-KV fit and preemption cooldown;
 - current KV pressure between configured soft and hard operational ratios;
@@ -202,23 +228,25 @@ vLLM metrics have not yet absorbed. The pure policy then evaluates:
 - a post-admit mean-active-TPS proxy derived from the generation-token delta.
 
 With no pressure, ordinary hard-fit requests remain work-conserving. Prefills
-also pass an independent token-weighted gate before they can reach vLLM. Below
-64K is the regular class; when no exclusive-or-larger Prefill is pending, the
-post-admit aggregate regular/weighted demand must stay at or below 256K.
-64K--256K is weighted and shares the same 256K pending-token budget.
-256K--512K allows one concurrent long Prefill while ordinary short requests may
-continue, and 512K or larger (including 650K) requires an idle backend and owns
-the Prefill phase until the first semantic response or terminal release. These
-thresholds are defaults, not model-name checks, so the same policy covers
-multi-card large-context models even when one canary has a smaller
-max-model-len. Hard KV fit keeps the conservative prompt safety upper. Prefill
-interference class and budget use the model-neutral estimate described above,
-falling back to the safety upper when the hint is unavailable. Neither value is
-reported as exact cached or uncached tokens.
+also pass an independent token-weighted gate before they can reach vLLM. The
+regular, weighted, exclusive, and quiescent boundaries come from the immutable
+profile rather than a model name. The aggregate budget limits overlapping
+regular/weighted Prefill work; exclusive work permits only one long Prefill;
+quiescent work requires an idle backend and owns the Prefill phase until the
+first semantic response or terminal release. On a calibrated backend these
+classes are bounded by approximately 5, 20, and 40 seconds of conservative cold
+Prefill work and never become more permissive than the earlier
+64K/256K/512K boundaries. A 650K request therefore remains quiescent even when
+calibration is unavailable or an idle probe is unusually fast.
 
-While a 512K-or-larger request is still prefilling, all later requests are
+Hard KV fit keeps the conservative prompt safety upper. Prefill interference
+class and budget use the model-neutral estimate described above, falling back
+to the safety upper when the hint is unavailable. Neither value is reported as
+exact cached or uncached tokens.
+
+While a quiescent-class request is still prefilling, all later requests are
 protected. After its first semantic response, ordinary requests can resume
-immediately, but another 512K-or-larger request still requires both the
+immediately, but another quiescent request still requires both the
 observed backend and every local effective sequence to be idle. A terminal
 event releases local ownership immediately; if the previous vLLM snapshot is
 still busy, a later 512K-or-larger request waits for the next fresh poll rather
@@ -234,12 +262,21 @@ earlier local reservations and must pass the post-admit hard-KV fit; the startup
 probe is the first counter baseline so normal operation can produce a TPS delta
 on the first 500-ms poll.
 
-The v0.11 policy has no online learner, calibrator, cache-aware decision, TTFT or
-TPOT gate, confidence frontier, promotion probe, model profile, or historical
-hold. Feedback only changes the next observer snapshot. A same-identity vLLM
-counter reset atomically discards old-epoch reservations and establishes a new
-baseline; model identity, KV capacity, or block-size drift remains fail-closed
-until PIG is reconstructed.
+The v0.12 policy has no online learner, cache-aware decision, TTFT/TPOT gate,
+confidence frontier, promotion probe, model-specific tokenizer asset, or
+historical hold. The bounded startup calibration is capability initialization,
+not business-feedback learning. A metrics poll changes only current state. A
+vLLM generation or preemption counter reset identifies a new backend
+incarnation and closes intake until PIG is reconstructed; the same model name,
+KV capacity, and block size cannot prove that execution settings or calibrated
+Prefill performance are unchanged. Identity, capacity, and block-size drift use
+the same fail-closed lifecycle.
+
+Future learning belongs only in a separate soft-forecast layer: attributed
+`usage.prompt_tokens` may calibrate the model-neutral size hint, uncensored
+completion usage may estimate expected output length, and stable Decode windows
+may estimate aggregate/marginal TPS by concurrency. None may lower the hard KV
+cost or mutate the immutable Prefill/KV profile, and none is active in v0.12.0.
 
 Important request-aware settings are:
 
@@ -248,17 +285,24 @@ PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS=500
 PREDICTIVE_MAX_METRICS_AGE_MS=1500
 PREDICTIVE_TPS_TARGET=25
 PREDICTIVE_TPS_FLOOR=20
-PREDICTIVE_PREFILL_REGULAR_TOKENS=65536
-PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS=262144
-PREDICTIVE_PREFILL_QUIESCENT_TOKENS=524288
-PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS=262144
 KV_ADMISSION_VLLM_TARGET_RATIO=<soft operational ratio>
 KV_ADMISSION_VLLM_HARD_RATIO=<hard operational ratio below 1>
 KV_ADMISSION_PREEMPTION_COOLDOWN_SECONDS=<cooldown>
 ```
 
+The values above all have built-in defaults and normally do not need to be
+written explicitly in Compose. In particular, omit all four
+`PREDICTIVE_PREFILL_*_TOKENS` variables to select initialization adaptation.
+Set all four only for a deliberate static override.
+
 The TPS values are deployment policy, not model-specific assets; validate them
 for each serving stack before enforce promotion.
+
+The initialized profile is visible without exposing model identity or prompt
+content through `pig_predictive_capability_profile_info`, the
+`pig_predictive_capability_kv_*` gauges, the
+`pig_predictive_capability_prefill_*` gauges, and the one-time
+`predictive_capability event=profile_initialized` startup log.
 
 In enforce mode, Router-readable capacity is a fresh, side-effect-free
 projection of the same request-aware policy. Raw legacy dynamic running,
