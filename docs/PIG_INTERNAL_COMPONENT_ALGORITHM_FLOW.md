@@ -1,6 +1,6 @@
-# PIG v0.12.1 Internal Algorithm Flow
+# PIG v0.12.2 Internal Algorithm Flow
 
-PIG v0.12.1 has one admission architecture and one upstream. Components are
+PIG v0.12.2 has one admission architecture and one upstream. Components are
 separated by ownership so request parsing, backend observation, policy,
 reservation lifecycle, proxying, and telemetry do not mutate each other's
 state.
@@ -99,6 +99,13 @@ predictive admission metrics
 
 This prevents a poll or request completion between writers from producing an
 internally contradictory scrape.
+
+Current-state inspection remains the primary Router projection. When an
+enforced load rejection is request-specific and a one-block inspect request
+still fits, the projection retains selective inspect capacity one for a bounded
+1500 ms from the original rejection. Stronger current-state capacity zero wins.
+The bounded projection changes no admission input, reservation, or observer
+state and clears without another business request.
 
 ## Ownership map
 

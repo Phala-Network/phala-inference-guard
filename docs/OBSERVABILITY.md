@@ -1,4 +1,4 @@
-# PIG v0.12.1 Observability
+# PIG v0.12.2 Observability
 
 PIG exports one predictive state. The request decision, status line, backend
 projection, and Router compatibility values must come from one captured
@@ -90,6 +90,14 @@ The authoritative fields are:
 Shadow always publishes inactive predictive Router backpressure and cannot
 reduce capacity.
 
+Enforce keeps a real load rejection visible as selective Router backpressure
+for a bounded 1500 ms after the pre-forward decision when the current
+one-block inspect probe would otherwise report open. This lets the live
+1000-ms Router poll observe the protection while retaining inspect capacity one
+for short traffic. A current snapshot that requires capacity zero remains
+authoritative, and a fresh open snapshot clears the projection automatically
+at the hold boundary. Scrapes and successful requests do not extend the hold.
+
 The current Router parser still requires six compatibility names:
 
 ```text
@@ -107,7 +115,7 @@ retired architecture is exported.
 
 ## Status log
 
-The bounded periodic line starts with `PIG-v0.12.1` and includes mode, attempts,
+The bounded periodic line starts with `PIG-v0.12.2` and includes mode, attempts,
 fit/risk/unknown counts, enforced rejects, reservations, last action/reason,
 Prefill estimate, KV post-admit values, TPS proxy/projection, Router scope and
 inspect capacity, observer freshness/identity/running/waiting, and compatibility

@@ -1,6 +1,6 @@
 # Phala Inference Guard
 
-Phala Inference Guard (PIG) v0.12.1 is a single-upstream, predictive admission
+Phala Inference Guard (PIG) v0.12.2 is a single-upstream, predictive admission
 proxy for OpenAI-compatible vLLM services. It estimates request size before an
 upstream call, combines that estimate with one fresh vLLM observation and all
 unabsorbed reservations, and decides whether the post-admit state can preserve
@@ -30,12 +30,12 @@ does not create a second post-response admission controller.
 ## Production configuration
 
 Production Compose should be small. Do not spell out values that equal the
-v0.12.1 defaults.
+v0.12.2 defaults.
 
 ```yaml
 services:
   pig:
-    image: ghcr.io/phala-network/phala-inference-guard:0.12.1
+    image: ghcr.io/phala-network/phala-inference-guard:0.12.2
     environment:
       - UPSTREAM=http://backend:8000
       - TOKEN=${PIG_TOKEN}
@@ -103,10 +103,10 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image builds for
-the v0.12.1 release are run on the approved clean Linux builder. The release
+the v0.12.2 release are run on the approved clean Linux builder. The release
 plan records the exact archive hash, commands, logs, image digest, live gates,
 and production observation evidence:
 
-- [v0.12.1 correction and live validation plan](docs/PREDICTIVE_ADMISSION_V0_12_1_CORRECTION_AND_LIVE_VALIDATION_PLAN.md)
+- [v0.12.x correction and live validation plan](docs/PREDICTIVE_ADMISSION_V0_12_1_CORRECTION_AND_LIVE_VALIDATION_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

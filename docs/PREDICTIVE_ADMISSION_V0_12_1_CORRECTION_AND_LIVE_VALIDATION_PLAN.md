@@ -1,4 +1,4 @@
-# PIG v0.12.1 Protocol Correction and Live Validation Plan
+# PIG v0.12.x Protocol Correction and Live Validation Plan
 
 Status: active execution plan, 2026-08-08
 
@@ -8,7 +8,8 @@ without inheriting obsolete v0.8-v0.11 behavior or starting v0.13 work.
 
 ## 1. Objective
 
-Release and validate PIG v0.12.1 as a single predictive-admission product. A
+Release and validate the current PIG v0.12.x patch as a single
+predictive-admission product. A
 request decision happens before an eligible request reaches the upstream,
 malformed client input remains a client protocol error, and every real
 protection decision is consistent across HTTP, metrics, bounded logs, and
@@ -829,8 +830,18 @@ A failed candidate is a completed diagnostic stage, not a successful release.
 - [x] v0.12.1 source implementation completed
 - [x] three source/evidence reviews completed
 - [x] full remote-builder matrix, simulations, and benchmarks green
-- [ ] exact source committed and pushed
-- [ ] immutable builder/registry image provenance complete
+- [x] v0.12.1 exact source committed and pushed at `d953233`
+- [x] v0.12.1 immutable image published at digest
+  `sha256:28713fc7811100beeba71b46cbcfec71b77b303488367cce9334d1ab15fa2ef8`
+- [x] v0.12.1 Router-disabled shadow matrix completed
+- [x] v0.12.1 enforce readiness, protocol, lifecycle, size, and contract gates
+  completed before r51
+- [x] r51 live red stopped v0.12.1 promotion; `use1-cb` remained disabled and
+  drained
+- [x] v0.12.2 request-reject Router projection correction is builder green
+  through the r55/r56 executable-identity evidence chain
+- [ ] v0.12.2 exact source committed and pushed
+- [ ] v0.12.2 immutable builder/registry image provenance complete
 - [ ] complete Router-disabled shadow matrix green
 - [ ] complete Router-disabled enforce matrix green
 - [ ] only `use1-cb` enabled for the canary
@@ -1054,3 +1065,213 @@ final exact-file provenance archive must prove byte identity of every file
 except this plan before commit. r28 authorizes commit/image work only after that
 proof; it is not image, registry, Compose, deployment, Router, or production
 evidence.
+
+## 14. r51 live red and v0.12.2 corrective continuation
+
+### 14.1 Promotion stop: request-specific hard protection was not projected
+
+The Router-disabled enforce differential run
+`enforce-differential-r51-d953233` completed from
+`2026-08-07T23:02:00.6522877Z` through
+`2026-08-07T23:02:57.4274904Z`. The existing 150,048-token request completed
+HTTP 200, the quiescent candidate returned pre-forward HTTP 429, and the
+same-pressure short request completed HTTP 200. Prediction deltas were exactly
+three attempts, two fits, and one risk. The enforced-reject and represented-log
+deltas were exactly one. Final reservations, Prefill ownership, backend
+running/waiting, Router target running, preemptions, backend errors, and
+internal failures were all zero. The Router digest and enabled set were
+unchanged and `use1-cb` remained disabled.
+
+The candidate was rejected as `hard_protect/kv`, not the harness-expected
+`size_protect/prefill_busy`: its estimated Prefill was 287,254 tokens and its
+645,120-token reservation did not fit beside the existing request. This is a
+valid safety decision, but the same scrape reported
+`pig_predictive_router_backpressure_active=0`,
+`pig_predictive_router_backpressure_applied=0`, inspect capacity zero as an
+inactive value, and unchanged effective compatibility capacity. The HTTP 429,
+predictive counter, last-reject, and bounded log therefore did not have the
+Router projection required by Sections 5.3 and 9.15.
+
+Source review identified the cause. `recordDecision` stores the enforced
+reject, but `PredictiveAdmissionTelemetry` independently evaluates only a
+one-block synthetic inspect request against current state. When the current
+state can accept a short request while the rejected business request itself
+crosses hard KV, that inspect request fits and clears Router backpressure
+immediately. The last-reject timestamp is exported but does not participate in
+capacity projection. Existing tests cover a hard reject only when the tiny
+inspect request also fails, so they did not cover request-specific hard
+protection.
+
+This is a product-contract red, not a harness-only failure. PIG v0.12.1 at
+`d953233` and image digest
+`sha256:28713fc7811100beeba71b46cbcfec71b77b303488367cce9334d1ab15fa2ef8`
+must not be Router-enabled or promoted. The next candidate is v0.12.2; the
+major/minor architecture and production configuration contract remain v0.12.
+
+### 14.2 Minimal correction contract
+
+The correction must preserve current-snapshot recovery while making every
+enforced protection observable to Router:
+
+1. The decision path remains unchanged: current observation plus atomic
+   reservations decides each business request before forwarding.
+2. A real enforce rejection publishes a bounded Router projection even when a
+   one-block inspect request still fits. Shadow and malformed-client 400 paths
+   never create this projection.
+3. If current-state inspection already requires stronger backpressure, that
+   current result wins. Otherwise, a recent load rejection publishes selective
+   backpressure with inspect capacity one so Router can continue bounded short
+   traffic while PIG retains request-size differentiation. A recent
+   availability rejection publishes hard capacity zero.
+4. The projection hold is an internal versioned constant of 1500 ms, long
+   enough to cross the live Router's 1000-ms metrics poll once, and is not a
+   production environment variable. It starts at the pre-forward rejection
+   timestamp and cannot be extended by scrapes or successful requests.
+5. After the bounded hold, a fresh open snapshot clears the projection without
+   requiring another business request. No indefinite sticky clamp, low-flow
+   self-lock, learned state, cooldown feedback admission, or second observer is
+   introduced.
+6. One telemetry scrape still reads one observer generation and atomically
+   drives predictive backpressure, the six compatibility fields, upstream
+   status, and metrics. Last-decision request fields remain diagnostic and do
+   not replace current observer state.
+7. Focused tests must prove the exact request-specific hard-KV case, hold
+   boundary, immediate fresh recovery after the boundary, no business-state
+   mutation from scrapes, shadow non-authority, malformed 400 isolation, and
+   race safety.
+8. The live differential harness must use a smaller active holder so the
+   intended quiescent Prefill-busy branch is tested separately from hard KV.
+   A distinct enforce-only atomic-reservation gate must reproduce the r51 hard
+   case and require HTTP, counter, bounded log, last-reject, active/applied
+   Router projection, compatibility fields, cancellation, and exact drain.
+
+Any executable correction invalidates the v0.12.1 builder, image, shadow, and
+enforce green evidence for release promotion. v0.12.2 must repeat the exact
+source archive, focused red/green, full builder matrix, immutable image,
+Router-disabled shadow/enforce matrix, and 30-minute canary gates before this
+objective can complete.
+
+### 14.3 r52-r56 builder evidence
+
+The r51 live summary SHA-256 is
+`f1b8adfcb40fb79cfbe0f95aaeacba3fb3a72d35efac3eb42d2e314cecd78e65`.
+The focused r52 source archive was
+`bf485866b7cc28804a67cae7ae154383d8f37a9cdd75adaa422feddddbb3603d`.
+On the approved builder, formatting passed, the exact test failed, and its
+failure matched `want recent selective KV protection`. The r52 evidence archive
+was independently pulled and hash-verified as
+`15c4ab226878541512ad34025f1701353f3f8f346e0216977d5f79cb04f10d2e`.
+This is valid red evidence for the request-specific hard-KV projection defect.
+
+The first green attempt r53 used source archive
+`7a66fd5c29c154d1fd3a9e8e5f6e27d39d3a1cf95eb7b495ee340b012d826ce4`.
+Formatting and the v0.12.2 binary passed, but focused/server/race tests failed
+because three existing assertions still required same-instant open and the
+static test provider was incorrectly expected to expose a nonzero observer.
+Its evidence archive is
+`5c04554b4c7996786977c090e5391d819d2f4f2f6ef25046858b1abb0e176354`.
+r53 is retained as failed green evidence and authorizes nothing.
+
+The corrected focused r54 source archive was
+`3214c1b296e5bc3cc97cf059e74b9d0ecfe8c110da5064ba97869fc69308ff68`.
+Formatting, the exact focused set, the complete server package, targeted race,
+and the v0.12.2 binary all passed. Its evidence archive is
+`75823e8dad12008238c5e8f7c0a245b52f58db8bf96ff44ea14f7bd0f0dec34e`.
+
+r55 ran the full matrix from that source against the exact v0.12.1 `d953233`
+baseline archive
+`fec86cbca8a640aa8955a5511dd5ab7644d876c48cdfe861e9e2dc1724f564fe`.
+Focused/full tests, vet, targeted/full race, all builds, versioned binary, two
+byte-identical simulations, simulation acceptance, both benchmark orders,
+the benchmark contract, and large-body benchmarks passed. The sole failure was
+the strict legacy audit: the new HTTP integration test duplicated the six
+`pig_dynamic_*` wire names outside their one compatibility-writer owner. r55 is
+therefore not a full green matrix. Its evidence archive is
+`b1f3738096dcd28689db7784c011f079c281925cea816ece82813e11f2bb4ba4`.
+
+r56 removed only those test-string duplicates. Its exact source archive was
+`94fbbcfe70d66365ca40d70d65c6d8468ef58d53b4be9004ddea634ea1450e6e`.
+The remote exact diff contained only
+`request_aware_predictive_http_integration_test.go`; complete non-test SHA
+manifests were byte-identical. r55's full evidence manifest and status contract
+were revalidated, and r56 independently passed formatting, strict legacy
+audit, focused/full tests, vet, targeted/full race, all builds, and the
+versioned binary. The r55 and r56 `-trimpath -buildvcs=false` binaries were
+byte-identical at
+`064d9dd65f21e4593843924ffe75b18482cd25bf6db40c7bae31d057ee77ee4a`.
+The r56 evidence archive is
+`402d5ea0050ace9d9ab62f5e1fd54c64a400da4dded1c94b844b3d511a073597`.
+This exact executable-identity chain makes the r55 simulation and benchmark
+steps applicable to r56 while correcting the audit-only test ownership defect.
+
+The deterministic simulation remained byte-identical and passed acceptance.
+Candidate aggregate completion TPS was `96.8961` versus `76.4926` for the
+binary baseline, and SLO-compliant completion TPS was `87.4188` versus
+`62.6674`. Preemptions remained `1/1`, waiting remained `5.0/5.0` seconds,
+TPS-floor violation was `20.7` versus `106.1` seconds, and candidate maximum
+idle-with-demand was `0.4` seconds. These are deterministic model results, not
+live GPU throughput claims.
+
+The paired benchmark contract passed without allocation growth. HTTP
+pre-forward protection was `13,232 ns/op` versus `13,019 ns/op` (`1.0164x`,
+`33/33` allocations). Manager decision was `3,299.5` versus `3,332 ns/op` at
+48 active and `17,254` versus `17,270 ns/op` at 256 active, both zero
+allocation. Policy ratios ranged from `0.9647x` to `1.0262x`, all zero
+allocation. Candidate 4 MiB structural scan was `7.348 ms/op`, zero allocation;
+full classification was `14.549 ms/op`, `4,210,092 B/op`, 22 allocations; the
+4 MiB estimator was `0.217 ms/op`, zero allocation. The correction adds one
+time subtraction and bounded branch only to telemetry projection, not the
+pre-forward policy hot path.
+
+### 14.4 Corrective review pass 1: model, protocol, and causality
+
+Completed 2026-08-08. The live red proved that request-specific post-admit KV
+cost can reject a large request while a one-block current-state probe still
+fits. Replacing that real decision with the probe was the causality error. The
+correction leaves business admission unchanged and projects only an already
+completed enforce rejection. Load scope becomes selective inspect capacity
+one; current stronger capacity zero wins; request-scoped client failures do not
+change Router capacity. No tokenizer, cache lookup, model-specific threshold,
+learner, routing decision, or feedback admission gate was added.
+
+### 14.5 Corrective review pass 2: lifecycle, safety, and SOLID
+
+Completed 2026-08-08. The hold starts from the immutable pre-forward reject
+timestamp, cannot be extended by scrapes or successful requests, excludes
+shadow and request-scoped client errors, and expires at exactly 1500 ms without
+a new business request. Repeated real rejects may refresh it. Current-state
+hard protection remains stronger than the recent selective projection. Tests
+cover load/availability/request scopes, future and expired timestamps, the
+boundary, shadow non-authority, malformed 400 isolation, current hard capacity
+zero, compatibility arithmetic, lifecycle state immutability, and concurrent
+telemetry/admission under race. The pure recent-reject helper lives with Router
+projection; policy, manager, observer, HTTP transaction, and compatibility
+writer ownership remain separate.
+
+### 14.6 Corrective review pass 3: evidence, efficiency, and release
+
+Completed 2026-08-08. r52 is valid red, r53 is failed green, r54 is focused
+green, r55 is full executable evidence with an audit red, and r56 proves the
+audit correction is test-only while re-running every source/race/build gate.
+The duplicate compatibility names were removed rather than weakening the
+strict ownership audit. Binary identity, full race, deterministic simulation,
+paired benchmarks, large-body cost, and evidence archives are recorded above.
+The 1500-ms hold is an internal versioned constant chosen to cross the current
+Router's 1000-ms poll once; it is not a production environment variable and it
+retains inspect capacity one to limit throughput loss. This review authorizes a
+final plan-only provenance archive, commit, image build, and Router-disabled
+rerun. It does not authorize Router enable or inherit any v0.12.1 live green
+gate for v0.12.2.
+
+r57 then froze source archive
+`be8868915ce321f280310769e46ffcc603d4dd77c41d564d0094cc48c8f37b66`.
+The remote exact diff against r56 contained only this plan document; the r56
+evidence manifest revalidated, formatting, strict legacy audit, full tests, all
+builds, and the v0.12.2 versioned binary passed. The r57 binary remained
+byte-identical at
+`064d9dd65f21e4593843924ffe75b18482cd25bf6db40c7bae31d057ee77ee4a`.
+The independently pulled r57 evidence archive SHA-256 is
+`2a190c56a94feb753f91d9993a4d385f4e7d2c0693b37885f610060b1aec4d20`.
+Because recording r57 changes only this plan, the pre-commit r58 archive must
+again prove a one-file plan-only diff and the same binary; no executable test,
+simulation, race, or benchmark evidence may otherwise be inherited.

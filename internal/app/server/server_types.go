@@ -12,7 +12,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-const version = "PIG-v0.12.1"
+const version = "PIG-v0.12.2"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 

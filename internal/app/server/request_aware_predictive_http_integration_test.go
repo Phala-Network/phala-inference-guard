@@ -265,6 +265,40 @@ func TestRequestAwareHTTPEnforceDifferentiatesSmallAndLargeBeforeUpstream(t *tes
 	}
 }
 
+func TestRequestAwareHTTPHardKVRejectProjectsSelectiveRouterCapacity(t *testing.T) {
+	adapter, manager := newRequestAwareAdapterTestFixture(t, 5_000, 0)
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	srv := newRequestAwareHTTPTestServer(t, backend.URL, adapter, "enforce")
+	defer srv.Close()
+
+	response := serveRequestAwareHTTP(t, srv, strings.Repeat("a", 16_000))
+	if response.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("request-specific hard response/backend=%d/%d body=%q, want pre-forward 429/0", response.Code, backendCalls, response.Body.String())
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 {
+		t.Fatalf("request-specific hard rejection created reservation: %+v", snapshot)
+	}
+	var rendered strings.Builder
+	srv.writePredictiveAndDynamicMetrics(&rendered)
+	for _, want := range []string{
+		`pig_predictive_request_aware_last_decision_info{action="hard_protect",reason="kv",pressure_source="none",prefill_class="regular"} 1`,
+		"pig_predictive_admission_enforced_rejects_total 1",
+		"pig_predictive_router_backpressure_active 1",
+		"pig_predictive_router_backpressure_applied 1",
+		`pig_predictive_router_backpressure_state_info{scope="load",reason="kv_over_budget",source="deterministic"} 1`,
+		"pig_predictive_router_inspect_capacity 1",
+	} {
+		if !strings.Contains(rendered.String(), want) {
+			t.Fatalf("request-specific hard metrics missing %q\n%s", want, rendered.String())
+		}
+	}
+}
+
 func TestRequestAwareHTTPShadowWouldProtectButStillForwards(t *testing.T) {
 	adapter, manager := newRequestAwareHTTPAdapter(t, "shadow")
 	var decisionLogs []requestAwareDecisionLogEvent

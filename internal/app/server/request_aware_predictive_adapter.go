@@ -443,6 +443,10 @@ func (a *requestAwarePredictiveAdapter) transitionRouterBackpressureLocked(
 	desired predictiveRouterBackpressureSnapshot,
 ) predictiveRouterBackpressureSnapshot {
 	desired.LatestRejectAt = a.attempts.LastRejectAt
+	if recent, ok := recentRequestAwareRejectProjection(now, a.attempts); ok &&
+		(!desired.Active || desired.InspectCapacity >= recent.InspectCapacity) {
+		desired = recent
+	}
 	if !desired.Active {
 		desired.Activations = a.routerActivationCounter
 		return desired
