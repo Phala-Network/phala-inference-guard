@@ -26,10 +26,13 @@ jobs:
       - name: Validate production image contract
         env:
           EXPECTED_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          EXPECTED_REVISION: ${{ github.sha }}
         run: tools/validate-production-image-contract.sh
       - uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
+          build-args: |
+            SOURCE_REVISION=${{ github.sha }}
           push: true
           tags: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}

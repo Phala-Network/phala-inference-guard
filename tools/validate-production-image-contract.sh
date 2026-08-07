@@ -8,6 +8,7 @@ dockerfile=${PIG_DOCKERFILE:-Dockerfile}
 image=${PIG_IMAGE_UNDER_TEST:-pig-production-contract:local}
 expected_version=${EXPECTED_VERSION:-}
 expected_label_version=${expected_version#v}
+expected_revision=${EXPECTED_REVISION:-}
 
 fail() {
     printf '%s\n' "PIG production image contract failed: $*" >&2
@@ -21,7 +22,13 @@ grep -Eq '^FROM[[:space:]]+gcr\.io/distroless/base-debian12(@sha256:[0-9a-f]+)?(
     fail 'production runtime must use distroless base-debian12 rather than a static image'
 
 if [ -z "${PIG_IMAGE_UNDER_TEST:-}" ]; then
-    docker build --pull=false --tag "$image" --file "$dockerfile" .
+    [ -n "$expected_revision" ] ||
+        fail 'EXPECTED_REVISION is required when building an image under test'
+    docker build --pull=false \
+        --build-arg "SOURCE_REVISION=$expected_revision" \
+        --tag "$image" \
+        --file "$dockerfile" \
+        .
 fi
 
 label_version=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$image")
@@ -29,6 +36,13 @@ label_version=$(docker image inspect --format '{{ index .Config.Labels "org.open
     fail 'image is missing org.opencontainers.image.version'
 if [ -n "$expected_version" ] && [ "$label_version" != "$expected_label_version" ]; then
     fail "image label version $label_version does not match expected tag $expected_version"
+fi
+
+label_revision=$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image")
+printf '%s\n' "$label_revision" | grep -Eq '^[0-9a-f]{40}$' ||
+    fail 'image org.opencontainers.image.revision must be a 40-character lowercase Git SHA'
+if [ -n "$expected_revision" ] && [ "$label_revision" != "$expected_revision" ]; then
+    fail "image label revision $label_revision does not match expected revision $expected_revision"
 fi
 
 visible_devices=$(docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$image" |
@@ -57,4 +71,4 @@ fi
 grep -aFq 'open NVML:' "$tmp_dir/phala-inference-guard" ||
     fail 'image binary does not contain the native NVML collector path'
 
-printf '%s\n' "PIG_PRODUCTION_IMAGE_CONTRACT_OK image=$image version=$label_version"
+printf '%s\n' "PIG_PRODUCTION_IMAGE_CONTRACT_OK image=$image version=$label_version revision=$label_revision"
