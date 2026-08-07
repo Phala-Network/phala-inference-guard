@@ -1,6 +1,8 @@
 # PIG v0.12.0 Immutable Backend Capability Profile Plan
 
-Status: design reviewed; test-first implementation in progress; focused remote-builder red evidence recorded
+Status: source implementation and complete remote-builder matrix passed; exact-commit
+builder-local image verified; implementation commit `caaa882` pending push at this
+document checkpoint
 
 Date: 2026-08-07
 
@@ -67,6 +69,8 @@ or allowing a workload learner to rewrite a physical resource limit.
 | KV capacity tokens | backend fact from `vllm:cache_config_info` | once per capability epoch | no | hard resource geometry |
 | KV block size | backend fact from `vllm:cache_config_info` | once per capability epoch | no | reservation and limit alignment |
 | maximum model length | backend fact from `/v1/models` | once per capability epoch | no | request/probe validity bound only |
+| scheduler sequence ceiling | future trusted backend fact such as explicitly published `max_num_seqs` | once per capability epoch, only when available and validated | no | cap the process fail-safe ceiling; never infer it from traffic |
+| scheduler Prefill geometry | future trusted backend facts such as `max_num_batched_tokens`, chunked-Prefill mode, and partial-Prefill concurrency | once per capability epoch, only when available and validated | no | fingerprint the backend, bound probes, and one-sided-cap partial-Prefill concurrency; never derive a request-size threshold from a scheduler-step budget |
 | KV target/hard ratios | versioned QoS policy or complete explicit override | process configuration | no | derive safe operating limits |
 | KV soft/hard token limits | KV facts plus fixed policy ratios | once per capability epoch | no | immutable soft selection and hard rejection |
 | cold-Prefill tokens/s | two bounded isolated initialization probes | once per capability epoch | no | convert request tokens to estimated Prefill work |
@@ -178,10 +182,54 @@ This produces the following implementation order:
 | none | current KV, running/waiting, reservations, generation delta, preemption event | current state; observe and replace, never train as a parameter |
 | excluded | cache-hit probability or cached-token estimate | outside the current contract |
 
+The scheduler rows are classification rules, not v0.12.0 implementation
+claims. The inspected vLLM v0.24.0 metrics contract does not publish those
+values, so the current implementation neither guesses them from running counts
+nor parses the upstream command line. If a later vLLM version publishes a
+stable typed contract, they become initialization facts and capability-epoch
+fingerprint inputs. `max_num_seqs` may cap an existing hard ceiling;
+`max_num_batched_tokens` must not be misread as a safe long-request or aggregate
+Prefill threshold and may only bound calibration work; explicitly published
+partial-Prefill concurrency may only tighten PIG concurrency.
+
 Preemption is a sparse safety event rather than a useful first learner target.
 v0.12 uses the event and a fixed cooldown as a one-sided brake. A future risk
 model would require independently attributable labels and may only tighten
 admission; it cannot justify a larger KV or Prefill envelope.
+
+The first future learner must estimate a response surface, not a learned
+concurrency threshold:
+
+```text
+(effective Decode sequences, coarse active-context pressure)
+  -> conservative lower confidence bound for aggregate completion TPS
+  -> conservative per-user TPS forecast after one more request
+```
+
+Only fresh, epoch-consistent, Decode-dominant windows qualify. A window is
+discarded on counter reset, preemption, active or pending Prefill, startup
+settling, unstable sequence ownership, insufficient generation progress, or
+metrics staleness. Context pressure is a read-only feature normalized by the
+immutable profile; it does not train KV capacity, limits, ratios, or
+reservations. The learned result may replace the deterministic soft TPS
+projection only after minimum bucket coverage and uncertainty gates pass. It
+has no authority over hard KV fit, frozen Prefill classes, the TPS SLO, or the
+global fail-safe ceiling. The immutable KV and Prefill gates run first; a
+learned Decode forecast cannot turn their rejection into an admission.
+
+Input-size correction remains a distinct lower-priority learner. Its target is
+the error of PIG's model-neutral request-size estimate against attributable
+`usage.prompt_tokens`; it is not a Prefill capability measurement. Even when
+mature, it may affect only soft size selection. The conservative raw input
+upper remains the hard KV and cold-Prefill safety cost. Completion-length
+learning is deferred further because abort, timeout, truncation, and client
+`max_tokens` make its labels frequently censored.
+
+Arrival-rate prediction, a learned preemption probability, TTFT learning,
+cache-hit prediction, and a directly learned global concurrency cap are
+excluded. Arrival and queue counters remain replaceable live state; a sparse
+adverse event remains a brake; and the user contract has removed TTFT and cache
+from this admission design.
 
 ## 3. Current-source findings
 
@@ -798,11 +846,13 @@ This goal ends at layer 6 unless the user gives new production authority.
 - [x] review pass 3 completed and corrections applied
 - [x] parameter-ownership follow-up review completed and corrections applied
 - [x] parameter-selection and backend-incarnation follow-up completed
+- [x] initialization-capability and future-learner boundary re-audited
 - [x] focused remote-builder red evidence recorded
 - [x] source implementation completed
 - [x] focused remote-builder green evidence recorded
 - [x] complete clean-builder matrix recorded
-- [ ] v0.12.0 source versioned, committed, and pushed
+- [x] v0.12.0 executable source versioned and committed as `caaa882`
+- [ ] implementation commit and closure documentation pushed
 - [x] builder-local deployable image verified
 
 ## 18. Design review record
@@ -1005,6 +1055,42 @@ Findings and corrections:
 Follow-up result: the v0.12 implementation boundary is still no online learner.
 It now defines a narrow next learner that targets over-protection without
 granting feedback any authority over Prefill or KV safety.
+
+### 18.7 Initialization and learner boundary re-audit, completed 2026-08-07
+
+Reclassified every current and plausible upstream input using four tests:
+stability for one backend incarnation, safe identifiability before intake,
+availability of an attributable uncensored label, and authority over hard
+admission.
+
+Findings:
+
+1. Current initialization adaptation is complete for the facts vLLM actually
+   exposes: served identity, KV capacity, block size, maximum model length, and
+   an isolated cold-Prefill rate. Derived KV and Prefill absolute limits remain
+   immutable and block-aligned.
+2. `max_num_seqs`, `max_num_batched_tokens`, and chunked/partial-Prefill
+   settings are conceptually initialization facts, not learner targets. They
+   cannot enter v0.12 because vLLM v0.24.0 exposes no validated metrics contract
+   for them. A future typed contract may only cap or tighten admission.
+3. TPS target/floor, KV ratios, Prefill time budgets and ceilings, poll timing,
+   cooldown, and `GLOBAL_LIMIT` are product or safety policy. Neither startup
+   traffic nor business feedback has authority to choose them.
+4. Used KV, reservations, running/waiting, generation delta, Prefill ownership,
+   and preemption are current state. Retaining history does not make them
+   trainable parameters.
+5. The first justified learner is a bounded Decode response surface with a
+   conservative confidence bound. It learns workload-dependent batching and
+   context response, not a concurrency limit, KV setting, or Prefill setting.
+6. Input-estimator correction is valid only as a soft measurement correction;
+   expected completion length is lower priority because usable labels are more
+   often censored. Cache, TTFT, arrival-rate, and preemption-risk learners stay
+   excluded.
+
+Result: no executable-source correction is required. The v0.12.0 implementation
+already freezes every Prefill/KV field and wires no learner. This pass narrows
+the future learner contract and prevents unavailable scheduler metadata from
+being guessed.
 
 ## 19. Focused red evidence
 
@@ -1220,6 +1306,20 @@ A temporary builder-local container started successfully, logged
 `phala-inference-guard PIG-v0.12.0`, and returned HTTP 200 with body `ok` from
 `/healthz`. The temporary smoke and extraction containers were removed after
 evidence capture; the image remains on the builder.
+
+The clean final commit archive (`caaa882`) was then built independently as
+`pig-v0.12.0-caaa882:latest`. A fresh 2026-08-07 inspect confirmed the same image
+ID, proving that the exact commit and the smoke-verified r9 candidate produced
+identical image content:
+
+```text
+exact-commit tag: pig-v0.12.0-caaa882:latest
+image ID:        sha256:49b2588abca4596909b552ec803c996ef7011fb212669d123d487944a25fefab
+OCI version:     0.12.0
+entrypoint:      /phala-inference-guard
+configured user: 0
+created:         2026-08-07T09:37:30.074180902Z
+```
 
 ```text
 image-build.log SHA-256:         f98fa00a8210a88d330973611474e6aa1812090c86d363dd3b1b50bb2b659cb5
