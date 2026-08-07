@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -9,9 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Phala-Network/phala-inference-guard/internal/config/pigconfig"
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
+	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
@@ -26,7 +26,7 @@ func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -55,7 +55,7 @@ func TestAPIAuthRejectsGenerationWithoutBearer(t *testing.T) {
 		t.Fatalf("backend should not be called")
 	}))
 	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestAPIAuthRejectsCompletionAndResponsesWithoutBearer(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestProtectedPIGRoutesRequireBearerAndDoNotProxy(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestUpstreamStatusReturnsAggregateCode(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestUpstreamStatusReturnsAggregateCode(t *testing.T) {
 	}
 }
 
-func TestCompletionAndResponsesProxyWithCombinedBodyRewrite(t *testing.T) {
+func TestCompletionAndResponsesProxyWithoutApplicationBodyRewrite(t *testing.T) {
 	for _, path := range []string{"/v1/completions", "/v1/responses"} {
 		t.Run(path, func(t *testing.T) {
 			var seenPath string
@@ -202,20 +202,7 @@ func TestCompletionAndResponsesProxyWithCombinedBodyRewrite(t *testing.T) {
 			}))
 			defer backend.Close()
 
-			cfg := testProxyConfig(backend.URL)
-			cfg.OpenAICompatStripEmptyToolCalls = true
-			cfg.BackendPriorityInjectionEnabled = true
-			cfg.BackendPriorityMode = "all"
-			cfg.BackendPriorityRewriteStrategy = "field_scan"
-			cfg.BackendPriorityField = "priority"
-			cfg.BackendPriorityPremiumValue = -100
-			cfg.BackendPriorityBasicValue = 0
-			cfg.BackendPriorityBodyBytes = defaultOpenAICompatBodyBytesForTest
-			cfg.BackendPriorityBufferBytes = 0
-			cfg.BackendPriorityStreamBufferBytes = 4 * 1024
-			cfg.BackendPriorityRewriteLimit = 8
-			cfg.BackendPriorityFailOpen = false
-			srv, err := newProxyServer(cfg)
+			srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 			if err != nil {
 				t.Fatalf("newProxyServer: %v", err)
 			}
@@ -235,17 +222,8 @@ func TestCompletionAndResponsesProxyWithCombinedBodyRewrite(t *testing.T) {
 			if seenPath != path {
 				t.Fatalf("backend path=%q want %q", seenPath, path)
 			}
-			var payload map[string]any
-			if err := json.Unmarshal([]byte(seenBody), &payload); err != nil {
-				t.Fatalf("backend body is not json: %v; body=%s", err, seenBody)
-			}
-			if payload["priority"].(float64) != -100 {
-				t.Fatalf("priority=%v want -100; body=%s", payload["priority"], seenBody)
-			}
-			messages := payload["messages"].([]any)
-			message := messages[0].(map[string]any)
-			if _, ok := message["tool_calls"]; ok {
-				t.Fatalf("empty tool_calls was not stripped: %s", seenBody)
+			if seenBody != body {
+				t.Fatalf("application body mutated: got=%s want=%s", seenBody, body)
 			}
 		})
 	}
@@ -259,7 +237,7 @@ func TestUpstreamErrorClassificationConvertsInputImage500(t *testing.T) {
 		_, _ = w.Write(testOpenAIErrorBody(upstreamMessage, "InternalServerError", http.StatusInternalServerError))
 	}))
 	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -281,7 +259,7 @@ func TestStreamingUpstreamErrorClassificationConvertsInputImage500(t *testing.T)
 		_, _ = w.Write(testOpenAIErrorBody(upstreamMessage, "InternalServerError", http.StatusInternalServerError))
 	}))
 	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -304,7 +282,7 @@ func TestUpstreamErrorClassificationLeavesBackendCrash500(t *testing.T) {
 		_, _ = w.Write(testOpenAIErrorBody(upstreamMessage, "InternalServerError", http.StatusInternalServerError))
 	}))
 	defer backend.Close()
-	srv, err := newProxyServer(testProxyConfig(backend.URL))
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -328,7 +306,7 @@ func TestUpstreamErrorClassificationCanBeDisabled(t *testing.T) {
 	defer backend.Close()
 	cfg := testProxyConfig(backend.URL)
 	cfg.UpstreamErrorClassificationEnabled = false
-	srv, err := newProxyServer(cfg)
+	srv, err := newTestProxyServer(cfg)
 	if err != nil {
 		t.Fatalf("newProxyServer: %v", err)
 	}
@@ -346,48 +324,64 @@ func testProxyConfig(upstream string) config {
 	return config{
 		Listen:                             ":0",
 		Upstream:                           upstream,
-		Backends:                           []pigconfig.Backend{{Name: "backend1", Upstream: upstream}},
+		PredictiveMetricsURL:               upstream + "/metrics",
 		Token:                              "secret",
 		QoSPaths:                           []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
 		APIAuthEnabled:                     true,
 		APIAuthPaths:                       []string{"/v1/chat/completions", "/v1/completions", "/v1/responses"},
-		GlobalLimit:                        16,
 		UpstreamErrorClassificationEnabled: true,
-		OpenAICompatStripEmptyToolCalls:    false,
-		OpenAICompatBodyBytes:              defaultOpenAICompatBodyBytesForTest,
-		OpenAICompatFailOpen:               true,
-		JSONClassifyBodyBytes:              2 * 1024 * 1024,
-		JSONClassifyLimit:                  16,
-		MediumBodyBytes:                    60000,
-		LongBodyBytes:                      100000,
-		VeryLongBodyBytes:                  524288,
-		MediumOutputTokens:                 1024,
-		LongOutputTokens:                   4096,
-		VeryLongOutputTokens:               8192,
-		BackendPriorityInjectionEnabled:    false,
-		DynamicPollInterval:                time.Second,
-		DynamicFailsafeState:               "yellow",
-		DynamicKVYellow:                    0.70,
-		DynamicKVRed:                       0.80,
-		DynamicWaitingYellow:               1,
-		DynamicWaitingRed:                  2,
-		DynamicUserTPSYellow:               25,
-		DynamicUserTPSRed:                  20,
-		DynamicTTFTPolicy:                  latency.DefaultPolicy(),
+		AttestationEnabled:                 false,
 		ProxyTimeout:                       10 * time.Second,
-		QoSQueuePoll:                       10 * time.Millisecond,
-		KVAdmissionPolicy:                  kvadmission.DefaultPolicy(),
-		KVAdmissionEstimator:               kvadmission.DefaultEstimatorConfig(),
+		PredictiveAdmissionMode:            "enforce",
+		PredictiveScannerBodyBytes:         2 * 1024 * 1024,
+		PredictiveScannerConcurrency:       16,
+		OutputTokenFields:                  []string{"max_tokens", "max_completion_tokens", "max_output_tokens"},
+		PredictiveEstimator:                kvadmission.DefaultEstimatorConfig(),
 		PredictiveStartupProbeTimeout:      time.Second,
 		PredictiveMetricsRequestTimeout:    100 * time.Millisecond,
 		PredictiveObservationPollInterval:  500 * time.Millisecond,
 		PredictiveMaximumMetricsAge:        1500 * time.Millisecond,
+		PredictivePreemptionCooldown:       10 * time.Second,
+		PredictiveKVTargetRatio:            0.84,
+		PredictiveKVHardRatio:              0.88,
 		PredictiveTPSTarget:                25,
 		PredictiveTPSFloor:                 20,
 	}
 }
 
-const defaultOpenAICompatBodyBytesForTest = 32 * 1024 * 1024
+func newTestProxyServer(cfg config) (*proxyServer, error) {
+	return newProxyServerWithDependencies(cfg, serverDependencies{
+		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) {
+			return &testForwardPredictiveAdapter{mode: cfg.PredictiveAdmissionMode}, nil
+		},
+	})
+}
+
+type testForwardPredictiveAdapter struct {
+	mode string
+}
+
+func (a *testForwardPredictiveAdapter) Decide(_ context.Context, _ string, _ predictiveShadowInput) predictiveAdmissionDecision {
+	decision := predictiveAdmissionDecision{Outcome: predictiveAdmissionOutcomeForward}
+	if a.mode == "enforce" {
+		decision.Reservation = &testForwardReservation{}
+	}
+	return decision
+}
+
+func (*testForwardPredictiveAdapter) PredictiveAdmissionTelemetry() predictiveAdmissionTelemetrySnapshot {
+	return predictiveAdmissionTelemetrySnapshot{}
+}
+
+func (*testForwardPredictiveAdapter) Close() error { return nil }
+
+type testForwardReservation struct{}
+
+func (*testForwardReservation) MarkForwarded() bool       { return true }
+func (*testForwardReservation) MarkPrefillComplete() bool { return true }
+func (*testForwardReservation) Terminate(runtimepredictive.TerminalCause) bool {
+	return true
+}
 
 func testOpenAIErrorBody(message, errorType string, code int) []byte {
 	body, err := json.Marshal(map[string]any{

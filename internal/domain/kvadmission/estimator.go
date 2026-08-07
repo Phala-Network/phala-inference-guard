@@ -2,6 +2,7 @@ package kvadmission
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 )
 
@@ -22,8 +23,11 @@ func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 
 	features, valid := scanJSONFeatures(body)
 	if !valid {
-		cost.UnsupportedReason = "invalid_json"
-		return cost
+		if !json.Valid(body) {
+			cost.UnsupportedReason = "invalid_json"
+			return cost
+		}
+		return estimateGenericJSONValue(cost, body, cfg)
 	}
 	cost.TextBytes = features.StringValueBytes
 	cost.ToolSchemaBytes = features.ToolSchemaBytes
@@ -62,6 +66,26 @@ func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 	cost.EstimatedInputLow = low
 	cost.EstimatedInputHigh = high
 	cost.BoundedDecodeTokens = int64(decode)
+	cost.Supported = true
+	return cost
+}
+
+func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost {
+	valueBytes := len(bytes.TrimSpace(body))
+	low := int64(ceilDiv(valueBytes, cfg.MaxBytesPerToken))
+	high := int64(ceilDiv(valueBytes, cfg.MinBytesPerToken))
+	if low < 1 {
+		low = 1
+	}
+	if high < low {
+		high = low
+	}
+	cost.TextBytes = valueBytes
+	cost.EstimatedInputLow = low
+	cost.EstimatedInputHigh = high
+	cost.ApproximateInputTokens = high
+	cost.ApproximateInputTokensKnown = true
+	cost.BoundedDecodeTokens = int64(cfg.BlindOutputTokens)
 	cost.Supported = true
 	return cost
 }

@@ -1,123 +1,100 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/Phala-Network/phala-inference-guard/internal/app/dynamic"
-	"github.com/Phala-Network/phala-inference-guard/internal/app/gate"
 	"github.com/Phala-Network/phala-inference-guard/internal/app/request"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
-	"github.com/Phala-Network/phala-inference-guard/internal/runtime/kvshadow"
-	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
+
+type predictiveReservationContextKey struct{}
 
 func newProxyServer(cfg config) (*proxyServer, error) {
 	return newProxyServerWithDependencies(cfg, serverDependencies{NewPredictiveShadow: newDefaultPredictiveShadow})
 }
 
 func newProxyServerWithDependencies(cfg config, dependencies serverDependencies) (*proxyServer, error) {
-	if len(cfg.Backends) == 0 && cfg.Upstream != "" {
-		metricsURL := ""
-		if len(cfg.DynamicMetricsURLs) > 0 {
-			metricsURL = cfg.DynamicMetricsURLs[0]
-		}
-		cfg.Backends = []backendConfig{{Name: "backend1", Upstream: strings.TrimRight(cfg.Upstream, "/"), MetricsURL: metricsURL}}
-	}
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
-	backends, target, proxy, err := backend.Build(backendProxyConfigs(cfg.Backends))
+	if dependencies.NewPredictiveShadow == nil {
+		return nil, fmt.Errorf("predictive admission adapter is required")
+	}
+	predictive, err := dependencies.NewPredictiveShadow(cfg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("construct predictive admission adapter: %w", err)
+	}
+	if predictive == nil {
+		return nil, fmt.Errorf("predictive admission adapter constructor returned nil")
+	}
+	backends, _, _, err := backend.Build([]backend.Config{{
+		Name: "upstream", Upstream: strings.TrimRight(cfg.Upstream, "/"), MetricsURL: cfg.PredictiveMetricsURL,
+	}})
+	if err != nil || len(backends) != 1 {
+		_ = predictive.Close()
+		if err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("construct exactly one upstream proxy")
 	}
 	attestationService, err := newAttestationService(cfg)
 	if err != nil {
+		_ = predictive.Close()
 		return nil, err
 	}
-	var predictiveShadow predictiveAdmissionShadow
-	if predictiveAdmissionEnabled(cfg.PredictiveAdmissionMode) {
-		if dependencies.NewPredictiveShadow == nil {
-			return nil, fmt.Errorf("predictive admission adapter is required when PREDICTIVE_ADMISSION_MODE is enabled")
-		}
-		predictiveShadow, err = dependencies.NewPredictiveShadow(cfg)
-		if err != nil {
-			return nil, fmt.Errorf("construct predictive admission adapter: %w", err)
-		}
-		if predictiveShadow == nil {
-			return nil, fmt.Errorf("predictive admission adapter constructor returned nil")
-		}
-	}
 	srv := &proxyServer{
-		cfg:                      cfg,
-		target:                   target,
-		proxy:                    proxy,
-		backends:                 backends,
-		globalLn:                 newLane("global", cfg.GlobalLimit),
-		defaultLn:                newLane("default", 0),
-		mediumLn:                 newLane("medium_body", 0),
-		longLn:                   newLane("long_body", 0),
-		veryLongLn:               newLane("very_long_body", 0),
-		mediumOutputLn:           newLane("medium_output", 0),
-		longOutputLn:             newLane("long_output", 0),
-		veryLongOutputLn:         newLane("very_long_output", 0),
-		unknownLn:                newLane("unknown_body", 0),
-		attestation:              attestationService,
-		priorityInjector:         request.NewPriorityInjector(priorityInjectorConfig(cfg)),
-		predictiveShadow:         predictiveShadow,
-		started:                  time.Now(),
-		activeRequests:           prefill.New(),
-		decisionDuration:         newDurationHistogram(),
-		kvEstimatorDuration:      newPredictiveDurationHistogram(),
-		kvShadowDecisionDuration: newDurationHistogram(),
-		proxyTTFB:                newDurationHistogram(),
-		requestSemanticTTFT:      newDurationHistogram(),
-		proxyTotal:               newDurationHistogram(),
-		internalOverhead:         newDurationHistogram(),
+		cfg:               cfg,
+		backend:           backends[0],
+		attestation:       attestationService,
+		predictiveShadow:  predictive,
+		started:           time.Now(),
+		decisionDuration:  newDurationHistogram(),
+		estimatorDuration: newPredictiveDurationHistogram(),
+		proxyTTFB:         newDurationHistogram(),
+		proxyTotal:        newDurationHistogram(),
+		internalOverhead:  newDurationHistogram(),
 	}
-	if cfg.KVAdmissionMode == "shadow" {
-		srv.kvShadow = kvshadow.New(cfg.KVAdmissionPolicy)
-	}
-	srv.qosGate = gate.New(gate.Config{
-		QueueWait: cfg.QoSQueueWait,
-		QueuePoll: cfg.QoSQueuePoll,
-	}, srv.globalLn, srv.currentQoSLimit, srv.effectiveQoSQueueWait)
-	srv.dynamicController = dynamic.New(dynamicQoSConfig(cfg), dynamic.Dependencies{
-		Backends:         dynamicQoSBackends(srv.backends),
-		GlobalLimit:      srv.globalLn.Limit,
-		QueueCurrent:     srv.qosGate.QueueCurrent,
-		DynamicRejected:  srv.qosGate.DynamicRejected,
-		TierSnapshot:     srv.qosGate.TierSnapshot,
-		SemanticTTFT:     srv.requestSemanticTTFT.Sample,
-		PrefillProtected: srv.activeRequests.ProtectedCount,
-		Notify:           srv.qosGate.Notify,
+	srv.requestClassifier = request.New(request.Config{
+		Paths:             cfg.QoSPaths,
+		SuffixMatch:       cfg.PathSuffixMatch,
+		MaximumBodyBytes:  cfg.PredictiveScannerBodyBytes,
+		MaximumConcurrent: cfg.PredictiveScannerConcurrency,
+		OutputTokenFields: cfg.OutputTokenFields,
+		Estimator:         cfg.PredictiveEstimator,
 	})
-	srv.requestClassifier = request.New(requestClassifierConfig(cfg), request.Lanes{
-		Default:        srv.defaultLn,
-		MediumBody:     srv.mediumLn,
-		LongBody:       srv.longLn,
-		VeryLongBody:   srv.veryLongLn,
-		UnknownBody:    srv.unknownLn,
-		MediumOutput:   srv.mediumOutputLn,
-		LongOutput:     srv.longOutputLn,
-		VeryLongOutput: srv.veryLongOutputLn,
-	}, srv.currentDynamicState)
-	for _, backend := range srv.backends {
-		backend := backend
-		backend.SetHandlers(srv.modifyBackendResponse, func(w http.ResponseWriter, r *http.Request, err error) {
-			if srv.recordClientDisconnect(r.Context(), clientDisconnectPhaseUpstream, true) {
-				return
-			}
-			srv.recordProxyUpstreamError(backend)
-			openai.WriteTooManyRequests(w)
-		})
-	}
-	srv.dynamicController.Start()
+	srv.backend.SetHandlers(srv.modifyBackendResponse, func(w http.ResponseWriter, r *http.Request, _ error) {
+		if srv.recordClientDisconnect(r.Context(), clientDisconnectPhaseUpstream, true) {
+			return
+		}
+		srv.backend.ObserveProxyError()
+		openai.WriteTooManyRequests(w)
+	})
 	return srv, nil
+}
+
+func (s *proxyServer) modifyBackendResponse(response *http.Response) error {
+	s.classifyUpstreamErrorResponse(response)
+	if response != nil && response.Request != nil {
+		if reservation, ok := response.Request.Context().Value(predictiveReservationContextKey{}).(predictiveShadowReservation); ok && reservation != nil {
+			response.Body = observePredictiveFirstBodyRead(response.Body, func() {
+				reservation.MarkPrefillComplete()
+			})
+		}
+	}
+	return nil
+}
+
+func attachPredictiveReservation(ctx context.Context, reservation predictiveShadowReservation) context.Context {
+	if reservation == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, predictiveReservationContextKey{}, reservation)
 }
 
 func newAttestationService(cfg config) (*attestation.Service, error) {

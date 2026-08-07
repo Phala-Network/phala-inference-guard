@@ -21,12 +21,6 @@ func (s *proxyServer) observeProxyResult(result proxyResult) {
 	}
 }
 
-func (s *proxyServer) observeSemanticTTFT(ttft time.Duration) {
-	if ttft > 0 {
-		s.requestSemanticTTFT.Observe(ttft)
-	}
-}
-
 func (s *proxyServer) observeInternalOverhead(total, queueWait, proxyTotal time.Duration) {
 	overhead := total - queueWait - proxyTotal
 	if overhead < 0 {

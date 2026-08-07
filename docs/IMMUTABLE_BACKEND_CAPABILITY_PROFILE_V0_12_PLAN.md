@@ -1547,9 +1547,9 @@ traffic. It also corrected the observability interpretation: the legacy dynamic
 limit may continue to appear in logs, but predictive enforce decisions and
 Router status must be judged from their own counters and reasons.
 
-Review result: the plan is ready for exact-image publication and candidate
-generation. No registry image, v0.12.0 Compose, deployment, Router mutation, or
-v0.12.0 inference request has yet been executed.
+Review result at authorization time: the plan was ready for exact-image
+publication and candidate generation. Section 21.9 supersedes the old
+pre-execution statement with current live evidence.
 
 ### 21.8 Live progress ledger
 
@@ -1557,10 +1557,200 @@ v0.12.0 inference request has yet been executed.
 - [x] fresh CVM/Compose/container/endpoint/metrics baseline captured
 - [x] fresh complete Router inventory captured
 - [x] three live-plan reviews completed and corrections recorded
-- [ ] exact v0.12.0 registry image published and pull-proven
-- [ ] normalized shadow/enforce candidates and rollback artifacts prepared
-- [ ] Router-disabled shadow deployment and gates passed
+- [x] exact v0.12.0 registry image published and pull-proven
+- [x] normalized shadow/enforce candidates and rollback artifacts prepared
+- [x] Router-disabled shadow deployment and gates passed
 - [ ] Router-disabled enforce deployment and gates passed
 - [ ] final canary preflight passed with at least one healthy non-target peer
 - [ ] 30-minute actual-traffic canary completed without a stop rule
 - [ ] final CVM/Router state and v0.12.0 conclusion recorded
+
+### 21.9 Live execution record, in progress 2026-08-07
+
+Registry publication and provenance are complete. Both
+`ghcr.io/phala-network/phala-inference-guard:v0.12.0` and
+`ghcr.io/phala-network/phala-inference-guard:v0.12.0-caaa882` resolve to:
+
+```text
+sha256:474bcb3184d6fc4218bb21471757d338c6e554a214164961c5405705cd99c5c5
+```
+
+The pulled registry image is image ID
+`sha256:49b2588abca4596909b552ec803c996ef7011fb212669d123d487944a25fefab`.
+Its extracted PIG binary SHA-256 is
+`7e3adec2558f17aa36d07b84bbec0fb01738d253f9da8ac40ead2b7166d6c743`,
+identical to the builder-local candidate.
+
+The exact rollback, shadow, and enforce UTF-8 Compose SHA-256 values are:
+
+```text
+rollback: 711f20570159c82666fd9e0827ac7c8de8aaa5d0aaba880e95734e93d3f5a3c7
+shadow:   bdae34d015019e60eb8ab96dcb1debcfcce01f873f895ef7c96ffa0623047bd8
+enforce:  c1031b021c8e06b5186d6317b6a22a7f6c8607c398d67d018bf5d9ee9e04c56b
+```
+
+Normalized comparison proved that vLLM, ingress, HAProxy, downloader,
+commands, volumes, ports, healthchecks, and secret references are unchanged.
+Four Prefill overrides and fourteen values equal to v0.12.0 defaults were
+removed. The predictive observer default is confirmed in executable source as
+500 ms with a 1500-ms maximum age. The `poll=100ms` startup field is the
+separate legacy dynamic loop and is not evidence that the predictive cadence
+changed.
+
+A fresh Router read before deployment found the previously recorded all-off
+state had drifted to `use1-19,use1-9b,use1-cb`. The guarded mutation disabled
+only `use1-cb`; three independent drain reads then found Router running, PIG
+reservations/Prefill, and vLLM running/waiting all zero. Later external Router
+activity enabled `use1-4c`, so the currently observed non-target set is
+`use1-19,use1-4c,use1-9b`. Every test precheck and postcheck has continued to
+prove `use1-cb` upstream and route disabled with route running zero. No Router
+digest or enabled set is reusable for a future mutation; it must be frozen
+again immediately before that operation.
+
+The Router-disabled shadow candidate is deployed. Live Compose SHA-256 is the
+shadow value above; PIG image digest/image ID match registry and builder; the
+vLLM digest is unchanged. `/healthz`, authenticated `/v1/models`, authenticated
+`/pig/metrics`, and authenticated `/v1/metrics` return 200; both metrics paths
+return 401 without authentication. The model is
+`google/gemma-4-31B-it`. Current profile evidence is:
+
+```text
+source/reason: startup_calibration/calibrated
+KV capacity/block: 862437/64
+KV soft/hard: 724416/758912
+safe cold Prefill: 6541 tok/s
+regular/exclusive/quiescent/aggregate: 32704/130816/261632/130816
+```
+
+Compose deployment restarted vLLM. Its full startup took about 350 seconds,
+longer than PIG's configured and source-maximum 300-second startup probe. The
+first PIG process exited once on connection refusal; `restart: always` started
+a second process after vLLM became ready, and that process calibrated once and
+has remained stable. This is recorded as a known deployment-transition
+recovery, not a passed steady-state restart, and must be re-evaluated after the
+enforce transition. No OOM, EngineCore death, preemption, or restart loop was
+observed.
+
+The Router-disabled shadow protocol artifact
+`protocol-shadow-20260807T121233Z` passed normal chat, supported sampling,
+streaming usage, required tool call, and strict structured output. The five
+valid requests returned 200; invalid model returned 404; malformed JSON
+returned 400 rather than 429/5xx. Seven predictive attempts produced six fit,
+one unknown, zero enforced reject, and zero preemption; terminal state was
+intake open with reservations, pending Prefill, running, and waiting zero.
+
+The lifecycle artifact `lifecycle-shadow-20260807T121616Z` passed three sparse
+requests separated by 1.2 seconds, an eight-request simultaneous short burst,
+and client cancellation at 1.024 seconds. Sparse and burst requests were all
+200. Cancellation produced curl exit 28 as intended; the first terminal sample
+after it showed all admission and backend lifecycle counts zero. No low-flow
+self-lock, sticky clamp, waiting, or preemption occurred.
+
+The complete size artifact `size-shadow-20260807T122528Z` recorded five cold
+requests with unique first-block nonces:
+
+| case | actual prompt | estimate | class | HTTP/action | duration |
+|---|---:|---:|---|---|---:|
+| regular | 20,051 | 22,682 | regular | 200/admit | 3.224 s |
+| weighted | 50,050 | 56,667 | weighted | 200/admit | 8.245 s |
+| exclusive | 150,051 | 175,808 | exclusive | 200/admit | 39.745 s |
+| conservative quiescent | 215,055 | 312,451 | quiescent | 200/admit | 71.891 s |
+| near-262K actual | 250,055 | 292,997 | quiescent | 200/admit | 91.698 s |
+
+Every case began and ended idle, had one isolated predictive attempt, zero
+waiting, zero preemption, stable containers, and stable Router state. The
+largest observed KV ratio was 0.255. One of thirty external metrics samples in
+the near-262K case timed out; the maximum consecutive failure count was one,
+below the stop rule of three. An earlier runner attempt also exposed transient
+monitor timeouts but left the node idle and healthy. The monitor now records
+failed samples instead of allowing a BackgroundJob error stream to destroy the
+request result.
+
+The aggregate size runner reported false for two harness expectations rather
+than PIG behavior: the 3.2-second regular request completed before its
+BackgroundJob produced a sample, and the near-262K request was incorrectly
+expected to be `exclusive` even though its conservative estimate correctly
+crossed the 261,632-token quiescent boundary. The runner has been corrected to
+allow zero samples for regular, expect quiescent for the measured near-262K
+shape, and apply the real three-consecutive-failure stop rule. The raw request,
+decision, terminal, and Router evidence above remains valid.
+
+The same-pressure artifact `differential-shadow-20260807T123848Z` then completed
+the remaining shadow gate. After an actual 150,053-token cold request was
+observed at backend running one, a second 215,056-token request produced
+`size_protect/prefill_busy/prefill/quiescent` while a 22-token request in the
+same window produced `admit/open/regular`. Shadow forwarded both by design.
+The exact delta was three attempts, two fit, one risk, zero enforced reject,
+and zero preemption; Router state stayed fixed and the first drain sample was
+terminally empty. The small request took 34.527 seconds because shadow allowed
+the second long Prefill to interfere. That is evidence for the protection the
+enforce phase must provide, not acceptable steady-state QoS.
+
+Router-disabled shadow deployment and all required shadow gates are now green.
+Enforce must prove the corresponding pre-forward 429, atomic reservations,
+observable reason/counters/logs, Router backpressure, and exact terminal release
+before any Router enable.
+
+### 21.10 Enforce protocol failure and v0.12.1 correction, in progress 2026-08-08
+
+The Router-disabled enforce protocol artifact
+`protocol-enforce-20260807T162356Z` stopped promotion. Normal chat, supported
+sampling, streaming usage, required tool call, and strict structured output all
+returned 200, and a valid request for an unknown model preserved the upstream
+404. A malformed chat-completions JSON body incorrectly returned 429 instead of
+the protocol-level 400 observed in shadow mode.
+
+The exact delta was seven predictive attempts, six fit, one unknown, one
+enforced reject, six backend accepts, zero backend failures, zero proxy errors,
+and zero preemptions. Terminal reservations, pending Prefill, backend running,
+and backend waiting were zero. `use1-cb` remained Router-disabled and drained;
+the Router digest and enabled set were stable across the artifact. This is an
+executable PIG defect, not a harness expectation error, so v0.12.0 cannot be
+enabled on the Router.
+
+Source tracing found the causal chain:
+
+1. request classification labels the malformed body `invalid_json`;
+2. request-aware cost conversion collapses that client syntax error into an
+   unknown request size;
+3. the adapter returns request-scoped `request_reject`;
+4. the HTTP layer maps every predictive rejection to the same QoS 429 and
+   increments `pig_predictive_admission_enforced_rejects_total`.
+
+That mapping is semantically wrong: client protocol validity precedes admission
+prediction. The v0.12.1 correction must return a bounded OpenAI-compatible 400
+before prediction and before forwarding, keep backend calls at zero, avoid QoS
+enforced-reject and Router-load activation, and expose a bounded client-error
+metric/reason. Valid but unsupported model IDs must still be forwarded so the
+upstream 404 is preserved. Unknown-length, oversized, saturated-classifier, and
+unsupported-content-type cases are not automatically equivalent to malformed
+JSON and must retain explicitly tested behavior.
+
+The same live artifact also proved
+`pig_predictive_admission_prediction_duration_seconds_count` remained zero
+after seven active request-aware decisions. Source tracing confirms the active
+request-aware adapter owns no duration histogram and does not return one in its
+telemetry snapshot. v0.12.1 must connect real pre-forward prediction timing to
+the existing bounded histogram without adding labels, allocations to the
+policy hot path, or another timing definition.
+
+The patch workflow is test-first and builder-only:
+
+1. add focused HTTP tests for malformed enforce 400, no backend call, no
+   predictive attempt, no QoS enforced reject, no Router backpressure, and one
+   bounded client-error observation;
+2. add active request-aware timing tests proving the histogram count advances
+   once per prediction and is exported through the existing metric;
+3. reproduce both failures on the remote builder before implementation;
+4. implement the smallest coherent classification/HTTP/telemetry correction,
+   review model causality, lifecycle safety, and evidence/release scope, then
+   run the full builder format, test, race, vet, simulation, and paired
+   benchmark matrix;
+5. release as v0.12.1, rebuild shadow and enforce candidates from a fresh live
+   Compose, and repeat the complete Router-disabled matrix rather than only the
+   two failed assertions.
+
+No learner or v0.13 work is authorized. `use1-cb` must stay disabled until the
+entire v0.12.1 shadow and enforce gates pass. A future Router mutation must
+fresh-read and freeze the exact enabled set and digest; no state recorded above
+is reusable for mutation.

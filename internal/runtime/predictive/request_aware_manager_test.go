@@ -112,7 +112,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 	}
 
 	t.Run("classification follows interference estimate", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		busy := idle
 		busy.Running = 1
 		busy.EffectiveSequences = 1
@@ -130,7 +130,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 	})
 
 	t.Run("aggregate budget sums interference estimates", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		cost := requestAwareManagerCost(240*kib, 0)
 		first := manager.DecideRequestAwareAndReserve(
 			time.Unix(2, 0), "divergent-weighted-first", cost, 99*kib, policy, idle,
@@ -154,7 +154,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 	})
 
 	t.Run("exclusive estimate does not inherit quiescent safety upper", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		long := manager.DecideRequestAwareAndReserve(
 			time.Unix(3, 0), "divergent-exclusive", requestAwareManagerCost(690*kib, 0), 285*kib, policy, idle,
 		)
@@ -177,7 +177,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 			ActiveKVUpper:       300 * kib,
 			DecodeSequences:     1,
 			ActiveContextTokens: 300 * kib,
-		}, domain.Constraints{}, nil)
+		})
 		input := idle
 		input.CapacityTokens = 1024 * kib
 		input.Running = 1
@@ -192,7 +192,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 	})
 
 	t.Run("prefill completion releases only interference budget", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		cost := requestAwareManagerCost(690*kib, 0)
 		first := manager.DecideRequestAwareAndReserve(
 			time.Unix(5, 0), "divergent-prefill", cost, 285*kib, policy, idle,
@@ -230,7 +230,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 
 	t.Run("terminal and cancellation release divergent reservation exact once", func(t *testing.T) {
 		for _, cause := range []TerminalCause{TerminalClientCancelled, TerminalExpired, TerminalCompleted} {
-			manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+			manager := NewManager("request-aware-test", domain.VirtualState{})
 			requestID := string(cause)
 			result := manager.DecideRequestAwareAndReserve(
 				time.Unix(7, 0), requestID, requestAwareManagerCost(240*kib, 0), 99*kib, policy, idle,
@@ -251,7 +251,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 	})
 
 	t.Run("missing interference metadata falls back to safety upper", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		manager.reservations["legacy-without-interference"] = reservation{
 			ID:           "legacy-without-interference",
 			Created:      time.Unix(9, 0),
@@ -280,7 +280,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 			PendingPrefillSequences: 1,
 			ActiveContextTokens:     240 * kib,
 			UncachedPrefillTokens:   240 * kib,
-		}, domain.Constraints{}, nil)
+		})
 		result := manager.DecideRequestAwareAndReserve(
 			time.Unix(9, 0), "weighted-behind-observed", requestAwareManagerCost(99*kib, 0), 99*kib, policy, idle,
 		)
@@ -295,7 +295,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 
 	t.Run("512K boundary and 650K sample remain quiescent by interference estimate", func(t *testing.T) {
 		for _, estimate := range []int64{512 * kib, 650 * kib} {
-			manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+			manager := NewManager("request-aware-test", domain.VirtualState{})
 			requestID := fmt.Sprintf("quiescent-%d", estimate)
 			result := manager.DecideRequestAwareAndReserve(
 				time.Unix(10, 0), requestID, requestAwareManagerCost(900*kib, 0), estimate, policy, idle,
@@ -418,7 +418,7 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 	}
 
 	t.Run("weighted aggregate budget", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		first := manager.DecideRequestAwareAndReserve(
 			time.Unix(1, 0), "weighted-first", requestAwareManagerCost(200*kib, 0), 200*kib, policy, input,
 		)
@@ -437,7 +437,7 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 	})
 
 	t.Run("one long prefill while short remains work conserving", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		first := manager.DecideRequestAwareAndReserve(
 			time.Unix(2, 0), "long-first", requestAwareManagerCost(300*kib, 0), 300*kib, policy, input,
 		)
@@ -462,7 +462,7 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 	})
 
 	t.Run("quiescent prefill is exclusive until prefill complete", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		first := manager.DecideRequestAwareAndReserve(
 			time.Unix(3, 0), "quiescent", requestAwareManagerCost(650*kib, 0), 650*kib, policy, input,
 		)
@@ -497,7 +497,7 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 	})
 
 	t.Run("quiescent terminal releases local gate without overriding observed busy", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		first := manager.DecideRequestAwareAndReserve(
 			time.Unix(5, 0), "quiescent-cancelled", requestAwareManagerCost(650*kib, 0), 650*kib, policy, input,
 		)
@@ -527,7 +527,7 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 	})
 
 	t.Run("concurrent long burst admits exactly one", func(t *testing.T) {
-		manager := NewManager("request-aware-test", domain.VirtualState{}, domain.Constraints{}, nil)
+		manager := NewManager("request-aware-test", domain.VirtualState{})
 		const concurrency = 64
 		start := make(chan struct{})
 		results := make(chan RequestAwareManagerResult, concurrency)
@@ -573,7 +573,7 @@ func TestRequestAwareManagerConcurrentRebaseInvalidatesEveryOldHandle(t *testing
 			policy := newRequestAwareTestPolicy(t)
 			manager := NewManager("request-aware-test", domain.VirtualState{
 				DecodeSequences: 4,
-			}, domain.Constraints{}, nil)
+			})
 			input := requestAwareManagerInput()
 			input.TPSValid = false
 			input.AggregateTPSProxy = 0
@@ -642,7 +642,7 @@ func newRequestAwareTestManager(usedTokens int64) *Manager {
 		ActiveKVUpper:       usedTokens,
 		DecodeSequences:     4,
 		ActiveContextTokens: usedTokens,
-	}, domain.Constraints{}, nil)
+	})
 }
 
 func newPrefillRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {
@@ -665,9 +665,8 @@ func requestAwareManagerInput() RequestAwareInput {
 
 func requestAwareManagerCost(inputTokens, decodeTokens int64) domain.RequestCost {
 	return domain.RequestCost{
-		ManifestID:                   "request-aware-test",
-		InputTokens:                  inputTokens,
-		RequestComplexityTokensUpper: inputTokens,
+		ManifestID:  "request-aware-test",
+		InputTokens: inputTokens,
 		KV: domain.KVIncrement{
 			PhysicalKVUpper: inputTokens + decodeTokens,
 			ActiveKVUpper:   inputTokens + decodeTokens,

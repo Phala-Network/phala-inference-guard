@@ -9,61 +9,6 @@ import (
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
-type Scheduler interface {
-	Identity() ModelIdentity
-	Predict(now time.Time, state domain.VirtualState, request domain.RequestCost) SchedulerPrediction
-}
-
-type SchedulerObserver interface {
-	Observe(prediction SchedulerPrediction, outcome SchedulerOutcome) error
-}
-
-func observeSchedulerOutcome(observer SchedulerObserver, prediction SchedulerPrediction, outcome SchedulerOutcome) (accepted bool) {
-	defer func() {
-		if recover() != nil {
-			accepted = false
-		}
-	}()
-	return observer.Observe(prediction, outcome) == nil
-}
-
-type SchedulerLearningInvalidator interface {
-	InvalidateLearning()
-}
-
-func validatedSchedulerIdentity(scheduler Scheduler) (identity ModelIdentity, valid bool) {
-	if scheduler == nil {
-		return ModelIdentity{}, false
-	}
-	defer func() {
-		if recover() != nil {
-			identity = ModelIdentity{}
-			valid = false
-		}
-	}()
-	identity = scheduler.Identity()
-	return identity, identity.Validate() == nil
-}
-
-func validatedSchedulerPrediction(scheduler Scheduler, now time.Time, state domain.VirtualState, cost domain.RequestCost) (prediction SchedulerPrediction, valid bool) {
-	defer func() {
-		if recover() != nil {
-			prediction = SchedulerPrediction{}
-			valid = false
-		}
-	}()
-	prediction = scheduler.Predict(now, state, cost)
-	return prediction, true
-}
-
-type assimilationState uint8
-
-const (
-	assimilationUnabsorbed assimilationState = iota
-	assimilationAmbiguous
-	assimilationAbsorbed
-)
-
 type TerminalCause string
 
 const (
@@ -78,37 +23,29 @@ const (
 
 func (c TerminalCause) Validate() error {
 	switch c {
-	case TerminalCompleted, TerminalLocalQoSReject, TerminalClientCancelled, TerminalClientDisconnected, TerminalUpstreamFailure, TerminalTimeout, TerminalExpired:
+	case TerminalCompleted, TerminalLocalQoSReject, TerminalClientCancelled,
+		TerminalClientDisconnected, TerminalUpstreamFailure, TerminalTimeout, TerminalExpired:
 		return nil
 	default:
 		return fmt.Errorf("predictive terminal cause %q is invalid", c)
 	}
 }
 
-func (c TerminalCause) allowsCompletedOutcome() bool {
-	return c == TerminalCompleted
-}
+type assimilationState uint8
 
-func (c TerminalCause) allowsOutcome(forwarded bool, outcome SchedulerOutcome) bool {
-	if outcome.Censored {
-		return forwarded && c != TerminalLocalQoSReject
-	}
-	return forwarded && c.allowsCompletedOutcome()
-}
+const (
+	assimilationUnabsorbed assimilationState = iota
+	assimilationAmbiguous
+	assimilationAbsorbed
+)
 
 type reservation struct {
-	ID      string
-	Created time.Time
-	Cost    domain.RequestCost
-	// PrefillInterferenceTokens is the request-aware Prefill work estimate.
-	// Cost.UncachedPrefillUpper remains the independent hard-KV safety upper.
+	ID                        string
+	Created                   time.Time
+	Cost                      domain.RequestCost
 	PrefillInterferenceTokens int64
-	Prediction                SchedulerPrediction
-	OutcomeObserved           bool
-	OutcomeInterfered         bool
 	Forwarded                 bool
 	PrefillComplete           bool
-	TerminalCause             TerminalCause
 	AdmittedSequence          uint64
 	ForwardedSequence         uint64
 	PrefillCompletedSequence  uint64
@@ -133,8 +70,7 @@ func (q *retiredReservationQueue) Push(item retiredReservation) bool {
 		q.items = make([]retiredReservation, maximumRetiredReservations)
 	}
 	if q.size < len(q.items) {
-		index := (q.head + q.size) % len(q.items)
-		q.items[index] = item
+		q.items[(q.head+q.size)%len(q.items)] = item
 		q.size++
 		return false
 	}
@@ -157,9 +93,7 @@ func (q *retiredReservationQueue) Pop() (retiredReservation, bool) {
 	return item, true
 }
 
-func (q *retiredReservationQueue) Len() int {
-	return q.size
-}
+func (q *retiredReservationQueue) Len() int { return q.size }
 
 type SampleWindow struct {
 	Observed         domain.VirtualState
@@ -172,8 +106,6 @@ type Manager struct {
 	manifestID             string
 	intakeOpen             bool
 	base                   domain.VirtualStateInterval
-	constraints            domain.Constraints
-	scheduler              Scheduler
 	reservations           map[string]reservation
 	retired                retiredReservationQueue
 	retiredEvictions       uint64
@@ -184,20 +116,17 @@ type Manager struct {
 }
 
 type Snapshot struct {
-	IntakeOpen                           bool
-	Reservations                         int
-	ReservedPhysicalKV                   int64
-	ReservedActiveKV                     int64
-	ForwardedPendingPrefills             int
-	ForwardedPendingPrefillTokens        int64
-	ForwardedPendingPrefillFeatures      SchedulerFeatures
-	ForwardedPendingPrefillFeaturesValid bool
-	ForwardedPendingPrefillExploratory   bool
-	ForwardedPendingPrefillSequence      uint64
-	EventSequence                        uint64
-	RetiredReservations                  int
-	RetiredEvictions                     uint64
-	Virtual                              domain.VirtualStateInterval
+	IntakeOpen                      bool
+	Reservations                    int
+	ReservedPhysicalKV              int64
+	ReservedActiveKV                int64
+	ForwardedPendingPrefills        int
+	ForwardedPendingPrefillTokens   int64
+	ForwardedPendingPrefillSequence uint64
+	EventSequence                   uint64
+	RetiredReservations             int
+	RetiredEvictions                uint64
+	Virtual                         domain.VirtualStateInterval
 }
 
 type RequestAwarePendingSnapshot struct {
@@ -207,109 +136,12 @@ type RequestAwarePendingSnapshot struct {
 	QuiescentPrefillSequences int
 }
 
-type managerAdmissionResult struct {
-	Decision                domain.Decision
-	Prediction              SchedulerPrediction
-	DecisionManagerSequence uint64
-	AvailabilityUnavailable bool
-}
-
-func NewManager(manifestID string, base domain.VirtualState, constraints domain.Constraints, scheduler Scheduler) *Manager {
+func NewManager(manifestID string, base domain.VirtualState) *Manager {
 	return &Manager{
-		manifestID: manifestID,
-		intakeOpen: true,
-		base: domain.VirtualStateInterval{
-			Lower: base,
-			Upper: base,
-		},
-		constraints:  constraints,
-		scheduler:    scheduler,
+		manifestID:   manifestID,
+		intakeOpen:   true,
+		base:         domain.VirtualStateInterval{Lower: base, Upper: base},
 		reservations: make(map[string]reservation),
-	}
-}
-
-func (m *Manager) DecideAndReserve(now time.Time, requestID string, cost domain.RequestCost) domain.Decision {
-	return m.decideAndReserve(now, requestID, cost).Decision
-}
-
-func (m *Manager) decideAndReserve(now time.Time, requestID string, cost domain.RequestCost) managerAdmissionResult {
-	if m == nil {
-		return managerUnavailableResult(0)
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if !m.intakeOpen {
-		return managerUnavailableResult(m.eventSequence)
-	}
-	if m.manifestID == "" || cost.ManifestID == "" || cost.ManifestID != m.manifestID {
-		return managerAdmissionResult{
-			Decision:                domain.Decision{Reason: domain.ReasonTokenizerProfileUnknown},
-			DecisionManagerSequence: m.eventSequence,
-		}
-	}
-	if requestID == "" || !validRequestCost(cost) {
-		return managerAdmissionResult{
-			Decision:                domain.Decision{Reason: domain.ReasonPredictorProfileUnknown},
-			DecisionManagerSequence: m.eventSequence,
-		}
-	}
-	if _, exists := m.reservations[requestID]; exists {
-		return managerAdmissionResult{
-			Decision:                domain.Decision{Reason: domain.ReasonDuplicateRequest},
-			DecisionManagerSequence: m.eventSequence,
-		}
-	}
-	if m.scheduler == nil {
-		m.intakeOpen = false
-		return managerUnavailableResult(m.eventSequence)
-	}
-	schedulerIdentity, identityValid := validatedSchedulerIdentity(m.scheduler)
-	if !identityValid {
-		m.intakeOpen = false
-		return managerUnavailableResult(m.eventSequence)
-	}
-	state := m.virtualStateIntervalLocked().Upper
-	prediction, predictionValid := validatedSchedulerPrediction(m.scheduler, now, state, cost)
-	if !predictionValid || prediction.Identity != schedulerIdentity || !validSchedulerPrediction(prediction) {
-		m.intakeOpen = false
-		return managerUnavailableResult(m.eventSequence)
-	}
-	projection := domain.Projection{
-		PhysicalKVUpper: addInt64Saturating(state.PhysicalKVUpper, cost.KV.PhysicalKVUpper),
-		ActiveKVUpper:   addInt64Saturating(state.ActiveKVUpper, cost.KV.ActiveKVUpper),
-	}
-	decision := domain.Evaluate(domain.EvaluationInput{
-		Projection:  projection,
-		Scheduler:   prediction.Estimate,
-		Constraints: m.constraints,
-		Confidence:  minimumConfidence(cost.Confidence, prediction.Confidence),
-	})
-	if decision.Reason == domain.ReasonFit {
-		m.markLiveOutcomesInterferedLocked()
-		m.eventSequence++
-		m.reservations[requestID] = reservation{
-			ID:               requestID,
-			Created:          now,
-			Cost:             cost,
-			Prediction:       prediction,
-			AdmittedSequence: m.eventSequence,
-			Assimilation:     assimilationUnabsorbed,
-		}
-	}
-	return managerAdmissionResult{
-		Decision:                decision,
-		Prediction:              prediction,
-		DecisionManagerSequence: m.eventSequence,
-	}
-}
-
-func managerUnavailableResult(decisionManagerSequence uint64) managerAdmissionResult {
-	return managerAdmissionResult{
-		Decision:                domain.Decision{Reason: domain.ReasonPredictorProfileUnknown},
-		Prediction:              SchedulerPrediction{Source: PredictionSourceUnavailable},
-		DecisionManagerSequence: decisionManagerSequence,
-		AvailabilityUnavailable: true,
 	}
 }
 
@@ -319,39 +151,7 @@ func (m *Manager) Available() bool {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if !m.intakeOpen || m.scheduler == nil {
-		return false
-	}
-	_, valid := validatedSchedulerIdentity(m.scheduler)
-	if !valid {
-		m.intakeOpen = false
-	}
-	return valid
-}
-
-// MarkLiveOutcomesInterfered censors QoS outcomes whose original prediction
-// did not include later work. It changes learning eligibility only; accounting
-// reservations and the virtual resource state are unchanged.
-func (m *Manager) MarkLiveOutcomesInterfered() int {
-	if m == nil {
-		return 0
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.markLiveOutcomesInterferedLocked()
-}
-
-func (m *Manager) markLiveOutcomesInterferedLocked() int {
-	marked := 0
-	for id, live := range m.reservations {
-		if live.OutcomeObserved || live.OutcomeInterfered {
-			continue
-		}
-		live.OutcomeInterfered = true
-		m.reservations[id] = live
-		marked++
-	}
-	return marked
+	return m.intakeOpen
 }
 
 func (m *Manager) MarkForwarded(requestID string) bool {
@@ -390,61 +190,8 @@ func (m *Manager) MarkPrefillComplete(requestID string) bool {
 	return true
 }
 
-func (m *Manager) ObserveOutcome(requestID string, outcome SchedulerOutcome) bool {
-	if m == nil || requestID == "" {
-		return false
-	}
-	observer, ok := m.scheduler.(SchedulerObserver)
-	if !ok {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	item, exists := m.reservations[requestID]
-	if !exists || !item.Forwarded || item.OutcomeObserved {
-		return false
-	}
-	outcome.Censored = outcome.Censored || item.OutcomeInterfered
-	if !observeSchedulerOutcome(observer, item.Prediction, outcome) {
-		return false
-	}
-	item.OutcomeObserved = true
-	m.reservations[requestID] = item
-	return true
-}
-
-// ObserveUnreservedOutcome trains a later prediction from qualified shadow
-// work without creating, releasing, or otherwise mutating resource accounting.
-func (m *Manager) ObserveUnreservedOutcome(prediction SchedulerPrediction, cause TerminalCause, forwarded bool, outcome SchedulerOutcome) bool {
-	if m == nil || cause.Validate() != nil || !cause.allowsOutcome(forwarded, outcome) {
-		return false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.intakeOpen || m.scheduler == nil {
-		return false
-	}
-	identity := m.scheduler.Identity()
-	if identity.Validate() != nil || prediction.Identity != identity || !validSchedulerPrediction(prediction) {
-		return false
-	}
-	observer, ok := m.scheduler.(SchedulerObserver)
-	return ok && observeSchedulerOutcome(observer, prediction, outcome)
-}
-
-func (m *Manager) Complete(requestID string) bool {
-	return m.Terminate(requestID, TerminalCompleted)
-}
-
 func (m *Manager) Terminate(requestID string, cause TerminalCause) bool {
-	return m.TerminateWithOutcome(requestID, cause, nil)
-}
-
-func (m *Manager) TerminateWithOutcome(requestID string, cause TerminalCause, outcome *SchedulerOutcome) bool {
-	if m == nil {
-		return false
-	}
-	if err := cause.Validate(); err != nil {
+	if m == nil || requestID == "" || cause.Validate() != nil {
 		return false
 	}
 	m.mu.Lock()
@@ -453,72 +200,19 @@ func (m *Manager) TerminateWithOutcome(requestID string, cause TerminalCause, ou
 	if !exists {
 		return false
 	}
-	if outcome != nil && !item.OutcomeObserved {
-		qualified := *outcome
-		qualified.Censored = qualified.Censored || item.OutcomeInterfered
-		if cause.allowsOutcome(item.Forwarded, qualified) {
-			if observer, ok := m.scheduler.(SchedulerObserver); ok && observeSchedulerOutcome(observer, item.Prediction, qualified) {
-				item.OutcomeObserved = true
-			}
-		}
-	}
-	m.terminateReservationLocked(requestID, item, cause)
-	return true
-}
-
-func (m *Manager) ReleaseResources(requestID string) (outcomeInterfered bool, released bool) {
-	if m == nil || requestID == "" {
-		return false, false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	item, exists := m.reservations[requestID]
-	if !exists || !item.Forwarded {
-		return false, false
-	}
-	m.terminateReservationLocked(requestID, item, TerminalCompleted)
-	return item.OutcomeInterfered, true
-}
-
-func (m *Manager) terminateReservationLocked(requestID string, item reservation, cause TerminalCause) {
 	m.eventSequence++
 	if item.Forwarded && !item.PrefillComplete {
 		m.advancePendingPrefillEpisodeLocked()
 	}
-	item.TerminalCause = cause
 	if item.Assimilation == assimilationAbsorbed && item.PrefillComplete {
 		materialized := materializedStateFloor(item.Cost)
 		m.base.Lower = subtractState(m.base.Lower, materialized)
 		m.base.Upper = subtractState(m.base.Upper, materialized)
-		if m.retired.Push(retiredReservation{
-			CompletedSequence: m.eventSequence,
-			MaterializedFloor: materialized,
-		}) {
+		if m.retired.Push(retiredReservation{CompletedSequence: m.eventSequence, MaterializedFloor: materialized}) {
 			m.retiredEvictions++
 		}
 	}
 	delete(m.reservations, requestID)
-}
-
-func (m *Manager) advancePendingPrefillEpisodeLocked() {
-	// Zero means that no forwarded-prefill episode has existed yet. Preserve
-	// that sentinel across the practically unreachable uint64 wrap boundary so
-	// every real pending-set transition continues to have a valid identity.
-	m.pendingPrefillSequence++
-	if m.pendingPrefillSequence == 0 {
-		m.pendingPrefillSequence = 1
-	}
-}
-
-func (m *Manager) InvalidateLearning() bool {
-	if m == nil {
-		return false
-	}
-	invalidator, ok := m.scheduler.(SchedulerLearningInvalidator)
-	if !ok {
-		return false
-	}
-	invalidator.InvalidateLearning()
 	return true
 }
 
@@ -527,28 +221,21 @@ func (m *Manager) InvalidateEpoch() bool {
 		return false
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	changed := m.intakeOpen
 	m.intakeOpen = false
-	m.mu.Unlock()
-	m.InvalidateLearning()
 	return changed
 }
 
-// RebaseEpoch replaces all resource ownership from a restarted backend epoch
-// with one exact, already-validated observation. It is intentionally separate
-// from InvalidateEpoch: identity/capacity drift remains quarantined, while a
-// same-identity monotonic-counter reset may recover without retaining any old
-// reservation handle or retired materialization.
 func (m *Manager) RebaseEpoch(observed domain.VirtualState) error {
 	if m == nil {
 		return fmt.Errorf("predictive manager is nil")
 	}
-	if observed.PhysicalKVUpper < 0 || observed.ActiveKVUpper < 0 || observed.DecodeSequences < 0 ||
-		observed.PendingPrefillSequences < 0 || observed.PendingPrefillSequences > observed.DecodeSequences ||
-		observed.ActiveContextTokens < 0 || observed.UncachedPrefillTokens < 0 {
+	if !validVirtualState(observed) {
 		return fmt.Errorf("predictive epoch base must be non-negative and internally consistent")
 	}
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.intakeOpen = false
 	m.eventSequence++
 	m.advancePendingPrefillEpisodeLocked()
@@ -558,8 +245,6 @@ func (m *Manager) RebaseEpoch(observed domain.VirtualState) error {
 	m.lastSampleFinished = m.eventSequence
 	m.hasSample = true
 	m.intakeOpen = true
-	m.mu.Unlock()
-	m.InvalidateLearning()
 	return nil
 }
 
@@ -572,14 +257,7 @@ func (m *Manager) EventSequence() uint64 {
 	return m.eventSequence
 }
 
-func (m *Manager) StartSampleWindow() uint64 {
-	if m == nil {
-		return 0
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.eventSequence
-}
+func (m *Manager) StartSampleWindow() uint64 { return m.EventSequence() }
 
 func (m *Manager) ReconcileSample(sample SampleWindow) error {
 	if m == nil {
@@ -587,26 +265,16 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if sample.StartedSequence > sample.FinishedSequence {
-		return fmt.Errorf("sample finish watermark precedes start")
-	}
-	if sample.FinishedSequence > m.eventSequence {
-		return fmt.Errorf("sample finish watermark is in the future")
+	if sample.StartedSequence > sample.FinishedSequence || sample.FinishedSequence > m.eventSequence {
+		return fmt.Errorf("predictive sample watermarks are invalid")
 	}
 	if m.hasSample && sample.FinishedSequence < m.lastSampleFinished {
-		return fmt.Errorf("sample finish watermark is stale")
+		return fmt.Errorf("predictive sample finish watermark is stale")
 	}
-	if sample.Observed.PhysicalKVUpper < 0 || sample.Observed.ActiveKVUpper < 0 || sample.Observed.DecodeSequences < 0 ||
-		sample.Observed.PendingPrefillSequences < 0 || sample.Observed.PendingPrefillSequences > sample.Observed.DecodeSequences ||
-		sample.Observed.ActiveContextTokens < 0 || sample.Observed.UncachedPrefillTokens < 0 {
-		return fmt.Errorf("sample state must be non-negative")
+	if !validVirtualState(sample.Observed) {
+		return fmt.Errorf("predictive sample state must be non-negative")
 	}
-
-	m.base = domain.VirtualStateInterval{
-		Lower: sample.Observed,
-		Upper: sample.Observed,
-	}
+	m.base = domain.VirtualStateInterval{Lower: sample.Observed, Upper: sample.Observed}
 	for id, item := range m.reservations {
 		switch {
 		case !item.Forwarded || !item.PrefillComplete:
@@ -657,62 +325,26 @@ func (m *Manager) Snapshot() Snapshot {
 		RetiredEvictions:                m.retiredEvictions,
 		Virtual:                         m.virtualStateIntervalLocked(),
 	}
-	var latestForwardedSequence uint64
-	var latestFeatures SchedulerFeatures
-	var latestFeaturesValid bool
-	var latestExploratory bool
 	for _, item := range m.reservations {
-		result.ReservedPhysicalKV += item.Cost.KV.PhysicalKVUpper
-		result.ReservedActiveKV += item.Cost.KV.ActiveKVUpper
+		result.ReservedPhysicalKV = addInt64Saturating(result.ReservedPhysicalKV, item.Cost.KV.PhysicalKVUpper)
+		result.ReservedActiveKV = addInt64Saturating(result.ReservedActiveKV, item.Cost.KV.ActiveKVUpper)
 		if item.Forwarded && !item.PrefillComplete {
 			result.ForwardedPendingPrefills++
-			result.ForwardedPendingPrefillTokens = addInt64Saturating(result.ForwardedPendingPrefillTokens, item.Cost.UncachedPrefillUpper)
-			if item.ForwardedSequence > latestForwardedSequence {
-				latestForwardedSequence = item.ForwardedSequence
-				latestFeatures, latestFeaturesValid = pendingPrefillFeatures(item.Prediction, item.Cost)
-				latestExploratory = predictionExistingTPSExploratory(item.Prediction)
+			tokens := item.PrefillInterferenceTokens
+			if tokens <= 0 {
+				tokens = item.Cost.UncachedPrefillUpper
 			}
+			result.ForwardedPendingPrefillTokens = addInt64Saturating(result.ForwardedPendingPrefillTokens, tokens)
 		}
-	}
-	// The latest forwarded prefill is the marginal admission whose immutable
-	// prediction includes all earlier pending work. It is attributable only
-	// when that post-admit feature vector still exactly matches the active
-	// aggregate pending count and tokens. This preserves multi-prefill pressure
-	// without retaining request identity or guessing materialization order.
-	if latestFeaturesValid && latestFeatures.PendingPrefillSequences == result.ForwardedPendingPrefills &&
-		latestFeatures.UncachedPrefillTokens == result.ForwardedPendingPrefillTokens {
-		result.ForwardedPendingPrefillFeatures = latestFeatures
-		result.ForwardedPendingPrefillFeaturesValid = true
-		result.ForwardedPendingPrefillExploratory = latestExploratory
 	}
 	return result
 }
 
-func pendingPrefillFeatures(prediction SchedulerPrediction, cost domain.RequestCost) (SchedulerFeatures, bool) {
-	features := prediction.Features
-	requestComplexity := cost.RequestComplexityTokensUpper
-	if requestComplexity < cost.InputTokens {
-		requestComplexity = cost.InputTokens
+func (m *Manager) advancePendingPrefillEpisodeLocked() {
+	m.pendingPrefillSequence++
+	if m.pendingPrefillSequence == 0 {
+		m.pendingPrefillSequence = 1
 	}
-	if features.ExistingDecodeSequences < 0 || features.ExistingDecodeSequences == math.MaxInt ||
-		features.DecodeSequences != features.ExistingDecodeSequences+1 ||
-		features.ExistingPendingPrefillSequences < 0 || features.ExistingPendingPrefillSequences > features.ExistingDecodeSequences ||
-		features.PendingPrefillSequences != features.ExistingPendingPrefillSequences+1 ||
-		features.ExistingActiveContextTokens < 0 || features.ExistingUncachedPrefill < 0 ||
-		features.ExistingPhysicalKVUpper < 0 || features.ExistingActiveKVUpper < 0 ||
-		features.ActiveContextTokens < features.ExistingActiveContextTokens ||
-		features.UncachedPrefillTokens < features.ExistingUncachedPrefill ||
-		features.PhysicalKVUpper < features.ExistingPhysicalKVUpper ||
-		features.ActiveKVUpper < features.ExistingActiveKVUpper ||
-		features.ActiveContextTokens-features.ExistingActiveContextTokens != cost.ActiveContextTokensUpper ||
-		features.UncachedPrefillTokens-features.ExistingUncachedPrefill != cost.UncachedPrefillUpper ||
-		features.PhysicalKVUpper-features.ExistingPhysicalKVUpper != cost.KV.PhysicalKVUpper ||
-		features.ActiveKVUpper-features.ExistingActiveKVUpper != cost.KV.ActiveKVUpper ||
-		features.RequestComplexityTokensUpper != requestComplexity ||
-		features.DecodeHorizonUpper != cost.DecodeHorizonUpper {
-		return SchedulerFeatures{}, false
-	}
-	return features, true
 }
 
 func (m *Manager) virtualStateIntervalLocked() domain.VirtualStateInterval {
@@ -752,11 +384,7 @@ func fullReservationStateCost(item *reservation) domain.RequestCost {
 }
 
 func futureReservationStateCost(item *reservation) domain.RequestCost {
-	return domain.RequestCost{
-		KV:                       item.Cost.FutureKV,
-		UncachedPrefillUpper:     0,
-		ActiveContextTokensUpper: item.Cost.FutureContextTokensUpper,
-	}
+	return domain.RequestCost{KV: item.Cost.FutureKV, ActiveContextTokensUpper: item.Cost.FutureContextTokensUpper}
 }
 
 func materializedStateFloor(cost domain.RequestCost) domain.RequestCost {
@@ -802,49 +430,37 @@ func subtractIntFloorZero(value, decrement int) int {
 	return value - decrement
 }
 
+func validVirtualState(state domain.VirtualState) bool {
+	return state.PhysicalKVUpper >= 0 && state.ActiveKVUpper >= 0 && state.DecodeSequences >= 0 &&
+		state.PendingPrefillSequences >= 0 && state.PendingPrefillSequences <= state.DecodeSequences &&
+		state.ActiveContextTokens >= 0 && state.UncachedPrefillTokens >= 0
+}
+
 func validRequestCost(cost domain.RequestCost) bool {
-	if cost.InputTokens < 0 || cost.UncachedPrefillUpper != cost.InputTokens {
+	if cost.InputTokens < 0 || cost.UncachedPrefillUpper != cost.InputTokens ||
+		cost.DecodeHorizonUpper < 0 || cost.DecodeSequencesUpper != 1 || cost.InputTokens > math.MaxInt64-cost.DecodeHorizonUpper {
 		return false
 	}
-	if cost.RequestComplexityTokensUpper < 0 || (cost.RequestComplexityTokensUpper > 0 && cost.RequestComplexityTokensUpper < cost.InputTokens) {
+	if cost.ActiveContextTokensUpper != cost.InputTokens+cost.DecodeHorizonUpper || cost.FutureContextTokensUpper != cost.DecodeHorizonUpper ||
+		cost.KV.PhysicalKVUpper < 0 || cost.KV.PhysicalKVUpper != cost.KV.ActiveKVUpper || cost.KV.PhysicalKVUpper < cost.ActiveContextTokensUpper ||
+		cost.FutureKV.PhysicalKVUpper < 0 || cost.FutureKV.PhysicalKVUpper != cost.FutureKV.ActiveKVUpper || cost.FutureKV.PhysicalKVUpper > cost.KV.PhysicalKVUpper ||
+		cost.KV.PhysicalKVUpper-cost.FutureKV.PhysicalKVUpper < cost.InputTokens {
 		return false
 	}
-	if cost.DecodeHorizonUpper < 0 || cost.DecodeSequencesUpper != 1 || cost.InputTokens > math.MaxInt64-cost.DecodeHorizonUpper {
-		return false
-	}
-	if cost.ActiveContextTokensUpper != cost.InputTokens+cost.DecodeHorizonUpper || cost.FutureContextTokensUpper != cost.DecodeHorizonUpper {
-		return false
-	}
-	if cost.KV.PhysicalKVUpper < 0 || cost.KV.PhysicalKVUpper != cost.KV.ActiveKVUpper || cost.KV.PhysicalKVUpper < cost.ActiveContextTokensUpper {
-		return false
-	}
-	if cost.FutureKV.PhysicalKVUpper < 0 || cost.FutureKV.PhysicalKVUpper != cost.FutureKV.ActiveKVUpper || cost.FutureKV.PhysicalKVUpper > cost.KV.PhysicalKVUpper {
-		return false
-	}
-	if cost.KV.PhysicalKVUpper-cost.FutureKV.PhysicalKVUpper < cost.InputTokens {
-		return false
-	}
-	return positiveFinite(cost.Confidence) && cost.Confidence <= 1
+	return cost.Confidence > 0 && cost.Confidence <= 1 && !math.IsNaN(cost.Confidence) && !math.IsInf(cost.Confidence, 0)
 }
 
-func validSchedulerPrediction(prediction SchedulerPrediction) bool {
-	estimate := prediction.Estimate
-	return nonNegativeFinite(estimate.ExistingUserTPSLower) &&
-		nonNegativeFinite(estimate.NewUserTPSLower) &&
-		nonNegativeFinite(estimate.AggregateCompletionTPSEstimate) &&
-		nonNegativeFinite(estimate.PreviousAggregateCompletionTPSEstimate) &&
-		estimate.TTFTUpper > 0 && estimate.TPOTUpper > 0 &&
-		nonNegativeFinite(estimate.WorkspaceRiskUpper) &&
-		nonNegativeFinite(estimate.PreemptionRiskUpper) &&
-		positiveFinite(prediction.Confidence) && prediction.Confidence <= 1
+func addInt64Saturating(left, right int64) int64 {
+	if right > 0 && left > math.MaxInt64-right {
+		return math.MaxInt64
+	}
+	return left + right
 }
 
-func minimumConfidence(left, right float64) float64 {
-	if left <= 0 || right <= 0 {
-		return 0
+func addIntSaturating(left, right int) int {
+	maximum := int(^uint(0) >> 1)
+	if right > 0 && left > maximum-right {
+		return maximum
 	}
-	if left < right {
-		return left
-	}
-	return right
+	return left + right
 }

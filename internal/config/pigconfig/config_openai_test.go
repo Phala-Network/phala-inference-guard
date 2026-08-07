@@ -13,12 +13,6 @@ func TestLoadOpenAIConfigDefaults(t *testing.T) {
 	if !cfg.UpstreamErrorClassificationEnabled {
 		t.Fatalf("UpstreamErrorClassificationEnabled = false, want true")
 	}
-	if !cfg.OpenAICompatStripEmptyToolCalls {
-		t.Fatalf("OpenAICompatStripEmptyToolCalls = false, want true")
-	}
-	if cfg.OpenAICompatBodyBytes != defaultOpenAICompatBodyBytes {
-		t.Fatalf("OpenAICompatBodyBytes = %d, want %d", cfg.OpenAICompatBodyBytes, defaultOpenAICompatBodyBytes)
-	}
 	if !cfg.AttestationEnabled {
 		t.Fatalf("AttestationEnabled = false, want true")
 	}
@@ -107,38 +101,5 @@ func TestLoadOpenAIConfigLoadsNVIDIAPayloadURL(t *testing.T) {
 	}
 	if cfg.AttestationNVIDIAPayloadAuth != "Bearer secret" {
 		t.Fatalf("AttestationNVIDIAPayloadAuth=%q", cfg.AttestationNVIDIAPayloadAuth)
-	}
-}
-
-func TestValidateOpenAIConfigRejectsAPIAuthWithoutToken(t *testing.T) {
-	cfg := Config{
-		APIAuthEnabled: true,
-		APIAuthPaths:   []string{"/v1/chat/completions"},
-	}
-	if err := validateOpenAIConfig(cfg); err == nil {
-		t.Fatalf("validateOpenAIConfig accepted API auth without token")
-	}
-}
-
-func TestValidateOpenAIConfigAcceptsRequiredNVIDIAEvidenceWithoutExternalSource(t *testing.T) {
-	cfg := Config{
-		AttestationEnabled:               true,
-		AttestationRequireNVIDIAEvidence: true,
-		AttestationNVIDIACommandTimeout:  1,
-	}
-	if err := validateOpenAIConfig(cfg); err != nil {
-		t.Fatalf("validateOpenAIConfig rejected native collector default: %v", err)
-	}
-}
-
-func TestValidateOpenAIConfigAcceptsRequiredNVIDIAEvidenceWithPayloadURL(t *testing.T) {
-	cfg := Config{
-		AttestationEnabled:               true,
-		AttestationRequireNVIDIAEvidence: true,
-		AttestationNVIDIACommandTimeout:  1,
-		AttestationNVIDIAPayloadURL:      "http://collector:8000/v1/attestation/report",
-	}
-	if err := validateOpenAIConfig(cfg); err != nil {
-		t.Fatalf("validateOpenAIConfig rejected payload url source: %v", err)
 	}
 }

@@ -2,11 +2,8 @@ package server
 
 import (
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
-	requesttier "github.com/Phala-Network/phala-inference-guard/internal/domain/request"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
@@ -38,185 +35,90 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(attachClientContext(r.Context(), r.Context()))
 	requestStart := time.Now()
-	admitted := s.admittedPath(r)
-	if !admitted {
-		backend := s.chooseBackend()
-		if backend == nil {
-			s.unavailable(w, "backend_unavailable")
-			return
-		}
-		result := s.proxyRequest(backend, w, r)
-		s.observeProxyResult(result)
-		s.observeInternalOverhead(time.Since(requestStart), 0, result.total)
+	if !s.requestClassifier.AdmittedPath(r) {
+		s.forwardWithoutAdmission(w, r, requestStart)
 		return
 	}
+
 	decisionStart := time.Now()
 	estimatorStart := time.Now()
-	classification := s.classifyRequest(r)
-	if s.kvShadow != nil || predictiveAdmissionEnabled(s.cfg.PredictiveAdmissionMode) {
-		s.kvEstimatorDuration.Observe(time.Since(estimatorStart))
+	classification, protocolError := s.requestClassifier.ClassifyRequest(r)
+	s.estimatorDuration.Observe(time.Since(estimatorStart))
+	if protocolError != nil {
+		s.decisionDuration.Observe(time.Since(decisionStart))
+		if protocolError.Reason == "invalid_json" {
+			s.clientProtocolInvalidJSON.Add(1)
+			openai.WriteInvalidJSON(w)
+			return
+		}
+		openai.WriteInvalidJSON(w)
+		return
 	}
-	predictiveDecision := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
-		Path:             r.URL.Path,
-		Cost:             classification.KVCost,
-		RequestStartedAt: requestStart,
-		OutputTokens:     classification.PredictiveOutputTokens,
-		HasOutputTokens:  classification.PredictiveHasOutputTokens,
-		Streaming:        classification.Streaming,
+	decision := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
+		Cost: classification.Cost,
 	})
-	predictiveReservation := predictiveDecision.Reservation
-	if s.cfg.PredictiveAdmissionMode == "enforce" && !predictiveDecision.validEnforceResult() {
-		s.decisionDuration.Observe(time.Since(decisionStart))
+	reservation := decision.Reservation
+	if s.cfg.PredictiveAdmissionMode == "enforce" && !decision.validEnforceResult() {
+		if reservation != nil {
+			reservation.Terminate(runtimepredictive.TerminalLocalQoSReject)
+		}
 		s.predictiveShadowFailures.decide.Add(1)
-		s.logPredictiveFailureReject("invalid_decision_result")
-		if predictiveReservation != nil {
-			predictiveReservation.Terminate(runtimepredictive.TerminalLocalQoSReject)
-		}
 		s.predictiveEnforcedRejects.Add(1)
-		s.reject(w, s.globalLn, "predictive_admission")
-		return
-	}
-	if s.cfg.PredictiveAdmissionMode == "enforce" && predictiveDecision.rejectsForward() {
+		s.total429.Add(1)
 		s.decisionDuration.Observe(time.Since(decisionStart))
+		openai.WriteTooManyRequests(w)
+		return
+	}
+	if s.cfg.PredictiveAdmissionMode == "enforce" && decision.rejectsForward() {
 		s.predictiveEnforcedRejects.Add(1)
-		s.reject(w, s.globalLn, "predictive_admission")
+		s.total429.Add(1)
+		s.decisionDuration.Observe(time.Since(decisionStart))
+		openai.WriteTooManyRequests(w)
 		return
 	}
-	predictiveCause := runtimepredictive.TerminalClientCancelled
-	if predictiveReservation != nil {
-		defer func() { predictiveReservation.Terminate(predictiveCause) }()
-	}
-	releaseKVShadow := s.shadowKVRequest(classification.KVCost)
-	defer releaseKVShadow()
-	ln := classification.Lane
-	outputTokens := classification.OutputTokens
-	hasOutputTokens := classification.HasOutputTokens
-	legacyQoS := s.cfg.PredictiveAdmissionMode != "enforce"
-	tier := requesttier.Basic
-	if legacyQoS {
-		tier = requesttier.FromHeader(r)
-	}
-	ln.ObserveBody(r.ContentLength)
-	s.globalLn.ObserveBody(r.ContentLength)
-	var releaseQoS func()
-	var queueWait time.Duration
-	if legacyQoS {
-		var qosReject string
-		releaseQoS, qosReject, queueWait = s.qosGate.WaitAcquire(r.Context(), ln, tier)
-		if releaseQoS == nil {
-			if s.recordClientDisconnect(r.Context(), clientDisconnectPhaseQueue, false) {
-				predictiveCause = runtimepredictive.TerminalClientDisconnected
-				return
-			}
-			if qosReject == "backend_unavailable" {
-				predictiveCause = runtimepredictive.TerminalUpstreamFailure
-				s.unavailable(w, qosReject)
-				return
-			}
-			predictiveCause = runtimepredictive.TerminalLocalQoSReject
-			s.qosGate.ObserveReject(ln, tier, qosReject)
-			rejectLane := ln
-			if strings.HasPrefix(qosReject, "global_") {
-				rejectLane = s.globalLn
-			}
-			s.reject(w, rejectLane, qosReject)
-			return
-		}
-	}
-	decisionElapsed := time.Since(decisionStart) - queueWait
-	if decisionElapsed < 0 {
-		decisionElapsed = 0
-	}
-	s.decisionDuration.Observe(decisionElapsed)
-	if releaseQoS != nil {
-		defer releaseQoS()
-	}
-	backend := s.chooseBackend()
-	if backend == nil {
-		predictiveCause = runtimepredictive.TerminalUpstreamFailure
-		s.unavailable(w, "backend_unavailable")
-		return
-	}
-	if !s.priorityInjector.Inject(r, tier) {
-		predictiveCause = runtimepredictive.TerminalLocalQoSReject
-		rejectCode := "request_compat_rewrite"
-		if legacyQoS {
-			rejectCode = "backend_priority_injection"
-			s.qosGate.ObserveReject(ln, tier, rejectCode)
-		}
-		s.reject(w, ln, rejectCode)
-		return
-	}
-	predictiveForwarded := false
-	if predictiveReservation != nil {
-		predictiveForwarded = predictiveReservation.MarkForwarded()
-		if !predictiveForwarded && s.cfg.PredictiveAdmissionMode == "enforce" {
-			predictiveCause = runtimepredictive.TerminalLocalQoSReject
-			s.predictiveShadowFailures.forwardRejected.Add(1)
-			s.logPredictiveFailureReject("forward_commit")
+	terminal := runtimepredictive.TerminalClientCancelled
+	if reservation != nil {
+		defer func() { reservation.Terminate(terminal) }()
+		if !reservation.MarkForwarded() {
+			terminal = runtimepredictive.TerminalLocalQoSReject
+			s.predictiveShadowFailures.forward.Add(1)
 			s.predictiveEnforcedRejects.Add(1)
-			s.reject(w, s.globalLn, "predictive_admission")
+			s.total429.Add(1)
+			s.decisionDuration.Observe(time.Since(decisionStart))
+			openai.WriteTooManyRequests(w)
 			return
 		}
+		r = r.WithContext(attachPredictiveReservation(r.Context(), reservation))
 	}
-	if predictiveForwarded {
-		r = attachPredictiveResponseObserver(r, predictiveReservation, requestStart, classification.Streaming, &s.predictiveCompletionObserver)
-	}
-	s.globalLn.ObserveAccepted()
-	ln.ObserveAccepted()
-	if legacyQoS {
-		s.qosGate.ObserveAccepted(tier)
-	}
-	prefillGrace := s.prefillGraceDuration(r, classification.Streaming)
-	markDecode, doneActive := s.trackActiveRequest(prefillGrace)
-	defer doneActive()
-	semanticCallbacks := semanticResponseCallbacks{observed: markDecode}
-	if predictiveForwarded {
-		semanticCallbacks.observed = func() {
-			markDecode()
-			predictiveReservation.MarkPrefillComplete()
-		}
-		semanticCallbacks.delivered = func(ttft time.Duration) {
-			observePredictiveSemanticTTFT(predictiveReservation, ttft)
-		}
-	}
-	if legacyQoS {
-		r.Header.Set("X-PIG-Lane", ln.Name())
-		r.Header.Set("X-PIG-Tier", tier.String())
-	} else {
-		r.Header.Del("X-PIG-Lane")
-		r.Header.Del("X-PIG-Tier")
-	}
-	if hasOutputTokens {
-		r.Header.Set("X-PIG-Output-Tokens", strconv.Itoa(outputTokens))
-	}
-	started := time.Now()
-	var result proxyResult
-	if classification.Streaming {
-		allowEarlyBridge := s.cfg.SSEEarlyBridgeEnabled && s.safeForEarlySSEBridge(r, outputTokens, hasOutputTokens)
-		result = s.proxyStreamingRequest(backend, w, r, allowEarlyBridge, requestStart, semanticCallbacks)
-	} else {
-		result = s.proxyRequest(backend, w, r)
-	}
-	if result.timedOut {
-		predictiveCause = runtimepredictive.TerminalTimeout
-	} else if result.status == clientClosedRequestStatus {
-		predictiveCause = runtimepredictive.TerminalClientDisconnected
-	} else if result.proxyFailed {
-		predictiveCause = runtimepredictive.TerminalUpstreamFailure
-	} else if result.status >= http.StatusOK && result.status < http.StatusMultipleChoices {
-		predictiveCause = runtimepredictive.TerminalCompleted
-	} else {
-		predictiveCause = runtimepredictive.TerminalUpstreamFailure
-	}
-	elapsed := time.Since(started)
+	s.decisionDuration.Observe(time.Since(decisionStart))
+	result := s.proxyRequest(s.backend, w, r)
+	terminal = predictiveTerminalCause(result)
 	s.observeProxyResult(result)
-	s.observeInternalOverhead(time.Since(requestStart), queueWait, result.total)
-	ln.ObserveComplete(result.status, elapsed)
-	s.globalLn.ObserveComplete(result.status, elapsed)
+	s.observeInternalOverhead(time.Since(requestStart), 0, result.total)
 }
 
-func (s *proxyServer) reject(w http.ResponseWriter, ln *qosLane, code string) {
-	s.total429.Add(1)
-	openai.WriteTooManyRequests(w)
+func (s *proxyServer) forwardWithoutAdmission(w http.ResponseWriter, r *http.Request, started time.Time) {
+	if s.backend == nil {
+		s.backendUnavailable.Add(1)
+		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	result := s.proxyRequest(s.backend, w, r)
+	s.observeProxyResult(result)
+	s.observeInternalOverhead(time.Since(started), 0, result.total)
+}
+
+func predictiveTerminalCause(result proxyResult) runtimepredictive.TerminalCause {
+	switch {
+	case result.timedOut:
+		return runtimepredictive.TerminalTimeout
+	case result.status == clientClosedRequestStatus:
+		return runtimepredictive.TerminalClientDisconnected
+	case result.proxyFailed:
+		return runtimepredictive.TerminalUpstreamFailure
+	case result.status >= http.StatusOK && result.status < http.StatusMultipleChoices:
+		return runtimepredictive.TerminalCompleted
+	default:
+		return runtimepredictive.TerminalUpstreamFailure
+	}
 }

@@ -7,8 +7,6 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/latency"
 )
 
 func TestDefaultPredictiveFactoryUsesDeterministicRequestAwareStack(t *testing.T) {
@@ -67,8 +65,7 @@ vllm:generation_tokens_total{model_name="vendor/arbitrary-model-v17",engine="0"}
 func requestAwareFactoryTestConfig(metricsURL, mode string) config {
 	cfg := testProxyConfig(metricsURL)
 	cfg.PredictiveAdmissionMode = mode
-	cfg.Backends[0].MetricsURL = metricsURL
-	cfg.DynamicMetricsURLs = []string{metricsURL}
+	cfg.PredictiveMetricsURL = metricsURL
 	cfg.PredictiveObservationPollInterval = 20 * time.Millisecond
 	cfg.PredictiveMaximumMetricsAge = 100 * time.Millisecond
 	cfg.PredictiveTPSTarget = 25
@@ -77,13 +74,6 @@ func requestAwareFactoryTestConfig(metricsURL, mode string) config {
 	cfg.PredictivePrefillExclusiveTokens = 2 * 1024
 	cfg.PredictivePrefillQuiescentTokens = 3 * 1024
 	cfg.PredictivePrefillAggregateBudgetTokens = 2 * 1024
-	cfg.KVAdmissionPolicy.PreemptionCooldown = 0
-
-	// These old predictive-learning inputs are deliberately unusable. The
-	// deterministic factory must not read or validate them.
-	cfg.DynamicPollInterval = time.Hour
-	cfg.DynamicUserTPSYellow = 0
-	cfg.DynamicUserTPSRed = 0
-	cfg.DynamicTTFTPolicy = latency.Policy{}
+	cfg.PredictivePreemptionCooldown = 0
 	return cfg
 }

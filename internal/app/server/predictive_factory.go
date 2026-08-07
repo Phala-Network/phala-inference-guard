@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
@@ -29,11 +30,11 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	}
 	initialization, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
 		MetricsURL:     metricsURL,
-		UpstreamURL:    cfg.Backends[0].Upstream,
+		UpstreamURL:    cfg.Upstream,
 		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 		RetryInterval:  cfg.PredictiveObservationPollInterval,
-		KVTargetRatio:  cfg.KVAdmissionPolicy.VLLM.TargetRatio,
-		KVHardRatio:    cfg.KVAdmissionPolicy.VLLM.HardRatio,
+		KVTargetRatio:  cfg.PredictiveKVTargetRatio,
+		KVHardRatio:    cfg.PredictiveKVHardRatio,
 		Prefill: runtimepredictive.PrefillTokenBounds{
 			Regular:   cfg.PredictivePrefillRegularTokens,
 			Exclusive: cfg.PredictivePrefillExclusiveTokens,
@@ -83,12 +84,6 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 			DecodeSequences:     startup.Running + startup.Waiting,
 			ActiveContextTokens: startup.UsedTokens,
 		},
-		domainpredictive.Constraints{
-			PhysicalKVHard: profile.KVHardLimitTokens,
-			ActiveKVHard:   profile.KVHardLimitTokens,
-			UserTPSTarget:  cfg.PredictiveTPSFloor,
-		},
-		nil,
 	)
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
 		MetricsURL:          metricsURL,
@@ -98,7 +93,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		PollInterval:        cfg.PredictiveObservationPollInterval,
 		MaximumAge:          cfg.PredictiveMaximumMetricsAge,
 		RequestTimeout:      cfg.PredictiveMetricsRequestTimeout,
-		PreemptionCooldown:  cfg.KVAdmissionPolicy.PreemptionCooldown,
+		PreemptionCooldown:  cfg.PredictivePreemptionCooldown,
 		Coordinator:         manager,
 		Initial:             startup,
 	})
@@ -121,6 +116,14 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		return nil, err
 	}
 	return adapter, nil
+}
+
+func predictiveVLLMMetricsURL(cfg config) (string, error) {
+	metricsURL := strings.TrimSpace(cfg.PredictiveMetricsURL)
+	if metricsURL == "" {
+		return "", fmt.Errorf("predictive vLLM metrics URL is empty")
+	}
+	return metricsURL, nil
 }
 
 func predictiveProtectedTokens(capacity int64, blockSize int, ratio float64) (int64, error) {

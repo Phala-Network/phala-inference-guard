@@ -49,6 +49,7 @@ type requestAwarePredictiveAdapter struct {
 	decisionLogInterval     time.Duration
 	decisionLogs            requestAwareDecisionLogState
 	onDecision              func(requestAwareDecisionLogEvent)
+	predictionDuration      durationHistogram
 }
 
 type requestAwarePredictiveReservation struct {
@@ -83,10 +84,17 @@ func newRequestAwarePredictiveAdapter(config requestAwarePredictiveAdapterConfig
 		now:                 config.Now,
 		decisionLogInterval: config.DecisionLogInterval,
 		onDecision:          config.OnDecision,
+		predictionDuration:  newPredictiveDurationHistogram(),
 	}, nil
 }
 
 func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID string, input predictiveShadowInput) predictiveAdmissionDecision {
+	started := time.Now()
+	defer func() {
+		if a != nil {
+			a.predictionDuration.Observe(time.Since(started))
+		}
+	}()
 	if a == nil {
 		return requestAwareAdapterFailure(
 			predictiveAdmissionOutcomeRequestReject,
@@ -246,7 +254,8 @@ func (a *requestAwarePredictiveAdapter) PredictiveAdmissionTelemetry() predictiv
 		return predictiveAdmissionTelemetrySnapshot{}
 	}
 	now := a.now()
-	router := a.inspectRouterBackpressure(now)
+	input, observer, inputValid := requestAwareTelemetryObservation(a.snapshot, now)
+	router := a.inspectRouterBackpressure(now, input, inputValid)
 	a.mu.Lock()
 	attempts := a.attempts
 	profile := a.capabilityProfile
@@ -266,7 +275,9 @@ func (a *requestAwarePredictiveAdapter) PredictiveAdmissionTelemetry() predictiv
 		CapabilityReason:   capabilityReason,
 		Attempts:           attempts,
 		Manager:            a.manager.Snapshot(),
+		PredictionDuration: &a.predictionDuration,
 		RouterBackpressure: router,
+		Observer:           observer,
 		RequestAware:       lastRequestAware,
 	}
 }
@@ -317,8 +328,6 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 	a.attempts.Attempts++
 	a.attempts.LastReason = decision.Reason
 	a.attempts.LastSource = decision.Source
-	a.attempts.LastSamples = 0
-	a.attempts.LastExploratory = false
 	if result.Decision.Action == runtimepredictive.RequestAwareAdmit && decision.Outcome == predictiveAdmissionOutcomeForward {
 		a.attempts.Fits++
 	} else if requestAwareUnknownReason(decision.Reason) {
@@ -330,7 +339,6 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 		a.attempts.LastRejectReason = decision.Reason
 		a.attempts.LastRejectSource = decision.Source
 		a.attempts.LastRejectScope = requestAwareProtectionScope(decision.Outcome)
-		a.attempts.LastRejectSamples = 0
 		a.attempts.LastRejectAt = now
 	}
 	a.lastRequestAware = last
@@ -372,7 +380,11 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 	emitRequestAwareDecision(reporter, logEvent)
 }
 
-func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(now time.Time) predictiveRouterBackpressureSnapshot {
+func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(
+	now time.Time,
+	input runtimepredictive.RequestAwareInput,
+	inputValid bool,
+) predictiveRouterBackpressureSnapshot {
 	a.mu.Lock()
 	mode := a.mode
 	closed := a.closed
@@ -387,8 +399,7 @@ func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(now time.Time)
 			predictiveProtectionScopeAvailability,
 		)
 	}
-	input, valid := requestAwareAdapterSnapshot(a.snapshot, now)
-	if !valid {
+	if !inputValid {
 		return requestAwareHardRouterBackpressure(
 			domainpredictive.ReasonMetricsStale,
 			runtimepredictive.PredictionSourceUnavailable,
@@ -409,14 +420,12 @@ func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(now time.Time)
 			return predictiveRouterBackpressureSnapshot{}
 		}
 		return predictiveRouterBackpressureSnapshot{
-			Active:               true,
-			Scope:                predictiveProtectionScopeLoad,
-			Reason:               domainpredictive.ReasonRequestSizeAtPressure,
-			Source:               runtimepredictive.PredictionSourceDeterministic,
-			MinimumRunning:       1,
-			InspectCapacity:      1,
-			AggregateTPS:         input.MeanActiveTPSProxy,
-			PreviousAggregateTPS: 0,
+			Active:          true,
+			Scope:           predictiveProtectionScopeLoad,
+			Reason:          domainpredictive.ReasonRequestSizeAtPressure,
+			Source:          runtimepredictive.PredictionSourceDeterministic,
+			MinimumRunning:  1,
+			InspectCapacity: 1,
 		}
 	}
 	protected := requestAwareAdapterProtectedDecision(result.Decision)
@@ -472,9 +481,8 @@ func requestAwareHardRouterBackpressure(
 
 func requestAwareInspectCost(manifestID string, blockSize int64) domainpredictive.RequestCost {
 	return domainpredictive.RequestCost{
-		ManifestID:                   manifestID,
-		InputTokens:                  blockSize,
-		RequestComplexityTokensUpper: blockSize,
+		ManifestID:  manifestID,
+		InputTokens: blockSize,
 		KV: domainpredictive.KVIncrement{
 			PhysicalKVUpper: blockSize,
 			ActiveKVUpper:   blockSize,
@@ -556,9 +564,8 @@ func requestAwareAdapterCost(manifestID string, blockSize int64, input predictiv
 	}
 	futureKV := totalKV - inputKV
 	return selectionInputTokens, domainpredictive.RequestCost{
-		ManifestID:                   manifestID,
-		InputTokens:                  cost.EstimatedInputHigh,
-		RequestComplexityTokensUpper: cost.EstimatedInputHigh,
+		ManifestID:  manifestID,
+		InputTokens: cost.EstimatedInputHigh,
 		KV: domainpredictive.KVIncrement{
 			PhysicalKVUpper: totalKV,
 			ActiveKVUpper:   totalKV,
@@ -597,6 +604,41 @@ func requestAwareAdapterSnapshot(provider requestAwareSnapshotProvider, now time
 		}
 	}()
 	return provider.RequestAwareInput(now), true
+}
+
+func requestAwareTelemetryObservation(
+	provider requestAwareSnapshotProvider,
+	now time.Time,
+) (input runtimepredictive.RequestAwareInput, observer predictiveObserverSnapshot, valid bool) {
+	if provider == nil || now.IsZero() {
+		return runtimepredictive.RequestAwareInput{}, predictiveObserverSnapshot{}, false
+	}
+	if source, ok := provider.(interface {
+		Snapshot(time.Time) predictiveObserverSnapshot
+	}); ok {
+		defer func() {
+			if recover() != nil {
+				input = runtimepredictive.RequestAwareInput{}
+				observer = predictiveObserverSnapshot{}
+				valid = false
+			}
+		}()
+		observer = source.Snapshot(now)
+		return runtimepredictive.RequestAwareInput{
+			MetricsFresh:       observer.MetricsFresh,
+			IdentityValid:      observer.IdentityValid,
+			CapacityTokens:     observer.CapacityTokens,
+			UsedTokens:         observer.UsedTokens,
+			Running:            observer.Running,
+			Waiting:            observer.Waiting,
+			AggregateTPSProxy:  observer.AggregateTPS,
+			MeanActiveTPSProxy: observer.MeanActiveTPS,
+			TPSValid:           observer.TPSValid,
+			PreemptionCooldown: observer.PreemptionCooldown,
+		}, observer, true
+	}
+	input, valid = requestAwareAdapterSnapshot(provider, now)
+	return input, predictiveObserverSnapshot{}, valid
 }
 
 func requestAwareAdapterProtectedDecision(decision runtimepredictive.RequestAwareDecision) predictiveAdmissionDecision {

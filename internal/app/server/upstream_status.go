@@ -25,59 +25,21 @@ func (s *proxyServer) upstreamStatusCode() int {
 	if s == nil {
 		return upstreamStatusUnknown
 	}
-	if s.cfg.PredictiveAdmissionMode == "enforce" {
-		return s.predictiveUpstreamStatusCode()
-	}
-	if s.qosGate == nil || s.globalLn == nil {
-		return upstreamStatusUnknown
-	}
-	limit, _, rejectCode := s.currentQoSLimit()
-	if rejectCode != "" || limit <= 0 {
-		return upstreamStatusRed
-	}
-	if s.qosGate.QueueCurrent() > 0 {
-		return upstreamStatusRed
-	}
-	if s.dynamicController != nil {
-		if s.dynamicController.BackendUnavailableActive() {
-			return upstreamStatusRed
-		}
-		snapshot := s.dynamicController.Snapshot()
-		if snapshot.Waiting > 0 {
-			return upstreamStatusRed
-		}
-		switch snapshot.DecisionState() {
-		case "red":
-			return upstreamStatusRed
-		case "yellow":
-			return upstreamStatusYellow
-		}
-	}
-
-	inflight := s.globalLn.Inflight()
-	if inflight >= int64(limit) {
-		return upstreamStatusRed
-	}
-	tierSnapshot := s.qosGate.TierSnapshot(limit)
-	if tierSnapshot.BasicWaiting > 0 || tierSnapshot.PremiumWaiting > 0 {
-		return upstreamStatusRed
-	}
-	if tierSnapshot.BasicLimit > 0 && tierSnapshot.BasicInflight >= int64(tierSnapshot.BasicLimit) {
-		return upstreamStatusRed
-	}
-	if upstreamStatusNearLimit(inflight, int64(limit)) ||
-		(tierSnapshot.BasicLimit > 0 && upstreamStatusNearLimit(tierSnapshot.BasicInflight, int64(tierSnapshot.BasicLimit))) {
-		return upstreamStatusYellow
-	}
-	return upstreamStatusGreen
-}
-
-func (s *proxyServer) predictiveUpstreamStatusCode() int {
 	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
 	if !ok {
-		return upstreamStatusRed
+		if s.cfg.PredictiveAdmissionMode == "enforce" {
+			return upstreamStatusRed
+		}
+		return upstreamStatusUnknown
 	}
-	backpressure := provider.PredictiveAdmissionTelemetry().RouterBackpressure
+	snapshot := provider.PredictiveAdmissionTelemetry()
+	if s.cfg.PredictiveAdmissionMode == "shadow" {
+		if snapshot.Observer.MetricsFresh && snapshot.Observer.IdentityValid {
+			return upstreamStatusGreen
+		}
+		return upstreamStatusUnknown
+	}
+	backpressure := snapshot.RouterBackpressure
 	if !backpressure.Active {
 		return upstreamStatusGreen
 	}
@@ -85,14 +47,4 @@ func (s *proxyServer) predictiveUpstreamStatusCode() int {
 		return upstreamStatusYellow
 	}
 	return upstreamStatusRed
-}
-
-func upstreamStatusNearLimit(used, limit int64) bool {
-	if limit <= 0 {
-		return false
-	}
-	if limit-used <= 1 {
-		return true
-	}
-	return used*100 >= limit*85
 }

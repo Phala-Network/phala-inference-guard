@@ -1,14 +1,9 @@
 package request
 
-import "github.com/Phala-Network/phala-inference-guard/internal/runtime/token"
-
-func New(cfg Config, lanes Lanes, stateFunc func() string) *Classifier {
-	classifier := &Classifier{cfg: cfg, lanes: lanes, stateFunc: stateFunc}
-	if cfg.AdaptiveOutput {
-		classifier.outputs = token.New(cfg.AdaptiveOutputWindow)
-	}
-	if cfg.JSONClassifyLimit > 0 {
-		classifier.tokens = make(chan struct{}, cfg.JSONClassifyLimit)
+func New(cfg Config) *Classifier {
+	classifier := &Classifier{cfg: cfg}
+	if cfg.MaximumConcurrent > 0 {
+		classifier.tokens = make(chan struct{}, cfg.MaximumConcurrent)
 	}
 	return classifier
 }
@@ -21,9 +16,27 @@ func (c *Classifier) Rejected() uint64 {
 	return c.rejected.Load()
 }
 
-func (c *Classifier) OutputSampleCount() int {
-	if c.outputs == nil {
-		return 0
+func (c *Classifier) acquire() bool {
+	if c.tokens == nil {
+		return true
 	}
-	return c.outputs.Count()
+	select {
+	case c.tokens <- struct{}{}:
+		c.inflight.Add(1)
+		return true
+	default:
+		c.rejected.Add(1)
+		return false
+	}
+}
+
+func (c *Classifier) release() {
+	if c.tokens == nil {
+		return
+	}
+	select {
+	case <-c.tokens:
+		c.inflight.Add(-1)
+	default:
+	}
 }

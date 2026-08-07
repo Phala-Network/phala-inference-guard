@@ -1,184 +1,401 @@
 package request
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
-	"io"
 	"strconv"
 	"strings"
 )
 
+const maximumJSONFieldScanDepth = 128
+
 type JSONFields struct {
 	OutputTokens    int
 	HasOutputTokens bool
-	Stream          bool
-	HasStream       bool
+}
+
+type jsonStringSpan struct {
+	raw     []byte
+	quoted  []byte
+	escaped bool
+}
+
+type jsonFieldParser struct {
+	body  []byte
+	index int
+	depth int
 }
 
 func ParseJSONFields(body []byte, fields []string) (JSONFields, bool) {
-	decoder := json.NewDecoder(bytes.NewReader(body))
-	decoder.UseNumber()
-	first, err := decoder.Token()
-	if err != nil {
+	parser := jsonFieldParser{body: body}
+	parser.skipSpace()
+	if parser.index >= len(body) || body[parser.index] != '{' {
 		return JSONFields{}, false
 	}
-	if delim, ok := first.(json.Delim); !ok || delim != '{' {
-		return JSONFields{}, false
-	}
+	result, ok := parser.parseRootObject(fields)
+	parser.skipSpace()
+	return result, ok && parser.index == len(body)
+}
+
+func (p *jsonFieldParser) parseRootObject(fields []string) (JSONFields, bool) {
 	result := JSONFields{}
-	for decoder.More() {
-		keyToken, err := decoder.Token()
-		if err != nil {
-			return JSONFields{}, false
-		}
-		key, ok := keyToken.(string)
+	if !p.enter('{') {
+		return result, false
+	}
+	defer p.leave()
+	p.skipSpace()
+	if p.consume('}') {
+		return result, true
+	}
+	for {
+		key, ok := p.parseString()
 		if !ok {
 			return JSONFields{}, false
 		}
-		if stringInList(key, fields) {
-			value, ok, err := decodeOutputTokenValue(decoder)
-			if err != nil {
-				return JSONFields{}, false
-			}
-			if ok && !result.HasOutputTokens {
-				result.OutputTokens = value
+		p.skipSpace()
+		if !p.consume(':') {
+			return JSONFields{}, false
+		}
+		p.skipSpace()
+		valueStart := p.index
+		if !p.parseValue() {
+			return JSONFields{}, false
+		}
+		value := p.body[valueStart:p.index]
+
+		if jsonStringSpanInList(key, fields) {
+			if outputTokens, valid := parseJSONOutputTokens(value); valid &&
+				(!result.HasOutputTokens || outputTokens > result.OutputTokens) {
+				result.OutputTokens = outputTokens
 				result.HasOutputTokens = true
 			}
-			continue
 		}
-		if key == "stream" {
-			value, ok, err := decodeJSONBool(decoder)
-			if err != nil {
+
+		p.skipSpace()
+		switch {
+		case p.consume('}'):
+			return result, true
+		case p.consume(','):
+			p.skipSpace()
+			if p.index >= len(p.body) || p.body[p.index] == '}' {
 				return JSONFields{}, false
 			}
-			if ok {
-				result.Stream = value
-				result.HasStream = true
-			}
-			continue
-		}
-		if err := skipJSONValue(decoder); err != nil {
+		default:
 			return JSONFields{}, false
 		}
 	}
-	closing, err := decoder.Token()
-	if err != nil {
-		return JSONFields{}, false
-	}
-	if delim, ok := closing.(json.Delim); !ok || delim != '}' {
-		return JSONFields{}, false
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return JSONFields{}, false
-	}
-	return result, true
 }
 
-func ParseOutputTokens(body []byte, fields []string) (int, bool) {
-	result, ok := ParseJSONFields(body, fields)
-	if !ok {
-		return 0, false
+func (p *jsonFieldParser) parseValue() bool {
+	p.skipSpace()
+	if p.index >= len(p.body) {
+		return false
 	}
-	return result.OutputTokens, result.HasOutputTokens
+	switch p.body[p.index] {
+	case '{':
+		return p.parseObject()
+	case '[':
+		return p.parseArray()
+	case '"':
+		_, ok := p.parseString()
+		return ok
+	case 't':
+		return p.consumeLiteral("true")
+	case 'f':
+		return p.consumeLiteral("false")
+	case 'n':
+		return p.consumeLiteral("null")
+	default:
+		return p.parseNumber()
+	}
 }
 
-func stringInList(value string, values []string) bool {
-	for _, candidate := range values {
-		if value == candidate {
+func (p *jsonFieldParser) parseObject() bool {
+	if !p.enter('{') {
+		return false
+	}
+	defer p.leave()
+	p.skipSpace()
+	if p.consume('}') {
+		return true
+	}
+	for {
+		if _, ok := p.parseString(); !ok {
+			return false
+		}
+		p.skipSpace()
+		if !p.consume(':') || !p.parseValue() {
+			return false
+		}
+		p.skipSpace()
+		switch {
+		case p.consume('}'):
+			return true
+		case p.consume(','):
+			p.skipSpace()
+			if p.index >= len(p.body) || p.body[p.index] == '}' {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+}
+
+func (p *jsonFieldParser) parseArray() bool {
+	if !p.enter('[') {
+		return false
+	}
+	defer p.leave()
+	p.skipSpace()
+	if p.consume(']') {
+		return true
+	}
+	for {
+		if !p.parseValue() {
+			return false
+		}
+		p.skipSpace()
+		switch {
+		case p.consume(']'):
+			return true
+		case p.consume(','):
+			p.skipSpace()
+			if p.index >= len(p.body) || p.body[p.index] == ']' {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+}
+
+func (p *jsonFieldParser) parseString() (jsonStringSpan, bool) {
+	if p.index >= len(p.body) || p.body[p.index] != '"' {
+		return jsonStringSpan{}, false
+	}
+	quotedStart := p.index
+	p.index++
+	rawStart := p.index
+	escaped := false
+	for p.index < len(p.body) {
+		value := p.body[p.index]
+		switch {
+		case value == '"':
+			span := jsonStringSpan{
+				raw:     p.body[rawStart:p.index],
+				quoted:  p.body[quotedStart : p.index+1],
+				escaped: escaped,
+			}
+			p.index++
+			return span, true
+		case value == '\\':
+			escaped = true
+			p.index++
+			if p.index >= len(p.body) {
+				return jsonStringSpan{}, false
+			}
+			escape := p.body[p.index]
+			if escape == 'u' {
+				if p.index+4 >= len(p.body) {
+					return jsonStringSpan{}, false
+				}
+				for offset := 1; offset <= 4; offset++ {
+					if !isJSONHex(p.body[p.index+offset]) {
+						return jsonStringSpan{}, false
+					}
+				}
+				p.index += 5
+				continue
+			}
+			if !isJSONSimpleEscape(escape) {
+				return jsonStringSpan{}, false
+			}
+			p.index++
+		case value < 0x20:
+			return jsonStringSpan{}, false
+		default:
+			p.index++
+		}
+	}
+	return jsonStringSpan{}, false
+}
+
+func (p *jsonFieldParser) parseNumber() bool {
+	start := p.index
+	if p.consume('-') && p.index >= len(p.body) {
+		return false
+	}
+	if p.consume('0') {
+		if p.index < len(p.body) && isJSONDigit(p.body[p.index]) {
+			return false
+		}
+	} else {
+		if p.index >= len(p.body) || p.body[p.index] < '1' || p.body[p.index] > '9' {
+			return false
+		}
+		for p.index < len(p.body) && isJSONDigit(p.body[p.index]) {
+			p.index++
+		}
+	}
+	if p.consume('.') {
+		if p.index >= len(p.body) || !isJSONDigit(p.body[p.index]) {
+			return false
+		}
+		for p.index < len(p.body) && isJSONDigit(p.body[p.index]) {
+			p.index++
+		}
+	}
+	if p.index < len(p.body) && (p.body[p.index] == 'e' || p.body[p.index] == 'E') {
+		p.index++
+		if p.index < len(p.body) && (p.body[p.index] == '+' || p.body[p.index] == '-') {
+			p.index++
+		}
+		if p.index >= len(p.body) || !isJSONDigit(p.body[p.index]) {
+			return false
+		}
+		for p.index < len(p.body) && isJSONDigit(p.body[p.index]) {
+			p.index++
+		}
+	}
+	return p.index > start
+}
+
+func (p *jsonFieldParser) enter(opening byte) bool {
+	if p.depth >= maximumJSONFieldScanDepth || !p.consume(opening) {
+		return false
+	}
+	p.depth++
+	return true
+}
+
+func (p *jsonFieldParser) leave() {
+	if p.depth > 0 {
+		p.depth--
+	}
+}
+
+func (p *jsonFieldParser) skipSpace() {
+	for p.index < len(p.body) && isJSONSpace(p.body[p.index]) {
+		p.index++
+	}
+}
+
+func (p *jsonFieldParser) consume(value byte) bool {
+	if p.index >= len(p.body) || p.body[p.index] != value {
+		return false
+	}
+	p.index++
+	return true
+}
+
+func (p *jsonFieldParser) consumeLiteral(value string) bool {
+	if len(p.body)-p.index < len(value) {
+		return false
+	}
+	for offset := range len(value) {
+		if p.body[p.index+offset] != value[offset] {
+			return false
+		}
+	}
+	p.index += len(value)
+	return true
+}
+
+func jsonStringSpanInList(value jsonStringSpan, candidates []string) bool {
+	for _, candidate := range candidates {
+		if jsonStringSpanEquals(value, candidate) {
 			return true
 		}
 	}
 	return false
 }
 
-func decodeOutputTokenValue(decoder *json.Decoder) (int, bool, error) {
-	token, err := decoder.Token()
-	if err != nil {
-		return 0, false, err
+func jsonStringSpanEquals(value jsonStringSpan, candidate string) bool {
+	if value.escaped {
+		decoded, err := strconv.Unquote(string(value.quoted))
+		return err == nil && decoded == candidate
 	}
-	switch value := token.(type) {
-	case json.Number:
-		tokens, err := strconv.Atoi(value.String())
-		if err == nil && tokens >= 0 {
-			return tokens, true, nil
-		}
-	case string:
-		tokens, err := strconv.Atoi(strings.TrimSpace(value))
-		if err == nil && tokens >= 0 {
-			return tokens, true, nil
-		}
-	case float64:
-		tokens := int(value)
-		if value == float64(tokens) && tokens >= 0 {
-			return tokens, true, nil
-		}
-	case json.Delim:
-		return 0, false, skipDelimitedJSONValue(decoder, value)
+	if len(value.raw) != len(candidate) {
+		return false
 	}
-	return 0, false, nil
+	for index := range value.raw {
+		if value.raw[index] != candidate[index] {
+			return false
+		}
+	}
+	return true
 }
 
-func decodeJSONBool(decoder *json.Decoder) (bool, bool, error) {
-	token, err := decoder.Token()
-	if err != nil {
-		return false, false, err
+func parseJSONOutputTokens(value []byte) (int, bool) {
+	if len(value) == 0 {
+		return 0, false
 	}
-	if value, ok := token.(bool); ok {
-		return value, true, nil
+	if value[0] != '"' {
+		return parseNonnegativeDecimal(value)
 	}
-	if delim, ok := token.(json.Delim); ok {
-		if err := skipDelimitedJSONValue(decoder, delim); err != nil {
-			return false, false, err
+	if len(value) < 2 || value[len(value)-1] != '"' {
+		return 0, false
+	}
+	raw := value[1 : len(value)-1]
+	for _, current := range raw {
+		if current == '\\' || current >= 0x80 {
+			decoded, err := strconv.Unquote(string(value))
+			if err != nil {
+				return 0, false
+			}
+			tokens, err := strconv.Atoi(strings.TrimSpace(decoded))
+			return tokens, err == nil && tokens >= 0
 		}
 	}
-	return false, false, nil
+	start, end := 0, len(raw)
+	for start < end && isASCIIStringSpace(raw[start]) {
+		start++
+	}
+	for end > start && isASCIIStringSpace(raw[end-1]) {
+		end--
+	}
+	return parseNonnegativeDecimal(raw[start:end])
 }
 
-func skipJSONValue(decoder *json.Decoder) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
+func parseNonnegativeDecimal(value []byte) (int, bool) {
+	if len(value) == 0 {
+		return 0, false
 	}
-	if delim, ok := token.(json.Delim); ok {
-		return skipDelimitedJSONValue(decoder, delim)
+	maximum := int(^uint(0) >> 1)
+	result := 0
+	for _, current := range value {
+		if !isJSONDigit(current) {
+			return 0, false
+		}
+		digit := int(current - '0')
+		if result > (maximum-digit)/10 {
+			return 0, false
+		}
+		result = result*10 + digit
 	}
-	return nil
+	return result, true
 }
 
-func skipDelimitedJSONValue(decoder *json.Decoder, start json.Delim) error {
-	switch start {
-	case '{':
-		for decoder.More() {
-			if _, err := decoder.Token(); err != nil {
-				return err
-			}
-			if err := skipJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		if delim, ok := closing.(json.Delim); !ok || delim != '}' {
-			return fmt.Errorf("invalid object closing token")
-		}
-	case '[':
-		for decoder.More() {
-			if err := skipJSONValue(decoder); err != nil {
-				return err
-			}
-		}
-		closing, err := decoder.Token()
-		if err != nil {
-			return err
-		}
-		if delim, ok := closing.(json.Delim); !ok || delim != ']' {
-			return fmt.Errorf("invalid array closing token")
-		}
+func isJSONSpace(value byte) bool {
+	return value == ' ' || value == '\n' || value == '\r' || value == '\t'
+}
+
+func isASCIIStringSpace(value byte) bool {
+	return value == ' ' || value == '\n' || value == '\r' || value == '\t' || value == '\v' || value == '\f'
+}
+
+func isJSONDigit(value byte) bool {
+	return value >= '0' && value <= '9'
+}
+
+func isJSONHex(value byte) bool {
+	return isJSONDigit(value) || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
+}
+
+func isJSONSimpleEscape(value byte) bool {
+	switch value {
+	case '"', '\\', '/', 'b', 'f', 'n', 'r', 't':
+		return true
 	default:
-		return nil
+		return false
 	}
-	return nil
 }

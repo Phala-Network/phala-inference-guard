@@ -8,7 +8,6 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/env"
 )
 
-const defaultOpenAICompatBodyBytes = 32 * 1024 * 1024
 const defaultNVIDIACommandTimeoutSeconds = 30
 
 func loadOpenAIConfig(cfg *Config) error {
@@ -17,18 +16,6 @@ func loadOpenAIConfig(cfg *Config) error {
 		return err
 	}
 	upstreamErrorClassificationEnabled, err := env.Bool("UPSTREAM_ERROR_CLASSIFICATION_ENABLED", true)
-	if err != nil {
-		return err
-	}
-	stripEmptyToolCalls, err := env.Bool("OPENAI_COMPAT_STRIP_EMPTY_TOOL_CALLS", true)
-	if err != nil {
-		return err
-	}
-	compatBodyBytes, err := env.Int("OPENAI_COMPAT_BODY_BYTES", defaultOpenAICompatBodyBytes)
-	if err != nil {
-		return err
-	}
-	compatFailOpen, err := env.Bool("OPENAI_COMPAT_FAIL_OPEN", true)
 	if err != nil {
 		return err
 	}
@@ -48,9 +35,6 @@ func loadOpenAIConfig(cfg *Config) error {
 	cfg.APIAuthEnabled = apiAuthEnabled
 	cfg.APIAuthPaths = env.CSV("API_AUTH_PATHS", strings.Join(cfg.QoSPaths, ","))
 	cfg.UpstreamErrorClassificationEnabled = upstreamErrorClassificationEnabled
-	cfg.OpenAICompatStripEmptyToolCalls = stripEmptyToolCalls
-	cfg.OpenAICompatBodyBytes = int64(compatBodyBytes)
-	cfg.OpenAICompatFailOpen = compatFailOpen
 	cfg.AttestationEnabled = attestationEnabled
 	cfg.AttestationDstackEndpoint = strings.TrimSpace(env.String("ATTESTATION_DSTACK_ENDPOINT", ""))
 	cfg.AttestationTLSCertPath = strings.TrimSpace(env.String("TLS_CERT_PATH", ""))

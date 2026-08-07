@@ -21,6 +21,23 @@ func (s staticRequestAwareSnapshot) RequestAwareInput(time.Time) runtimepredicti
 	return s.input
 }
 
+type splitRequestAwareTelemetrySnapshot struct {
+	requestInput  runtimepredictive.RequestAwareInput
+	observer      predictiveObserverSnapshot
+	requestReads  int
+	observerReads int
+}
+
+func (s *splitRequestAwareTelemetrySnapshot) RequestAwareInput(time.Time) runtimepredictive.RequestAwareInput {
+	s.requestReads++
+	return s.requestInput
+}
+
+func (s *splitRequestAwareTelemetrySnapshot) Snapshot(time.Time) predictiveObserverSnapshot {
+	s.observerReads++
+	return s.observer
+}
+
 func TestRequestAwareAdapterRequestSizeChangesPreForwardDecision(t *testing.T) {
 	smallAdapter, smallManager := newRequestAwareAdapterTestFixture(t, 5_000, 1)
 	largeAdapter, largeManager := newRequestAwareAdapterTestFixture(t, 5_000, 1)
@@ -75,7 +92,7 @@ func TestRequestAwareAdapterFreshCompletionSnapshotDoesNotMislockIdleBackend(t *
 		PhysicalKVUpper:     2_000,
 		ActiveKVUpper:       2_000,
 		ActiveContextTokens: 2_000,
-	}, domainpredictive.Constraints{}, nil)
+	})
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		SoftKVLimitTokens:            6_000,
 		HardKVLimitTokens:            8_992,
@@ -129,7 +146,7 @@ func TestRequestAwareAdapterFreshCompletionSnapshotDoesNotMislockIdleBackend(t *
 }
 
 func TestRequestAwareAdapterRejectsPolicyCapabilityMismatch(t *testing.T) {
-	manager := runtimepredictive.NewManager("request-aware-http-test", domainpredictive.VirtualState{}, domainpredictive.Constraints{}, nil)
+	manager := runtimepredictive.NewManager("request-aware-http-test", domainpredictive.VirtualState{})
 	policy := newLargeRequestAwareServerTestPolicy(t)
 	_, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
 		Manager:           manager,
@@ -321,6 +338,56 @@ func TestRequestAwareAdapterTelemetryPublishesHardProtectionWithZeroInspectCapac
 		!snapshot.RouterBackpressure.Active || snapshot.RouterBackpressure.InspectCapacity != 0 ||
 		snapshot.RouterBackpressure.Reason != domainpredictive.ReasonKVOverBudget {
 		t.Fatalf("hard protection telemetry request=%+v Router=%+v", snapshot.RequestAware, snapshot.RouterBackpressure)
+	}
+}
+
+func TestV0121RequestAwareTelemetryUsesOneObserverGenerationForRouterProjection(t *testing.T) {
+	manager := runtimepredictive.NewManager("request-aware-http-test", domainpredictive.VirtualState{
+		PhysicalKVUpper:     5_000,
+		ActiveKVUpper:       5_000,
+		DecodeSequences:     4,
+		ActiveContextTokens: 5_000,
+	})
+	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
+		SoftKVLimitTokens:            6_000,
+		HardKVLimitTokens:            8_992,
+		TPSTarget:                    20,
+		TPSFloor:                     15,
+		BlockSize:                    16,
+		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
+		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
+		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
+	})
+	if err != nil {
+		t.Fatalf("NewRequestAwarePolicy: %v", err)
+	}
+	now := time.Unix(3_000, 0)
+	provider := &splitRequestAwareTelemetrySnapshot{
+		requestInput: runtimepredictive.RequestAwareInput{},
+		observer: predictiveObserverSnapshot{
+			ObservedAt: now, MetricsFresh: true, IdentityValid: true,
+			CapacityTokens: 10_000, UsedTokens: 5_000, Running: 4,
+			AggregateTPS: 80, MeanActiveTPS: 20, TPSValid: true,
+		},
+	}
+	adapter, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
+		Manager: manager, Policy: policy,
+		CapabilityProfile: requestAwareTestCapabilityProfile(10_000, 16, 6_000, 8_992),
+		CapabilityReason:  "test", Snapshot: provider,
+		ManifestID: "request-aware-http-test", BlockSize: 16, Mode: "enforce",
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("newRequestAwarePredictiveAdapter: %v", err)
+	}
+
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if provider.requestReads != 0 || provider.observerReads != 1 {
+		t.Fatalf("telemetry observer reads request=%d snapshot=%d, want 0/1", provider.requestReads, provider.observerReads)
+	}
+	if telemetry.RouterBackpressure.Active || !telemetry.Observer.MetricsFresh || telemetry.Observer.Running != 4 {
+		t.Fatalf("mixed-generation telemetry Router=%+v observer=%+v", telemetry.RouterBackpressure, telemetry.Observer)
 	}
 }
 
@@ -516,7 +583,7 @@ func newRequestAwareAdapterTestFixtureWithMode(t testing.TB, usedTokens int64, w
 		ActiveKVUpper:       usedTokens,
 		DecodeSequences:     4 + waiting,
 		ActiveContextTokens: usedTokens,
-	}, domainpredictive.Constraints{}, nil)
+	})
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		SoftKVLimitTokens:            6_000,
 		HardKVLimitTokens:            8_992,

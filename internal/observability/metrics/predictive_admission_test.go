@@ -45,13 +45,10 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		VirtualDecodeSequences:                          3,
 		ForwardedPendingPrefills:                        1,
 		ForwardedPendingPrefillTokens:                   100,
-		ForwardedPendingPrefillAttributionValid:         true,
 		RetiredReservations:                             3,
 		RetiredEvictions:                                1,
 		FailureForward:                                  3,
-		FailureSemantic:                                 4,
-		FailureCompletion:                               5,
-		FailureResourceRelease:                          7,
+		FailurePrefill:                                  4,
 		FailureTerminal:                                 6,
 		PredictionDuration:                              &prediction,
 		EstimatorDuration:                               &estimator,
@@ -118,7 +115,6 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		"pig_predictive_admission_virtual_decode_sequences 3",
 		"pig_predictive_admission_forwarded_pending_prefills 1",
 		"pig_predictive_admission_forwarded_pending_prefill_tokens 100",
-		"pig_predictive_admission_forwarded_pending_prefill_attribution_valid 1",
 		"pig_predictive_admission_intake_open 1",
 		"pig_predictive_admission_retired_evictions_total 1",
 		"pig_predictive_router_backpressure_active 1",
@@ -160,9 +156,7 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		"pig_predictive_request_aware_last_decision_pending_quiescent_prefill_sequences 1",
 		"pig_predictive_router_inspect_capacity 1",
 		`pig_predictive_admission_failures_total{phase="forward"} 3`,
-		`pig_predictive_admission_failures_total{phase="semantic"} 4`,
-		`pig_predictive_admission_failures_total{phase="completion"} 5`,
-		`pig_predictive_admission_failures_total{phase="resource_release"} 7`,
+		`pig_predictive_admission_failures_total{phase="prefill"} 4`,
 		`pig_predictive_admission_failures_total{phase="terminal"} 6`,
 		"pig_predictive_admission_prediction_duration_seconds_count 1",
 		"pig_predictive_admission_estimator_duration_seconds_count 1",
@@ -173,12 +167,12 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 	}
 }
 
-func TestWritePredictiveAdmissionNormalizesDisabledModeAndNilHistograms(t *testing.T) {
+func TestWritePredictiveAdmissionNormalizesInvalidModeAndNilHistograms(t *testing.T) {
 	var out bytes.Buffer
 	WritePredictiveAdmission(&out, PredictiveAdmissionInput{})
 	got := out.String()
 	for _, want := range []string{
-		`pig_predictive_admission_mode_info{mode="off"} 1`,
+		`pig_predictive_admission_mode_info{mode="unknown"} 1`,
 		"pig_predictive_admission_enabled 0",
 		`pig_predictive_router_backpressure_state_info{scope="none",reason="none",source="unknown"} 1`,
 		`pig_predictive_request_aware_last_decision_info{action="unknown",reason="unknown",pressure_source="none",prefill_class="unknown"} 1`,
@@ -211,6 +205,12 @@ func TestWritePredictiveAdmissionOmitsRetiredLearningMetrics(t *testing.T) {
 	WritePredictiveAdmission(&out, PredictiveAdmissionInput{Mode: "enforce"})
 	got := out.String()
 	for _, retired := range []string{
+		`pig_predictive_admission_mode_info{mode="off"}`,
+		"pig_predictive_admission_forwarded_pending_prefill_attribution_valid",
+		`pig_predictive_admission_failures_total{phase="forward_rejected"}`,
+		`pig_predictive_admission_failures_total{phase="semantic"}`,
+		`pig_predictive_admission_failures_total{phase="completion"}`,
+		`pig_predictive_admission_failures_total{phase="resource_release"}`,
 		"pig_predictive_learning_",
 		"pig_predictive_input_size_",
 		"pig_predictive_existing_prefill_",

@@ -57,6 +57,19 @@ func TestEstimateJSONRejectsMalformedOrTrailingData(t *testing.T) {
 	}
 }
 
+func TestV0121EstimateJSONSupportsValidNonObjectValuesConservatively(t *testing.T) {
+	for _, body := range [][]byte{[]byte(`null`), []byte(`[]`), []byte(`"value"`), []byte(`42`)} {
+		cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig())
+		if !cost.Supported || cost.EstimatedInputLow <= 0 || cost.EstimatedInputHigh < cost.EstimatedInputLow ||
+			cost.BoundedDecodeTokens != int64(DefaultEstimatorConfig().BlindOutputTokens) {
+			t.Fatalf("valid non-object JSON %q cost=%+v, want bounded generic estimate", body, cost)
+		}
+		if _, known := cost.ApproximateInputTokenHint(); !known {
+			t.Fatalf("valid non-object JSON %q has no approximate input hint: %+v", body, cost)
+		}
+	}
+}
+
 func TestApproximateInputTokenHintSeparatesEqualByteLanguageShapes(t *testing.T) {
 	const textBytes = 96
 	asciiBody := []byte(`{"prompt":"` + strings.Repeat("a", textBytes) + `"}`)
@@ -187,6 +200,10 @@ func BenchmarkEstimator1MiB(b *testing.B) {
 
 func BenchmarkEstimator2MiB(b *testing.B) {
 	benchmarkEstimator(b, 2*1024*1024)
+}
+
+func BenchmarkEstimator4MiB(b *testing.B) {
+	benchmarkEstimator(b, 4*1024*1024)
 }
 
 func BenchmarkApproximateJSONStringTokens1KiB(b *testing.B) {

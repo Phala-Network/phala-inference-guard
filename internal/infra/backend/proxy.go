@@ -142,7 +142,6 @@ func (b *Proxy) NewUpstreamRequest(ctx context.Context, r *http.Request) *http.R
 	out.Header = httpx.CloneHeader(r.Header)
 	httpx.RemoveHopByHopHeaders(out.Header)
 	httpx.AddXForwardedFor(out, r)
-	out.Header.Set("X-PIG-Backend", b.cfg.Name)
 	return out
 }
 

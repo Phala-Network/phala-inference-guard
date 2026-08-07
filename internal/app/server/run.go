@@ -17,8 +17,11 @@ func Run() (runErr error) {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, srv.Close()) }()
-	log.Printf("phala-inference-guard %s listen=%s upstream=%s backends=%d dynamic=%t/%t metrics=%d queue=%s poll=%s status_log=%s target_tps=%.1f/%.1f capacity_learning=cap learn=%t dynamic_ttft_protect=%t predictive_ttft_observe=%t predictive_ttft_protect=false kv_admission=%s predictive_admission=%s upstream_error_classification=%t sse_keepalive=%t sse_early_bridge=%t global_cap=%d",
-		version, cfg.Listen, cfg.Upstream, len(cfg.Backends), cfg.DynamicEnabled, cfg.DynamicEnforce, len(cfg.DynamicMetricsURLs), cfg.QoSQueueWait, cfg.QoSQueuePoll, cfg.StatusLogInterval, cfg.DynamicUserTPSRed, cfg.DynamicUserTPSYellow, cfg.DynamicUserTPSCapacityLearn, cfg.DynamicTTFTEnabled, predictiveAdmissionEnabled(cfg.PredictiveAdmissionMode), cfg.KVAdmissionMode, cfg.PredictiveAdmissionMode, cfg.UpstreamErrorClassificationEnabled, cfg.SSEKeepAliveEnabled, cfg.SSEEarlyBridgeEnabled, cfg.GlobalLimit)
+	log.Printf("phala-inference-guard %s listen=%s upstream=%s metrics=%s observer=%s freshness=%s predictive_admission=%s target_tps=%.1f/%.1f upstream_error_classification=%t",
+		version, cfg.Listen, cfg.Upstream, cfg.PredictiveMetricsURL,
+		cfg.PredictiveObservationPollInterval, cfg.PredictiveMaximumMetricsAge,
+		cfg.PredictiveAdmissionMode, cfg.PredictiveTPSFloor, cfg.PredictiveTPSTarget,
+		cfg.UpstreamErrorClassificationEnabled)
 	log.Print(srv.statusLogLine())
 	if cfg.StatusLogInterval > 0 {
 		go srv.statusLogLoop()

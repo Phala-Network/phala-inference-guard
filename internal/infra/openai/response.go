@@ -41,3 +41,16 @@ func WriteUnauthorized(w http.ResponseWriter) {
 		},
 	})
 }
+
+func WriteInvalidJSON(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	_ = json.NewEncoder(w).Encode(Response{
+		Error: Info{
+			Message: "Invalid JSON request body",
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    http.StatusBadRequest,
+		},
+	})
+}

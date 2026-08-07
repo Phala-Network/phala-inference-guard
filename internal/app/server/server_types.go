@@ -1,47 +1,24 @@
 package server
 
 import (
-	"net/http/httputil"
-	"net/url"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/Phala-Network/phala-inference-guard/internal/app/dynamic"
-	"github.com/Phala-Network/phala-inference-guard/internal/app/gate"
 	"github.com/Phala-Network/phala-inference-guard/internal/app/request"
 	"github.com/Phala-Network/phala-inference-guard/internal/config/pigconfig"
-	domainlane "github.com/Phala-Network/phala-inference-guard/internal/domain/lane"
 	infrabackend "github.com/Phala-Network/phala-inference-guard/internal/infra/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/observability/histogram"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
-	"github.com/Phala-Network/phala-inference-guard/internal/runtime/kvshadow"
-	"github.com/Phala-Network/phala-inference-guard/internal/runtime/prefill"
 )
 
-const version = "PIG-v0.12.0"
-
-const maxQoSQueueWait = 500 * time.Millisecond
-
-const severeDynamicQueueWait = 100 * time.Millisecond
-
-const saturatedDynamicQueueWait = 250 * time.Millisecond
-
-const sseKeepAliveInterval = 2 * time.Second
-
-const sseKeepAliveMaxKVCacheUsage = 0.70
-
-const sseBridgeHeaderGrace = 500 * time.Millisecond
+const version = "PIG-v0.12.1"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 
-var bodyBucketsBytes = []int64{16 * 1024, 64 * 1024, 128 * 1024, 512 * 1024, 1024 * 1024, 4 * 1024 * 1024, 16 * 1024 * 1024}
-
 type config = pigconfig.Config
-type backendConfig = pigconfig.Backend
 type backendProxy = infrabackend.Proxy
 type durationHistogram = histogram.DurationHistogram
-type qosLane = domainlane.Lane
 
 type proxyResult struct {
 	status      int
@@ -53,92 +30,54 @@ type proxyResult struct {
 }
 
 type predictiveShadowFailureCounters struct {
-	close           atomic.Uint64
-	decide          atomic.Uint64
-	forward         atomic.Uint64
-	forwardRejected atomic.Uint64
-	semantic        atomic.Uint64
-	completion      atomic.Uint64
-	resourceRelease atomic.Uint64
-	terminal        atomic.Uint64
-}
-
-type predictiveCompletionObserverCounters struct {
-	attached atomic.Uint64
-	claimed  atomic.Uint64
-	usage    atomic.Uint64
+	close    atomic.Uint64
+	decide   atomic.Uint64
+	forward  atomic.Uint64
+	prefill  atomic.Uint64
 	terminal atomic.Uint64
 }
 
-func loadConfig() (config, error) {
-	return pigconfig.Load()
+func (c *predictiveShadowFailureCounters) add(phase string) {
+	if c == nil {
+		return
+	}
+	switch phase {
+	case "forward":
+		c.forward.Add(1)
+	case "prefill":
+		c.prefill.Add(1)
+	case "terminal":
+		c.terminal.Add(1)
+	default:
+		c.decide.Add(1)
+	}
 }
 
-func validateConfig(cfg config) error {
-	return pigconfig.Validate(cfg)
-}
-
-func newLane(name string, limit int) *qosLane {
-	return domainlane.New(name, limit, domainlane.Buckets{
-		DurationSeconds: durationBucketsSeconds,
-		BodyBytes:       bodyBucketsBytes,
-	})
-}
+func loadConfig() (config, error)     { return pigconfig.Load() }
+func validateConfig(cfg config) error { return pigconfig.Validate(cfg) }
 
 type proxyServer struct {
-	cfg                          config
-	target                       *url.URL
-	proxy                        *httputil.ReverseProxy
-	backends                     []*backendProxy
-	globalLn                     *qosLane
-	defaultLn                    *qosLane
-	mediumLn                     *qosLane
-	longLn                       *qosLane
-	veryLongLn                   *qosLane
-	mediumOutputLn               *qosLane
-	longOutputLn                 *qosLane
-	veryLongOutputLn             *qosLane
-	unknownLn                    *qosLane
-	requestClassifier            *request.Classifier
-	priorityInjector             *request.PriorityInjector
-	attestation                  *attestation.Service
-	dynamicController            *dynamic.Controller
-	kvShadow                     *kvshadow.Manager
-	predictiveShadow             predictiveAdmissionShadow
-	closeOnce                    sync.Once
-	closeErr                     error
-	started                      time.Time
-	total429                     atomic.Uint64
-	backendUnavailable           atomic.Uint64
-	qosGate                      *gate.Gate
-	activeRequests               *prefill.Tracker
-	nextActiveID                 atomic.Uint64
-	nextKVShadowID               atomic.Uint64
-	nextPredictiveID             atomic.Uint64
-	predictiveEnforcedRejects    atomic.Uint64
-	predictiveRouterLogs         predictiveRouterCapacityLogState
-	predictiveFailureLogMu       sync.Mutex
-	predictiveFailureRejectLogs  predictiveRequestRejectLogState
-	predictiveShadowFailures     predictiveShadowFailureCounters
-	predictiveCompletionObserver predictiveCompletionObserverCounters
-	decisionDuration             durationHistogram
-	kvEstimatorDuration          durationHistogram
-	kvShadowDecisionDuration     durationHistogram
-	proxyTTFB                    durationHistogram
-	requestSemanticTTFT          durationHistogram
-	proxyTotal                   durationHistogram
-	internalOverhead             durationHistogram
-	sseKeepAliveStreams          atomic.Uint64
-	sseKeepAliveComments         atomic.Uint64
-	sseBridgeStreams             atomic.Uint64
-	sseBridgeUpstreamErr         atomic.Uint64
-	sseBridgeInvalid             atomic.Uint64
-	sseBridgeCopyErr             atomic.Uint64
-	semanticTTFTLimited          atomic.Uint64
-	proxyUpstreamErr             atomic.Uint64
-	proxyCopyErr                 atomic.Uint64
-	clientDisconnectQueue        atomic.Uint64
-	clientDisconnectUpstream     atomic.Uint64
-	clientDisconnectResponse     atomic.Uint64
-	clientDisconnectCancel       atomic.Uint64
+	cfg                       config
+	backend                   *backendProxy
+	requestClassifier         *request.Classifier
+	attestation               *attestation.Service
+	predictiveShadow          predictiveAdmissionShadow
+	closeOnce                 sync.Once
+	closeErr                  error
+	started                   time.Time
+	nextPredictiveID          atomic.Uint64
+	total429                  atomic.Uint64
+	clientProtocolInvalidJSON atomic.Uint64
+	backendUnavailable        atomic.Uint64
+	predictiveEnforcedRejects atomic.Uint64
+	predictiveShadowFailures  predictiveShadowFailureCounters
+	decisionDuration          durationHistogram
+	estimatorDuration         durationHistogram
+	proxyTTFB                 durationHistogram
+	proxyTotal                durationHistogram
+	internalOverhead          durationHistogram
+	clientDisconnectQueue     atomic.Uint64
+	clientDisconnectUpstream  atomic.Uint64
+	clientDisconnectResponse  atomic.Uint64
+	clientDisconnectCancel    atomic.Uint64
 }

@@ -432,9 +432,7 @@ vllm:request_prefill_time_seconds_sum{model_name="vendor/capability-model",engin
 func v012CapabilityFactoryConfig(upstream string) config {
 	cfg := testProxyConfig(upstream)
 	cfg.PredictiveAdmissionMode = "shadow"
-	cfg.Backends[0].Upstream = upstream
-	cfg.Backends[0].MetricsURL = upstream + "/metrics"
-	cfg.DynamicMetricsURLs = []string{upstream + "/metrics"}
+	cfg.PredictiveMetricsURL = upstream + "/metrics"
 	cfg.PredictiveStartupProbeTimeout = 2 * time.Second
 	cfg.PredictiveMetricsRequestTimeout = 500 * time.Millisecond
 	cfg.PredictiveObservationPollInterval = time.Hour
@@ -443,6 +441,6 @@ func v012CapabilityFactoryConfig(upstream string) config {
 	cfg.PredictivePrefillExclusiveTokens = 0
 	cfg.PredictivePrefillQuiescentTokens = 0
 	cfg.PredictivePrefillAggregateBudgetTokens = 0
-	cfg.KVAdmissionPolicy.PreemptionCooldown = 0
+	cfg.PredictivePreemptionCooldown = 0
 	return cfg
 }

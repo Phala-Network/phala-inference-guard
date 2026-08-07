@@ -1,11 +1,26 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
+
+type routerMetricsPredictiveShadow struct {
+	telemetry predictiveAdmissionTelemetrySnapshot
+}
+
+func (*routerMetricsPredictiveShadow) Decide(context.Context, string, predictiveShadowInput) predictiveAdmissionDecision {
+	return predictiveAdmissionDecision{Outcome: predictiveAdmissionOutcomeForward}
+}
+
+func (*routerMetricsPredictiveShadow) Close() error { return nil }
+
+func (s *routerMetricsPredictiveShadow) PredictiveAdmissionTelemetry() predictiveAdmissionTelemetrySnapshot {
+	return s.telemetry
+}
 
 func TestPredictiveEnforceUpstreamStatusUsesRequestAwareProjectionOnly(t *testing.T) {
 	tests := []struct {

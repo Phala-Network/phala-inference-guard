@@ -42,16 +42,12 @@ type PredictiveAdmissionInput struct {
 	VirtualDecodeSequences                                   int
 	ForwardedPendingPrefills                                 int
 	ForwardedPendingPrefillTokens                            int64
-	ForwardedPendingPrefillAttributionValid                  bool
 	RetiredReservations                                      int
 	RetiredEvictions                                         uint64
 	FailureClose                                             uint64
 	FailureDecide                                            uint64
 	FailureForward                                           uint64
-	FailureForwardRejected                                   uint64
-	FailureSemantic                                          uint64
-	FailureCompletion                                        uint64
-	FailureResourceRelease                                   uint64
+	FailurePrefill                                           uint64
 	FailureTerminal                                          uint64
 	PredictionDuration                                       *histogram.DurationHistogram
 	EstimatorDuration                                        *histogram.DurationHistogram
@@ -109,7 +105,7 @@ type PredictiveRouterBackpressureInput struct {
 func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	mode := input.Mode
 	if mode != "shadow" && mode != "enforce" {
-		mode = "off"
+		mode = "unknown"
 	}
 	backpressureReason := input.RouterBackpressure.Reason
 	if backpressureReason == "" {
@@ -156,7 +152,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_exclusive_tokens %d\n", input.CapabilityPrefillExclusiveTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_quiescent_tokens %d\n", input.CapabilityPrefillQuiescentTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_aggregate_budget_tokens %d\n", input.CapabilityPrefillAggregateBudgetTokens)
-	fmt.Fprintf(w, "pig_predictive_admission_enabled %d\n", num.BoolAsInt(mode != "off"))
+	fmt.Fprintf(w, "pig_predictive_admission_enabled %d\n", num.BoolAsInt(mode == "shadow" || mode == "enforce"))
 	fmt.Fprintf(w, "pig_predictive_admission_enforce %d\n", num.BoolAsInt(mode == "enforce"))
 	fmt.Fprintf(w, "pig_predictive_admission_attempts_total %d\n", input.Attempts)
 	fmt.Fprintf(w, "pig_predictive_admission_decisions_total{decision=%q} %d\n", "fit", input.Fits)
@@ -171,7 +167,6 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_virtual_decode_sequences %d\n", input.VirtualDecodeSequences)
 	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefills %d\n", input.ForwardedPendingPrefills)
 	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefill_tokens %d\n", input.ForwardedPendingPrefillTokens)
-	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefill_attribution_valid %d\n", num.BoolAsInt(input.ForwardedPendingPrefillAttributionValid))
 	fmt.Fprintf(w, "pig_predictive_admission_retired_reservations %d\n", input.RetiredReservations)
 	fmt.Fprintf(w, "pig_predictive_admission_retired_evictions_total %d\n", input.RetiredEvictions)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_active %d\n", num.BoolAsInt(input.RouterBackpressure.Active))
@@ -216,10 +211,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "decide", input.FailureDecide)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "forward", input.FailureForward)
-	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "forward_rejected", input.FailureForwardRejected)
-	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "semantic", input.FailureSemantic)
-	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "completion", input.FailureCompletion)
-	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "resource_release", input.FailureResourceRelease)
+	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "prefill", input.FailurePrefill)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "terminal", input.FailureTerminal)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_prediction_duration_seconds", input.PredictionDuration)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_estimator_duration_seconds", input.EstimatorDuration)
