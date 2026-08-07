@@ -4025,3 +4025,120 @@ R140 达到 **Router-disabled enforce green**，但尚未增加 Router canary �
 runtime gate 没有漂移；随后只 enable `use1-cb`，立即以 exact-once auto-disable observer 运行完整 30 分钟。
 任一 stop rule 触发时先 disable `use1-cb`，再收集日志和 drain；不得修改其他 upstream，也不得把 Router
 request count 当 completion throughput。
+
+### 13.86 R141 v0.11.4 Router canary、同窗口对照与暂时保留结论
+
+R141 只延续用户授权目标
+`a0f0bfb3-e46f-4b22-814e-24872f251193` / `gemma4-31b-it-use1-cb` 的既定 canary。
+Router 变更只把 `use1-cb` upstream/route 从 `false/false` 改为 `true/true`；PATCH 返回 HTTP 200，
+其他 upstream state 与完整 route inventory 保持。启用前 enabled set 为 `use1-19,use1-9b`、digest 为
+`sha256:b8447a719c6fb9d8bf956ae60928d5e857828e7c2874739e7bb8fae8cca5c47a`；启用后为
+`use1-19,use1-9b,use1-cb`、digest 为
+`sha256:1ee61ece6d82d2b14c31ec2747ffb0574b8306a954f152df2c157b0699ef7df1`。没有修改其他
+upstream、Compose、镜像、vLLM 源码或 Router 源码。完整窗口通过时 observer 按合同不自动 disable，
+所以本节结束时 `use1-cb` 有意保持 enabled。
+
+30 分钟 observer 从 `2026-08-07T01:59:27.0895767Z` 运行到
+`2026-08-07T02:29:29.0405038Z`，共 `1801.9509271` 秒、137 个样本；`stop_reason=null`、
+`completed_full_window=true`、`promotion_passed=true`，没有执行 rollback。canary summary SHA-256 为
+`72762e820538c8570b048d53cebe6f1a307ffae4dd601003985336c2ad36c904`。Router target
+processed delta 为 1,031，三条 route processed delta 为 `522/573/1031`；这里的 48.49% 是 target
+**attempt/route processed share**，其中包含 PIG pre-forward 429 以及 Router 可能的后续重试，不能当成
+completion share 或吞吐量。PIG admission attempts/fit/risk/unknown 为 `1036/817/216/3`，执行 219 次
+pre-forward reject，attempt-level reject rate 为 21.14%；predictive failure、vLLM preemption/error/abort
+全部为 0。窗口内完成 707 个请求、975,557 completion tokens、2,937,343 prompt tokens，其中
+139,904 cached prompt tokens。基于窗口首尾 cumulative counter 的 target completion goodput 为
+`550.89 tok/s`，prompt/uncached-prompt TPS 为 `1658.68/1579.68`，completed RPS 为 `0.399`。
+
+QoS 不能由一个低样本决定。112 个通过 validity gate 的 mean-active TPS proxy 样本中，min/p10/p50/p95
+为 `4.955/21.889/36.569/94.964`，只有 4 个低于 20，且不连续；唯一低于 5 的样本发生在约
+126.6K pending Prefill 后并快速恢复，critical/soft timer 都归零。max running/waiting/KV 为
+`39/3/76.93%`，max current Prefill 为 13 sequences / 424,387 tokens，max reservations 为 41；没有
+preemption、sticky clamp、低流自锁或误锁。TTFT 只观测，未参与 admission/stop。estimator 共调用
+1,036 次、累计 1.213966 秒，平均 `1171.78 us/request`；`prediction_calls=0` 是因为当前合同没有独立
+在线 learner/predictor，实际 hot path 是 model-agnostic approximate request-size estimator，不能把 0
+误报成 tokenizer 没有执行。
+
+保护可见性与实际动作一致：enforced counter 精确增加 219，物理 protection log 153 行，通过每行
+`1 + suppressed` 共代表 221 个事件，日志和 metrics 都可见。多种真实大输入在进入 vLLM 前被阻挡，
+包括 estimate `1,064,887`、`1,052,839`、`555,481` 的 quiescent/kv-over-budget 请求，以及
+`348,371/439,959/498,330/506,512` 的 exclusive/kv-over-budget 请求；当前 262,144 max-model-len 节点
+没有构造或发送 512K/650K actual prompt。
+
+三个 canary `unknown` 已按 counter transition 和原始日志逐个复核，而不是全部归为坏 body：
+
+1. `02:02:16.431Z`：`hard_protect/invalid/request_size_unknown/request`；
+2. `02:10:07.709Z`：单次 `hard_protect/stale/metrics_stale/availability`，下一秒恢复正常预测；
+3. `02:12:11.923Z`：`hard_protect/invalid/request_size_unknown/request`。
+
+三者都在 forward 前 fail-closed，`predictive_failures=0`。30 分钟窗口后的 `02:52:28.235Z` 又出现一次
+同类 `request_size_unknown`，使累计 unknown 从 3 增为 4；它同样不是 predictor failure。由于 PIG 不保留
+request body，本证据只能证明“request size 无法解析”，不能无证据反推具体客户端 payload。
+
+vLLM canary log 中实际有 3 个独立 request-level ASGI exception，分别终止于
+`02:23:05.421Z`、`02:23:17.299Z`、`02:26:10.640Z` 的
+`binascii.Error: Non-base64 digit found`。采集窗口从第一条 traceback 中段开始，所以 observer 只数到
+2 个 `Traceback (most recent call last)` 起点；terminal error 计数为 3。三次均属于无效 image data URL，
+没有进入 EngineCore fatal、CUDA OOM、Xid/SXid 或 restart。当前日志没有可靠保留每个客户端最终 HTTP
+结果，因此不猜测状态码；它们不作为 PIG rollback 或 v0.11.5 的理由。
+
+为避免把 dashboard 面板的整窗 min/max 当成精确因果，本轮从 Grafana inspector 导出三台节点同一 PromQL、
+同一 15 秒 step 的原始 CSV；严格过滤到 canary 窗口后，每台每项保留 120 个样本，排除了启用前的
+`01:59:15` 样本。`use1-4c` 在该窗口既不在 enabled set，也没有同窗口原始 series，因此不拿另一个历史
+负载窗口强行比较；同窗口旧算法对照节点为 `use1-19` 与 `use1-9b`。关键结果如下：
+
+| 节点 | Output TPS mean | Prompt TPS mean | Prompt+output TPS mean | Running mean | raw mean-active TPS proxy p10 |
+|---|---:|---:|---:|---:|---:|
+| `use1-19` | 611.7 | 1350.3 | 1962.0 | 11.0 | 21.79 |
+| `use1-9b` | 540.2 | 1456.7 | 1996.9 | 8.1 | 29.09 |
+| `use1-cb` | 538.0 | 1612.2 | 2150.2 | 19.1 | 17.11 |
+
+| 节点 | Queue-P95 series p95 | Waiting max | KV p95 | Cache-hit mean | Spec-accept mean | Preemption |
+|---|---:|---:|---:|---:|---:|---:|
+| `use1-19` | 0.874 s | 4 | 58.45% | 7.63% | 84.83% | 0 |
+| `use1-9b` | 1.310 s | 0 | 44.04% | 4.56% | 83.55% | 0 |
+| `use1-cb` | 3.886 s | 6 | 71.46% | 3.86% | 73.48% | 0 |
+
+Grafana 的 `use1-cb` output-rate mean `537.99 tok/s` 与 observer cumulative-counter goodput
+`550.89 tok/s` 使用不同采样/聚合口径，不互相替代；前者只用于三节点 same-query 相对比较，后者是 target
+窗口 canonical completion goodput。same-query 结果说明：`use1-cb` output TPS 比 `use1-9b` 低约 0.4%、
+比 `use1-19` 低约 12.1%，不能宣称 completion goodput 已显著优于每台旧节点；但 prompt+output 总 token
+TPS 分别高约 7.7% 和 9.6%；该合计是 service token work rate，不是 completion goodput、GPU utilization
+或 compute-normalized efficiency。它在更高 running、更低 cache hit、更低 speculative acceptance 的流量
+形状下，把更高 Prefill/总 token throughput 换成了较低但受控的单流 TPS，且未产生 preemption。raw proxy p10
+包含 Prefill transition 等 observer validity gate 会排除的样本，因此 target QoS 结论仍使用 observer valid
+p10 `21.889`，不能把 raw `17.11` 冒充真实逐请求 TPS 或 stop-gate 值。
+
+本 dashboard 没有 GPU utilization panel；本轮在当前可用 Prometheus datasource 查询
+`DCGM_FI_DEV_GPU_UTIL` 也没有得到 series，另一个同名 datasource 返回 `parse "": empty url`。因此 GPU utilization
+被明确保留为证据缺口，没有用 KV、running 或 route count 代替。raw comparison evidence 位于 ignored
+`tmp/pig-v0114-use1-cb-live-20260806/canary-comparison-20260807-r1/grafana/`；其中 output/prompt/running/
+waiting/mean-active-proxy/queue/KV/spec-accept/cache-hit CSV SHA-256 分别为
+`05049ef50e014b551fc696da0220e1d63b62a187a44d12d5a3287ff22bb4de09`、
+`d3bad1039e8ba893493ec41e3a21625b2337017b84f9d236a186c02976e0d7b9`、
+`7a608056bf66a48fcaef2772a00886e47b743c28d052a2374f420209d0c2f0ff`、
+`838498b7dfe88e160ab8a54de6e97703a02fc4abb975b10c7cc35386ec81b45f`、
+`f4b7d806896c91489e5b3bd1d4dc7f4bdc64d9ba2d95350594e747149e493bca`、
+`72c0f96b80e375edba88f3259a45e6b675c8e5ba6168000661f08ff18bc38ead`、
+`0cedc471344973e3f3ae3ff52c35263c27cc20c2813c93df8da6bb435ff0114e`、
+`818d944ab6a9c7fa34e5fdd391591411c60fbb87b908dba9965499ea215d90f7`、
+`39f0a2c401731d09a573524beb86b5be624d90ac7341fca82814654332b9159c`。
+
+两次 post-canary read-only capture 分别在 `02:35:00Z` 与 `02:58:02Z` 完成，summary SHA-256 为
+`c69925f6c28713bce6a39385d2f975207c105b1e215d66c3774dab48f711c67a` /
+`3d915d2bd1d7e10ee26865e5a8ee6278e04fff09543cf692f73dc2562977cd5d`。两次都确认 Compose SHA-256
+`711f2057...a3c7`、PIG immutable digest `sha256:b8756c49...016e`、Router digest
+`sha256:1ee61ece...7df1` 与 enabled set 未漂移，四个 authenticated endpoint 均为 200，无 PIG fatal 或
+vLLM engine/GPU fatal。第二次 target route running 为 9；最近 status 累计 attempts/fit/risk/unknown/reject
+为 `1932/1527/401/4/405`，waiting 0、preemption 0，证明完成 30 分钟 gate 后继续承载真实流量仍未出现
+延迟故障。
+
+R141 的暂时结论是 **保留 v0.11.4 enforce，并保持 `use1-cb` enabled；不立即发布 v0.11.5**。理由不是
+“当前算法已全局最优”，而是：预转发 size-aware 保护、日志/metrics/Router backpressure 可见性、QoS
+恢复、无 preemption、选择性大请求阻挡和总 token throughput 都已取得实际证据；同时当前对照没有一个
+已经隔离因果、可通过单一 patch 验证的明显产品缺陷。21.14% attempt-level reject 本身不足以证明过度保护，
+因为窗口同时包含 Router retry、大请求 hard-protect 与 TPS pressure；也不能因 target completion TPS 未超过
+`use1-19` 就盲目调松。后续只有在 workload-normalized A/B 证明 completion goodput 持续落后、valid QoS
+连续越界、出现 preemption/生命周期泄漏，或 request-size/metrics-stale 分类暴露真实代码错误时，才 bump
+patch version 并重走 builder -> image -> Router-disabled shadow -> enforce -> 30 分钟 canary。禁止为了
+“再提高一点”在线热改阈值或在没有可归因假设时重复发布。
