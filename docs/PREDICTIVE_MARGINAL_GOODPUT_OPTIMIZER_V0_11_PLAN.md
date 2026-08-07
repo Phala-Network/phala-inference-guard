@@ -1,6 +1,6 @@
 # PIG v0.11.4 确定性请求感知与 Prefill 干扰准入计划
 
-状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source commit/push/annotated tag、clean-tag builder-local/registry immutable image provenance、部署前 live baseline/候选、Router-disabled 专用验证 harness 和 30 分钟 canary observer 三遍静态复查；GitHub Publish Image #26 的 terminal manifest HEAD denied 继续客观记为红状态，但 raw job log、BuildKit build record、registry image/config/binary 已形成 exact cross-provenance，用户已于 2026-08-07 指示继续，因此该异常只作为 v0.11.4 一次性非阻断 release-process 记录；禁止重跑、重推或移动 v0.11.4 tag，harness/observer 尚未运行，未部署或重新启用 use1-cb**
+状态：**唯一 canonical 执行规范；v0.11.3 Router canary 已失败并回退，禁止重新晋级；v0.11.4 corrective 已完成 behavioral red/green、三遍 final review、exact-source builder matrix、source/tag/image provenance 和 terminal HEAD 非阻断记录；2026-08-07 fresh drift、Router-disabled shadow deployment/readiness/protocol/low-flow/cancel/burst/80K-230K-multimodal size-tier 与最终恢复门禁已全绿，use1-cb 继续 Router disabled；下一步只能从 fresh drift recheck 进入 exact v0.11.4 enforce，尚未执行 enforce、Router enable 或 30 分钟实际流量观察；禁止重跑、重推或移动 v0.11.4 tag**
 最后更新：2026-08-07
 仓库：`phala-inference-guard`
 默认 vLLM poll interval：`500 ms`
@@ -836,7 +836,9 @@ matrix；必须完成三轮复查、release identity、commit/tag/image、Router
   静态语法/无生产写命令审计；harness 尚未运行，不构成 deployment/readiness 证据；
 - [x] v0.11.4 30 分钟 canary observer、只摘 `use1-cb` 的 exact-once stop rollback、drain 与
   只读 progress reader 三遍静态复查；observer 尚未运行，不构成 canary/production 证据；
-- [ ] v0.11.4 Router-disabled shadow/enforce 与 Router enable 前 current-state drift recheck；
+- [x] v0.11.4 Router-disabled shadow deployment/readiness/protocol/low-flow/cancel/burst/size-tier 与 final
+  preflight；
+- [ ] v0.11.4 Router-disabled enforce 与 Router enable 前 current-state drift recheck；
 - [ ] v0.11.4 Router canary 与 30 分钟实际流量观察。
 
 截至当前，v0.11.4 已发布为 immutable registry image
@@ -3881,3 +3883,68 @@ disabled。只有完整 Router-disabled 验证 green 后，才可按第 12 节�
 CI 改为 validation-only 或取消重复 push；若保留 CI publication，则 builder 继续只做独立构建和 registry
 回拉验证。禁止两个环境用含动态 timestamp 的独立构建竞争覆盖同一版本 tag。该 future CI/release
 hardening 不在 v0.11.4 live validation 的执行范围内。
+
+### 13.84 R139 v0.11.4 Router-disabled shadow live validation green
+
+R139 按 R138 恢复执行，只对用户授权目标
+`a0f0bfb3-e46f-4b22-814e-24872f251193` / `gemma4-31b-it-use1-cb` 进行一次
+Compose 更新与 Router-disabled direct request validation。Router 未修改，enabled set 始终为
+`use1-19,use1-9b`，`use1-cb` upstream/route 始终 `false/false`、running `0`。
+
+fresh drift summary SHA-256
+`3e69c069f824760fbef31483c0d98b52590c3240c862c39756e9acd7378416c4` 全绿：annotated tag object/
+commit 仍为 `28b06970...`/`c6e8ac37...`；authenticated GHCR manifest HEAD 已恢复 HTTP 200，tag digest
+仍精确为 `sha256:b8756c49271d7ac0c42f46cd0201db571cd02bce1c08e3721fafe8ae0a2e016e`；
+live v0.11.3 enforce Compose SHA-256 仍为 `0c6debae...`，CVM running/no operation/no boot error，候选
+shadow/enforce SHA-256 仍为 `92d55f60...`/`711f2057...`。Phala CLI 在完整有效 JSON 后退出
+`-1073740791` 并输出已知 `src\win\async.c:94` libuv cleanup assertion；夹具只在 JSON 成功且 stderr
+精确属于该已知尾部错误、没有认证/网络错误时接受，不隐藏其他 CLI failure。
+
+exact shadow candidate 从 `2026-08-07T01:08:24.7999140Z` 部署到
+`2026-08-07T01:12:54.5880755Z`，`phala deploy --wait` exit 0；deploy summary SHA-256 为
+`fb3fdc79ae52b7be41685ab1de90777ad1d4ff2765db4f2087427c66300a4b5d`。部署只把 PIG immutable
+digest 替换为 v0.11.4 并把 admission mode 从 enforce 改为 shadow；没有提供 env file、修改 Router 或发送
+部署阶段推理请求。初始 metrics 503 被正确记录为启动阶段，未重复 deploy。vLLM 随后报告 GPU KV cache
+`862,437 tokens`、262,144-token 最大上下文约 `3.29x`，完成 weights、MTP、torch.compile、CUDA graph 和
+multimodal warmup，于 `01:18:35.431779590Z` 出现 `Application startup complete`；PIG 同秒启动并在下一
+状态周期从 backend unavailable 恢复 green，无 fatal/OOM/Xid。
+
+ready preflight summary SHA-256
+`fc4a255621f2de9ab7d37d4289b1cf30be40a7a4922438de7adb7d5fa896251a` 全绿：live Compose/image/
+runtime 精确为 `92d55f60...`、v0.11.4、shadow，TTFT gate disabled；authenticated models/attestation/
+upstream-status/PIG metrics/vLLM metrics 正常且 metrics 未认证为 401；current reservation、forwarded
+Prefill、current Prefill gauges、vLLM running/waiting/KV、failure/preemption/error 均为 0。一次 preflight
+调用把期望 hash 中 `eeff` 错写为大写，在 case-sensitive fixture check 失败；全小写复采即上述 green，
+没有产品或部署变化。
+
+Router-disabled request gates：
+
+- protocol summary SHA-256
+  `2fced0f1d1557efd0521b6d8626199e0869a3ebc6e6a27d820d3a1a8e28e47e8`：chat、stream、required
+  tool、strict JSON Schema、Responses API、CJK 共 6/6 为 200，attempts 精确 `0 -> 6`，无 reject/
+  failure/preemption/error，current lifecycle 全部归零；
+- low-flow summary SHA-256
+  `9913b79240fd70bba207818901e8cd71a4cd65305e83e86fa66aa59d8be4d05e`：首个低流、连续低流、
+  completion window、cancel 后 recovery、12 并发短 burst 和 burst 后 recovery 均通过；stream cancel 为
+  curl exit 28 且已接收 body，随后恢复 200。shadow 在 burst 内预测 1 个 TPS risk 但不执行拒绝，12/12
+  仍为 200；attempts `6 -> 31`，最终无 sticky clamp、current lifecycle、failure/preemption/error；
+- size-tier 原始 summary SHA-256
+  `b89f582be3e72fa2c598b876d1b628a3503e04f7e027a88cfe5790bf7b97b9b8`：80,042 actual prompt 的
+  model-agnostic estimate 为 `105,022`、hard upper `240,128`，strict weighted；230,043 actual prompt 的
+  estimate 为 `301,897`、hard upper `690,112`，strict exclusive 且不是 quiescent；单个 1x1 PNG 为 200，
+  使用 `8,379` safety-high estimate 后仍为 regular。三条请求后 current lifecycle 全回零，且无 failure/
+  preemption/error。当前 262K 节点未发送 512K/650K。
+
+size-tier 原始 summary 唯一 false 是夹具要求 230K estimate 落在 `280K--292K`；该窄区间不是算法合同，
+而本次 `301,897` 与 v0.11.3 同一 representative 的既有 `301,897` 完全一致。有效合同是 strict
+`[256K,512K)` exclusive、selection signal identity 与 lifecycle safety，均已通过。夹具删除该过度精确条件，
+没有修改产品代码或重发 230K 请求；确定性 rescore summary SHA-256
+`fe53288cb58cf00ceffb21b6c4928379f008599c04ac3dcbac75de38fb639e34`，引用原始 summary hash 并记录
+`product_requests_repeated=0`、`product_code_changed=false`，结果全绿。
+
+最终 shadow preflight summary SHA-256
+`f4f5125b37c9de4e96002c78e7037a8684377760aa3e62a0b73a34939ab70cb8` 再次全绿：attempts/fit/risk/
+unknown=`34/33/1/0`、enforced rejects `0`、vLLM success/error=`33/0`；PIG failure、vLLM preemption、
+running/waiting/KV、reservation、forwarded/current Prefill 和 Router backpressure 均为 0，日志无 PIG fatal
+或 vLLM engine/GPU fatal。R139 只达到 **Router-disabled shadow green**；下一步必须重新读取 live Compose/
+Router drift，再仅部署 exact enforce candidate，不能由本节直接 enable Router。
