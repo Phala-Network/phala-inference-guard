@@ -2,8 +2,8 @@
 
 Status: source implementation and complete remote-builder matrix passed;
 exact-commit builder-local image verified; implementation commit `caaa882` and
-parameter-boundary review commit `f3d92d3` pushed to
-`pig-origin/codex/pig-v0.11.0-request-aware`
+parameter-boundary review commit `f3d92d3` pushed; live v0.12.0 validation is
+now authorized and in read-only preflight, with no v0.12.0 deployment yet
 
 Date: 2026-08-07
 
@@ -13,9 +13,14 @@ Baseline commit: `c7abab035135647d0f87c7a8d39be3dec15eb60c`
 
 Target source version: `PIG-v0.12.0`
 
-Execution boundary: PIG source only. Go, race, simulation, benchmark, and image
-execution is remote-builder-only. This plan does not authorize a registry push,
-Compose change, Router change, CVM deployment, restart, or production request.
+Execution boundary: the completed source phase kept Go, race, simulation,
+benchmark, and image execution on the remote builder. On 2026-08-07 the user
+expanded authority only for the Section 21 v0.12.0 validation on
+`a0f0bfb3-e46f-4b22-814e-24872f251193` / `use1-cb`. It permits exact-image
+publication, a drain-safe PIG-only Compose update, controlled direct requests,
+and a gated 30-minute Router canary. It does not authorize changing another
+Router node, changing vLLM, jumping to v0.13, or developing a learner before
+v0.12.0 live evidence exists.
 
 ## 1. Goal
 
@@ -1332,3 +1337,230 @@ Completion layer is now source implementation, complete remote-builder matrix,
 and builder-local image. Registry publication, Compose integration, Router
 mutation, CVM deployment, GPU calibration, and live traffic remain deliberately
 unperformed and unproven.
+
+## 21. v0.12.0 live-validation loop
+
+### 21.1 Corrected objective and authority
+
+The next objective is to validate v0.12.0 itself. No Decode learner or v0.13
+work may start before this loop produces real evidence. If v0.12.0 fails, the
+fix remains in the v0.12.x patch line and repeats the complete loop.
+
+The only deployment target is:
+
+```text
+CVM UUID:  a0f0bfb3-e46f-4b22-814e-24872f251193
+CVM name:  gemma4-31b-it-use1-cb
+Router key: use1-cb
+```
+
+No operation may change another Router upstream or route. Source tests remain
+remote-builder-only. The live phase may publish the exact candidate image,
+update only the target PIG service, send bounded direct validation requests,
+and enable only `use1-cb` after every Router-disabled gate passes.
+
+### 21.2 Fresh read-only baseline
+
+The 2026-08-07T10:19:01.889Z read established:
+
+```text
+CVM status/in_progress: running/false
+live Compose UTF-8 SHA-256:
+  711f20570159c82666fd9e0827ac7c8de8aaa5d0aaba880e95734e93d3f5a3c7
+platform compose hash:
+  2263e6881a58907f06d47ae8be4a6984d7c91ddaf0f317734d05104deeb65a7e
+current PIG version: PIG-v0.11.4
+rollback PIG registry digest:
+  ghcr.io/phala-network/phala-inference-guard@sha256:b8756c49271d7ac0c42f46cd0201db571cd02bce1c08e3721fafe8ae0a2e016e
+current vLLM image digest:
+  ghcr.io/phala-network/vllm-openai:v0.24.0-cu129-ubuntu2404-phala.8@sha256:485ec89ea08e6b4ead55f4721b01c053264d747bde685de04cd7d5b114d219fe
+vLLM max-model-len/max-num-seqs/max-num-batched-tokens/gpu-memory-utilization:
+  262144/512/8192/0.91
+direct health/models/authenticated metrics: 200/200/200
+unauthenticated metrics: 401
+served model/max_model_len: google/gemma-4-31B-it/262144
+vLLM KV capacity/current used: 862437/0 tokens
+```
+
+The live v0.11.4 Compose is enforce mode with 500-ms observation, TPS
+target/floor 25/20, explicit 64K/256K/512K/256K Prefill values, and fixed
+0.84/0.88 KV ratios. The four Prefill overrides suppress v0.12.0 startup
+calibration and must be absent from the v0.12.0 candidate.
+
+The current Router digest is:
+
+```text
+sha256:60e8a19f16688210f8f17ab0739f2d322dced011ede2063b788ad4bdc7627128
+```
+
+All six known upstreams and all six routes were disabled, including
+`use1-cb`; its route running count was zero. This is current truth, not a state
+to repair implicitly. Enabling only `use1-cb` while every peer remains disabled
+would make the candidate receive all Router traffic, not a bounded canary. The
+Router canary is therefore forbidden until a fresh read shows at least one
+non-target healthy enabled peer and the complete enabled set is frozen into the
+canary invocation. PIG-only Router-disabled work may continue meanwhile.
+
+The target still receives occasional direct requests while Router-disabled.
+Every deployment and direct harness must account for that background demand;
+an apparently isolated sample is invalid when counters prove overlap.
+
+The v0.11.4 status log currently reports a legacy dynamic learned limit of one
+after sparse traffic. Source inspection proves that this value is not an active
+gate in predictive enforce mode: request-aware admission runs first,
+`legacyQoS` is false, the legacy queue acquire is skipped, and Router status is
+derived from predictive backpressure. Live conclusions must correlate actual
+HTTP 429 responses with predictive reject counters, request-aware reason,
+current reservations, and status logs rather than reading the legacy limit.
+
+### 21.3 Candidate configuration contract
+
+The executable candidate remains commit `caaa882`; a plan-only change does not
+create another binary. Registry publication must start from builder image
+`pig-v0.12.0-caaa882:latest`, whose image ID is already recorded in Section
+20.5. After push, pull the immutable registry digest on the builder and prove
+its extracted binary SHA-256 equals the builder-local image before Compose use.
+
+The shadow and enforce candidates are derived from the fresh live Compose. No
+vLLM, ingress, HAProxy, volume, port, command, healthcheck, or secret reference
+may change. PIG changes are limited to:
+
+1. replace the PIG image with the immutable v0.12.0 registry digest;
+2. select `PREDICTIVE_ADMISSION_MODE=shadow` for the first deployment and
+   `enforce` for the second;
+3. remove all four explicit `PREDICTIVE_PREFILL_*_TOKENS` values so startup
+   calibration or conservative fallback owns the profile;
+4. remove v0.12.0 values proven equal to source defaults, including the 500-ms
+   poll, 1500-ms maximum age, TPS 25/20, KV mode off, KV ratios 0.84/0.88,
+   ten-second cooldown, and TTFT false; keep the non-default 300-second startup
+   probe timeout and all endpoint/auth/operational settings;
+5. render and compare normalized Compose so default removal is proven
+   behavior-preserving outside profile initialization and selected mode.
+
+The rollback is the exact baseline Compose bytes and PIG digest above. Do not
+reconstruct rollback from memory or from a generated candidate.
+
+### 21.4 Promotion sequence
+
+The sequence is strict:
+
+1. capture a new live CVM, Router, endpoint, log, metrics, and Compose snapshot;
+2. verify `use1-cb` disabled and route running zero; if enabled, disable only
+   `use1-cb` and drain Router, PIG reservations/Prefill, and backend
+   running/waiting to zero;
+3. publish and pull-verify the exact v0.12.0 image;
+4. deploy the PIG-only shadow candidate;
+5. require platform complete, expected containers stable, vLLM unchanged,
+   PIG-v0.12.0 startup, one capability profile, endpoints, auth, logs, and
+   metrics green;
+6. run shadow protocol, low-flow, cancellation, burst, and request-size gates;
+7. deploy the PIG-only enforce candidate while Router-disabled and repeat all
+   readiness and behavioral gates;
+8. run a final pre-enable drift and drain check;
+9. only when at least one non-target healthy peer is enabled, freeze the exact
+   enabled set/digest and enable only `use1-cb`;
+10. observe uninterrupted actual traffic for 30 minutes with an exact-once
+    auto-disable stop path;
+11. on failure, disable first, then preserve evidence and decide whether to
+    roll back or build a v0.12.x patch; on pass, record the exact final Router
+    and CVM state rather than assuming it.
+
+`phala deploy --wait`, `status=running`, an image pull, or `/healthz=200` is not
+readiness. The applicable `/v1/models`, chat/stream/tool/structured-output,
+metrics auth, container/log, profile, reservation, and preemption gates must all
+pass.
+
+### 21.5 Required behavioral evidence
+
+The Router-disabled matrix must prove:
+
+- startup calibration runs at most once and publishes exactly one coherent
+  profile source/reason; a fallback is acceptable only with its bounded reason;
+- reported KV capacity/block geometry and absolute soft/hard limits match vLLM
+  and the immutable profile;
+- idle and sparse traffic do not close intake, create a sticky Router clamp, or
+  make a fresh hard-fit short request wait behind historical state;
+- a completed, cancelled, disconnected, timed-out, and failed request releases
+  its reservation exactly once;
+- simultaneous decisions include every unmaterialized local reservation and
+  cannot oversubscribe hard KV;
+- short requests can still enter under soft pressure when their post-admit
+  projection fits, while a larger request can be protected in the same state;
+- regular, weighted, exclusive, and the largest valid near-262K request use the
+  intended Prefill lifecycle; do not send a 512K/650K prompt to this 262K
+  backend;
+- streaming, non-streaming, tools, strict structured output, supported sampling
+  parameters, and malformed/unsupported requests preserve protocol behavior;
+- every enforced protection is visible in HTTP status, predictive counters,
+  current/last decision metrics, and a bounded status log, and Router capacity
+  does not advertise availability that the request path will reject;
+- no new preemption, fatal, OOM, restart loop, counter reset, reservation leak,
+  stale-profile use, or low-flow self-lock occurs.
+
+The 30-minute comparison separates `use1-cb` from old-version peers and records
+traffic share. Compare completion goodput, per-user Decode TPS, running/waiting,
+KV tokens/ratio, Prefill ownership, enforced 429s by reason, Router
+backpressure, preemptions, restarts, and idle-with-demand. Do not attribute a
+node difference to PIG when request size, cache state, or traffic share differs.
+
+### 21.6 Stop rules
+
+Immediately disable only `use1-cb` when any of these occurs during the Router
+canary:
+
+- any new backend preemption, fatal, OOM, EngineCore death, PIG/vLLM restart,
+  or capability-epoch reset;
+- metrics stale/unavailable or intake closed for three consecutive 500-ms
+  observations outside a known deploy transition;
+- a Router availability advertisement contradicts an enforce rejection, or an
+  enforce 429 lacks the matching predictive counter/reason/log evidence;
+- a hard-fit short request is falsely protected while a larger request would
+  correctly be protected in the same fresh state;
+- backend and reservations are idle for three fresh observations but a load
+  clamp or rejection remains active;
+- waiting persists more than five seconds outside an owned long-Prefill phase;
+- per-user Decode TPS remains below the configured floor across two consecutive
+  ten-second Decode-dominant windows;
+- the target exceeds 50 percent Router traffic share over a five-minute window,
+  another route changes, the enabled set/digest drifts, or collection loses the
+  ability to prove target state.
+
+Disable confirmation precedes expensive evidence collection. After disable,
+wait for Router running, PIG reservations/Prefill, and vLLM running/waiting to
+drain to zero. Never change another route to make the canary proceed.
+
+### 21.7 Three live-plan reviews
+
+Pass 1, model and causality: corrected the invalid jump to a learner and made
+v0.12.0 evidence the prerequisite. It also removed explicit Prefill overrides
+from the candidate and prohibited treating 512K/650K as valid for this 262K
+backend.
+
+Pass 2, safety and lifecycle: a fresh Router read found every route disabled.
+The plan now forbids a one-node 100-percent canary, preserves the exact rollback
+bytes, accounts for direct background traffic, requires disable-before-capture,
+and tests cancellation plus atomic reservation release.
+
+Pass 3, evidence and release: separated builder-local image, registry digest,
+Compose deployment, endpoint readiness, Router-disabled behavior, and actual
+traffic. It also corrected the observability interpretation: the legacy dynamic
+limit may continue to appear in logs, but predictive enforce decisions and
+Router status must be judged from their own counters and reasons.
+
+Review result: the plan is ready for exact-image publication and candidate
+generation. No registry image, v0.12.0 Compose, deployment, Router mutation, or
+v0.12.0 inference request has yet been executed.
+
+### 21.8 Live progress ledger
+
+- [x] corrected goal to v0.12.0 live validation before learner work
+- [x] fresh CVM/Compose/container/endpoint/metrics baseline captured
+- [x] fresh complete Router inventory captured
+- [x] three live-plan reviews completed and corrections recorded
+- [ ] exact v0.12.0 registry image published and pull-proven
+- [ ] normalized shadow/enforce candidates and rollback artifacts prepared
+- [ ] Router-disabled shadow deployment and gates passed
+- [ ] Router-disabled enforce deployment and gates passed
+- [ ] final canary preflight passed with at least one healthy non-target peer
+- [ ] 30-minute actual-traffic canary completed without a stop rule
+- [ ] final CVM/Router state and v0.12.0 conclusion recorded
