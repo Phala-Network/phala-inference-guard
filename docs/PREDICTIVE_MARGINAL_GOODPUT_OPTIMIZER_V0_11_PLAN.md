@@ -3948,3 +3948,80 @@ unknown=`34/33/1/0`、enforced rejects `0`、vLLM success/error=`33/0`；PIG fai
 running/waiting/KV、reservation、forwarded/current Prefill 和 Router backpressure 均为 0，日志无 PIG fatal
 或 vLLM engine/GPU fatal。R139 只达到 **Router-disabled shadow green**；下一步必须重新读取 live Compose/
 Router drift，再仅部署 exact enforce candidate，不能由本节直接 enable Router。
+
+### 13.85 R140 v0.11.4 Router-disabled enforce live validation green
+
+R140 继续只操作用户授权目标
+`a0f0bfb3-e46f-4b22-814e-24872f251193` / `gemma4-31b-it-use1-cb`。exact enforce candidate
+SHA-256 `711f20570159c82666fd9e0827ac7c8de8aaa5d0aaba880e95734e93d3f5a3c7` 从
+`2026-08-07T01:29:42.9205025Z` 部署到 `01:34:00.8617351Z`，`phala deploy --wait` exit 0；
+deploy summary SHA-256 为 `f37813e67278cebf803053dc57de9e886c66ce4c703af5e5a26b32c3e8af5a04`。
+部署没有提供 env file，也没有修改 Router；enabled set 始终为 `use1-19,use1-9b`，`use1-cb`
+upstream/route 始终 `false/false`、running `0`，Router config digest 保持
+`sha256:b8447a719c6fb9d8bf956ae60928d5e857828e7c2874739e7bb8fae8cca5c47a`。
+
+启动期初始 503 没有被误判为最终失败或触发重复 deploy。vLLM 完成 weights、MTP、torch.compile、CUDA
+graph 和多模态 warmup，报告 GPU KV cache `862,437 tokens`、262,144-token 最大上下文约 `3.29x`，并于
+`01:39:33.433835091Z` 出现 `Application startup complete`；PIG 随后从 backend unavailable 恢复 green。
+startup summary SHA-256
+`c92f07d00edd400c10d1a264f5f664d9805f74e5184aef32ac6e23407415cd7b` 证明 Compose/image identity
+保持、四个 authenticated endpoint 均为 200、无 PIG fatal 或 vLLM engine/GPU fatal。ready preflight
+SHA-256 `b5965d582d6b41baf34389f4a746e839d4cb662071ed2c44d6a43dd81b9cad8d` 全绿：mode
+为 enforce、TTFT admission disabled、metrics auth boundary 为 401、current lifecycle 与 backend running/
+waiting/KV 全为 0。
+
+Router-disabled request gates：
+
+- protocol summary SHA-256
+  `995f2c469194352c0f677c94004632c6d8ce4221f2d4cc27562bcb0f29c1cab6`：chat、stream、required
+  tool、strict JSON Schema、Responses API、CJK 共 6/6 HTTP 200，attempts `0 -> 6`，无 reject/failure/
+  preemption/error，current lifecycle 全部归零；
+- low-flow summary SHA-256
+  `190cb37f72eaea9f5a630cf38f5077ae5f07c3ef242b78bd05edaea746b4a57d`：首个及连续低流、completion
+  window、stream cancel 后 recovery、12 并发短 burst 和 burst 后 recovery 全部通过。cancel 为 curl exit 28
+  且已接收 body；12/12 burst 为 200，无低流自锁、误锁、sticky clamp、reject/failure/preemption/error；
+- weighted-budget green summary SHA-256
+  `853bc8cdb9cc1c0a59d88f3e9575bc57a0eac9391d4a0932725ec48ecc79f48f`：三个 67,042 actual
+  prompt 各得到 87,959 model-agnostic estimate，前两个建立原子 reservation 并进入上游，第三个在 forward
+  前返回 429；同一压力窗口中的小请求仍返回 200。第三请求的 `size_protect/prefill_budget/prefill/weighted`
+  verdict、`request_size_at_pressure` HTTP reason、enforced reject counter 与 unified/prefill-budget protection log
+  各精确增加一；上游 success 只增加四（两个大请求、小请求、recovery），current lifecycle 随后归零，
+  preemption/error/fatal 不变；
+- exclusive 原始 summary SHA-256
+  `7a52c652b6253f3ddf5e6c342bba89491b1aba1fb3547e94af9fe66143b5ce3b`：230,043 actual prompt 返回
+  200，estimate/selection signal 均为 `301,897`，严格落在 `[256K,512K)` exclusive tier；hard upper 为
+  `690,112`，hard KV 条件成立，current lifecycle 归零，显式 last-decision post-admit 值保留 `301,897`，
+  无 reject/preemption/error。当前 262K 节点仍未发送 512K/650K prompt。
+
+本阶段两个非产品异常均在安全边界内自行定位、修复和重新闭合证据，没有把可处理的工具/夹具问题变成人工
+阻塞：
+
+1. weighted runner 首次在 PIG-only pending scrape 使用 `IncludeVllm=false`，common module 却仍把空的 vLLM
+   text 传入 mandatory parser，导致请求发出后 runner 提前退出。post-failure preflight SHA-256
+   `562d55634e4a794ecb6af1adc451634a43b7fbed1b0dab16c230e1470db5c672` 证明产品已正确完成两次 admit/
+   一次 pre-forward reject，保护 counter/log 均增加一，所有请求与 reservation 已自动回收，Router 仍 disabled，
+   无 failure/preemption/error/fatal。ignored harness 现只在 `IncludeVllm=true` 时读取 vLLM-derived metrics，
+   PIG-only snapshot 明确返回这些字段为 null；修复后 common SHA-256 为
+   `deddbd41779e520f5076a0d2781e53d7c6ed3c9cca6bf2ec4cbfa254e33ae44d`，随后用全新目录完成上述 green
+   weighted run。累积 counter 因此包含首次已真实发生的一次 reject 与重跑的一次 reject，不能把累计 2
+   误读为单次 runner 多拒一个请求。
+2. exclusive runner 仍复制了 shadow runner 已删除的 `280K--292K` 固定估算区间，并把同一固定区间用于
+   last-decision post-admit 检查，因而把一致的 `301,897` 两次判 false。算法合同只要求 strict exclusive tier、
+   selection identity 与 last-decision identity，不要求某个窄估算点。runner 现删除窄区间并要求
+   `last_decision_post_admit == estimated_prefill_tokens`，SHA-256 为
+   `476e610c144977e6561c3d2b654a7ec673be24ef4adba0f2d97a4f6a91b6dab8`。带原始 summary immutable hash
+   guard 的 deterministic rescore 未重发产品请求、未修改产品代码，rescore script/summary SHA-256 分别为
+   `d8563b4c53c538f41f9aa8c5915d1e9e4074d93ddbade8bb8e6bb3ab5555425c` /
+   `8770b857eb5d0e2d582fdd6cac007154bd2519185b9987813267ded347a90755`，结果全绿。
+
+修复后对 harness 全部十五个 PowerShell 文件重新执行 AST parse，均为 0 error。最终 enforce preflight
+summary SHA-256 `68b77279352d7db2983e93924a7e427421262c5f036e9ad525bd7d03cc7523df` 全绿：累计
+attempts/fit/risk/unknown=`40/38/2/0`、enforced rejects `2`、vLLM success/error=`37/0`；PIG failure、vLLM
+preemption、running/waiting/KV、reservation、forwarded/current Prefill 和 Router backpressure 均为 0，
+日志无 PIG fatal 或 vLLM engine/GPU fatal。
+
+R140 达到 **Router-disabled enforce green**，但尚未增加 Router canary 或 30 分钟 production evidence。
+下一步必须重新保存完整 Router enabled set、config digest 与 route inventory，并确认上述 Compose/image/
+runtime gate 没有漂移；随后只 enable `use1-cb`，立即以 exact-once auto-disable observer 运行完整 30 分钟。
+任一 stop rule 触发时先 disable `use1-cb`，再收集日志和 drain；不得修改其他 upstream，也不得把 Router
+request count 当 completion throughput。
