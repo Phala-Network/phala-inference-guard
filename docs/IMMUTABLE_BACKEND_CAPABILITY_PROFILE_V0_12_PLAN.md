@@ -1,8 +1,9 @@
 # PIG v0.12.0 Immutable Backend Capability Profile Plan
 
-Status: source implementation and complete remote-builder matrix passed; exact-commit
-builder-local image verified; implementation commit `caaa882` pending push at this
-document checkpoint
+Status: source implementation and complete remote-builder matrix passed;
+exact-commit builder-local image verified; implementation commit `caaa882` and
+parameter-boundary review commit `f3d92d3` pushed to
+`pig-origin/codex/pig-v0.11.0-request-aware`
 
 Date: 2026-08-07
 
@@ -852,7 +853,7 @@ This goal ends at layer 6 unless the user gives new production authority.
 - [x] focused remote-builder green evidence recorded
 - [x] complete clean-builder matrix recorded
 - [x] v0.12.0 executable source versioned and committed as `caaa882`
-- [ ] implementation commit and closure documentation pushed
+- [x] implementation commit and parameter-boundary documentation pushed
 - [x] builder-local deployable image verified
 
 ## 18. Design review record
