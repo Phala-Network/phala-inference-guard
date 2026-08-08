@@ -840,8 +840,9 @@ A failed candidate is a completed diagnostic stage, not a successful release.
   drained
 - [x] v0.12.2 request-reject Router projection correction is builder green
   through the r55/r56 executable-identity evidence chain
-- [ ] v0.12.2 exact source committed and pushed
-- [ ] v0.12.2 immutable builder/registry image provenance complete
+- [x] v0.12.2 exact source committed and pushed at `88cbb29`
+- [x] v0.12.2 immutable builder/registry image provenance complete at digest
+  `sha256:7cafb935d48175045cd355a844a3f94638fdfae16f965e2a9d7dbedeee63c4e4`
 - [ ] complete Router-disabled shadow matrix green
 - [ ] complete Router-disabled enforce matrix green
 - [ ] only `use1-cb` enabled for the canary
@@ -1275,3 +1276,118 @@ The independently pulled r57 evidence archive SHA-256 is
 Because recording r57 changes only this plan, the pre-commit r58 archive must
 again prove a one-file plan-only diff and the same binary; no executable test,
 simulation, race, or benchmark evidence may otherwise be inherited.
+
+### 14.7 Exact commit and builder-local image provenance
+
+r58 completed that final pre-commit gate from source archive
+`375ee1510ec3b8110d8cca48c69e86cc58702f30547fd61c05bcd607cb0c74ee`.
+Its summary is `overall=0`, records `inherited_r57=true`, and revalidated the
+plan-only transition without replacing any r55/r56 executable evidence. The
+exact v0.12.2 source was then committed and pushed as
+`88cbb29d9666f77d670c03132866cba38b0c016a`. The commit archive
+`pig-v0122-88cbb29.tar.gz` has SHA-256
+`9eb69e62d1891f8fb410d438b61a5641062ab006a54e3f78f29a9f2943a47747`.
+The two unrelated untracked v0.11 plan documents remained excluded.
+
+r59 stopped before build because its host/container provenance path was
+incorrect. r59b proved the only Windows-archive difference from r58 was CRLF
+versus LF in `LICENSE`; it did not build. r59c normalized that comparison and
+built the production image on the approved builder from the exact commit
+archive. It passed the production image contract, OCI version/revision,
+entrypoint, user, linux/amd64, NVML environment and native collector checks,
+default-enforce startup, health, and authenticated/unauthenticated metrics.
+r59c then stopped while constructing the hard-KV request because BusyBox
+`head` lacks GNU `-c`; it has no hard-KV conclusion or final summary and is not
+represented as a complete smoke run.
+
+r60 continued against the unchanged r59c image and replaced the unsupported
+fixture command. It passed with:
+
+- builder-local image
+  `ghcr.io/phala-network/phala-inference-guard:0.12.2-88cbb29-local`;
+- image ID
+  `sha256:4582a5224f0202f3d1d9e7384c01eec036afb308877abe7c55784a23ff769014`;
+- production binary SHA-256
+  `3b16e83d385d723d573831c1d9e81f7ef3556a21590c853022c5cb1fbb311bbc`;
+- OCI revision `88cbb29d9666f77d670c03132866cba38b0c016a` and
+  version `0.12.2`;
+- default mode `enforce`, health 200, authenticated metrics 200,
+  unauthenticated metrics 401;
+- a pre-forward hard-KV 429 with enforced-reject accounting, active/applied
+  selective Router projection, inspect capacity one, coherent compatibility
+  capacity, bounded log attribution, and automatic open recovery after the
+  1500-ms hold.
+
+The production image binary is intentionally distinct from the non-CGO
+`-trimpath -buildvcs=false` builder-test binary recorded by r57. Its identity is
+proven by the production Docker build, native NVML contract, builder-local
+extraction, and registry pull below; it is not inferred from the test binary.
+
+### 14.8 Immutable registry publication and independent evidence pull
+
+r61 used the workstation's existing Git credential only after authenticated
+absence checks returned `manifest unknown` for both target tags. Its push was
+denied because that token lacked package-write scope; no manifest was created
+and the builder logged out. r61b used a bounded hand-written device flow, but
+GHCR still returned a token-scope mismatch; the exact missing server-side
+permission was not independently enumerated. It was likewise denied before
+manifest creation and logged out. These failed runs authorize nothing.
+
+r61c used the official GitHub CLI device flow. The returned token was verified
+to contain `gist`, `read:org`, `repo`, and `write:packages`, was passed to the
+builder only through SSH standard input, and was removed from both the builder
+Docker config and the isolated local CLI config after publication. r61c again
+proved both tags absent with explicit `manifest unknown`, then published:
+
+- `ghcr.io/phala-network/phala-inference-guard:0.12.2`;
+- `ghcr.io/phala-network/phala-inference-guard:0.12.2-88cbb29d9666`.
+
+Both pushes produced registry digest
+`sha256:7cafb935d48175045cd355a844a3f94638fdfae16f965e2a9d7dbedeee63c4e4`.
+The builder pulled that digest and revalidated image ID, linux/amd64, user
+`0`, entrypoint `/phala-inference-guard`, OCI version/revision, NVML
+environment, and the extracted binary SHA-256. The source, builder-local, and
+registry-extracted production binaries all equal
+`3b16e83d385d723d573831c1d9e81f7ef3556a21590c853022c5cb1fbb311bbc`.
+
+r62b revalidated the unchanged r59c evidence against the manifest frozen at
+r60 startup, revalidated the complete r60 and r61c evidence manifests, and
+confirmed builder GHCR credentials absent. Its full builder archive SHA-256 is
+`ba3c3013372b3bc13a2f983b9cadaf2286f63c4b4e0e1e2c192a55995f01d9af`.
+Because TLS-over-SSH made redundant binary transfer impractical, r62d produced
+a light evidence archive excluding only the already-hashed PIG binary copies
+and two smoke-fixture executables. Its independently pulled SHA-256 is
+`01419772d09f6ebb9d65927bdb5e4b674cba3f9e14e4179377a6d96274302fa8`.
+Local verification recomputed 71 included manifest entries, accepted exactly
+four excluded PIG binary entries only at the expected production binary hash,
+proved the current and frozen r59c manifests byte-identical at
+`a570bc69e776bfd8d24a08c99f574c5c8a8a805323c84aaf66c6a7bdebe0280a`,
+and found no credential token pattern.
+
+This completes source-push, builder-local image, registry publication, and
+digest-pull provenance layers only. It does not inherit v0.12.1 live evidence,
+deploy either v0.12.2 mode, authorize Router enable, or satisfy the remaining
+Router-disabled shadow/enforce and 30-minute canary gates.
+
+### 14.9 Publication evidence review: three passes completed 2026-08-08
+
+Pass 1, model and causality: publication introduced no executable source
+change. r60 exercised the production image's real default-enforce HTTP path and
+proved that a hard-KV pre-forward rejection causes matching request accounting,
+Router projection, compatibility capacity, and bounded recovery. This narrow
+smoke supports image contract and request-aware projection only; it does not
+replace the required live size, lifecycle, differentiation, or atomic gates.
+
+Pass 2, safety and lifecycle: each failed authentication run rechecked tag
+absence and stopped before manifest creation. The successful run rechecked
+absence again, published both tags, pulled by digest, and logged out. Builder
+Docker credentials and the isolated local CLI credential record are absent.
+r59c partial evidence is inherited only through the byte-identical manifest
+frozen by r60; r60 and r61c manifests independently revalidated.
+
+Pass 3, evidence and release: the remote source ref resolves to `88cbb29`; both
+current registry tags resolve to the recorded digest and linux/amd64 platform;
+the builder-local and registry-extracted identities match; and the pulled light
+archive passes its own hash, path-exclusion, manifest, and secret-pattern
+checks. The review leaves deployment, both Router-disabled mode matrices,
+Router enable, 30-minute observation, and final state deliberately incomplete.
