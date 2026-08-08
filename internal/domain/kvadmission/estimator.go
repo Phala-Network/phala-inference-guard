@@ -97,7 +97,6 @@ type jsonFeatures struct {
 	ToolCount                   int
 	ModalityCount               int
 	ApproximateInputTokens      int64
-	ApproximateInputSampleBytes int
 	ApproximateInputTokensKnown bool
 }
 
@@ -127,9 +126,7 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 			next := skipJSONSpace(body, closing+1)
 			if next >= len(body) || body[next] != ':' {
 				features.StringValueBytes += len(raw)
-				remainingBudget := approximateLexicalRequestBudget - features.ApproximateInputSampleBytes
-				if hint, sampled, known := approximateJSONStringTokensWithBudget(raw, remainingBudget); known {
-					features.ApproximateInputSampleBytes += sampled
+				if hint, known := approximateJSONStringTokens(raw); known {
 					if !addApproximateInputTokens(&features.ApproximateInputTokens, hint) {
 						features.ApproximateInputTokensKnown = false
 					}

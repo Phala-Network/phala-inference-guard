@@ -11,9 +11,13 @@ import (
 
 func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 	prediction := histogram.NewPredictiveDurationHistogram()
+	bodyRead := histogram.NewPredictiveDurationHistogram()
 	estimator := histogram.NewPredictiveDurationHistogram()
+	preForward := histogram.NewPredictiveDurationHistogram()
 	prediction.Observe(3 * time.Millisecond)
+	bodyRead.Observe(2 * time.Millisecond)
 	estimator.Observe(4 * time.Microsecond)
+	preForward.Observe(5 * time.Millisecond)
 	var out bytes.Buffer
 	WritePredictiveAdmission(&out, PredictiveAdmissionInput{
 		Mode:                                            "enforce",
@@ -22,7 +26,6 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		CapabilityInitializationReason:                  "calibrated",
 		CapabilityKVCapacityTokens:                      1_000_000,
 		CapabilityKVBlockSize:                           64,
-		CapabilityKVSoftLimitTokens:                     840_000,
 		CapabilityKVHardLimitTokens:                     880_000,
 		CapabilitySafeColdPrefillTokensPerSecond:        8_000,
 		CapabilityPrefillRegularTokens:                  40_000,
@@ -51,14 +54,16 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		FailurePrefill:                                  4,
 		FailureTerminal:                                 6,
 		PredictionDuration:                              &prediction,
+		BodyReadDuration:                                &bodyRead,
 		EstimatorDuration:                               &estimator,
+		PreForwardDuration:                              &preForward,
 		RequestAwareAction:                              "size_protect",
-		RequestAwareReason:                              "request_size",
-		RequestAwarePressureSource:                      "kv",
-		RequestAwarePressure:                            0.333333,
+		RequestAwareReason:                              "prefill_busy",
+		RequestAwarePressureSource:                      "prefill",
+		RequestAwarePressure:                            1,
 		RequestAwareSelectionInputTokens:                1500,
 		RequestAwareReservedTokens:                      1600,
-		RequestAwareAllowanceTokens:                     1333,
+		RequestAwareAllowanceTokens:                     0,
 		RequestAwareEffectiveKV:                         7000,
 		RequestAwarePostAdmitKV:                         8600,
 		RequestAwareRemainingKV:                         2000,
@@ -67,8 +72,6 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		RequestAwareEffectiveSequences:                  4,
 		RequestAwareAggregateTPSProxy:                   80,
 		RequestAwareMeanActiveTPSProxy:                  20,
-		RequestAwareProjectedTPSProxy:                   16,
-		RequestAwareTPSForecastValid:                    true,
 		RequestAwarePrefillClass:                        "weighted",
 		RequestAwareEstimatedPrefillTokens:              1500,
 		RequestAwarePendingPrefillSequences:             2,
@@ -96,7 +99,6 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		`pig_predictive_capability_profile_info{schema="request-aware-capability-v1",source="startup_calibration",reason="calibrated"} 1`,
 		"pig_predictive_capability_kv_capacity_tokens 1000000",
 		"pig_predictive_capability_kv_block_size 64",
-		"pig_predictive_capability_kv_soft_limit_tokens 840000",
 		"pig_predictive_capability_kv_hard_limit_tokens 880000",
 		"pig_predictive_capability_safe_cold_prefill_tokens_per_second 8000.000000",
 		"pig_predictive_capability_prefill_regular_tokens 40000",
@@ -128,11 +130,11 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		"pig_predictive_router_backpressure_effective_running 3",
 		"pig_predictive_router_backpressure_raw_global_limit 50",
 		"pig_predictive_router_backpressure_effective_global_limit 4",
-		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="request_size",pressure_source="kv",prefill_class="weighted"} 1`,
-		"pig_predictive_request_aware_pressure 0.333333",
+		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="weighted"} 1`,
+		"pig_predictive_request_aware_pressure 1.000000",
 		"pig_predictive_request_aware_selection_input_tokens 1500",
 		"pig_predictive_request_aware_reserved_tokens 1600",
-		"pig_predictive_request_aware_allowance_tokens 1333",
+		"pig_predictive_request_aware_allowance_tokens 0",
 		"pig_predictive_request_aware_effective_kv_tokens 7000",
 		"pig_predictive_request_aware_post_admit_kv_tokens 8600",
 		"pig_predictive_request_aware_remaining_kv_tokens 2000",
@@ -141,8 +143,6 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		"pig_predictive_request_aware_effective_sequences 4",
 		"pig_predictive_request_aware_aggregate_tps_proxy 80.000000",
 		"pig_predictive_request_aware_mean_active_tps_proxy 20.000000",
-		"pig_predictive_request_aware_projected_tps_proxy 16.000000",
-		"pig_predictive_request_aware_tps_forecast_valid 1",
 		"pig_predictive_request_aware_estimated_prefill_tokens 1500",
 		"pig_predictive_request_aware_pending_prefill_sequences 2",
 		"pig_predictive_request_aware_pending_prefill_tokens 2000",
@@ -159,7 +159,9 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		`pig_predictive_admission_failures_total{phase="prefill"} 4`,
 		`pig_predictive_admission_failures_total{phase="terminal"} 6`,
 		"pig_predictive_admission_prediction_duration_seconds_count 1",
+		"pig_predictive_admission_body_read_duration_seconds_count 1",
 		"pig_predictive_admission_estimator_duration_seconds_count 1",
+		"pig_predictive_admission_pre_forward_duration_seconds_count 1",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("output missing %q\noutput:\n%s", want, got)
@@ -200,7 +202,7 @@ func TestWritePredictiveAdmissionBoundsRequestAwareLabels(t *testing.T) {
 	}
 }
 
-func TestWritePredictiveAdmissionOmitsRetiredLearningMetrics(t *testing.T) {
+func TestWritePredictiveAdmissionOmitsRetiredMetrics(t *testing.T) {
 	var out bytes.Buffer
 	WritePredictiveAdmission(&out, PredictiveAdmissionInput{Mode: "enforce"})
 	got := out.String()
@@ -230,6 +232,11 @@ func TestWritePredictiveAdmissionOmitsRetiredLearningMetrics(t *testing.T) {
 		"pig_predictive_pressure_invalidations_",
 		"pig_predictive_pressure_events_",
 		"pig_predictive_pressure_global_",
+		"pig_predictive_decode_pacer_",
+		"pig_predictive_request_aware_decode_pacer_",
+		"pig_predictive_request_aware_projected_tps_proxy",
+		"pig_predictive_request_aware_tps_forecast_valid",
+		"pig_predictive_capability_kv_soft_limit_tokens",
 	} {
 		if strings.Contains(got, retired) {
 			t.Fatalf("retired metric %q remains in production output", retired)

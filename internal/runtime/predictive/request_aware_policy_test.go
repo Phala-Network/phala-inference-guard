@@ -1,53 +1,55 @@
 package predictive
 
 import (
-	"math"
 	"testing"
 )
 
 func TestRequestAwarePolicyRejectsInvalidFrozenKVLimits(t *testing.T) {
 	for _, test := range []struct {
 		name   string
-		softKV int64
 		hardKV int64
 	}{
-		{name: "zero soft boundary", softKV: 0, hardKV: 9_000},
-		{name: "no elastic band", softKV: 9_000, hardKV: 9_000},
-		{name: "unaligned soft boundary", softKV: 6_001, hardKV: 9_008},
+		{name: "zero hard boundary", hardKV: 0},
+		{name: "negative hard boundary", hardKV: -16},
+		{name: "unaligned hard boundary", hardKV: 9_001},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := NewRequestAwarePolicy(RequestAwareConfig{
-				SoftKVLimitTokens: test.softKV,
-				HardKVLimitTokens: test.hardKV,
-				TPSTarget:         20,
-				TPSFloor:          15,
-				BlockSize:         16,
+				HardKVLimitTokens:            test.hardKV,
+				BlockSize:                    16,
+				PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
+				PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
+				PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+				PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 			})
 			if err == nil {
-				t.Fatalf("NewRequestAwarePolicy accepted frozen soft/hard %d/%d without a valid aligned band", test.softKV, test.hardKV)
+				t.Fatalf("NewRequestAwarePolicy accepted invalid hard KV limit %d", test.hardKV)
 			}
 		})
 	}
 }
 
-func TestRequestAwarePolicySelectsSmallRequestUnderSamePressure(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
+func TestRequestAwarePolicyDifferentiatesByPrefillWorkUnderSameBackendState(t *testing.T) {
+	policy := newLargeRequestAwareTestPolicy(t)
 	small := requestAwareTestInput()
-	small.UsedTokens = 2_000
-	small.Waiting = 1
-	small.SelectionInputTokens = 500
-	small.RequestReservedTokens = 800
+	small.CapacityTokens = 4 * 1024 * 1024
+	small.UsedTokens = 128 * 1024
+	small.SelectionInputTokens = 8 * 1024
+	small.EstimatedPrefillTokens = 8 * 1024
+	small.RequestReservedTokens = 16 * 1024
 
 	large := small
-	large.SelectionInputTokens = 700
+	large.SelectionInputTokens = 650 * 1024
+	large.EstimatedPrefillTokens = 650 * 1024
+	large.RequestReservedTokens = 700 * 1024
 
 	smallDecision := policy.Evaluate(small)
 	largeDecision := policy.Evaluate(large)
 	if smallDecision.Action != RequestAwareAdmit || largeDecision.Action != RequestAwareSizeProtect {
 		t.Fatalf("same-pressure decisions small=%+v large=%+v, want admit/size_protect", smallDecision, largeDecision)
 	}
-	if smallDecision.Pressure != largeDecision.Pressure || smallDecision.AllowanceTokens != largeDecision.AllowanceTokens {
-		t.Fatalf("request size changed current pressure budget: small=%+v large=%+v", smallDecision, largeDecision)
+	if largeDecision.Reason != RequestAwareReasonPrefillBusy || largeDecision.PrefillClass != RequestAwarePrefillQuiescent {
+		t.Fatalf("large request protection=%+v, want quiescent Prefill-busy", largeDecision)
 	}
 }
 
@@ -179,9 +181,61 @@ func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstWithoutBlockingShortB
 	}
 }
 
+func TestV0123RequestAwarePolicyTPSIsTelemetryNotAdmissionAuthority(t *testing.T) {
+	policy := newRequestAwareTestPolicy(t)
+	healthy := requestAwareTestInput()
+	healthy.UsedTokens = 2_000
+	healthy.SelectionInputTokens = 1
+	healthy.EstimatedPrefillTokens = 1
+	healthy.RequestReservedTokens = 16
+
+	degraded := healthy
+	degraded.AggregateTPSProxy = 40
+	degraded.MeanActiveTPSProxy = 10
+
+	healthyDecision := policy.Evaluate(healthy)
+	degradedDecision := policy.Evaluate(degraded)
+	if healthyDecision.Action != RequestAwareAdmit || degradedDecision.Action != RequestAwareAdmit {
+		t.Fatalf("TPS-only change altered admission: healthy=%+v degraded=%+v, want both admitted", healthyDecision, degradedDecision)
+	}
+	if healthyDecision.PressureSource != RequestAwarePressureNone || degradedDecision.PressureSource != RequestAwarePressureNone {
+		t.Fatalf("TPS remained admission authority: healthy=%+v degraded=%+v", healthyDecision, degradedDecision)
+	}
+}
+
+func TestV0123RequestAwarePolicyPendingQuiescentIsCandidateClassAware(t *testing.T) {
+	policy := newLargeRequestAwareTestPolicy(t)
+	base := requestAwareTestInput()
+	base.CapacityTokens = 4 * 1024 * 1024
+	base.UsedTokens = 128 * 1024
+	base.PendingPrefillSequences = 1
+	base.PendingPrefillTokens = 650 * 1024
+	base.PendingLongPrefillSequences = 1
+	base.PendingQuiescentPrefillSequences = 1
+
+	regular := base
+	regular.SelectionInputTokens = 8 * 1024
+	regular.EstimatedPrefillTokens = 8 * 1024
+	regular.RequestReservedTokens = 16 * 1024
+	regularDecision := policy.Evaluate(regular)
+	if regularDecision.Action != RequestAwareAdmit {
+		t.Fatalf("regular request behind quiescent=%+v, want work-conserving admission", regularDecision)
+	}
+
+	exclusive := base
+	exclusive.SelectionInputTokens = 300 * 1024
+	exclusive.EstimatedPrefillTokens = 300 * 1024
+	exclusive.RequestReservedTokens = 320 * 1024
+	exclusiveDecision := policy.Evaluate(exclusive)
+	if exclusiveDecision.Action != RequestAwareSizeProtect ||
+		exclusiveDecision.Reason != RequestAwareReasonPrefillExclusive {
+		t.Fatalf("exclusive request behind quiescent=%+v, want size protection", exclusiveDecision)
+	}
+}
+
 func TestRequestAwarePolicyRejectsInvalidPrefillThresholdOrdering(t *testing.T) {
 	_, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVLimitTokens: 6_000, HardKVLimitTokens: 9_008, TPSTarget: 20, TPSFloor: 15, BlockSize: 16,
+		HardKVLimitTokens: 9_008, BlockSize: 16,
 		PrefillRegularTokens: 64 * 1024, PrefillExclusiveTokens: 256 * 1024,
 		PrefillQuiescentTokens: 512 * 1024, PrefillAggregateBudgetTokens: 128 * 1024,
 	})
@@ -192,10 +246,7 @@ func TestRequestAwarePolicyRejectsInvalidPrefillThresholdOrdering(t *testing.T) 
 
 func TestRequestAwarePolicyRequiresInitializedPrefillProfile(t *testing.T) {
 	_, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVLimitTokens: 6_000,
 		HardKVLimitTokens: 9_008,
-		TPSTarget:         20,
-		TPSFloor:          15,
 		BlockSize:         16,
 	})
 	if err == nil {
@@ -217,142 +268,41 @@ func TestRequestAwarePolicyFreshCompletionWindowDoesNotMislockIdleBackend(t *tes
 
 	decision := policy.Evaluate(input)
 	if decision.Action != RequestAwareAdmit || decision.Reason != RequestAwareReasonOpen ||
-		decision.Pressure != 0 || decision.TPSForecastValid {
+		decision.Pressure != 0 {
 		t.Fatalf("idle completion-window decision=%+v, want TPS-neutral admit/open", decision)
 	}
 
-	afterLocalReservations := input
-	afterLocalReservations.EffectiveSequences = 2
-	constrained := policy.Evaluate(afterLocalReservations)
-	if constrained.Action != RequestAwareSizeProtect || constrained.PressureSource != RequestAwarePressureTPS ||
-		!constrained.TPSForecastValid || math.Abs(constrained.ProjectedMeanActiveTPSProxy-(40.0/3.0)) > 1e-9 {
-		t.Fatalf("same-snapshot post-admit completion forecast=%+v, want TPS size protection", constrained)
-	}
 }
 
 func TestRequestAwarePolicyWaitingIsSelectiveNotGlobalClose(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
+	policy := newLargeRequestAwareTestPolicy(t)
 	small := requestAwareTestInput()
-	small.UsedTokens = 2_000
+	small.CapacityTokens = 4 * 1024 * 1024
+	small.UsedTokens = 128 * 1024
 	small.Running = 4
 	small.Waiting = 1
-	small.SelectionInputTokens = 500
-	small.RequestReservedTokens = 600
+	small.SelectionInputTokens = 8 * 1024
+	small.EstimatedPrefillTokens = 8 * 1024
+	small.RequestReservedTokens = 16 * 1024
 
 	large := small
-	large.SelectionInputTokens = 2_600
-	large.RequestReservedTokens = 2_600
+	large.SelectionInputTokens = 100 * 1024
+	large.EstimatedPrefillTokens = 100 * 1024
+	large.RequestReservedTokens = 128 * 1024
 
 	smallDecision := policy.Evaluate(small)
 	largeDecision := policy.Evaluate(large)
 	if smallDecision.Action != RequestAwareAdmit || largeDecision.Action != RequestAwareSizeProtect {
 		t.Fatalf("waiting decisions small=%+v large=%+v, want admit/size_protect", smallDecision, largeDecision)
 	}
-	if smallDecision.PressureSource != RequestAwarePressureTPS || !smallDecision.TPSForecastValid ||
-		math.Abs(smallDecision.ProjectedMeanActiveTPSProxy-16) > 1e-9 {
-		t.Fatalf("waiting forecast=%+v, want TPS source and projected TPS=16", smallDecision)
-	}
-}
-
-func TestRequestAwarePolicyForecastsPostAdmitTPSAndStopsAtProjectedFloor(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
-	input := requestAwareTestInput()
-	input.UsedTokens = 2_000
-	input.SelectionInputTokens = 2_500
-	input.RequestReservedTokens = 2_500
-
-	atTarget := input
-	atTarget.MeanActiveTPSProxy = 20
-	atTarget.AggregateTPSProxy = 80
-	midway := input
-	midway.MeanActiveTPSProxy = 19.5
-	midway.AggregateTPSProxy = 78
-	atFloor := input
-	atFloor.MeanActiveTPSProxy = 15
-	atFloor.AggregateTPSProxy = 60
-	belowFloor := input
-	belowFloor.MeanActiveTPSProxy = 10
-	belowFloor.AggregateTPSProxy = 40
-	tinyAtFloor := atFloor
-	tinyAtFloor.SelectionInputTokens = 1
-	tinyAtFloor.RequestReservedTokens = 16
-
-	targetDecision := policy.Evaluate(atTarget)
-	midwayDecision := policy.Evaluate(midway)
-	floorDecision := policy.Evaluate(atFloor)
-	belowFloorDecision := policy.Evaluate(belowFloor)
-	tinyAtFloorDecision := policy.Evaluate(tinyAtFloor)
-	if targetDecision.Action != RequestAwareAdmit || midwayDecision.Action != RequestAwareSizeProtect ||
-		floorDecision.Action != RequestAwareSizeProtect || belowFloorDecision.Action != RequestAwareSizeProtect ||
-		tinyAtFloorDecision.Action != RequestAwareSizeProtect {
-		t.Fatalf(
-			"TPS decisions target=%+v midway=%+v floor=%+v below=%+v tiny=%+v",
-			targetDecision, midwayDecision, floorDecision, belowFloorDecision, tinyAtFloorDecision,
-		)
-	}
-	if targetDecision.AllowanceTokens <= midwayDecision.AllowanceTokens ||
-		floorDecision.AllowanceTokens != 0 || belowFloorDecision.AllowanceTokens != floorDecision.AllowanceTokens ||
-		floorDecision.Pressure != 1 || belowFloorDecision.Pressure != 1 ||
-		floorDecision.PressureSource != RequestAwarePressureTPS || tinyAtFloorDecision.Reason != RequestAwareReasonRequestSize ||
-		!midwayDecision.TPSForecastValid || math.Abs(midwayDecision.ProjectedMeanActiveTPSProxy-15.6) > 1e-9 {
-		t.Fatalf(
-			"TPS allowance/floor target=%+v midway=%+v floor=%+v below=%+v tiny=%+v",
-			targetDecision, midwayDecision, floorDecision, belowFloorDecision, tinyAtFloorDecision,
-		)
-	}
-}
-
-func TestRequestAwarePolicyEffectiveSequencesChangeSameSnapshotVerdict(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
-	first := requestAwareTestInput()
-	first.UsedTokens = 2_000
-	first.SelectionInputTokens = 400
-	first.RequestReservedTokens = 500
-	first.MeanActiveTPSProxy = 19.8
-	first.AggregateTPSProxy = 79.2
-
-	second := first
-	second.EffectiveSequences++
-
-	firstDecision := policy.Evaluate(first)
-	secondDecision := policy.Evaluate(second)
-	if firstDecision.Action != RequestAwareAdmit || secondDecision.Action != RequestAwareSizeProtect {
-		t.Fatalf("effective-sequence decisions first=%+v second=%+v, want admit/size_protect", firstDecision, secondDecision)
-	}
-	if !firstDecision.TPSForecastValid || !secondDecision.TPSForecastValid ||
-		firstDecision.ProjectedMeanActiveTPSProxy <= secondDecision.ProjectedMeanActiveTPSProxy {
-		t.Fatalf("effective-sequence forecast did not decrease: first=%+v second=%+v", firstDecision, secondDecision)
-	}
-}
-
-func TestRequestAwarePolicyHealthySnapshotDoesNotReuseOptimisticTPSAfterReservation(t *testing.T) {
-	policy := newRequestAwareTestPolicy(t)
-	first := requestAwareTestInput()
-	first.UsedTokens = 2_000
-	first.SelectionInputTokens = 300
-	first.RequestReservedTokens = 400
-
-	second := first
-	second.EffectiveSequences++
-
-	firstDecision := policy.Evaluate(first)
-	secondDecision := policy.Evaluate(second)
-	if firstDecision.Action != RequestAwareAdmit || secondDecision.Action != RequestAwareSizeProtect {
-		t.Fatalf("healthy same-snapshot decisions first=%+v second=%+v, want admit/size_protect", firstDecision, secondDecision)
-	}
-	if !firstDecision.TPSForecastValid || !secondDecision.TPSForecastValid ||
-		math.Abs(firstDecision.ProjectedMeanActiveTPSProxy-20) > 1e-9 ||
-		math.Abs(secondDecision.ProjectedMeanActiveTPSProxy-(80.0/6.0)) > 1e-9 {
-		t.Fatalf("healthy same-snapshot forecast first=%+v second=%+v", firstDecision, secondDecision)
+	if largeDecision.Reason != RequestAwareReasonPrefillBusy {
+		t.Fatalf("waiting class-aware decisions small=%+v large=%+v", smallDecision, largeDecision)
 	}
 }
 
 func TestRequestAwarePolicyBlockAlignsOperationalKVLimits(t *testing.T) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVLimitTokens:            576,
 		HardKVLimitTokens:            896,
-		TPSTarget:                    20,
-		TPSFloor:                     15,
 		BlockSize:                    16,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
@@ -373,16 +323,13 @@ func TestRequestAwarePolicyBlockAlignsOperationalKVLimits(t *testing.T) {
 		t.Fatalf("block-aligned decision=%+v, want hard=896 remaining=320", decision)
 	}
 	if decision.Pressure != 0 || decision.Action != RequestAwareAdmit {
-		t.Fatalf("soft boundary decision=%+v, want open at block-aligned soft limit", decision)
+		t.Fatalf("hard-boundary decision=%+v, want open below the block-aligned hard limit", decision)
 	}
 }
 
 func TestRequestAwarePolicyUsesFrozenAbsoluteKVLimits(t *testing.T) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVLimitTokens:            700_032,
 		HardKVLimitTokens:            800_000,
-		TPSTarget:                    20,
-		TPSFloor:                     15,
 		BlockSize:                    64,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
@@ -437,7 +384,6 @@ func TestRequestAwarePolicyHardGuardsCannotBeOverriddenBySmallRequest(t *testing
 		reason RequestAwareReason
 	}{
 		{name: "stale", mutate: func(input *RequestAwareInput) { input.MetricsFresh = false }, reason: RequestAwareReasonStale},
-		{name: "preemption", mutate: func(input *RequestAwareInput) { input.PreemptionCooldown = true }, reason: RequestAwareReasonPreemption},
 		{name: "kv", mutate: func(input *RequestAwareInput) {
 			input.UsedTokens = 8_990
 			input.RequestReservedTokens = 32
@@ -452,6 +398,28 @@ func TestRequestAwarePolicyHardGuardsCannotBeOverriddenBySmallRequest(t *testing
 				t.Fatalf("hard guard decision=%+v, want hard_protect/%s", decision, test.reason)
 			}
 		})
+	}
+}
+
+func TestRequestAwarePolicyNewPreemptionGuardIsCandidateClassAware(t *testing.T) {
+	policy := newLargeRequestAwareTestPolicy(t)
+	regular := requestAwareTestInput()
+	regular.CapacityTokens = 4 * 1024 * 1024
+	regular.PreemptionObserved = true
+	regular.SelectionInputTokens = 8 * 1024
+	regular.EstimatedPrefillTokens = 8 * 1024
+	regular.RequestReservedTokens = 16 * 1024
+
+	weighted := regular
+	weighted.SelectionInputTokens = 100 * 1024
+	weighted.EstimatedPrefillTokens = 100 * 1024
+	weighted.RequestReservedTokens = 128 * 1024
+
+	regularDecision := policy.Evaluate(regular)
+	weightedDecision := policy.Evaluate(weighted)
+	if regularDecision.Action != RequestAwareAdmit || weightedDecision.Action != RequestAwareHardProtect ||
+		weightedDecision.Reason != RequestAwareReasonPreemption {
+		t.Fatalf("preemption class-aware decisions regular=%+v weighted=%+v", regularDecision, weightedDecision)
 	}
 }
 
@@ -476,20 +444,17 @@ func TestRequestAwarePolicyIsHistoryIndependent(t *testing.T) {
 }
 
 func newRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {
-	return newRequestAwareTestPolicyWithLimits(t, 6_000, 8_992)
+	return newRequestAwareTestPolicyWithLimit(t, 8_992)
 }
 
 func newLargeRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {
-	return newRequestAwareTestPolicyWithLimits(t, 2_516_576, 3_774_864)
+	return newRequestAwareTestPolicyWithLimit(t, 3_774_864)
 }
 
-func newRequestAwareTestPolicyWithLimits(t *testing.T, soft, hard int64) *RequestAwarePolicy {
+func newRequestAwareTestPolicyWithLimit(t *testing.T, hard int64) *RequestAwarePolicy {
 	t.Helper()
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVLimitTokens:            soft,
 		HardKVLimitTokens:            hard,
-		TPSTarget:                    20,
-		TPSFloor:                     15,
 		BlockSize:                    16,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,

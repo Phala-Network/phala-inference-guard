@@ -33,7 +33,6 @@ type predictiveCapabilityInitializationConfig struct {
 	UpstreamURL    string
 	RequestTimeout time.Duration
 	RetryInterval  time.Duration
-	KVTargetRatio  float64
 	KVHardRatio    float64
 	Prefill        runtimepredictive.PrefillTokenBounds
 }
@@ -55,7 +54,6 @@ func initializePredictiveCapability(
 		ModelIdentitySHA256: startup.ModelIdentitySHA256,
 		KVCapacityTokens:    startup.CapacityTokens,
 		KVBlockSize:         int64(startup.BlockSize),
-		KVTargetRatio:       config.KVTargetRatio,
 		KVHardRatio:         config.KVHardRatio,
 	}
 	explicit, automatic, err := predictivePrefillProfileMode(config.Prefill)

@@ -16,7 +16,6 @@ type PredictiveAdmissionInput struct {
 	CapabilityInitializationReason           string
 	CapabilityKVCapacityTokens               int64
 	CapabilityKVBlockSize                    int64
-	CapabilityKVSoftLimitTokens              int64
 	CapabilityKVHardLimitTokens              int64
 	CapabilitySafeColdPrefillTokensPerSecond float64
 	CapabilityPrefillRegularTokens           int64
@@ -50,7 +49,9 @@ type PredictiveAdmissionInput struct {
 	FailurePrefill                                           uint64
 	FailureTerminal                                          uint64
 	PredictionDuration                                       *histogram.DurationHistogram
+	BodyReadDuration                                         *histogram.DurationHistogram
 	EstimatorDuration                                        *histogram.DurationHistogram
+	PreForwardDuration                                       *histogram.DurationHistogram
 	RouterBackpressure                                       PredictiveRouterBackpressureInput
 	RequestAwareAction                                       string
 	RequestAwareReason                                       string
@@ -67,8 +68,6 @@ type PredictiveAdmissionInput struct {
 	RequestAwareEffectiveSequences                           int
 	RequestAwareAggregateTPSProxy                            float64
 	RequestAwareMeanActiveTPSProxy                           float64
-	RequestAwareProjectedTPSProxy                            float64
-	RequestAwareTPSForecastValid                             bool
 	RequestAwarePrefillClass                                 string
 	RequestAwareEstimatedPrefillTokens                       int64
 	RequestAwarePendingPrefillSequences                      int
@@ -145,7 +144,6 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_capability_profile_info{schema=%q,source=%q,reason=%q} 1\n", capabilitySchema, capabilitySource, capabilityReason)
 	fmt.Fprintf(w, "pig_predictive_capability_kv_capacity_tokens %d\n", input.CapabilityKVCapacityTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_kv_block_size %d\n", input.CapabilityKVBlockSize)
-	fmt.Fprintf(w, "pig_predictive_capability_kv_soft_limit_tokens %d\n", input.CapabilityKVSoftLimitTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_kv_hard_limit_tokens %d\n", input.CapabilityKVHardLimitTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_safe_cold_prefill_tokens_per_second %.6f\n", input.CapabilitySafeColdPrefillTokensPerSecond)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_regular_tokens %d\n", input.CapabilityPrefillRegularTokens)
@@ -194,8 +192,6 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_request_aware_effective_sequences %d\n", input.RequestAwareEffectiveSequences)
 	fmt.Fprintf(w, "pig_predictive_request_aware_aggregate_tps_proxy %.6f\n", input.RequestAwareAggregateTPSProxy)
 	fmt.Fprintf(w, "pig_predictive_request_aware_mean_active_tps_proxy %.6f\n", input.RequestAwareMeanActiveTPSProxy)
-	fmt.Fprintf(w, "pig_predictive_request_aware_projected_tps_proxy %.6f\n", input.RequestAwareProjectedTPSProxy)
-	fmt.Fprintf(w, "pig_predictive_request_aware_tps_forecast_valid %d\n", num.BoolAsInt(input.RequestAwareTPSForecastValid))
 	fmt.Fprintf(w, "pig_predictive_request_aware_estimated_prefill_tokens %d\n", input.RequestAwareEstimatedPrefillTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_pending_prefill_sequences %d\n", input.RequestAwarePendingPrefillSequences)
 	fmt.Fprintf(w, "pig_predictive_request_aware_pending_prefill_tokens %d\n", input.RequestAwarePendingPrefillTokens)
@@ -214,7 +210,9 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "prefill", input.FailurePrefill)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "terminal", input.FailureTerminal)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_prediction_duration_seconds", input.PredictionDuration)
+	writePredictiveDurationHistogram(w, "pig_predictive_admission_body_read_duration_seconds", input.BodyReadDuration)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_estimator_duration_seconds", input.EstimatorDuration)
+	writePredictiveDurationHistogram(w, "pig_predictive_admission_pre_forward_duration_seconds", input.PreForwardDuration)
 }
 
 func normalizeCapabilityProfileSource(value string) string {
@@ -246,7 +244,7 @@ func normalizeRequestAwareAction(value string) string {
 
 func normalizeRequestAwareReason(value string) string {
 	switch value {
-	case "open", "within_budget", "request_size", "stale", "preemption", "kv", "prefill_budget", "prefill_concurrency", "prefill_exclusive", "prefill_busy", "duplicate", "unavailable", "invalid":
+	case "open", "stale", "preemption", "kv", "prefill_budget", "prefill_concurrency", "prefill_exclusive", "prefill_busy", "duplicate", "unavailable", "invalid":
 		return value
 	default:
 		return "unknown"
@@ -255,7 +253,7 @@ func normalizeRequestAwareReason(value string) string {
 
 func normalizeRequestAwarePressureSource(value string) string {
 	switch value {
-	case "none", "kv", "waiting", "tps", "prefill":
+	case "none", "prefill", "decode":
 		return value
 	default:
 		return "none"

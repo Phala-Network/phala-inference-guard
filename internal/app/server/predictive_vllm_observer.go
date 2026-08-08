@@ -24,7 +24,6 @@ type predictiveVLLMObserverConfig struct {
 	PollInterval        time.Duration
 	MaximumAge          time.Duration
 	RequestTimeout      time.Duration
-	PreemptionCooldown  time.Duration
 	Coordinator         predictiveSampleCoordinator
 	Initial             predictiveVLLMStartup
 	Now                 func() time.Time
@@ -48,7 +47,6 @@ type predictiveVLLMObserver struct {
 	blockSize               int
 	pollInterval            time.Duration
 	maximumAge              time.Duration
-	preemptionCooldown      time.Duration
 	coordinator             predictiveSampleCoordinator
 	now                     func() time.Time
 	client                  *http.Client
@@ -57,7 +55,6 @@ type predictiveVLLMObserver struct {
 	closeOnce               sync.Once
 	closed                  bool
 	lastSuccess             time.Time
-	lastPreemption          time.Time
 	epochInvalidated        bool
 	requestAwareInput       runtimepredictive.RequestAwareInput
 	requestAwareObservedAt  time.Time
@@ -78,7 +75,7 @@ type predictiveObserverSnapshot struct {
 	AggregateTPS       float64
 	MeanActiveTPS      float64
 	TPSValid           bool
-	PreemptionCooldown bool
+	PreemptionObserved bool
 }
 
 type predictiveSampleDisposition uint8
@@ -100,7 +97,7 @@ func newPredictiveVLLMObserver(config predictiveVLLMObserverConfig) (*predictive
 	}
 	if !validPredictiveModelIdentitySHA256(identity) || config.MaximumKVTokens <= 0 || config.BlockSize <= 0 ||
 		config.PollInterval <= 0 || config.MaximumAge < config.PollInterval || config.RequestTimeout <= 0 ||
-		config.PreemptionCooldown < 0 || config.Coordinator == nil {
+		config.Coordinator == nil {
 		return nil, fmt.Errorf("predictive vLLM observer configuration is invalid")
 	}
 	now := config.Now
@@ -116,7 +113,6 @@ func newPredictiveVLLMObserver(config predictiveVLLMObserverConfig) (*predictive
 		blockSize:           config.BlockSize,
 		pollInterval:        config.PollInterval,
 		maximumAge:          config.MaximumAge,
-		preemptionCooldown:  config.PreemptionCooldown,
 		coordinator:         config.Coordinator,
 		now:                 now,
 		client:              &http.Client{Timeout: config.RequestTimeout, Transport: transport},
@@ -189,13 +185,6 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 
 	o.mu.Lock()
 	reset := o.requestAwareHasBaseline && (sample.Generation < o.requestAwareGeneration || sample.Preemptions < o.requestAwarePreemptions)
-	preempted := o.requestAwareHasBaseline && sample.Preemptions > o.requestAwarePreemptions
-	if preempted {
-		o.lastPreemption = observedAt
-		o.requestAwareInput.TPSValid = false
-		o.requestAwareInput.AggregateTPSProxy = 0
-		o.requestAwareInput.MeanActiveTPSProxy = 0
-	}
 	o.mu.Unlock()
 	if reset {
 		o.invalidateEpoch()
@@ -247,12 +236,13 @@ func (o *predictiveVLLMObserver) publish(sample telemetry.Sample, observedAt tim
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	input := runtimepredictive.RequestAwareInput{
-		MetricsFresh:   true,
-		IdentityValid:  !o.epochInvalidated,
-		CapacityTokens: o.maximumKVTokens,
-		UsedTokens:     sample.KVUsedTokens,
-		Running:        sample.Running,
-		Waiting:        sample.Waiting,
+		MetricsFresh:       true,
+		IdentityValid:      !o.epochInvalidated,
+		CapacityTokens:     o.maximumKVTokens,
+		UsedTokens:         sample.KVUsedTokens,
+		Running:            sample.Running,
+		Waiting:            sample.Waiting,
+		PreemptionObserved: o.requestAwareHasBaseline && sample.Preemptions > o.requestAwarePreemptions,
 	}
 	if o.requestAwareHasBaseline && sample.Preemptions == o.requestAwarePreemptions && sample.Generation > o.requestAwareGeneration {
 		elapsed := observedAt.Sub(o.requestAwareObservedAt)
@@ -271,7 +261,6 @@ func (o *predictiveVLLMObserver) publish(sample telemetry.Sample, observedAt tim
 		}
 	}
 	if o.requestAwareHasBaseline && sample.Preemptions > o.requestAwarePreemptions {
-		o.lastPreemption = observedAt
 		input.TPSValid = false
 		input.AggregateTPSProxy = 0
 		input.MeanActiveTPSProxy = 0
@@ -311,8 +300,8 @@ func (o *predictiveVLLMObserver) requestAwareInputLocked(now time.Time) runtimep
 	fresh := !o.epochInvalidated && !o.lastSuccess.IsZero() && !now.Before(o.lastSuccess) && now.Sub(o.lastSuccess) <= o.maximumAge
 	input.MetricsFresh = fresh
 	input.IdentityValid = fresh
-	input.PreemptionCooldown = fresh && !o.lastPreemption.IsZero() && !now.Before(o.lastPreemption) && now.Sub(o.lastPreemption) < o.preemptionCooldown
 	if !fresh {
+		input.PreemptionObserved = false
 		input.TPSValid = false
 		input.AggregateTPSProxy = 0
 		input.MeanActiveTPSProxy = 0
@@ -332,7 +321,7 @@ func (o *predictiveVLLMObserver) Snapshot(now time.Time) predictiveObserverSnaps
 		ObservedAt: observedAt, MetricsFresh: input.MetricsFresh, IdentityValid: input.IdentityValid,
 		CapacityTokens: input.CapacityTokens, UsedTokens: input.UsedTokens, Running: input.Running,
 		Waiting: input.Waiting, AggregateTPS: input.AggregateTPSProxy, MeanActiveTPS: input.MeanActiveTPSProxy,
-		TPSValid: input.TPSValid, PreemptionCooldown: input.PreemptionCooldown,
+		TPSValid: input.TPSValid, PreemptionObserved: input.PreemptionObserved,
 	}
 }
 

@@ -36,11 +36,12 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		"prefill-quiescent-idle-650k":                     false, "prefill-quiescent-busy-650k": false,
 		"prefill-quiescent-cancel-recovery": false, "prefill-quiescent-exclusive-recovery": false,
 	}
+	wantPolicies := []PolicyName{"no_admission", "v0.12.2", "v0.12.3"}
 	for _, scenario := range suite.Scenarios {
 		if _, ok := required[scenario.Name]; ok {
 			required[scenario.Name] = true
 		}
-		for _, policy := range []PolicyName{PolicyGlobalBinary, PolicyRequestAware} {
+		for _, policy := range wantPolicies {
 			if _, ok := scenario.Policies[policy]; !ok {
 				t.Fatalf("scenario %q missing policy %q", scenario.Name, policy)
 			}
@@ -50,6 +51,35 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		if !present {
 			t.Fatalf("required scenario %q is missing", name)
 		}
+	}
+}
+
+func TestV0123SimulationUsesAtomicResourceAndPrefillGatesWithoutObservationCredit(t *testing.T) {
+	suite, err := RunSuite()
+	if err != nil {
+		t.Fatalf("RunSuite: %v", err)
+	}
+	want := map[string]struct {
+		admitted int
+		rejected int
+	}{
+		"pre-poll-burst":                   {admitted: 5, rejected: 0},
+		"prefill-regular-multimodal-burst": {admitted: 32, rejected: 8},
+	}
+	for _, scenario := range suite.Scenarios {
+		expected, ok := want[scenario.Name]
+		if !ok {
+			continue
+		}
+		metrics, present := scenario.Policies[PolicyName("v0.12.3")]
+		if !present || metrics.Admitted != expected.admitted || metrics.Rejected != expected.rejected {
+			t.Fatalf("scenario %s v0.12.3=%+v present=%t, want admitted/rejected=%d/%d",
+				scenario.Name, metrics, present, expected.admitted, expected.rejected)
+		}
+		delete(want, scenario.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("resource/Prefill gate scenarios missing: %v", want)
 	}
 }
 
@@ -64,6 +94,32 @@ func TestDeterministicRequestAwareGoodputSuiteIsReplayable(t *testing.T) {
 	}
 	if !reflect.DeepEqual(first, second) {
 		t.Fatal("fixed-seed request-aware simulation is not replayable")
+	}
+}
+
+func TestDeterministicRequestAwareGoodputSuiteIsPolicyOrderIndependent(t *testing.T) {
+	forward, err := runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0123})
+	if err != nil {
+		t.Fatalf("forward policy order: %v", err)
+	}
+	reverse, err := runSuite([]PolicyName{PolicyV0123, PolicyV0122, PolicyNoAdmission})
+	if err != nil {
+		t.Fatalf("reverse policy order: %v", err)
+	}
+	if !reflect.DeepEqual(forward, reverse) {
+		t.Fatal("simulation result depends on policy execution order")
+	}
+}
+
+func TestDeterministicRequestAwareGoodputSuiteRejectsInvalidPolicyOrder(t *testing.T) {
+	for _, order := range [][]PolicyName{
+		{PolicyNoAdmission, PolicyV0122},
+		{PolicyNoAdmission, PolicyV0122, PolicyV0122},
+		{PolicyNoAdmission, PolicyV0122, PolicyName("unknown")},
+	} {
+		if _, err := runSuite(order); err == nil {
+			t.Fatalf("invalid policy order passed: %v", order)
+		}
 	}
 }
 
@@ -113,8 +169,8 @@ func TestDeterministicRequestAwareGoodputSuiteMeetsRegisteredAcceptance(t *testi
 		t.Logf(
 			"scenario=%s baseline=%+v candidate=%+v",
 			scenario.Name,
-			scenario.Policies[PolicyGlobalBinary],
-			scenario.Policies[PolicyRequestAware],
+			scenario.Policies[PolicyV0122],
+			scenario.Policies[PolicyV0123],
 		)
 	}
 	if err := ValidateAcceptance(suite); err != nil {
@@ -122,112 +178,109 @@ func TestDeterministicRequestAwareGoodputSuiteMeetsRegisteredAcceptance(t *testi
 	}
 }
 
-func TestValidateAcceptanceDoesNotAccumulatePerScenarioTPSFloorTolerance(t *testing.T) {
-	suite := Suite{
-		ProductionPolicyCalls: 1,
-		Scenarios: []ScenarioResult{
-			{
-				Name: "first",
-				Policies: map[PolicyName]Metrics{
-					PolicyGlobalBinary: {},
-					PolicyRequestAware: {TPSFloorViolationSeconds: 0.1},
-				},
-			},
-			{
-				Name: "second",
-				Policies: map[PolicyName]Metrics{
-					PolicyGlobalBinary: {},
-					PolicyRequestAware: {TPSFloorViolationSeconds: 0.1},
-				},
-			},
-		},
+func TestValidateAcceptanceTreatsSyntheticTPSAndWaitingAsDiagnostics(t *testing.T) {
+	suite := acceptanceSuite(Metrics{
+		Arrivals: 1, Admitted: 1, PeakKVTokens: 64, MaximumRunning: 1,
+		TPSFloorViolationSeconds: 20, WaitingSeconds: 20,
+	})
+	if err := ValidateAcceptance(suite); err != nil {
+		t.Fatalf("diagnostic TPS/waiting rejected simulation: %v", err)
 	}
+}
+
+func TestValidateAcceptanceRejectsPreemptionRegression(t *testing.T) {
+	suite := acceptanceSuite(Metrics{
+		Arrivals: 1, Admitted: 1, PeakKVTokens: 64, MaximumRunning: 1, Preemptions: 1,
+	})
 	if err := ValidateAcceptance(suite); err == nil {
-		t.Fatal("aggregate acceptance allowed per-scenario TPS-floor tolerance to accumulate")
+		t.Fatal("candidate preemption regression passed")
 	}
 }
 
-func TestValidateAcceptanceDoesNotAccumulatePerScenarioWaitingTolerance(t *testing.T) {
-	suite := Suite{
-		ProductionPolicyCalls: 1,
-		Scenarios: []ScenarioResult{
-			{
-				Name: "first",
-				Policies: map[PolicyName]Metrics{
-					PolicyGlobalBinary: {},
-					PolicyRequestAware: {WaitingSeconds: 0.1},
-				},
-			},
-			{
-				Name: "second",
-				Policies: map[PolicyName]Metrics{
-					PolicyGlobalBinary: {},
-					PolicyRequestAware: {WaitingSeconds: 0.1},
-				},
-			},
-		},
-	}
+func TestValidateAcceptanceRejectsKVHardLimitBreach(t *testing.T) {
+	suite := acceptanceSuite(Metrics{
+		Arrivals: 1, Admitted: 1, PeakKVTokens: 1_001, MaximumRunning: 1,
+	})
 	if err := ValidateAcceptance(suite); err == nil {
-		t.Fatal("aggregate acceptance allowed per-scenario waiting tolerance to accumulate")
-	}
-}
-
-func TestValidateBoundedGoodputRegressionDoesNotUseDurationTolerance(t *testing.T) {
-	baseline := Metrics{CompletionTokensPerSecond: 1, SLOCompletionTokensPerSecond: 1}
-	candidate := Metrics{CompletionTokensPerSecond: 0.90, SLOCompletionTokensPerSecond: 0.90}
-	if err := validateBoundedGoodputRegression("units", baseline, candidate); err == nil {
-		t.Fatal("goodput regression was hidden by a seconds-valued tolerance")
-	}
-}
-
-func TestValidateGoodputImprovementDoesNotHideOtherMetricRegression(t *testing.T) {
-	baseline := Metrics{CompletionTokensPerSecond: 1, SLOCompletionTokensPerSecond: 1}
-	candidate := Metrics{CompletionTokensPerSecond: 0.95, SLOCompletionTokensPerSecond: 1.01}
-	if err := validateGoodputImprovement("units", baseline, candidate); err == nil {
-		t.Fatal("one improved goodput metric hid a regression in the other through a seconds-valued tolerance")
-	}
-}
-
-func TestValidateAcceptanceRejectsBurstGoodputRegressionWithinQoSBudget(t *testing.T) {
-	suite := Suite{
-		ProductionPolicyCalls: 1,
-		Scenarios: []ScenarioResult{
-			{
-				Name:     "burst-regression",
-				Category: "burst",
-				Policies: map[PolicyName]Metrics{
-					PolicyGlobalBinary: {
-						CompletionTokensPerSecond:    100,
-						SLOCompletionTokensPerSecond: 100,
-						TPSFloorViolationSeconds:     0.1,
-					},
-					PolicyRequestAware: {
-						CompletionTokensPerSecond:    70,
-						SLOCompletionTokensPerSecond: 70,
-					},
-				},
-			},
-		},
-	}
-	if err := ValidateAcceptance(suite); err == nil {
-		t.Fatal("burst goodput regression passed merely because candidate removed an allowed TPS-floor tick")
+		t.Fatal("candidate KV hard-limit breach passed")
 	}
 }
 
 func TestValidateAcceptanceLimitsIdleWithDemandToOnePoll(t *testing.T) {
-	suite := Suite{
-		ProductionPolicyCalls: 1,
-		Scenarios: []ScenarioResult{
-			{
-				Name: "short-only",
-				Policies: map[PolicyName]Metrics{
-					PolicyGlobalBinary: {},
-					PolicyRequestAware: {MaximumIdleWithDemandSeconds: 0.6},
-				},
-			},
-		},
-	}
+	suite := acceptanceSuite(Metrics{
+		Arrivals: 1, Rejected: 1, SizeProtects: 1, HardFitIdleRejects: 1,
+		MaximumIdleWithDemandSeconds: 0.6,
+	})
 	if err := ValidateAcceptance(suite); err == nil {
-		t.Fatal("idle/self-lock acceptance allowed one poll plus a duration budget")
+		t.Fatal("idle/self-lock acceptance allowed more than one poll")
+	}
+
+	suite = acceptanceSuite(Metrics{
+		Arrivals: 1, Rejected: 1, SizeProtects: 1, HardFitIdleRejects: 1,
+		MaximumIdleWithDemandSeconds: 0.4,
+	})
+	if err := ValidateAcceptance(suite); err != nil {
+		t.Fatalf("one recoverable protection was treated as self-lock: %v", err)
+	}
+}
+
+func TestValidateAcceptanceRejectsBrokenRequestAccounting(t *testing.T) {
+	suite := acceptanceSuite(Metrics{Arrivals: 1})
+	if err := ValidateAcceptance(suite); err == nil {
+		t.Fatal("broken request accounting passed")
+	}
+}
+
+func TestSimulationCandidateSizeAwareWorkConservationContracts(t *testing.T) {
+	suite, err := RunSuite()
+	if err != nil {
+		t.Fatalf("RunSuite: %v", err)
+	}
+	want := map[string][2]int{
+		"low-flow-first-large":                 {2, 0},
+		"prefill-weighted-budget":              {1, 1},
+		"prefill-long-singleton":               {2, 1},
+		"prefill-quiescent-idle-650k":          {1, 0},
+		"prefill-quiescent-busy-650k":          {0, 1},
+		"prefill-quiescent-exclusive-recovery": {3, 1},
+	}
+	for _, scenario := range suite.Scenarios {
+		contract, exists := want[scenario.Name]
+		if !exists {
+			continue
+		}
+		candidate := scenario.Policies[PolicyV0123]
+		if candidate.Admitted != contract[0] || candidate.Rejected != contract[1] {
+			t.Fatalf(
+				"scenario %s admitted/rejected=%d/%d want=%d/%d",
+				scenario.Name,
+				candidate.Admitted,
+				candidate.Rejected,
+				contract[0],
+				contract[1],
+			)
+		}
+		delete(want, scenario.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("size-aware scenarios missing: %v", want)
+	}
+}
+
+func acceptanceSuite(candidate Metrics) Suite {
+	baseline := Metrics{Arrivals: 1, Admitted: 1, PeakKVTokens: 64, MaximumRunning: 1}
+	return Suite{
+		ProductionPolicyCalls: 1,
+		Scenarios: []ScenarioResult{{
+			Name: "acceptance-unit",
+			CapabilityProfile: runtimepredictive.BackendCapabilityProfile{
+				KVHardLimitTokens: 1_000,
+			},
+			Policies: map[PolicyName]Metrics{
+				PolicyNoAdmission: baseline,
+				PolicyV0122:       baseline,
+				PolicyV0123:       candidate,
+			},
+		}},
 	}
 }

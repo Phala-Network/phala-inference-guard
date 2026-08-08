@@ -9,7 +9,6 @@ import (
 const (
 	simulationCapacityTokens = int64(100_000)
 	simulationBlockSize      = int64(64)
-	simulationSoftKVRatio    = 0.70
 	simulationHardKVRatio    = 0.90
 	simulationTPSTarget      = 25.0
 	simulationTPSFloor       = 20.0

@@ -1,4 +1,4 @@
-# PIG v0.12.2 Observability
+# PIG v0.12.3 Observability
 
 PIG exports one predictive state. The request decision, status line, backend
 projection, and Router compatibility values must come from one captured
@@ -70,7 +70,7 @@ action, reason, pressure source, and Prefill class. Numeric gauges expose:
 - estimated Prefill and selected input tokens;
 - reserved, effective, post-admit, remaining, and allowance KV tokens;
 - running, waiting, and effective sequence counts;
-- aggregate, mean-active, and projected TPS proxies plus forecast validity;
+- aggregate and mean-active TPS proxies as observation-only diagnostics;
 - pending Prefill sequences/tokens and long/quiescent subsets;
 - the equivalent last-decision post-admit Prefill state.
 
@@ -115,9 +115,9 @@ retired architecture is exported.
 
 ## Status log
 
-The bounded periodic line starts with `PIG-v0.12.2` and includes mode, attempts,
+The bounded periodic line starts with `PIG-v0.12.3` and includes mode, attempts,
 fit/risk/unknown counts, enforced rejects, reservations, last action/reason,
-Prefill estimate, KV post-admit values, TPS proxy/projection, Router scope and
+Prefill estimate, KV post-admit values, TPS proxy, Router scope and
 inspect capacity, observer freshness/identity/running/waiting, and compatibility
 running/limit values.
 

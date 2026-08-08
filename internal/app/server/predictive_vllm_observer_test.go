@@ -168,7 +168,6 @@ func newManualPredictiveVLLMObserver(metricsURL string, maximumKV int64, coordin
 		blockSize:           4,
 		pollInterval:        time.Second,
 		maximumAge:          10 * time.Second,
-		preemptionCooldown:  5 * time.Second,
 		coordinator:         coordinator,
 		now:                 now,
 		client:              &http.Client{Timeout: time.Second},

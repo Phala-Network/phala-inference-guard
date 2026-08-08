@@ -5,7 +5,6 @@ import (
 	"math"
 	"net/url"
 	"strings"
-	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	"github.com/Phala-Network/phala-inference-guard/internal/support/names"
@@ -78,16 +77,8 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 		cfg.PredictiveMaximumMetricsAge < cfg.PredictiveObservationPollInterval || cfg.PredictiveMaximumMetricsAge > predictiveMaximumMetricsRequestTime {
 		return fmt.Errorf("predictive metrics freshness bounds are invalid")
 	}
-	if cfg.PredictivePreemptionCooldown < 0 || cfg.PredictivePreemptionCooldown > 24*time.Hour {
-		return fmt.Errorf("predictive preemption cooldown is invalid")
-	}
-	if !finite(cfg.PredictiveKVTargetRatio) || !finite(cfg.PredictiveKVHardRatio) ||
-		cfg.PredictiveKVTargetRatio <= 0 || cfg.PredictiveKVTargetRatio >= cfg.PredictiveKVHardRatio || cfg.PredictiveKVHardRatio >= 1 {
-		return fmt.Errorf("predictive KV ratios must satisfy 0 < target < hard < 1")
-	}
-	if !finite(cfg.PredictiveTPSTarget) || !finite(cfg.PredictiveTPSFloor) ||
-		cfg.PredictiveTPSFloor <= 0 || cfg.PredictiveTPSFloor >= cfg.PredictiveTPSTarget {
-		return fmt.Errorf("PREDICTIVE_TPS_FLOOR must be > 0 and < PREDICTIVE_TPS_TARGET")
+	if !finite(cfg.PredictiveKVHardRatio) || cfg.PredictiveKVHardRatio <= 0 || cfg.PredictiveKVHardRatio >= 1 {
+		return fmt.Errorf("PREDICTIVE_KV_HARD_RATIO must be between 0 and 1")
 	}
 	regular, exclusive, quiescent, aggregate := predictivePrefillBounds(cfg)
 	automatic := regular == 0 && exclusive == 0 && quiescent == 0 && aggregate == 0

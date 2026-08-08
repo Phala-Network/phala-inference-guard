@@ -66,6 +66,7 @@ func TestV0121ConfigHasNoLegacyModeOwnership(t *testing.T) {
 		"DynamicUserTPSCapacityHealthyN", "DynamicUserTPSCapacityHealthyMul",
 		"DynamicGlobalGreen", "DynamicGlobalYellow", "DynamicGlobalRed",
 		"QoSQueueWait", "QoSQueuePoll", "KVAdmissionMode", "KVAdmissionPolicy",
+		"PredictiveKVTargetRatio", "PredictivePreemptionCooldown",
 		"SSEKeepAliveEnabled", "SSEEarlyBridgeEnabled",
 	}
 	typeOfConfig := reflect.TypeOf(Config{})
@@ -78,19 +79,21 @@ func TestV0121ConfigHasNoLegacyModeOwnership(t *testing.T) {
 
 func TestV0121RetiredEnvironmentCannotReenableLegacyModes(t *testing.T) {
 	retired := map[string]string{
-		"GLOBAL_LIMIT":                         "not-an-int",
-		"DYNAMIC_ENABLED":                      "not-a-bool",
-		"DYNAMIC_ENFORCE":                      "not-a-bool",
-		"DYNAMIC_METRICS_URL":                  "http://retired.invalid/metrics",
-		"KV_ADMISSION_MODE":                    "shadow",
-		"BACKEND_PRIORITY_INJECTION_ENABLED":   "not-a-bool",
-		"OPENAI_COMPAT_STRIP_EMPTY_TOOL_CALLS": "not-a-bool",
-		"CLASSIFY_OUTPUT_TOKENS":               "not-a-bool",
-		"ADAPTIVE_OUTPUT_ENABLED":              "not-a-bool",
-		"SSE_KEEPALIVE_ENABLED":                "not-a-bool",
-		"SSE_EARLY_BRIDGE_ENABLED":             "not-a-bool",
-		"UPSTREAMS":                            "http://retired-a.invalid,http://retired-b.invalid",
-		"BACKENDS":                             "a=http://retired-a.invalid|http://retired-a.invalid/metrics",
+		"GLOBAL_LIMIT":                           "not-an-int",
+		"DYNAMIC_ENABLED":                        "not-a-bool",
+		"DYNAMIC_ENFORCE":                        "not-a-bool",
+		"DYNAMIC_METRICS_URL":                    "http://retired.invalid/metrics",
+		"KV_ADMISSION_MODE":                      "shadow",
+		"BACKEND_PRIORITY_INJECTION_ENABLED":     "not-a-bool",
+		"OPENAI_COMPAT_STRIP_EMPTY_TOOL_CALLS":   "not-a-bool",
+		"CLASSIFY_OUTPUT_TOKENS":                 "not-a-bool",
+		"ADAPTIVE_OUTPUT_ENABLED":                "not-a-bool",
+		"SSE_KEEPALIVE_ENABLED":                  "not-a-bool",
+		"SSE_EARLY_BRIDGE_ENABLED":               "not-a-bool",
+		"PREDICTIVE_KV_TARGET_RATIO":             "not-a-float",
+		"PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS": "not-an-int",
+		"UPSTREAMS":                              "http://retired-a.invalid,http://retired-b.invalid",
+		"BACKENDS":                               "a=http://retired-a.invalid|http://retired-a.invalid/metrics",
 	}
 	for name, value := range retired {
 		t.Setenv(name, value)
@@ -151,10 +154,7 @@ func TestV0121TestsCanExplicitlyOverrideTypedPredictivePolicy(t *testing.T) {
 	t.Setenv("PREDICTIVE_METRICS_URL", "http://fixture:9000/custom-metrics")
 	t.Setenv("PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS", "20")
 	t.Setenv("PREDICTIVE_MAX_METRICS_AGE_MS", "100")
-	t.Setenv("PREDICTIVE_KV_TARGET_RATIO", "0.80")
 	t.Setenv("PREDICTIVE_KV_HARD_RATIO", "0.90")
-	t.Setenv("PREDICTIVE_TPS_TARGET", "22")
-	t.Setenv("PREDICTIVE_TPS_FLOOR", "16")
 	t.Setenv("PREDICTIVE_PREFILL_REGULAR_TOKENS", "1024")
 	t.Setenv("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", "2048")
 	t.Setenv("PREDICTIVE_PREFILL_QUIESCENT_TOKENS", "4096")
@@ -167,8 +167,7 @@ func TestV0121TestsCanExplicitlyOverrideTypedPredictivePolicy(t *testing.T) {
 		t.Fatalf("Validate explicit test policy: %v", err)
 	}
 	if cfg.PredictiveAdmissionMode != "shadow" || cfg.PredictiveObservationPollInterval != 20*time.Millisecond ||
-		cfg.PredictiveMaximumMetricsAge != 100*time.Millisecond || cfg.PredictiveKVTargetRatio != 0.80 ||
-		cfg.PredictiveKVHardRatio != 0.90 || cfg.PredictiveTPSTarget != 22 || cfg.PredictiveTPSFloor != 16 ||
+		cfg.PredictiveMaximumMetricsAge != 100*time.Millisecond || cfg.PredictiveKVHardRatio != 0.90 ||
 		cfg.PredictivePrefillRegularTokens != 1024 || cfg.PredictivePrefillExclusiveTokens != 2048 ||
 		cfg.PredictivePrefillQuiescentTokens != 4096 || cfg.PredictivePrefillAggregateBudgetTokens != 2048 {
 		t.Fatalf("explicit test policy was not loaded exactly: %+v", cfg)

@@ -309,8 +309,6 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 		EffectiveSequences:                  result.Decision.EffectiveSequences,
 		AggregateTPSProxy:                   input.AggregateTPSProxy,
 		MeanActiveTPSProxy:                  input.MeanActiveTPSProxy,
-		ProjectedTPSProxy:                   result.Decision.ProjectedMeanActiveTPSProxy,
-		TPSForecastValid:                    result.Decision.TPSForecastValid,
 		PrefillClass:                        result.Decision.PrefillClass,
 		EstimatedPrefillTokens:              result.Decision.EstimatedPrefillTokens,
 		PendingPrefillSequences:             result.Decision.PendingPrefillSequences,
@@ -364,8 +362,6 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 			EffectiveSequences:               result.Decision.EffectiveSequences,
 			AggregateTPSProxy:                input.AggregateTPSProxy,
 			MeanActiveTPSProxy:               input.MeanActiveTPSProxy,
-			ProjectedTPSProxy:                result.Decision.ProjectedMeanActiveTPSProxy,
-			TPSForecastValid:                 result.Decision.TPSForecastValid,
 			PrefillClass:                     result.Decision.PrefillClass,
 			EstimatedPrefillTokens:           result.Decision.EstimatedPrefillTokens,
 			PendingPrefillSequences:          result.Decision.PendingPrefillSequences,
@@ -557,8 +553,15 @@ func requestAwareAdapterCost(manifestID string, blockSize int64, input predictiv
 	if selectionInputTokens <= 0 || cost.EstimatedInputHigh > math.MaxInt64-cost.BoundedDecodeTokens {
 		return 0, domainpredictive.RequestCost{}, false
 	}
-	activeContext := cost.EstimatedInputHigh + cost.BoundedDecodeTokens
-	inputKV, valid := requestAwareRoundUp(cost.EstimatedInputHigh, blockSize)
+	safetyInputTokens := cost.EstimatedInputHigh
+	if selectionInputTokens > safetyInputTokens {
+		safetyInputTokens = selectionInputTokens
+	}
+	if safetyInputTokens > math.MaxInt64-cost.BoundedDecodeTokens {
+		return 0, domainpredictive.RequestCost{}, false
+	}
+	activeContext := safetyInputTokens + cost.BoundedDecodeTokens
+	inputKV, valid := requestAwareRoundUp(safetyInputTokens, blockSize)
 	if !valid {
 		return 0, domainpredictive.RequestCost{}, false
 	}
@@ -569,7 +572,7 @@ func requestAwareAdapterCost(manifestID string, blockSize int64, input predictiv
 	futureKV := totalKV - inputKV
 	return selectionInputTokens, domainpredictive.RequestCost{
 		ManifestID:  manifestID,
-		InputTokens: cost.EstimatedInputHigh,
+		InputTokens: safetyInputTokens,
 		KV: domainpredictive.KVIncrement{
 			PhysicalKVUpper: totalKV,
 			ActiveKVUpper:   totalKV,
@@ -578,7 +581,7 @@ func requestAwareAdapterCost(manifestID string, blockSize int64, input predictiv
 			PhysicalKVUpper: futureKV,
 			ActiveKVUpper:   futureKV,
 		},
-		UncachedPrefillUpper:     cost.EstimatedInputHigh,
+		UncachedPrefillUpper:     safetyInputTokens,
 		DecodeHorizonUpper:       cost.BoundedDecodeTokens,
 		DecodeSequencesUpper:     1,
 		ActiveContextTokensUpper: activeContext,
@@ -638,7 +641,7 @@ func requestAwareTelemetryObservation(
 			AggregateTPSProxy:  observer.AggregateTPS,
 			MeanActiveTPSProxy: observer.MeanActiveTPS,
 			TPSValid:           observer.TPSValid,
-			PreemptionCooldown: observer.PreemptionCooldown,
+			PreemptionObserved: observer.PreemptionObserved,
 		}, observer, true
 	}
 	input, valid = requestAwareAdapterSnapshot(provider, now)
@@ -648,8 +651,6 @@ func requestAwareTelemetryObservation(
 func requestAwareAdapterProtectedDecision(decision runtimepredictive.RequestAwareDecision) predictiveAdmissionDecision {
 	source := runtimepredictive.PredictionSourceDeterministic
 	switch decision.Reason {
-	case runtimepredictive.RequestAwareReasonRequestSize:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonRequestSizeAtPressure, source)
 	case runtimepredictive.RequestAwareReasonPrefillBudget,
 		runtimepredictive.RequestAwareReasonPrefillConcurrency,
 		runtimepredictive.RequestAwareReasonPrefillExclusive,
@@ -658,7 +659,7 @@ func requestAwareAdapterProtectedDecision(decision runtimepredictive.RequestAwar
 	case runtimepredictive.RequestAwareReasonKV:
 		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonKVOverBudget, source)
 	case runtimepredictive.RequestAwareReasonPreemption:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonPreemptionCooldown, source)
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonPreemptionObserved, source)
 	case runtimepredictive.RequestAwareReasonStale, runtimepredictive.RequestAwareReasonUnavailable:
 		return requestAwareAdapterFailure(predictiveAdmissionOutcomeAvailabilityProtection, domainpredictive.ReasonMetricsStale, runtimepredictive.PredictionSourceUnavailable)
 	case runtimepredictive.RequestAwareReasonDuplicate:

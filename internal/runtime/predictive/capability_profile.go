@@ -36,7 +36,6 @@ type CapabilityProfileInput struct {
 	ModelIdentitySHA256             string
 	KVCapacityTokens                int64
 	KVBlockSize                     int64
-	KVTargetRatio                   float64
 	KVHardRatio                     float64
 	ObservedColdPrefillTokensPerSec float64
 	Prefill                         PrefillTokenBounds
@@ -48,7 +47,6 @@ type BackendCapabilityProfile struct {
 	ModelIdentitySHA256          string
 	KVCapacityTokens             int64
 	KVBlockSize                  int64
-	KVSoftLimitTokens            int64
 	KVHardLimitTokens            int64
 	SafeColdPrefillTokensPerSec  float64
 	PrefillRegularTokens         int64
@@ -61,16 +59,11 @@ type BackendCapabilityProfile struct {
 func NewBackendCapabilityProfile(input CapabilityProfileInput) (BackendCapabilityProfile, error) {
 	if input.ModelIdentitySHA256 == "" || input.KVCapacityTokens <= 0 || input.KVCapacityTokens > 1<<53 ||
 		input.KVBlockSize <= 0 || input.KVBlockSize >= input.KVCapacityTokens ||
-		!requestAwareFinite(input.KVTargetRatio) || !requestAwareFinite(input.KVHardRatio) ||
-		input.KVTargetRatio <= 0 || input.KVHardRatio <= input.KVTargetRatio || input.KVHardRatio >= 1 {
+		!requestAwareFinite(input.KVHardRatio) || input.KVHardRatio <= 0 || input.KVHardRatio >= 1 {
 		return BackendCapabilityProfile{}, fmt.Errorf("backend capability geometry is invalid")
 	}
-	soft, ok := capabilityRatioTokens(input.KVCapacityTokens, input.KVBlockSize, input.KVTargetRatio)
-	if !ok {
-		return BackendCapabilityProfile{}, fmt.Errorf("backend capability soft KV limit is invalid")
-	}
 	hard, ok := capabilityRatioTokens(input.KVCapacityTokens, input.KVBlockSize, input.KVHardRatio)
-	if !ok || soft >= hard || hard >= input.KVCapacityTokens || hard-soft < input.KVBlockSize {
+	if !ok || hard >= input.KVCapacityTokens {
 		return BackendCapabilityProfile{}, fmt.Errorf("backend capability KV limits are invalid")
 	}
 
@@ -79,7 +72,6 @@ func NewBackendCapabilityProfile(input CapabilityProfileInput) (BackendCapabilit
 		ModelIdentitySHA256: input.ModelIdentitySHA256,
 		KVCapacityTokens:    input.KVCapacityTokens,
 		KVBlockSize:         input.KVBlockSize,
-		KVSoftLimitTokens:   soft,
 		KVHardLimitTokens:   hard,
 		Source:              input.Source,
 	}
@@ -110,9 +102,8 @@ func (p BackendCapabilityProfile) Validate() error {
 	if p.SchemaVersion != CapabilityProfileSchema || p.ModelIdentitySHA256 == "" ||
 		p.KVCapacityTokens <= 0 || p.KVCapacityTokens > 1<<53 ||
 		p.KVBlockSize <= 0 || p.KVBlockSize >= p.KVCapacityTokens ||
-		p.KVSoftLimitTokens <= 0 || p.KVHardLimitTokens <= p.KVSoftLimitTokens ||
-		p.KVHardLimitTokens >= p.KVCapacityTokens ||
-		p.KVSoftLimitTokens%p.KVBlockSize != 0 || p.KVHardLimitTokens%p.KVBlockSize != 0 {
+		p.KVHardLimitTokens <= 0 || p.KVHardLimitTokens >= p.KVCapacityTokens ||
+		p.KVHardLimitTokens%p.KVBlockSize != 0 {
 		return fmt.Errorf("backend capability profile is invalid")
 	}
 	if err := validatePrefillBounds(PrefillTokenBounds{

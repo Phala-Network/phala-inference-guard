@@ -41,9 +41,13 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decisionStart := time.Now()
-	estimatorStart := time.Now()
 	classification, protocolError := s.requestClassifier.ClassifyRequest(r)
-	s.estimatorDuration.Observe(time.Since(estimatorStart))
+	if classification.Timing.BodyReadMeasured {
+		s.bodyReadDuration.Observe(classification.Timing.BodyRead)
+	}
+	if classification.Timing.EstimatorMeasured {
+		s.estimatorDuration.Observe(classification.Timing.Estimator)
+	}
 	if protocolError != nil {
 		s.decisionDuration.Observe(time.Since(decisionStart))
 		if protocolError.Reason == "invalid_json" {

@@ -14,9 +14,5 @@ func (c *Classifier) AdmittedPath(r *http.Request) bool {
 }
 
 func (c *Classifier) ClassifyRequest(r *http.Request) (Classification, *ProtocolError) {
-	cost, protocolError := c.classifyJSONFields(r)
-	if protocolError != nil {
-		return Classification{}, protocolError
-	}
-	return Classification{Cost: cost}, nil
+	return c.classifyJSONFields(r)
 }

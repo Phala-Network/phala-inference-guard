@@ -48,6 +48,6 @@ const (
 	ReasonRequestSizeAtPressure   Reason = "request_size_at_pressure"
 	ReasonPredictorProfileUnknown Reason = "predictor_profile_unknown"
 	ReasonMetricsStale            Reason = "metrics_stale"
-	ReasonPreemptionCooldown      Reason = "preemption_cooldown"
+	ReasonPreemptionObserved      Reason = "preemption_observed"
 	ReasonDuplicateRequest        Reason = "duplicate_request"
 )

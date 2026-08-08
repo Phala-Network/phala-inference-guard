@@ -38,7 +38,7 @@ func TestV012FactoryBuildsProfileFromOneBoundedStartupCalibration(t *testing.T) 
 	}()
 	profile := adapter.PredictiveAdmissionTelemetry().CapabilityProfile
 	if profile.Source != runtimepredictive.CapabilityProfileCalibrated ||
-		profile.KVSoftLimitTokens != 840_000 || profile.KVHardLimitTokens != 880_000 {
+		profile.KVHardLimitTokens != 880_000 {
 		t.Fatalf("calibrated capability profile = %+v", profile)
 	}
 	if reason := adapter.PredictiveAdmissionTelemetry().CapabilityReason; reason != "calibrated" {
@@ -187,7 +187,7 @@ func TestV012CapabilityMetadataRedirectIsNotFollowed(t *testing.T) {
 	initialization, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
 		MetricsURL: origin.URL + "/metrics", UpstreamURL: origin.URL,
 		RequestTimeout: 50 * time.Millisecond, RetryInterval: 10 * time.Millisecond,
-		KVTargetRatio: 0.84, KVHardRatio: 0.88,
+		KVHardRatio: 0.88,
 	}, v012CapabilityStartup())
 	if err != nil {
 		t.Fatalf("redirect fallback initialization: %v", err)
@@ -441,6 +441,5 @@ func v012CapabilityFactoryConfig(upstream string) config {
 	cfg.PredictivePrefillExclusiveTokens = 0
 	cfg.PredictivePrefillQuiescentTokens = 0
 	cfg.PredictivePrefillAggregateBudgetTokens = 0
-	cfg.PredictivePreemptionCooldown = 0
 	return cfg
 }

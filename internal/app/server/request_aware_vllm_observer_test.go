@@ -23,15 +23,14 @@ func TestRequestAwareObserverStartupProbeIsTheFirstTPSBaseline(t *testing.T) {
 	defer server.Close()
 	observedAt := time.Unix(99_000, 0)
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
-		MetricsURL:         server.URL,
-		ServedModel:        "google/gemma-4-fixture",
-		MaximumKVTokens:    1_000,
-		BlockSize:          4,
-		PollInterval:       time.Hour,
-		MaximumAge:         2 * time.Hour,
-		RequestTimeout:     time.Hour,
-		PreemptionCooldown: time.Minute,
-		Coordinator:        &stablePrefillTestCoordinator{},
+		MetricsURL:      server.URL,
+		ServedModel:     "google/gemma-4-fixture",
+		MaximumKVTokens: 1_000,
+		BlockSize:       4,
+		PollInterval:    time.Hour,
+		MaximumAge:      2 * time.Hour,
+		RequestTimeout:  time.Hour,
+		Coordinator:     &stablePrefillTestCoordinator{},
 		Initial: predictiveVLLMStartup{
 			ModelIdentitySHA256: predictiveModelIdentitySHA256("google/gemma-4-fixture"),
 			CapacityTokens:      1_000,
@@ -114,7 +113,7 @@ func TestRequestAwareObserverPublishesFreshCompletionWindowTPSWithNoCurrentRunni
 	}
 }
 
-func TestRequestAwareObserverPublishesCooldownAndFreshness(t *testing.T) {
+func TestRequestAwareObserverPreemptionProtectionClearsOnNextFreshObservation(t *testing.T) {
 	clock := &adapterTestClock{now: time.Unix(102_000, 0)}
 	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 2, 0, 0, 100, true)}
 	server := httptest.NewServer(fixture)
@@ -124,15 +123,17 @@ func TestRequestAwareObserverPublishesCooldownAndFreshness(t *testing.T) {
 	clock.Advance(500 * time.Millisecond)
 	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, 0, 1, 110, true))
 	observer.poll(context.Background())
-	if input := observer.RequestAwareInput(clock.Now()); !input.MetricsFresh || !input.PreemptionCooldown || input.TPSValid {
+	if input := observer.RequestAwareInput(clock.Now()); !input.MetricsFresh || !input.PreemptionObserved || input.TPSValid {
 		t.Fatalf("preemption request-aware snapshot=%+v", input)
 	}
 
-	clock.Advance(6 * time.Second)
-	if input := observer.RequestAwareInput(clock.Now()); !input.MetricsFresh || input.PreemptionCooldown {
-		t.Fatalf("post-cooldown request-aware snapshot=%+v", input)
+	clock.Advance(500 * time.Millisecond)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.10, 2, 0, 1, 120, true))
+	observer.poll(context.Background())
+	if input := observer.RequestAwareInput(clock.Now()); !input.MetricsFresh || input.PreemptionObserved {
+		t.Fatalf("next fresh observation retained preemption protection=%+v", input)
 	}
-	clock.Advance(5 * time.Second)
+	clock.Advance(11 * time.Second)
 	if input := observer.RequestAwareInput(clock.Now()); input.MetricsFresh {
 		t.Fatalf("stale request-aware snapshot=%+v", input)
 	}
@@ -155,10 +156,7 @@ func TestRequestAwareObserverSameIdentityCounterResetInvalidatesCapabilityEpoch(
 	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, manager, clock.Now)
 	observer.poll(context.Background())
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVLimitTokens:            600,
 		HardKVLimitTokens:            900,
-		TPSTarget:                    20,
-		TPSFloor:                     15,
 		BlockSize:                    4,
 		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,

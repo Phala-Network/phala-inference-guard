@@ -31,8 +31,6 @@ type requestAwareDecisionLogEvent struct {
 	EffectiveSequences               int
 	AggregateTPSProxy                float64
 	MeanActiveTPSProxy               float64
-	ProjectedTPSProxy                float64
-	TPSForecastValid                 bool
 	PrefillClass                     runtimepredictive.RequestAwarePrefillClass
 	EstimatedPrefillTokens           int64
 	PendingPrefillSequences          int
@@ -94,7 +92,7 @@ func requestAwareDecisionLogLine(event requestAwareDecisionLogEvent) string {
 		scope = predictiveProtectionScopeRequest
 	}
 	return fmt.Sprintf(
-		"predictive_request_aware event=admission_decision mode=%s enforced=%t action=%s reason=%s http_reason=%s scope=%s pressure_source=%s pressure=%.6f selection_input_tokens=%d reserved_tokens=%d allowance_tokens=%d effective_kv=%d post_admit_kv=%d remaining_kv=%d running=%d waiting=%d effective_sequences=%d aggregate_tps_proxy=%.6f mean_active_tps_proxy=%.6f projected_tps_proxy=%.6f tps_forecast_valid=%t prefill_class=%s estimated_prefill_tokens=%d pending_prefill_sequences=%d pending_prefill_tokens=%d post_admit_pending_prefill_tokens=%d pending_long_prefill_sequences=%d pending_quiescent_prefill_sequences=%d suppressed=%d observed_at=%s",
+		"predictive_request_aware event=admission_decision mode=%s enforced=%t action=%s reason=%s http_reason=%s scope=%s pressure_source=%s pressure=%.6f selection_input_tokens=%d reserved_tokens=%d allowance_tokens=%d effective_kv=%d post_admit_kv=%d remaining_kv=%d running=%d waiting=%d effective_sequences=%d aggregate_tps_proxy=%.6f mean_active_tps_proxy=%.6f prefill_class=%s estimated_prefill_tokens=%d pending_prefill_sequences=%d pending_prefill_tokens=%d post_admit_pending_prefill_tokens=%d pending_long_prefill_sequences=%d pending_quiescent_prefill_sequences=%d suppressed=%d observed_at=%s",
 		event.Mode,
 		event.Enforced,
 		event.Action,
@@ -114,8 +112,6 @@ func requestAwareDecisionLogLine(event requestAwareDecisionLogEvent) string {
 		event.EffectiveSequences,
 		event.AggregateTPSProxy,
 		event.MeanActiveTPSProxy,
-		event.ProjectedTPSProxy,
-		event.TPSForecastValid,
 		event.PrefillClass,
 		event.EstimatedPrefillTokens,
 		event.PendingPrefillSequences,

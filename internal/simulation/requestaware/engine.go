@@ -6,10 +6,12 @@ import (
 	"sort"
 	"time"
 
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 const (
+	simulationManifestID      = "deterministic-request-aware-simulation"
 	simulationAggregateTPS    = 140.0
 	simulationUncontendedTPS  = 30.0
 	simulationPrefillTokensPS = 20_000.0
@@ -23,8 +25,15 @@ type activeRequest struct {
 	outputRemaining  float64
 	generated        float64
 	unabsorbed       bool
+	materialized     bool
+	prefillComplete  bool
 	violatedFloor    bool
 	cancelAt         time.Duration
+}
+
+type scheduledRequest struct {
+	id     string
+	active *activeRequest
 }
 
 type observedState struct {
@@ -40,7 +49,9 @@ type observedState struct {
 type scenarioRunner struct {
 	spec                   scenarioSpec
 	policyName             PolicyName
+	profile                runtimepredictive.BackendCapabilityProfile
 	policy                 *runtimepredictive.RequestAwarePolicy
+	manager                *runtimepredictive.Manager
 	productionPolicyCalls  int
 	active                 map[string]*activeRequest
 	order                  []string
@@ -52,7 +63,12 @@ type scenarioRunner struct {
 	externalPreemptionSeen bool
 }
 
-func runScenario(spec scenarioSpec, policyName PolicyName, policy *runtimepredictive.RequestAwarePolicy) (Metrics, int, error) {
+func runScenario(
+	spec scenarioSpec,
+	policyName PolicyName,
+	profile runtimepredictive.BackendCapabilityProfile,
+	policy *runtimepredictive.RequestAwarePolicy,
+) (Metrics, int, error) {
 	capacity := spec.capacityTokens
 	if capacity <= 0 {
 		capacity = simulationCapacityTokens
@@ -63,12 +79,21 @@ func runScenario(spec scenarioSpec, policyName PolicyName, policy *runtimepredic
 	runner := &scenarioRunner{
 		spec:       spec,
 		policyName: policyName,
+		profile:    profile,
 		policy:     policy,
 		active:     make(map[string]*activeRequest),
 		observed: observedState{
 			usedTokens: spec.initialKVTokens,
 			running:    spec.backgroundRunning,
 		},
+	}
+	if policyName == PolicyV0123 {
+		runner.manager = runtimepredictive.NewManager(simulationManifestID, domainpredictive.VirtualState{
+			PhysicalKVUpper:     spec.initialKVTokens,
+			ActiveKVUpper:       spec.initialKVTokens,
+			DecodeSequences:     spec.backgroundRunning,
+			ActiveContextTokens: spec.initialKVTokens,
+		})
 	}
 	runner.metrics.PeakKVTokens = spec.initialKVTokens
 	arrivals := make(map[time.Duration][]requestSpec)
@@ -98,13 +123,17 @@ func runScenario(spec scenarioSpec, policyName PolicyName, policy *runtimepredic
 		runner.metrics.CompletionTokensPerSecond = runner.metrics.CompletionTokens / durationSeconds
 		runner.metrics.SLOCompletionTokensPerSecond = runner.metrics.SLOCompletionTokens / durationSeconds
 	}
+	runner.terminateAll(runtimepredictive.TerminalExpired)
+	if runner.manager != nil && runner.manager.Snapshot().Reservations != 0 {
+		return Metrics{}, runner.productionPolicyCalls, fmt.Errorf("candidate manager leaked reservations")
+	}
 	return runner.metrics, runner.productionPolicyCalls, nil
 }
 
 func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
 	r.metrics.Arrivals++
 	effectiveKV := r.observed.usedTokens + r.unabsorbedReservations()
-	hardLimit := int64(math.Floor(float64(r.capacityTokens()) * simulationHardKVRatio))
+	hardLimit := r.profile.KVHardLimitTokens
 	hardFit := effectiveKV >= 0 && request.reservedTokens > 0 && request.reservedTokens <= hardLimit-effectiveKV
 	admit, hardProtect := r.decide(at, request, effectiveKV, hardFit)
 	if !admit {
@@ -145,49 +174,42 @@ func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
 func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effectiveKV int64, hardFit bool) (admit bool, hardProtect bool) {
 	metricsFresh := !insideAny(r.spec.staleMetrics, at)
 	preemptionCooldown := insideAny(r.spec.preemptionCooldown, at)
-	if r.policyName == PolicyGlobalBinary {
-		if !metricsFresh || preemptionCooldown || !hardFit {
-			return false, true
-		}
-		if float64(effectiveKV)/float64(r.capacityTokens()) >= simulationSoftKVRatio ||
-			r.observed.waiting > 0 ||
-			(r.observed.tpsValid && r.observed.tps < simulationTPSTarget) {
-			return false, false
-		}
+	switch r.policyName {
+	case PolicyNoAdmission:
 		return true, false
+	case PolicyV0122:
+		return r.decideV0122(request, effectiveKV, hardFit, metricsFresh, preemptionCooldown)
 	}
-	if r.policyName != PolicyRequestAware || r.policy == nil {
+	if r.policyName != PolicyV0123 || r.policy == nil || r.manager == nil {
 		return false, true
 	}
 	r.productionPolicyCalls++
-	pendingSequences, pendingTokens, pendingLong, pendingQuiescent := r.pendingPrefillSummary()
-	estimatedPrefill := request.estimatedPrefill
-	if estimatedPrefill <= 0 {
-		estimatedPrefill = request.selectionInput
-	}
-	decision := r.policy.Evaluate(runtimepredictive.RequestAwareInput{
-		MetricsFresh:                     metricsFresh,
-		IdentityValid:                    true,
-		CapacityTokens:                   r.capacityTokens(),
-		UsedTokens:                       r.observed.usedTokens,
-		ReservedTokens:                   r.unabsorbedReservations(),
-		RequestReservedTokens:            request.reservedTokens,
-		SelectionInputTokens:             request.selectionInput,
-		Running:                          r.observed.running,
-		Waiting:                          r.observed.waiting,
-		EffectiveSequences:               r.observed.running + r.unabsorbedSequenceCount(),
-		AggregateTPSProxy:                r.observed.aggregateTPS,
-		MeanActiveTPSProxy:               r.observed.tps,
-		TPSValid:                         r.observed.tpsValid,
-		PreemptionCooldown:               preemptionCooldown,
-		EstimatedPrefillTokens:           estimatedPrefill,
-		PendingPrefillSequences:          pendingSequences,
-		PendingPrefillTokens:             pendingTokens,
-		PendingLongPrefillSequences:      pendingLong,
-		PendingQuiescentPrefillSequences: pendingQuiescent,
-	})
-	switch decision.Action {
+	result := r.manager.DecideRequestAwareAndReserve(
+		time.Unix(0, int64(at)),
+		request.id,
+		simulationRequestCost(request),
+		request.selectionInput,
+		r.policy,
+		runtimepredictive.RequestAwareInput{
+			MetricsFresh:       metricsFresh,
+			IdentityValid:      true,
+			CapacityTokens:     r.capacityTokens(),
+			Running:            r.observed.running,
+			Waiting:            r.observed.waiting,
+			AggregateTPSProxy:  r.observed.aggregateTPS,
+			MeanActiveTPSProxy: r.observed.tps,
+			TPSValid:           r.observed.tpsValid,
+			PreemptionObserved: preemptionCooldown,
+		},
+	)
+	switch result.Decision.Action {
 	case runtimepredictive.RequestAwareAdmit:
+		if !result.Reserved || !r.manager.MarkForwarded(request.id) {
+			if result.Reserved {
+				r.manager.Terminate(request.id, runtimepredictive.TerminalLocalQoSReject)
+			}
+			return false, true
+		}
 		return true, false
 	case runtimepredictive.RequestAwareSizeProtect:
 		return false, false
@@ -204,13 +226,18 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	for _, id := range r.order {
 		active := r.active[id]
 		if active != nil && active.cancelAt > 0 && at >= active.cancelAt {
-			delete(r.active, id)
+			r.removeActive(id, runtimepredictive.TerminalClientCancelled)
 		}
+	}
+	scheduled := r.scheduledRequests()
+	waitingAtStart := r.currentWaiting(at - elapsed)
+	for _, request := range scheduled {
+		request.active.materialized = true
 	}
 	prefillAtStart := 0
 	prefillExcessAtStart := 0.0
-	for _, id := range r.order {
-		if active := r.active[id]; active != nil && active.prefillRemaining > 0 {
+	for _, request := range scheduled {
+		if active := request.active; active.prefillRemaining > 0 {
 			prefillAtStart++
 			if excess := active.prefillRemaining - float64(runtimepredictive.DefaultRequestAwarePrefillRegularTokens); excess > 0 {
 				prefillExcessAtStart += excess
@@ -218,18 +245,24 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		}
 	}
 	prefillBudget := simulationPrefillTokensPS * seconds
-	for _, id := range r.order {
-		active := r.active[id]
-		if active == nil || active.prefillRemaining <= 0 || prefillBudget <= 0 {
+	for _, request := range scheduled {
+		active := request.active
+		if active.prefillRemaining <= 0 || prefillBudget <= 0 {
 			continue
 		}
 		consumed := math.Min(active.prefillRemaining, prefillBudget)
 		active.prefillRemaining -= consumed
 		prefillBudget -= consumed
+		if active.prefillRemaining <= simulationFloatTolerance && !active.prefillComplete {
+			active.prefillComplete = true
+			if r.manager != nil && !r.manager.MarkPrefillComplete(request.id) {
+				panic("simulation manager rejected Prefill completion")
+			}
+		}
 	}
-	ready := make([]*activeRequest, 0, len(r.active))
-	for _, id := range r.order {
-		if active := r.active[id]; active != nil && active.prefillRemaining <= simulationFloatTolerance {
+	ready := make([]*activeRequest, 0, len(scheduled))
+	for _, request := range scheduled {
+		if active := request.active; active.prefillRemaining <= simulationFloatTolerance {
 			ready = append(ready, active)
 		}
 	}
@@ -270,10 +303,10 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		active := r.active[id]
 		if active != nil && active.outputRemaining <= simulationFloatTolerance {
 			r.metrics.Completed++
-			delete(r.active, id)
+			r.removeActive(id, runtimepredictive.TerminalCompleted)
 		}
 	}
-	if r.currentWaiting(at) > 0 {
+	if waitingAtStart > 0 {
 		r.metrics.WaitingSeconds += seconds
 	}
 	r.updatePeaks(at)
@@ -282,8 +315,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 
 func (r *scenarioRunner) poll(at time.Duration) {
 	used := r.trueKVTokens()
-	running := r.spec.backgroundRunning + len(r.active)
-	waiting := r.currentWaiting(at)
+	running, waiting := r.schedulerCounts(at)
 	aggregateTPS := 0.0
 	tps := 0.0
 	tpsValid := false
@@ -309,20 +341,64 @@ func (r *scenarioRunner) poll(at time.Duration) {
 		at:           at,
 	}
 	r.lastObservedGeneration = r.metrics.CompletionTokens
+	if r.manager != nil {
+		started := r.manager.StartSampleWindow()
+		finished := r.manager.EventSequence()
+		decodeSequences := running + waiting
+		if err := r.manager.ReconcileSample(runtimepredictive.SampleWindow{
+			Observed: domainpredictive.VirtualState{
+				PhysicalKVUpper:         used,
+				ActiveKVUpper:           used,
+				DecodeSequences:         decodeSequences,
+				PendingPrefillSequences: waiting,
+				ActiveContextTokens:     used,
+			},
+			StartedSequence:  started,
+			FinishedSequence: finished,
+		}); err != nil {
+			panic(fmt.Sprintf("simulation reconcile: %v", err))
+		}
+	}
 	for _, active := range r.active {
 		active.unabsorbed = false
 	}
 }
 
 func (r *scenarioRunner) currentWaiting(at time.Duration) int {
-	waiting := r.spec.backgroundRunning + len(r.active) - r.maximumNoWait()
-	if waiting < 0 {
-		waiting = 0
-	}
+	_, waiting := r.schedulerCounts(at)
+	return waiting
+}
+
+func (r *scenarioRunner) schedulerCounts(at time.Duration) (running, waiting int) {
+	scheduled := len(r.scheduledRequests())
+	running = r.spec.backgroundRunning + scheduled
+	waiting = len(r.active) - scheduled
 	if insideAny(r.spec.forcedWaiting, at) {
 		waiting++
 	}
-	return waiting
+	return running, waiting
+}
+
+func (r *scenarioRunner) scheduledRequests() []scheduledRequest {
+	available := r.maximumNoWait() - r.spec.backgroundRunning
+	if available <= 0 || len(r.active) == 0 {
+		return nil
+	}
+	if available > len(r.active) {
+		available = len(r.active)
+	}
+	scheduled := make([]scheduledRequest, 0, available)
+	for _, id := range r.order {
+		active := r.active[id]
+		if active == nil {
+			continue
+		}
+		scheduled = append(scheduled, scheduledRequest{id: id, active: active})
+		if len(scheduled) == available {
+			break
+		}
+	}
+	return scheduled
 }
 
 func (r *scenarioRunner) maximumNoWait() int {
@@ -335,6 +411,9 @@ func (r *scenarioRunner) maximumNoWait() int {
 func (r *scenarioRunner) trueKVTokens() int64 {
 	tokens := r.spec.initialKVTokens
 	for _, active := range r.active {
+		if !active.materialized {
+			continue
+		}
 		requestTokens := active.spec.actualInput + int64(math.Ceil(active.generated))
 		if requestTokens > 0 && tokens <= math.MaxInt64-requestTokens {
 			tokens += requestTokens
@@ -380,10 +459,10 @@ func (r *scenarioRunner) pendingPrefillSummary() (sequences int, tokens int64, l
 		} else {
 			tokens = math.MaxInt64
 		}
-		if estimated >= runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens {
+		if estimated >= r.profile.PrefillQuiescentTokens {
 			quiescent++
 			long++
-		} else if estimated >= runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens {
+		} else if estimated >= r.profile.PrefillExclusiveTokens {
 			long++
 		}
 	}
@@ -402,22 +481,53 @@ func (r *scenarioRunner) updatePeaks(at time.Duration) {
 	if kv > r.metrics.PeakKVTokens {
 		r.metrics.PeakKVTokens = kv
 	}
-	running := r.spec.backgroundRunning + len(r.active)
+	running, _ := r.schedulerCounts(at)
 	if running > r.metrics.MaximumRunning {
 		r.metrics.MaximumRunning = running
 	}
 }
 
 func (r *scenarioRunner) enforceHardKV() {
-	hardLimit := int64(math.Floor(float64(r.capacityTokens()) * simulationHardKVRatio))
+	hardLimit := r.profile.KVHardLimitTokens
 	for r.trueKVTokens() > hardLimit && len(r.active) > 0 {
 		ids := make([]string, 0, len(r.active))
 		for id := range r.active {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
-		delete(r.active, ids[len(ids)-1])
+		r.removeActive(ids[len(ids)-1], runtimepredictive.TerminalUpstreamFailure)
 		r.metrics.Preemptions++
+	}
+}
+
+func (r *scenarioRunner) removeActive(id string, cause runtimepredictive.TerminalCause) {
+	if _, exists := r.active[id]; !exists {
+		return
+	}
+	if r.manager != nil && !r.manager.Terminate(id, cause) {
+		panic("simulation manager rejected terminal event")
+	}
+	delete(r.active, id)
+}
+
+func (r *scenarioRunner) terminateAll(cause runtimepredictive.TerminalCause) {
+	for _, id := range r.order {
+		r.removeActive(id, cause)
+	}
+}
+
+func simulationRequestCost(request requestSpec) domainpredictive.RequestCost {
+	return domainpredictive.RequestCost{
+		ManifestID:  simulationManifestID,
+		InputTokens: request.reservedTokens,
+		KV: domainpredictive.KVIncrement{
+			PhysicalKVUpper: request.reservedTokens,
+			ActiveKVUpper:   request.reservedTokens,
+		},
+		UncachedPrefillUpper:     request.reservedTokens,
+		DecodeSequencesUpper:     1,
+		ActiveContextTokensUpper: request.reservedTokens,
+		Confidence:               1,
 	}
 }
 

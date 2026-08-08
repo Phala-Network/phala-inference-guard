@@ -134,6 +134,7 @@ type RequestAwarePendingSnapshot struct {
 	PrefillTokens             int64
 	LongPrefillSequences      int
 	QuiescentPrefillSequences int
+	UnknownPrefillSequences   int
 }
 
 func NewManager(manifestID string, base domain.VirtualState) *Manager {

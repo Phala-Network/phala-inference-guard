@@ -44,11 +44,7 @@ type Config struct {
 	PredictiveMetricsRequestTimeout        time.Duration
 	PredictiveObservationPollInterval      time.Duration
 	PredictiveMaximumMetricsAge            time.Duration
-	PredictivePreemptionCooldown           time.Duration
-	PredictiveKVTargetRatio                float64
 	PredictiveKVHardRatio                  float64
-	PredictiveTPSTarget                    float64
-	PredictiveTPSFloor                     float64
 	PredictivePrefillRegularTokens         int64
 	PredictivePrefillExclusiveTokens       int64
 	PredictivePrefillQuiescentTokens       int64

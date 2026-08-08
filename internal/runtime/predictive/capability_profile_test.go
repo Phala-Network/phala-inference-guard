@@ -7,7 +7,6 @@ func TestCapabilityProfileDerivesFrozenKVAndCalibratedPrefillLimits(t *testing.T
 		ModelIdentitySHA256:             "identity",
 		KVCapacityTokens:                1_000_000,
 		KVBlockSize:                     64,
-		KVTargetRatio:                   0.84,
 		KVHardRatio:                     0.88,
 		ObservedColdPrefillTokensPerSec: 10_000,
 		Source:                          CapabilityProfileCalibrated,
@@ -15,8 +14,8 @@ func TestCapabilityProfileDerivesFrozenKVAndCalibratedPrefillLimits(t *testing.T
 	if err != nil {
 		t.Fatalf("derive calibrated profile: %v", err)
 	}
-	if profile.KVSoftLimitTokens != 840_000 || profile.KVHardLimitTokens != 880_000 {
-		t.Fatalf("KV limits = %d/%d", profile.KVSoftLimitTokens, profile.KVHardLimitTokens)
+	if profile.KVHardLimitTokens != 880_000 {
+		t.Fatalf("hard KV limit = %d", profile.KVHardLimitTokens)
 	}
 	if profile.SafeColdPrefillTokensPerSec != 8_000 || profile.PrefillRegularTokens != 40_000 ||
 		profile.PrefillExclusiveTokens != 160_000 || profile.PrefillQuiescentTokens != 320_000 ||
@@ -30,7 +29,6 @@ func TestCapabilityProfileAlignsStaticFallbackWithoutInventingRate(t *testing.T)
 		ModelIdentitySHA256: "identity",
 		KVCapacityTokens:    1_003_000,
 		KVBlockSize:         64,
-		KVTargetRatio:       0.84,
 		KVHardRatio:         0.88,
 		Prefill: PrefillTokenBounds{
 			Regular: 64*1024 + 1, Exclusive: 256*1024 + 1,
@@ -53,7 +51,6 @@ func TestCapabilityProfileDoesNotWidenPrefillFromIdleProbeAlone(t *testing.T) {
 		ModelIdentitySHA256:             "identity",
 		KVCapacityTokens:                4 * 1024 * 1024,
 		KVBlockSize:                     64,
-		KVTargetRatio:                   0.84,
 		KVHardRatio:                     0.88,
 		ObservedColdPrefillTokensPerSec: 40_000,
 		Source:                          CapabilityProfileCalibrated,
@@ -73,7 +70,7 @@ func TestCapabilityProfileDoesNotWidenPrefillFromIdleProbeAlone(t *testing.T) {
 func TestCapabilityProfileRejectsInvalidGeometryRateAndOrdering(t *testing.T) {
 	base := CapabilityProfileInput{
 		ModelIdentitySHA256: "identity", KVCapacityTokens: 1_000_000, KVBlockSize: 64,
-		KVTargetRatio: 0.84, KVHardRatio: 0.88,
+		KVHardRatio:                     0.88,
 		ObservedColdPrefillTokensPerSec: 10_000, Source: CapabilityProfileCalibrated,
 	}
 	tests := []struct {
@@ -83,7 +80,7 @@ func TestCapabilityProfileRejectsInvalidGeometryRateAndOrdering(t *testing.T) {
 		{name: "identity", mutate: func(input *CapabilityProfileInput) { input.ModelIdentitySHA256 = "" }},
 		{name: "capacity", mutate: func(input *CapabilityProfileInput) { input.KVCapacityTokens = 0 }},
 		{name: "block", mutate: func(input *CapabilityProfileInput) { input.KVBlockSize = 0 }},
-		{name: "ratios", mutate: func(input *CapabilityProfileInput) { input.KVTargetRatio = input.KVHardRatio }},
+		{name: "hard ratio", mutate: func(input *CapabilityProfileInput) { input.KVHardRatio = 1 }},
 		{name: "rate", mutate: func(input *CapabilityProfileInput) { input.ObservedColdPrefillTokensPerSec = 0 }},
 	}
 	for _, test := range tests {
@@ -100,7 +97,7 @@ func TestCapabilityProfileRejectsInvalidGeometryRateAndOrdering(t *testing.T) {
 func TestCapabilityProfileValidationRejectsForgedRuntimeProfile(t *testing.T) {
 	profile, err := NewBackendCapabilityProfile(CapabilityProfileInput{
 		ModelIdentitySHA256: "model-hash", KVCapacityTokens: 1_000_000, KVBlockSize: 64,
-		KVTargetRatio: 0.84, KVHardRatio: 0.88,
+		KVHardRatio: 0.88,
 		Prefill: PrefillTokenBounds{
 			Regular: 64 * 1024, Exclusive: 256 * 1024,
 			Quiescent: 512 * 1024, Aggregate: 256 * 1024,

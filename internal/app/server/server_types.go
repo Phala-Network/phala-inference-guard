@@ -12,7 +12,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-const version = "PIG-v0.12.2"
+const version = "PIG-v0.12.3"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 
@@ -72,6 +72,7 @@ type proxyServer struct {
 	predictiveEnforcedRejects atomic.Uint64
 	predictiveShadowFailures  predictiveShadowFailureCounters
 	decisionDuration          durationHistogram
+	bodyReadDuration          durationHistogram
 	estimatorDuration         durationHistogram
 	proxyTTFB                 durationHistogram
 	proxyTotal                durationHistogram

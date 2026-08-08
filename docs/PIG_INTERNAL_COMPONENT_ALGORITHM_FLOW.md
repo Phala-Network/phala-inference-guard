@@ -1,6 +1,6 @@
-# PIG v0.12.2 Internal Algorithm Flow
+# PIG v0.12.3 Internal Algorithm Flow
 
-PIG v0.12.2 has one admission architecture and one upstream. Components are
+PIG v0.12.3 has one admission architecture and one upstream. Components are
 separated by ownership so request parsing, backend observation, policy,
 reservation lifecycle, proxying, and telemetry do not mutate each other's
 state.
@@ -30,7 +30,8 @@ HTTP admitted path
   -> estimate lexical input, output horizon, KV upper bound, and Prefill work
   -> capture fresh observer input
   -> Manager combines physical observation with every live reservation
-  -> Policy evaluates post-admit hard KV, Prefill interference, and soft TPS
+  -> ResourceGate evaluates post-admit hard KV fit
+  -> InterferenceGate evaluates class-aware Prefill interference
   -> Manager atomically decides and reserves in enforce
   -> proxy forwards unchanged request, or returns predictive HTTP 429
 ```
@@ -49,9 +50,10 @@ pressure:
 - a quiescent request requires a sufficiently idle backend;
 - any request exceeding hard post-admit KV is protected.
 
-TPS is a soft QoS constraint. A projected reduction can narrow the allowance or
-protect a large marginal request, but the design does not turn every temporary
-TPS dip into a global stop.
+Generation TPS remains observation-only diagnostic data in v0.12.3. It is used
+to evaluate QoS in controlled GPU experiments, but it does not authorize or
+reject a request. A future Decode envelope requires causal Router-disabled A/B
+evidence rather than a synthetic per-observation credit.
 
 ## Lifecycle
 
@@ -112,7 +114,9 @@ state and clears without another business request.
 | Owner | Responsibility |
 | --- | --- |
 | `internal/app/request` | Bounded read-only request inspection and exact body restoration |
-| `internal/runtime/predictive/request_aware_policy.go` | Pure request-aware decision policy |
+| `internal/runtime/predictive/resource_gate.go` | Pure post-admit KV fit |
+| `internal/runtime/predictive/interference_gate.go` | Pure class-aware Prefill interference |
+| `internal/runtime/predictive/request_aware_policy.go` | Two-gate decision composition |
 | `internal/runtime/predictive/manager.go` | Atomic reservation and reconciliation state |
 | `internal/app/server/predictive_vllm_observer.go` | Coherent vLLM observation, freshness, cooldown, epoch detection |
 | `internal/app/server/request_aware_predictive_adapter.go` | HTTP-facing decision translation and telemetry |

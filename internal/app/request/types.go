@@ -2,6 +2,7 @@ package request
 
 import (
 	"sync/atomic"
+	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 )
@@ -23,7 +24,15 @@ type Classifier struct {
 }
 
 type Classification struct {
-	Cost kvadmission.Cost
+	Cost   kvadmission.Cost
+	Timing ClassificationTiming
+}
+
+type ClassificationTiming struct {
+	BodyRead          time.Duration
+	Estimator         time.Duration
+	BodyReadMeasured  bool
+	EstimatorMeasured bool
 }
 
 type ProtocolError struct {

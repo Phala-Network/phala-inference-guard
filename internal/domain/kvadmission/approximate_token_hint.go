@@ -4,7 +4,6 @@ import "math"
 
 const (
 	approximateASCIIBytesPerToken    = 4
-	approximateLexicalRequestBudget  = 256
 	approximateLexicalPerStringLimit = 64
 	approximateLexicalWindows        = 4
 )
@@ -14,6 +13,12 @@ const (
 // IDs, vocabulary, templates, full Unicode traversal, allocation, network,
 // RPC, and FFI are all outside this contract.
 func approximateJSONStringTokens(raw []byte) (int64, bool) {
+	if len(raw) <= 3 {
+		if len(raw) == 0 {
+			return 0, true
+		}
+		return 1, true
+	}
 	tokens, _, known := approximateJSONStringTokensWithBudget(raw, approximateLexicalPerStringLimit)
 	return tokens, known
 }

@@ -19,8 +19,6 @@ type RequestAwareReason string
 
 const (
 	RequestAwareReasonOpen               RequestAwareReason = "open"
-	RequestAwareReasonWithinBudget       RequestAwareReason = "within_budget"
-	RequestAwareReasonRequestSize        RequestAwareReason = "request_size"
 	RequestAwareReasonStale              RequestAwareReason = "stale"
 	RequestAwareReasonPreemption         RequestAwareReason = "preemption"
 	RequestAwareReasonKV                 RequestAwareReason = "kv"
@@ -37,9 +35,6 @@ type RequestAwarePressureSource string
 
 const (
 	RequestAwarePressureNone    RequestAwarePressureSource = "none"
-	RequestAwarePressureKV      RequestAwarePressureSource = "kv"
-	RequestAwarePressureWaiting RequestAwarePressureSource = "waiting"
-	RequestAwarePressureTPS     RequestAwarePressureSource = "tps"
 	RequestAwarePressurePrefill RequestAwarePressureSource = "prefill"
 )
 
@@ -58,10 +53,7 @@ const (
 )
 
 type RequestAwareConfig struct {
-	SoftKVLimitTokens            int64
 	HardKVLimitTokens            int64
-	TPSTarget                    float64
-	TPSFloor                     float64
 	BlockSize                    int64
 	PrefillRegularTokens         int64
 	PrefillExclusiveTokens       int64
@@ -70,19 +62,29 @@ type RequestAwareConfig struct {
 }
 
 func (c RequestAwareConfig) Validate() error {
-	validKVLimits := c.BlockSize > 0 && c.SoftKVLimitTokens > 0 &&
-		c.HardKVLimitTokens > c.SoftKVLimitTokens &&
-		c.SoftKVLimitTokens%c.BlockSize == 0 && c.HardKVLimitTokens%c.BlockSize == 0
-	if !validKVLimits ||
-		!requestAwareFinite(c.TPSTarget) || c.TPSTarget <= 0 ||
-		!requestAwareFinite(c.TPSFloor) || c.TPSFloor <= 0 || c.TPSFloor >= c.TPSTarget ||
-		c.PrefillRegularTokens <= 0 || c.PrefillExclusiveTokens <= c.PrefillRegularTokens ||
-		c.PrefillQuiescentTokens <= c.PrefillExclusiveTokens ||
-		c.PrefillAggregateBudgetTokens < c.PrefillExclusiveTokens ||
-		c.PrefillAggregateBudgetTokens > c.PrefillQuiescentTokens {
-		return fmt.Errorf("request-aware policy configuration is invalid")
+	if err := validateResourceGateConfig(c.resourceGateConfig()); err != nil {
+		return fmt.Errorf("request-aware policy configuration is invalid: %w", err)
+	}
+	if err := validateInterferenceGateConfig(c.interferenceGateConfig()); err != nil {
+		return fmt.Errorf("request-aware policy configuration is invalid: %w", err)
 	}
 	return nil
+}
+
+func (c RequestAwareConfig) resourceGateConfig() ResourceGateConfig {
+	return ResourceGateConfig{
+		HardKVLimitTokens: c.HardKVLimitTokens,
+		BlockSize:         c.BlockSize,
+	}
+}
+
+func (c RequestAwareConfig) interferenceGateConfig() InterferenceGateConfig {
+	return InterferenceGateConfig{
+		PrefillRegularTokens:         c.PrefillRegularTokens,
+		PrefillExclusiveTokens:       c.PrefillExclusiveTokens,
+		PrefillQuiescentTokens:       c.PrefillQuiescentTokens,
+		PrefillAggregateBudgetTokens: c.PrefillAggregateBudgetTokens,
+	}
 }
 
 type RequestAwareInput struct {
@@ -99,12 +101,13 @@ type RequestAwareInput struct {
 	AggregateTPSProxy                float64
 	MeanActiveTPSProxy               float64
 	TPSValid                         bool
-	PreemptionCooldown               bool
+	PreemptionObserved               bool
 	EstimatedPrefillTokens           int64
 	PendingPrefillSequences          int
 	PendingPrefillTokens             int64
 	PendingLongPrefillSequences      int
 	PendingQuiescentPrefillSequences int
+	PendingUnknownPrefillSequences   int
 }
 
 type RequestAwareDecision struct {
@@ -118,8 +121,6 @@ type RequestAwareDecision struct {
 	RemainingKV                      int64
 	HardKVLimit                      int64
 	EffectiveSequences               int
-	ProjectedMeanActiveTPSProxy      float64
-	TPSForecastValid                 bool
 	PrefillClass                     RequestAwarePrefillClass
 	EstimatedPrefillTokens           int64
 	PendingPrefillSequences          int
@@ -127,228 +128,102 @@ type RequestAwareDecision struct {
 	PostAdmitPendingPrefillTokens    int64
 	PendingLongPrefillSequences      int
 	PendingQuiescentPrefillSequences int
+	PendingUnknownPrefillSequences   int
 }
 
 type RequestAwarePolicy struct {
-	config RequestAwareConfig
+	resourceGate     ResourceGate
+	interferenceGate InterferenceGate
 }
 
 func NewRequestAwarePolicy(config RequestAwareConfig) (*RequestAwarePolicy, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	return &RequestAwarePolicy{config: config}, nil
+	return &RequestAwarePolicy{
+		resourceGate:     ResourceGate{config: config.resourceGateConfig()},
+		interferenceGate: InterferenceGate{config: config.interferenceGateConfig()},
+	}, nil
 }
 
 func (p *RequestAwarePolicy) MatchesCapability(profile BackendCapabilityProfile) bool {
 	if p == nil || profile.Validate() != nil {
 		return false
 	}
-	return p.config.SoftKVLimitTokens == profile.KVSoftLimitTokens &&
-		p.config.HardKVLimitTokens == profile.KVHardLimitTokens &&
-		p.config.BlockSize == profile.KVBlockSize &&
-		p.config.PrefillRegularTokens == profile.PrefillRegularTokens &&
-		p.config.PrefillExclusiveTokens == profile.PrefillExclusiveTokens &&
-		p.config.PrefillQuiescentTokens == profile.PrefillQuiescentTokens &&
-		p.config.PrefillAggregateBudgetTokens == profile.PrefillAggregateBudgetTokens
+	return p.resourceGate.MatchesCapability(profile) && p.interferenceGate.MatchesCapability(profile)
 }
 
 func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecision {
+	if p == nil {
+		return RequestAwareDecision{Action: RequestAwareHardProtect, Reason: RequestAwareReasonInvalid}
+	}
 	estimatedPrefillTokens := input.EstimatedPrefillTokens
 	if estimatedPrefillTokens == 0 {
 		estimatedPrefillTokens = input.SelectionInputTokens
 	}
-	if p == nil || input.CapacityTokens <= 0 || input.CapacityTokens > 1<<53 ||
-		input.UsedTokens < 0 || input.UsedTokens > input.CapacityTokens ||
-		input.ReservedTokens < 0 || input.RequestReservedTokens <= 0 || input.SelectionInputTokens <= 0 ||
-		input.Running < 0 || input.Waiting < 0 || input.EffectiveSequences < input.Running ||
-		!requestAwareFinite(input.AggregateTPSProxy) || input.AggregateTPSProxy < 0 ||
-		!requestAwareFinite(input.MeanActiveTPSProxy) || input.MeanActiveTPSProxy < 0 ||
-		(input.TPSValid && (input.AggregateTPSProxy <= 0 || input.MeanActiveTPSProxy <= 0)) ||
-		estimatedPrefillTokens <= 0 || input.PendingPrefillSequences < 0 || input.PendingPrefillTokens < 0 ||
-		input.PendingLongPrefillSequences < 0 || input.PendingLongPrefillSequences > input.PendingPrefillSequences ||
-		input.PendingQuiescentPrefillSequences < 0 || input.PendingQuiescentPrefillSequences > input.PendingLongPrefillSequences ||
-		(input.PendingPrefillSequences == 0 && input.PendingPrefillTokens != 0) ||
-		(input.PendingPrefillSequences > 0 && input.PendingPrefillTokens == 0) {
-		return RequestAwareDecision{Action: RequestAwareHardProtect, Reason: RequestAwareReasonInvalid}
-	}
-
-	softKVLimit := p.config.SoftKVLimitTokens
-	hardKVLimit := p.config.HardKVLimitTokens
-	effectiveKV, ok := requestAwareAdd(input.UsedTokens, input.ReservedTokens)
-	if !ok {
-		return RequestAwareDecision{
-			Action:      RequestAwareHardProtect,
-			Reason:      RequestAwareReasonInvalid,
-			HardKVLimit: hardKVLimit,
-		}
-	}
-	postAdmitKV, ok := requestAwareAdd(effectiveKV, input.RequestReservedTokens)
-	if !ok {
-		return RequestAwareDecision{
-			Action:             RequestAwareHardProtect,
-			Reason:             RequestAwareReasonInvalid,
-			EffectiveKV:        effectiveKV,
-			HardKVLimit:        hardKVLimit,
-			EffectiveSequences: input.EffectiveSequences,
-		}
-	}
-	remainingKV := hardKVLimit - effectiveKV
-	if remainingKV < 0 {
-		remainingKV = 0
-	}
-	decision := RequestAwareDecision{
-		Action:                           RequestAwareHardProtect,
-		PressureSource:                   RequestAwarePressureNone,
-		EffectiveKV:                      effectiveKV,
-		PostAdmitKV:                      postAdmitKV,
-		RemainingKV:                      remainingKV,
-		HardKVLimit:                      hardKVLimit,
-		EffectiveSequences:               input.EffectiveSequences,
-		PrefillClass:                     p.prefillClass(estimatedPrefillTokens),
+	resource := p.resourceGate.Evaluate(ResourceGateInput{
+		MetricsFresh:          input.MetricsFresh,
+		IdentityValid:         input.IdentityValid,
+		CapacityTokens:        input.CapacityTokens,
+		UsedTokens:            input.UsedTokens,
+		ReservedTokens:        input.ReservedTokens,
+		RequestReservedTokens: input.RequestReservedTokens,
+	})
+	interference := p.interferenceGate.Evaluate(InterferenceGateInput{
 		EstimatedPrefillTokens:           estimatedPrefillTokens,
+		Running:                          input.Running,
+		Waiting:                          input.Waiting,
+		EffectiveSequences:               input.EffectiveSequences,
+		PreemptionObserved:               input.PreemptionObserved,
 		PendingPrefillSequences:          input.PendingPrefillSequences,
 		PendingPrefillTokens:             input.PendingPrefillTokens,
 		PendingLongPrefillSequences:      input.PendingLongPrefillSequences,
 		PendingQuiescentPrefillSequences: input.PendingQuiescentPrefillSequences,
+		PendingUnknownPrefillSequences:   input.PendingUnknownPrefillSequences,
+	})
+	decision := RequestAwareDecision{
+		Action:                           RequestAwareHardProtect,
+		Reason:                           resource.Reason,
+		PressureSource:                   RequestAwarePressureNone,
+		EffectiveKV:                      resource.EffectiveKV,
+		PostAdmitKV:                      resource.PostAdmitKV,
+		RemainingKV:                      resource.RemainingKV,
+		HardKVLimit:                      resource.HardKVLimit,
+		EffectiveSequences:               input.EffectiveSequences,
+		PrefillClass:                     interference.PrefillClass,
+		EstimatedPrefillTokens:           interference.EstimatedPrefillTokens,
+		PendingPrefillSequences:          interference.PendingPrefillSequences,
+		PendingPrefillTokens:             interference.PendingPrefillTokens,
+		PostAdmitPendingPrefillTokens:    interference.PostAdmitPendingPrefillTokens,
+		PendingLongPrefillSequences:      interference.PendingLongPrefillSequences,
+		PendingQuiescentPrefillSequences: interference.PendingQuiescentPrefillSequences,
+		PendingUnknownPrefillSequences:   interference.PendingUnknownPrefillSequences,
 	}
-	postAdmitPendingPrefillTokens, pendingTokensValid := requestAwareAdd(input.PendingPrefillTokens, estimatedPrefillTokens)
-	if !pendingTokensValid {
-		decision.Reason = RequestAwareReasonInvalid
+	if !resource.Fits {
 		return decision
 	}
-	decision.PostAdmitPendingPrefillTokens = postAdmitPendingPrefillTokens
-
-	if !input.MetricsFresh || !input.IdentityValid {
-		decision.Reason = RequestAwareReasonStale
-		return decision
-	}
-	if input.PreemptionCooldown {
-		decision.Reason = RequestAwareReasonPreemption
-		return decision
-	}
-	selectiveWindowTokens := hardKVLimit - softKVLimit
-	if hardKVLimit <= 0 || hardKVLimit >= input.CapacityTokens || selectiveWindowTokens <= 0 {
-		decision.Reason = RequestAwareReasonInvalid
-		return decision
-	}
-	if effectiveKV > hardKVLimit || postAdmitKV > hardKVLimit {
-		decision.Reason = RequestAwareReasonKV
-		return decision
-	}
-	if reason, protect := p.prefillProtectionReason(input, decision.PrefillClass, postAdmitPendingPrefillTokens); protect {
+	if !interference.Admit {
+		decision.Reason = interference.Reason
+		if interference.HardProtection {
+			return decision
+		}
 		decision.Action = RequestAwareSizeProtect
-		decision.Reason = reason
 		decision.PressureSource = RequestAwarePressurePrefill
 		decision.Pressure = 1
 		decision.AllowanceTokens = 0
 		return decision
 	}
-	tpsUsable := input.TPSValid && input.EffectiveSequences > 0
-	kvPressure := requestAwareNormalizedPressure(
-		float64(effectiveKV),
-		float64(softKVLimit),
-		float64(hardKVLimit),
-	)
-	waitingPressure := float64(input.Waiting) /
-		(float64(input.Running) + float64(input.Waiting) + 1)
-	tpsPressure := 0.0
-	if tpsUsable {
-		projectedTPS := input.MeanActiveTPSProxy
-		if input.MeanActiveTPSProxy < p.config.TPSTarget || input.Waiting > 0 || input.EffectiveSequences > input.Running {
-			if input.EffectiveSequences == int(^uint(0)>>1) {
-				decision.Reason = RequestAwareReasonInvalid
-				return decision
-			}
-			projectedTPS = input.AggregateTPSProxy / float64(input.EffectiveSequences+1)
-		}
-		if !requestAwareFinite(projectedTPS) || projectedTPS <= 0 {
-			decision.Reason = RequestAwareReasonInvalid
-			return decision
-		}
-		decision.ProjectedMeanActiveTPSProxy = projectedTPS
-		decision.TPSForecastValid = true
-		if projectedTPS < p.config.TPSTarget {
-			tpsPressure = (p.config.TPSTarget - projectedTPS) /
-				(p.config.TPSTarget - p.config.TPSFloor)
-		}
-	}
-
-	pressure := kvPressure
-	pressureSource := RequestAwarePressureKV
-	if waitingPressure > pressure {
-		pressure = waitingPressure
-		pressureSource = RequestAwarePressureWaiting
-	}
-	if tpsPressure > pressure {
-		pressure = tpsPressure
-		pressureSource = RequestAwarePressureTPS
-	}
-	pressure = requestAwareClampUnit(pressure)
-	if pressure == 0 {
-		decision.Action = RequestAwareAdmit
-		decision.Reason = RequestAwareReasonOpen
-		decision.AllowanceTokens = remainingKV
-		return decision
-	}
-
-	allowance := int64(math.Floor(float64(selectiveWindowTokens) * (1 - pressure)))
-	if allowance < 0 {
-		allowance = 0
-	}
-	if allowance > remainingKV {
-		allowance = remainingKV
-	}
-	decision.PressureSource = pressureSource
-	decision.Pressure = pressure
-	decision.AllowanceTokens = allowance
-	if input.SelectionInputTokens <= allowance {
-		decision.Action = RequestAwareAdmit
-		decision.Reason = RequestAwareReasonWithinBudget
-		return decision
-	}
-	decision.Action = RequestAwareSizeProtect
-	decision.Reason = RequestAwareReasonRequestSize
+	decision.Action = RequestAwareAdmit
+	decision.Reason = RequestAwareReasonOpen
+	decision.AllowanceTokens = resource.RemainingKV
 	return decision
 }
 
 func (p *RequestAwarePolicy) prefillClass(tokens int64) RequestAwarePrefillClass {
-	switch {
-	case p == nil || tokens <= 0:
+	if p == nil {
 		return ""
-	case tokens < p.config.PrefillRegularTokens:
-		return RequestAwarePrefillRegular
-	case tokens < p.config.PrefillExclusiveTokens:
-		return RequestAwarePrefillWeighted
-	case tokens < p.config.PrefillQuiescentTokens:
-		return RequestAwarePrefillExclusive
-	default:
-		return RequestAwarePrefillQuiescent
 	}
-}
-
-func (p *RequestAwarePolicy) prefillProtectionReason(
-	input RequestAwareInput,
-	class RequestAwarePrefillClass,
-	postAdmitTokens int64,
-) (RequestAwareReason, bool) {
-	if input.PendingQuiescentPrefillSequences > 0 {
-		return RequestAwareReasonPrefillExclusive, true
-	}
-	switch class {
-	case RequestAwarePrefillRegular:
-		return RequestAwareReasonPrefillBudget,
-			input.PendingLongPrefillSequences == 0 && postAdmitTokens > p.config.PrefillAggregateBudgetTokens
-	case RequestAwarePrefillWeighted:
-		return RequestAwareReasonPrefillBudget, postAdmitTokens > p.config.PrefillAggregateBudgetTokens
-	case RequestAwarePrefillExclusive:
-		return RequestAwareReasonPrefillConcurrency, input.PendingLongPrefillSequences > 0
-	case RequestAwarePrefillQuiescent:
-		return RequestAwareReasonPrefillBusy, input.Running > 0 || input.Waiting > 0 ||
-			input.EffectiveSequences > 0 || input.PendingPrefillSequences > 0
-	default:
-		return "", false
-	}
+	return p.interferenceGate.Classify(tokens)
 }
 
 func requestAwareFinite(value float64) bool {
@@ -360,18 +235,4 @@ func requestAwareAdd(left, right int64) (int64, bool) {
 		return 0, false
 	}
 	return left + right, true
-}
-
-func requestAwareNormalizedPressure(value, soft, hard float64) float64 {
-	return requestAwareClampUnit((value - soft) / (hard - soft))
-}
-
-func requestAwareClampUnit(value float64) float64 {
-	if value <= 0 {
-		return 0
-	}
-	if value >= 1 {
-		return 1
-	}
-	return value
 }

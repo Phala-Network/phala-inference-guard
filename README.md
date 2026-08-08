@@ -1,6 +1,6 @@
 # Phala Inference Guard
 
-Phala Inference Guard (PIG) v0.12.2 is a single-upstream, predictive admission
+Phala Inference Guard (PIG) v0.12.3 is a single-upstream, predictive admission
 proxy for OpenAI-compatible vLLM services. It estimates request size before an
 upstream call, combines that estimate with one fresh vLLM observation and all
 unabsorbed reservations, and decides whether the post-admit state can preserve
@@ -16,7 +16,7 @@ backend pressure.
 bounded read-only JSON scan
   -> model-agnostic lexical input and output-horizon estimate
   -> fresh vLLM KV, running, waiting, generation and preemption snapshot
-  -> current reservations and post-admit KV/Prefill/TPS projection
+  -> current reservations and post-admit KV and Prefill gates
   -> atomic enforce decision and reservation
   -> unchanged request bytes forwarded to the single upstream
   -> Prefill completion and exact-once terminal release
@@ -30,12 +30,12 @@ does not create a second post-response admission controller.
 ## Production configuration
 
 Production Compose should be small. Do not spell out values that equal the
-v0.12.2 defaults.
+v0.12.3 defaults.
 
 ```yaml
 services:
   pig:
-    image: ghcr.io/phala-network/phala-inference-guard:0.12.2
+    image: ghcr.io/phala-network/phala-inference-guard:0.12.3
     environment:
       - UPSTREAM=http://backend:8000
       - TOKEN=${PIG_TOKEN}
@@ -46,7 +46,7 @@ services:
 `UPSTREAM` is exactly one absolute HTTP URL. PIG derives the observer endpoint
 from its origin as `/metrics`. Predictive admission defaults to `enforce`, the
 observer polls every 500 ms, and the maximum observation age defaults to
-1500 ms. KV capacity, block size, protected KV limits, and Prefill thresholds
+1500 ms. KV capacity, block size, protected KV limit, and Prefill thresholds
 are derived once during startup from the upstream capability profile.
 The bounded request scanner uses a 4 MiB internal ceiling so a model-neutral
 650K-token text window remains classifiable under the estimator's six-byte
@@ -103,10 +103,11 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image builds for
-the v0.12.2 release are run on the approved clean Linux builder. The release
+the v0.12.3 release are run on the approved clean Linux builder. The release
 plan records the exact archive hash, commands, logs, image digest, live gates,
 and production observation evidence:
 
-- [v0.12.x correction and live validation plan](docs/PREDICTIVE_ADMISSION_V0_12_1_CORRECTION_AND_LIVE_VALIDATION_PLAN.md)
+- [v0.12.3 QoS-constrained goodput plan](docs/PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md)
+- [v0.12.0-v0.12.2 historical audit](docs/PREDICTIVE_ADMISSION_V0_12_1_CORRECTION_AND_LIVE_VALIDATION_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

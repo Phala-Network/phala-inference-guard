@@ -10,10 +10,11 @@ import (
 )
 
 type simulationReport struct {
-	Suite      requestaware.Suite   `json:"suite"`
-	Baseline   requestaware.Metrics `json:"baseline_aggregate"`
-	Candidate  requestaware.Metrics `json:"candidate_aggregate"`
-	Acceptance string               `json:"acceptance"`
+	Suite       requestaware.Suite   `json:"suite"`
+	NoAdmission requestaware.Metrics `json:"no_admission_aggregate"`
+	V0122       requestaware.Metrics `json:"v0_12_2_aggregate"`
+	Candidate   requestaware.Metrics `json:"v0_12_3_aggregate"`
+	Acceptance  string               `json:"acceptance"`
 }
 
 func buildSimulationReport() (simulationReport, error) {
@@ -25,10 +26,11 @@ func buildSimulationReport() (simulationReport, error) {
 		return simulationReport{}, err
 	}
 	return simulationReport{
-		Suite:      suite,
-		Baseline:   suite.Aggregate(requestaware.PolicyGlobalBinary),
-		Candidate:  suite.Aggregate(requestaware.PolicyRequestAware),
-		Acceptance: "passed",
+		Suite:       suite,
+		NoAdmission: suite.Aggregate(requestaware.PolicyNoAdmission),
+		V0122:       suite.Aggregate(requestaware.PolicyV0122),
+		Candidate:   suite.Aggregate(requestaware.PolicyV0123),
+		Acceptance:  "passed",
 	}, nil
 }
 

@@ -33,7 +33,6 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		UpstreamURL:    cfg.Upstream,
 		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 		RetryInterval:  cfg.PredictiveObservationPollInterval,
-		KVTargetRatio:  cfg.PredictiveKVTargetRatio,
 		KVHardRatio:    cfg.PredictiveKVHardRatio,
 		Prefill: runtimepredictive.PrefillTokenBounds{
 			Regular:   cfg.PredictivePrefillRegularTokens,
@@ -48,13 +47,12 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	profile := initialization.Profile
 	startup = initialization.Startup
 	log.Printf(
-		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_soft_limit_tokens=%d kv_hard_limit_tokens=%d safe_cold_prefill_tokens_per_second=%.0f prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_aggregate_budget_tokens=%d",
+		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d safe_cold_prefill_tokens_per_second=%.0f prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_aggregate_budget_tokens=%d",
 		profile.SchemaVersion,
 		profile.Source,
 		initialization.Reason,
 		profile.KVCapacityTokens,
 		profile.KVBlockSize,
-		profile.KVSoftLimitTokens,
 		profile.KVHardLimitTokens,
 		profile.SafeColdPrefillTokensPerSec,
 		profile.PrefillRegularTokens,
@@ -63,10 +61,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		profile.PrefillAggregateBudgetTokens,
 	)
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVLimitTokens:            profile.KVSoftLimitTokens,
 		HardKVLimitTokens:            profile.KVHardLimitTokens,
-		TPSTarget:                    cfg.PredictiveTPSTarget,
-		TPSFloor:                     cfg.PredictiveTPSFloor,
 		BlockSize:                    int64(startup.BlockSize),
 		PrefillRegularTokens:         profile.PrefillRegularTokens,
 		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
@@ -79,10 +74,11 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	manager := runtimepredictive.NewManager(
 		predictiveApproximateManifestID,
 		domainpredictive.VirtualState{
-			PhysicalKVUpper:     startup.UsedTokens,
-			ActiveKVUpper:       startup.UsedTokens,
-			DecodeSequences:     startup.Running + startup.Waiting,
-			ActiveContextTokens: startup.UsedTokens,
+			PhysicalKVUpper:         startup.UsedTokens,
+			ActiveKVUpper:           startup.UsedTokens,
+			DecodeSequences:         startup.Running + startup.Waiting,
+			PendingPrefillSequences: startup.Waiting,
+			ActiveContextTokens:     startup.UsedTokens,
 		},
 	)
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
@@ -93,7 +89,6 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		PollInterval:        cfg.PredictiveObservationPollInterval,
 		MaximumAge:          cfg.PredictiveMaximumMetricsAge,
 		RequestTimeout:      cfg.PredictiveMetricsRequestTimeout,
-		PreemptionCooldown:  cfg.PredictivePreemptionCooldown,
 		Coordinator:         manager,
 		Initial:             startup,
 	})

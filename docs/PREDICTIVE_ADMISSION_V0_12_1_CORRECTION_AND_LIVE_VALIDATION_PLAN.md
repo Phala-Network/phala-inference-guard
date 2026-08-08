@@ -1,10 +1,11 @@
 # PIG v0.12.x Protocol Correction and Live Validation Plan
 
-Status: active execution plan, 2026-08-08
+Status: superseded as an execution plan, retained as the v0.12.0-v0.12.2 audit
+ledger. The active plan is
+`PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md`.
 
-This document is the canonical continuation record for PIG v0.12.x. It is
-intentionally self-contained so work can resume after context compression
-without inheriting obsolete v0.8-v0.11 behavior or starting v0.13 work.
+This document is the historical continuation record for PIG v0.12.0-v0.12.2.
+It is retained for audit provenance and must not be used to resume execution.
 
 ## 1. Objective
 

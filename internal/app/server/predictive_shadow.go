@@ -86,8 +86,6 @@ type requestAwareTelemetrySnapshot struct {
 	EffectiveSequences                           int
 	AggregateTPSProxy                            float64
 	MeanActiveTPSProxy                           float64
-	ProjectedTPSProxy                            float64
-	TPSForecastValid                             bool
 	PrefillClass                                 runtimepredictive.RequestAwarePrefillClass
 	EstimatedPrefillTokens                       int64
 	PendingPrefillSequences                      int

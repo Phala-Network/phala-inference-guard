@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +50,88 @@ func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
 	if seenGatewayTrace != "trace-123" {
 		t.Fatalf("gateway trace header = %q, want forwarded trace", seenGatewayTrace)
 	}
+}
+
+func TestPredictiveTimingSeparatesBodyReadEstimatorAndPreForwardDecision(t *testing.T) {
+	const body = `{"model":"m","messages":[{"role":"user","content":"timing"}]}`
+	const readDelay = 40 * time.Millisecond
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	srv, err := newTestProxyServer(testProxyConfig(backend.URL))
+	if err != nil {
+		t.Fatalf("newProxyServer: %v", err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	request.Body = &delayedReadCloser{Reader: strings.NewReader(body), delay: readDelay}
+	request.ContentLength = int64(len(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	srv.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("timed request status=%d body=%q, want 200", response.Code, response.Body.String())
+	}
+	var rendered strings.Builder
+	srv.writePredictiveAndDynamicMetrics(&rendered)
+	metricsBody := rendered.String()
+	bodyRead := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_body_read_duration_seconds_sum")
+	estimator := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_estimator_duration_seconds_sum")
+	preForward := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_pre_forward_duration_seconds_sum")
+	if bodyRead < readDelay.Seconds() {
+		t.Fatalf("body-read duration=%f, want at least injected delay %f", bodyRead, readDelay.Seconds())
+	}
+	if estimator >= readDelay.Seconds()/2 {
+		t.Fatalf("estimator duration=%f includes injected body-read delay %f", estimator, readDelay.Seconds())
+	}
+	if preForward < bodyRead+estimator {
+		t.Fatalf("pre-forward duration=%f, want at least body-read+estimator=%f", preForward, bodyRead+estimator)
+	}
+	for _, name := range []string{
+		"pig_predictive_admission_body_read_duration_seconds_count",
+		"pig_predictive_admission_estimator_duration_seconds_count",
+		"pig_predictive_admission_pre_forward_duration_seconds_count",
+	} {
+		if got := requirePrometheusMetric(t, metricsBody, name); got != 1 {
+			t.Fatalf("%s=%f, want one measured request", name, got)
+		}
+	}
+}
+
+type delayedReadCloser struct {
+	io.Reader
+	delay time.Duration
+	done  bool
+}
+
+func (r *delayedReadCloser) Read(buffer []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		time.Sleep(r.delay)
+	}
+	return r.Reader.Read(buffer)
+}
+
+func (*delayedReadCloser) Close() error { return nil }
+
+func requirePrometheusMetric(t *testing.T, body, name string) float64 {
+	t.Helper()
+	prefix := name + " "
+	for _, line := range strings.Split(body, "\n") {
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		value, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimPrefix(line, prefix)), 64)
+		if err != nil {
+			t.Fatalf("parse %s from %q: %v", name, line, err)
+		}
+		return value
+	}
+	t.Fatal(fmt.Sprintf("metric %s missing from output:\n%s", name, body))
+	return 0
 }
 
 func TestAPIAuthRejectsGenerationWithoutBearer(t *testing.T) {
@@ -341,11 +425,7 @@ func testProxyConfig(upstream string) config {
 		PredictiveMetricsRequestTimeout:    100 * time.Millisecond,
 		PredictiveObservationPollInterval:  500 * time.Millisecond,
 		PredictiveMaximumMetricsAge:        1500 * time.Millisecond,
-		PredictivePreemptionCooldown:       10 * time.Second,
-		PredictiveKVTargetRatio:            0.84,
 		PredictiveKVHardRatio:              0.88,
-		PredictiveTPSTarget:                25,
-		PredictiveTPSFloor:                 20,
 	}
 }
 

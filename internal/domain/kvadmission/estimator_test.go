@@ -96,14 +96,91 @@ func TestApproximateInputTokenHintSeparatesEqualByteLanguageShapes(t *testing.T)
 	}
 }
 
+func TestApproximateInputTokenHintPreservesShapeAfterEarlierStrings(t *testing.T) {
+	prefixValue := strings.Repeat("a", approximateLexicalPerStringLimit)
+	prefix := `{"a":"` + prefixValue + `","b":"` + prefixValue + `","c":"` + prefixValue + `","d":"` + prefixValue + `","prompt":"`
+	const payloadBytes = 3 * 1024
+	asciiBody := []byte(prefix + strings.Repeat("a", payloadBytes) + `"}`)
+	cjkBody := []byte(prefix + strings.Repeat("\xe4\xb8\xad", payloadBytes/3) + `"}`)
+	if len(asciiBody) != len(cjkBody) {
+		t.Fatalf("fixture body lengths differ: ascii=%d cjk=%d", len(asciiBody), len(cjkBody))
+	}
+
+	asciiCost := EstimateJSON(asciiBody, 64, true, DefaultEstimatorConfig())
+	cjkCost := EstimateJSON(cjkBody, 64, true, DefaultEstimatorConfig())
+	asciiHint, asciiKnown := asciiCost.ApproximateInputTokenHint()
+	cjkHint, cjkKnown := cjkCost.ApproximateInputTokenHint()
+	if !asciiCost.Supported || !cjkCost.Supported || !asciiKnown || !cjkKnown || cjkHint <= asciiHint {
+		t.Fatalf("late string shape was lost: ascii=%d/%t cjk=%d/%t", asciiHint, asciiKnown, cjkHint, cjkKnown)
+	}
+}
+
+func TestApproximateInputTokenHintKeepsLate650KCJKQuiescentSized(t *testing.T) {
+	prefixValue := strings.Repeat("a", approximateLexicalPerStringLimit)
+	prefix := `{"a":"` + prefixValue + `","b":"` + prefixValue + `","c":"` + prefixValue + `","d":"` + prefixValue + `","prompt":"`
+	body := []byte(prefix + strings.Repeat("\xe4\xb8\xad", 650*1024) + `"}`)
+
+	cost := EstimateJSON(body, 64, true, DefaultEstimatorConfig())
+	hint, known := cost.ApproximateInputTokenHint()
+	if !cost.Supported || !known || hint < 512*1024 {
+		t.Fatalf("late 650K CJK hint=%d/%t supported=%t, want >=512K quiescent boundary", hint, known, cost.Supported)
+	}
+}
+
+func TestApproximateJSONStringTokensShortValueFastPath(t *testing.T) {
+	for _, test := range []struct {
+		raw  string
+		want int64
+	}{
+		{raw: "", want: 0},
+		{raw: "a", want: 1},
+		{raw: "abc", want: 1},
+		{raw: "\xe4\xb8\xad", want: 1},
+	} {
+		got, known := approximateJSONStringTokens([]byte(test.raw))
+		if !known || got != test.want {
+			t.Fatalf("short lexical value %q = %d/%t want %d/true", test.raw, got, known, test.want)
+		}
+	}
+}
+
+func TestApproximateInputTokenHintModelNeutralShapeCorpus(t *testing.T) {
+	fixtures := []struct {
+		name string
+		body string
+	}{
+		{name: "ascii", body: `{"prompt":"alpha beta 123"}`},
+		{name: "punctuation", body: `{"prompt":"!@#$%^&*()[]{}"}`},
+		{name: "cjk", body: `{"prompt":"中文输入大小"}`},
+		{name: "escaped-json", body: `{"prompt":"line\\nquote\\\"slash\\\\end"}`},
+		{name: "tool-schema", body: `{"messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}}]}`},
+		{name: "multimodal-marker", body: `{"messages":[{"role":"user","content":[{"type":"input_text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,x"}}]}]}`},
+	}
+	for _, fixture := range fixtures {
+		t.Run(fixture.name, func(t *testing.T) {
+			cost := EstimateJSON([]byte(fixture.body), 64, true, DefaultEstimatorConfig())
+			hint, known := cost.ApproximateInputTokenHint()
+			if !cost.Supported || !known || hint <= 0 || cost.EstimatedInputHigh <= 0 {
+				t.Fatalf("shape corpus cost=%+v hint=%d/%t", cost, hint, known)
+			}
+		})
+	}
+
+	ascii, _, asciiKnown := approximateJSONStringTokensWithBudget([]byte("aaaaaaaaaaaaaaaa"), 16)
+	punctuation, _, punctuationKnown := approximateJSONStringTokensWithBudget([]byte("!!!!!!!!!!!!!!!!"), 16)
+	if !asciiKnown || !punctuationKnown || punctuation <= ascii {
+		t.Fatalf("equal-byte lexical differentiation ascii=%d/%t punctuation=%d/%t", ascii, asciiKnown, punctuation, punctuationKnown)
+	}
+}
+
 func TestApproximateInputTokenHintUsesBoundedSampling(t *testing.T) {
 	raw := bytes.Repeat([]byte("bounded lexical sample "), 128*1024)
-	tokens, sampled, known := approximateJSONStringTokensWithBudget(raw, approximateLexicalRequestBudget)
+	tokens, sampled, known := approximateJSONStringTokensWithBudget(raw, approximateLexicalPerStringLimit)
 	if !known || tokens <= 0 {
 		t.Fatalf("bounded lexical hint unavailable: tokens=%d known=%t", tokens, known)
 	}
-	if sampled != approximateLexicalPerStringLimit || sampled > approximateLexicalRequestBudget {
-		t.Fatalf("sampled bytes=%d want per-string bound=%d request bound<=%d", sampled, approximateLexicalPerStringLimit, approximateLexicalRequestBudget)
+	if sampled != approximateLexicalPerStringLimit {
+		t.Fatalf("sampled bytes=%d want per-string bound=%d", sampled, approximateLexicalPerStringLimit)
 	}
 }
 
@@ -204,6 +281,28 @@ func BenchmarkEstimator2MiB(b *testing.B) {
 
 func BenchmarkEstimator4MiB(b *testing.B) {
 	benchmarkEstimator(b, 4*1024*1024)
+}
+
+func BenchmarkEstimatorManyStrings4MiB(b *testing.B) {
+	const targetBytes = 4 * 1024 * 1024
+	prefix := []byte(`{"prompt":[`)
+	item := []byte(`"a",`)
+	suffix := []byte(`"a"]}`)
+	itemCount := (targetBytes - len(prefix) - len(suffix)) / len(item)
+	body := make([]byte, 0, targetBytes)
+	body = append(body, prefix...)
+	body = append(body, bytes.Repeat(item, itemCount)...)
+	body = append(body, suffix...)
+	cfg := DefaultEstimatorConfig()
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for b.Loop() {
+		benchmarkEstimatorCost = EstimateJSON(body, 256, true, cfg)
+		if !benchmarkEstimatorCost.Supported {
+			b.Fatal("unsupported")
+		}
+	}
 }
 
 func BenchmarkApproximateJSONStringTokens1KiB(b *testing.B) {

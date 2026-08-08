@@ -68,12 +68,9 @@ func requestAwareFactoryTestConfig(metricsURL, mode string) config {
 	cfg.PredictiveMetricsURL = metricsURL
 	cfg.PredictiveObservationPollInterval = 20 * time.Millisecond
 	cfg.PredictiveMaximumMetricsAge = 100 * time.Millisecond
-	cfg.PredictiveTPSTarget = 25
-	cfg.PredictiveTPSFloor = 20
 	cfg.PredictivePrefillRegularTokens = 1024
 	cfg.PredictivePrefillExclusiveTokens = 2 * 1024
 	cfg.PredictivePrefillQuiescentTokens = 3 * 1024
 	cfg.PredictivePrefillAggregateBudgetTokens = 2 * 1024
-	cfg.PredictivePreemptionCooldown = 0
 	return cfg
 }

@@ -11,8 +11,9 @@ const SimulationSeed int64 = 0x504947_0110
 type PolicyName string
 
 const (
-	PolicyGlobalBinary PolicyName = "global_binary"
-	PolicyRequestAware PolicyName = "request_aware"
+	PolicyNoAdmission PolicyName = "no_admission"
+	PolicyV0122       PolicyName = "v0.12.2"
+	PolicyV0123       PolicyName = "v0.12.3"
 )
 
 type Metrics struct {
@@ -50,6 +51,13 @@ type Suite struct {
 }
 
 func RunSuite() (Suite, error) {
+	return runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0123})
+}
+
+func runSuite(policyOrder []PolicyName) (Suite, error) {
+	if err := validatePolicyOrder(policyOrder); err != nil {
+		return Suite{}, err
+	}
 	suite := Suite{Seed: SimulationSeed}
 	for _, scenario := range simulationScenarios(SimulationSeed) {
 		profile, policy, err := simulationCapabilityPolicy(scenario, simulationPrefillTokensPS)
@@ -61,10 +69,10 @@ func RunSuite() (Suite, error) {
 			Category:          scenario.category,
 			DurationSeconds:   scenario.duration.Seconds(),
 			CapabilityProfile: profile,
-			Policies:          make(map[PolicyName]Metrics, 2),
+			Policies:          make(map[PolicyName]Metrics, 3),
 		}
-		for _, policyName := range []PolicyName{PolicyGlobalBinary, PolicyRequestAware} {
-			metrics, calls, runErr := runScenario(scenario, policyName, policy)
+		for _, policyName := range policyOrder {
+			metrics, calls, runErr := runScenario(scenario, policyName, profile, policy)
 			if runErr != nil {
 				return Suite{}, fmt.Errorf("scenario %s policy %s: %w", scenario.name, policyName, runErr)
 			}
@@ -74,6 +82,25 @@ func RunSuite() (Suite, error) {
 		suite.Scenarios = append(suite.Scenarios, result)
 	}
 	return suite, nil
+}
+
+func validatePolicyOrder(policyOrder []PolicyName) error {
+	if len(policyOrder) != 3 {
+		return fmt.Errorf("simulation policy order must contain three policies")
+	}
+	seen := make(map[PolicyName]struct{}, 3)
+	for _, policyName := range policyOrder {
+		switch policyName {
+		case PolicyNoAdmission, PolicyV0122, PolicyV0123:
+		default:
+			return fmt.Errorf("simulation policy order contains unknown policy %q", policyName)
+		}
+		if _, duplicate := seen[policyName]; duplicate {
+			return fmt.Errorf("simulation policy order repeats policy %q", policyName)
+		}
+		seen[policyName] = struct{}{}
+	}
+	return nil
 }
 
 func simulationCapabilityPolicy(
@@ -88,7 +115,6 @@ func simulationCapabilityPolicy(
 		ModelIdentitySHA256:             "deterministic-request-aware-simulation",
 		KVCapacityTokens:                capacity,
 		KVBlockSize:                     simulationBlockSize,
-		KVTargetRatio:                   simulationSoftKVRatio,
 		KVHardRatio:                     simulationHardKVRatio,
 		ObservedColdPrefillTokensPerSec: observedColdPrefillTokensPerSecond,
 		Source:                          runtimepredictive.CapabilityProfileCalibrated,
@@ -97,10 +123,7 @@ func simulationCapabilityPolicy(
 		return runtimepredictive.BackendCapabilityProfile{}, nil, err
 	}
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		SoftKVLimitTokens:            profile.KVSoftLimitTokens,
 		HardKVLimitTokens:            profile.KVHardLimitTokens,
-		TPSTarget:                    simulationTPSTarget,
-		TPSFloor:                     simulationTPSFloor,
 		BlockSize:                    profile.KVBlockSize,
 		PrefillRegularTokens:         profile.PrefillRegularTokens,
 		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,

@@ -1,4 +1,4 @@
-# PIG v0.12.2 Advanced Configuration
+# PIG v0.12.3 Advanced Configuration
 
 This document separates production configuration from test controls. The
 loader accepts bounded overrides so the policy can be tested, but parser
@@ -10,17 +10,17 @@ A normal production deployment contains only:
 
 - `UPSTREAM`, exactly one absolute HTTP URL;
 - required authentication and attestation infrastructure;
-- a deployment choice that genuinely differs from the v0.12.2 default.
+- a deployment choice that genuinely differs from the v0.12.3 default.
 
 Do not explicitly configure predictive mode, metrics URL, polling, freshness,
-KV ratios, TPS policy, or Prefill boundaries when the defaults are intended.
+the KV hard ratio, or Prefill boundaries when the defaults are intended.
 The enforce artifact must prove default behavior with
 `PREDICTIVE_ADMISSION_MODE` absent.
 
 Test and production manifests are separate artifacts. Generate production from
 the fresh live Compose and immutable image digest; do not promote a test
 manifest by only changing its mode. Before deployment, audit the effective PIG
-environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.2
+environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.3
 default and have a target-specific operational reason. Shadow may additionally
 set `PREDICTIVE_ADMISSION_MODE=shadow`; enforce must omit it.
 
@@ -45,7 +45,7 @@ not alter admission policy.
 
 ## Version defaults
 
-These values are part of the v0.12.2 behavior and should normally remain absent
+These values are part of the v0.12.3 behavior and should normally remain absent
 from production Compose.
 
 | Variable | Default | Constraint |
@@ -56,11 +56,7 @@ from production Compose.
 | `PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS` | `500` | Not greater than startup timeout |
 | `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS` | `500` | Positive, at most 60000 |
 | `PREDICTIVE_MAX_METRICS_AGE_MS` | `3 x poll`, normally `1500` | At least one poll, at most 60000 |
-| `PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS` | `10` | `0..86400` |
-| `PREDICTIVE_KV_TARGET_RATIO` | `0.84` | Less than the hard ratio |
 | `PREDICTIVE_KV_HARD_RATIO` | `0.88` | Less than 1 |
-| `PREDICTIVE_TPS_TARGET` | `25` | Soft target |
-| `PREDICTIVE_TPS_FLOOR` | `20` | Positive and less than target |
 | `OUTPUT_TOKEN_FIELD_NAMES` | standard OpenAI output-limit fields | Unique supported JSON field names |
 
 The scanner body ceiling (4 MiB) and scanner concurrency are internal bounded
@@ -78,10 +74,10 @@ The startup probe requires coherent vLLM metrics for:
 - KV block size;
 - used KV, running, waiting, generation, and preemption counters.
 
-PIG then freezes one immutable capability profile. It aligns target and hard KV
-limits to the upstream block size and derives Prefill classes and aggregate
-budget from the measured cold-Prefill capability. These values are not learned
-during service.
+PIG then freezes one immutable capability profile. It aligns the hard KV limit
+to the upstream block size and derives Prefill classes and aggregate budget
+from the measured cold-Prefill capability. These values are not learned during
+service.
 
 Explicit Prefill overrides are available only as a controlled test/deployment
 exception:
@@ -103,8 +99,8 @@ exclusive <= aggregate <= quiescent
 ## Test matrix rules
 
 Builder tests and Router-disabled experiments may explicitly configure cadence,
-freshness, KV ratios, TPS values, cooldown, Prefill bounds, metrics URL, and
-mode. Each result must include the exact override set and archive hash.
+freshness, the KV hard ratio, Prefill bounds, metrics URL, and mode. Each result
+must include the exact override set and archive hash.
 
 Shadow is observation-only. It cannot:
 

@@ -11,10 +11,7 @@ var benchmarkRequestAwareManagerResult RequestAwareManagerResult
 
 func BenchmarkRequestAwarePolicyEvaluate(b *testing.B) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVLimitTokens:            2_516_576,
 		HardKVLimitTokens:            3_774_864,
-		TPSTarget:                    20,
-		TPSFloor:                     15,
 		BlockSize:                    16,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
@@ -58,12 +55,15 @@ func BenchmarkRequestAwarePolicyEvaluate(b *testing.B) {
 		{name: "weighted-budget", input: func() RequestAwareInput {
 			input := base
 			input.EstimatedPrefillTokens = 100 * 1024
+			input.PendingPrefillSequences = 1
 			input.PendingPrefillTokens = 200 * 1024
 			return input
 		}()},
 		{name: "exclusive-concurrency", input: func() RequestAwareInput {
 			input := base
 			input.EstimatedPrefillTokens = 300 * 1024
+			input.PendingPrefillSequences = 1
+			input.PendingPrefillTokens = 300 * 1024
 			input.PendingLongPrefillSequences = 1
 			return input
 		}()},
@@ -96,10 +96,7 @@ func BenchmarkRequestAwarePolicyEvaluate(b *testing.B) {
 
 func BenchmarkRequestAwareManagerDecide(b *testing.B) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
-		SoftKVLimitTokens:            10_066_320,
 		HardKVLimitTokens:            15_099_488,
-		TPSTarget:                    20,
-		TPSFloor:                     15,
 		BlockSize:                    16,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,

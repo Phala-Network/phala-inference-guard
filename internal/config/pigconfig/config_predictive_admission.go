@@ -34,23 +34,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	preemptionCooldownSeconds, err := env.Int("PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS", 10)
-	if err != nil {
-		return err
-	}
-	kvTargetRatio, err := env.Float("PREDICTIVE_KV_TARGET_RATIO", 0.84)
-	if err != nil {
-		return err
-	}
 	kvHardRatio, err := env.Float("PREDICTIVE_KV_HARD_RATIO", 0.88)
-	if err != nil {
-		return err
-	}
-	targetTPS, err := env.Float("PREDICTIVE_TPS_TARGET", 25)
-	if err != nil {
-		return err
-	}
-	floorTPS, err := env.Float("PREDICTIVE_TPS_FLOOR", 20)
 	if err != nil {
 		return err
 	}
@@ -81,7 +65,6 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 		{"PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS", requestTimeoutMS, 1, int(predictiveMaximumMetricsRequestTime / time.Millisecond)},
 		{"PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS", pollIntervalMS, 1, int(predictiveMaximumMetricsRequestTime / time.Millisecond)},
 		{"PREDICTIVE_MAX_METRICS_AGE_MS", maximumAgeMS, 1, int(predictiveMaximumMetricsRequestTime / time.Millisecond)},
-		{"PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS", preemptionCooldownSeconds, 0, int((24 * time.Hour) / time.Second)},
 	}
 	for _, bound := range integerBounds {
 		if bound.value < bound.minimum || bound.value > bound.maximum {
@@ -112,11 +95,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveMetricsRequestTimeout = time.Duration(requestTimeoutMS) * time.Millisecond
 	cfg.PredictiveObservationPollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 	cfg.PredictiveMaximumMetricsAge = time.Duration(maximumAgeMS) * time.Millisecond
-	cfg.PredictivePreemptionCooldown = time.Duration(preemptionCooldownSeconds) * time.Second
-	cfg.PredictiveKVTargetRatio = kvTargetRatio
 	cfg.PredictiveKVHardRatio = kvHardRatio
-	cfg.PredictiveTPSTarget = targetTPS
-	cfg.PredictiveTPSFloor = floorTPS
 	cfg.PredictivePrefillRegularTokens = int64(prefillRegular)
 	cfg.PredictivePrefillExclusiveTokens = int64(prefillExclusive)
 	cfg.PredictivePrefillQuiescentTokens = int64(prefillQuiescent)

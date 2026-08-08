@@ -59,14 +59,16 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 
 func (s *proxyServer) predictiveAdmissionMetricsInput() (metrics.PredictiveAdmissionInput, predictiveAdmissionTelemetrySnapshot) {
 	input := metrics.PredictiveAdmissionInput{
-		Mode:              s.cfg.PredictiveAdmissionMode,
-		EnforcedRejects:   s.predictiveEnforcedRejects.Load(),
-		FailureClose:      s.predictiveShadowFailures.close.Load(),
-		FailureDecide:     s.predictiveShadowFailures.decide.Load(),
-		FailureForward:    s.predictiveShadowFailures.forward.Load(),
-		FailurePrefill:    s.predictiveShadowFailures.prefill.Load(),
-		FailureTerminal:   s.predictiveShadowFailures.terminal.Load(),
-		EstimatorDuration: &s.estimatorDuration,
+		Mode:               s.cfg.PredictiveAdmissionMode,
+		EnforcedRejects:    s.predictiveEnforcedRejects.Load(),
+		FailureClose:       s.predictiveShadowFailures.close.Load(),
+		FailureDecide:      s.predictiveShadowFailures.decide.Load(),
+		FailureForward:     s.predictiveShadowFailures.forward.Load(),
+		FailurePrefill:     s.predictiveShadowFailures.prefill.Load(),
+		FailureTerminal:    s.predictiveShadowFailures.terminal.Load(),
+		BodyReadDuration:   &s.bodyReadDuration,
+		EstimatorDuration:  &s.estimatorDuration,
+		PreForwardDuration: &s.decisionDuration,
 	}
 	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
 	if !ok {
@@ -78,7 +80,6 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() (metrics.PredictiveAdmis
 	input.CapabilityInitializationReason = snapshot.CapabilityReason
 	input.CapabilityKVCapacityTokens = snapshot.CapabilityProfile.KVCapacityTokens
 	input.CapabilityKVBlockSize = snapshot.CapabilityProfile.KVBlockSize
-	input.CapabilityKVSoftLimitTokens = snapshot.CapabilityProfile.KVSoftLimitTokens
 	input.CapabilityKVHardLimitTokens = snapshot.CapabilityProfile.KVHardLimitTokens
 	input.CapabilitySafeColdPrefillTokensPerSecond = snapshot.CapabilityProfile.SafeColdPrefillTokensPerSec
 	input.CapabilityPrefillRegularTokens = snapshot.CapabilityProfile.PrefillRegularTokens
@@ -117,8 +118,6 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() (metrics.PredictiveAdmis
 	input.RequestAwareEffectiveSequences = snapshot.RequestAware.EffectiveSequences
 	input.RequestAwareAggregateTPSProxy = snapshot.RequestAware.AggregateTPSProxy
 	input.RequestAwareMeanActiveTPSProxy = snapshot.RequestAware.MeanActiveTPSProxy
-	input.RequestAwareProjectedTPSProxy = snapshot.RequestAware.ProjectedTPSProxy
-	input.RequestAwareTPSForecastValid = snapshot.RequestAware.TPSForecastValid
 	input.RequestAwarePrefillClass = string(snapshot.RequestAware.PrefillClass)
 	input.RequestAwareEstimatedPrefillTokens = snapshot.RequestAware.EstimatedPrefillTokens
 	input.RequestAwarePendingPrefillSequences = snapshot.RequestAware.PendingPrefillSequences
