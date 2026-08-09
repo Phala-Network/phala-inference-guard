@@ -13,6 +13,15 @@ type RequestAwareManagerResult struct {
 	DecisionManagerSequenceValid bool
 }
 
+type requestAwareStateSnapshot struct {
+	Virtual                          domain.VirtualState
+	PendingPrefillTokens             int64
+	PendingLongPrefillSequences      int
+	PendingQuiescentPrefillSequences int
+	PendingUnknownPrefillSequences   int
+	UnobservedActiveDecodeSequences  int
+}
+
 func (m *Manager) DecideRequestAwareAndReserve(
 	now time.Time,
 	requestID string,
@@ -61,10 +70,10 @@ func (m *Manager) decideRequestAware(
 		return requestAwareManagerFailure(RequestAwareReasonDuplicate, m.eventSequence, true)
 	}
 
-	state, pendingPrefillTokens, pendingLong, pendingQuiescent, pendingUnknown := m.requestAwareStateLocked(policy)
-	effectiveKV := state.ActiveKVUpper
-	if state.PhysicalKVUpper > effectiveKV {
-		effectiveKV = state.PhysicalKVUpper
+	state := m.requestAwareStateLocked(policy)
+	effectiveKV := state.Virtual.ActiveKVUpper
+	if state.Virtual.PhysicalKVUpper > effectiveKV {
+		effectiveKV = state.Virtual.PhysicalKVUpper
 	}
 	requestReservedTokens := cost.KV.ActiveKVUpper
 	if cost.KV.PhysicalKVUpper > requestReservedTokens {
@@ -72,18 +81,15 @@ func (m *Manager) decideRequestAware(
 	}
 	input.UsedTokens = effectiveKV
 	input.ReservedTokens = 0
-	input.EffectiveSequences = state.DecodeSequences - input.Waiting
-	if input.EffectiveSequences < input.Running {
-		input.EffectiveSequences = input.Running
-	}
+	input.EffectiveSequences = addIntSaturating(input.Running, state.UnobservedActiveDecodeSequences)
 	input.RequestReservedTokens = requestReservedTokens
 	input.SelectionInputTokens = selectionInputTokens
 	input.EstimatedPrefillTokens = selectionInputTokens
-	input.PendingPrefillSequences = state.PendingPrefillSequences
-	input.PendingPrefillTokens = pendingPrefillTokens
-	input.PendingLongPrefillSequences = pendingLong
-	input.PendingQuiescentPrefillSequences = pendingQuiescent
-	input.PendingUnknownPrefillSequences = pendingUnknown
+	input.PendingPrefillSequences = state.Virtual.PendingPrefillSequences
+	input.PendingPrefillTokens = state.PendingPrefillTokens
+	input.PendingLongPrefillSequences = state.PendingLongPrefillSequences
+	input.PendingQuiescentPrefillSequences = state.PendingQuiescentPrefillSequences
+	input.PendingUnknownPrefillSequences = state.PendingUnknownPrefillSequences
 	decision := policy.Evaluate(input)
 	if decision.Action != RequestAwareAdmit || !reserve {
 		return RequestAwareManagerResult{
@@ -110,35 +116,42 @@ func (m *Manager) decideRequestAware(
 	}
 }
 
-func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) (domain.VirtualState, int64, int, int, int) {
+func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) requestAwareStateSnapshot {
 	state := m.base
+	snapshot := requestAwareStateSnapshot{
+		PendingPrefillTokens:           state.Upper.UncachedPrefillTokens,
+		PendingUnknownPrefillSequences: state.Upper.PendingPrefillSequences,
+	}
 	// Existing backend work has no attributable lexical estimate, so preserve
 	// its observed safety upper. Local reservations replace only their own
 	// upper with the request-aware interference estimate below.
-	pendingPrefillTokens := state.Upper.UncachedPrefillTokens
-	pendingLong := 0
-	pendingQuiescent := 0
-	pendingUnknown := state.Upper.PendingPrefillSequences
 	for _, item := range m.reservations {
 		addReservationToStateInterval(&state, &item)
 		if item.PrefillComplete {
+			if item.Assimilation != assimilationAbsorbed {
+				snapshot.UnobservedActiveDecodeSequences = addIntSaturating(
+					snapshot.UnobservedActiveDecodeSequences,
+					item.Cost.DecodeSequencesUpper,
+				)
+			}
 			continue
 		}
 		prefillInterferenceTokens := item.PrefillInterferenceTokens
 		if prefillInterferenceTokens <= 0 {
 			prefillInterferenceTokens = item.Cost.UncachedPrefillUpper
-			pendingUnknown = addIntSaturating(pendingUnknown, 1)
+			snapshot.PendingUnknownPrefillSequences = addIntSaturating(snapshot.PendingUnknownPrefillSequences, 1)
 		}
-		pendingPrefillTokens = addInt64Saturating(pendingPrefillTokens, prefillInterferenceTokens)
+		snapshot.PendingPrefillTokens = addInt64Saturating(snapshot.PendingPrefillTokens, prefillInterferenceTokens)
 		switch policy.prefillClass(prefillInterferenceTokens) {
 		case RequestAwarePrefillQuiescent:
-			pendingQuiescent = addIntSaturating(pendingQuiescent, 1)
-			pendingLong = addIntSaturating(pendingLong, 1)
+			snapshot.PendingQuiescentPrefillSequences = addIntSaturating(snapshot.PendingQuiescentPrefillSequences, 1)
+			snapshot.PendingLongPrefillSequences = addIntSaturating(snapshot.PendingLongPrefillSequences, 1)
 		case RequestAwarePrefillWeighted, RequestAwarePrefillExclusive:
-			pendingLong = addIntSaturating(pendingLong, 1)
+			snapshot.PendingLongPrefillSequences = addIntSaturating(snapshot.PendingLongPrefillSequences, 1)
 		}
 	}
-	return state.Upper, pendingPrefillTokens, pendingLong, pendingQuiescent, pendingUnknown
+	snapshot.Virtual = state.Upper
+	return snapshot
 }
 
 func (m *Manager) CurrentRequestAwarePending(policy *RequestAwarePolicy) RequestAwarePendingSnapshot {
@@ -147,13 +160,13 @@ func (m *Manager) CurrentRequestAwarePending(policy *RequestAwarePolicy) Request
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	state, tokens, long, quiescent, unknown := m.requestAwareStateLocked(policy)
+	state := m.requestAwareStateLocked(policy)
 	return RequestAwarePendingSnapshot{
-		PrefillSequences:          state.PendingPrefillSequences,
-		PrefillTokens:             tokens,
-		LongPrefillSequences:      long,
-		QuiescentPrefillSequences: quiescent,
-		UnknownPrefillSequences:   unknown,
+		PrefillSequences:          state.Virtual.PendingPrefillSequences,
+		PrefillTokens:             state.PendingPrefillTokens,
+		LongPrefillSequences:      state.PendingLongPrefillSequences,
+		QuiescentPrefillSequences: state.PendingQuiescentPrefillSequences,
+		UnknownPrefillSequences:   state.PendingUnknownPrefillSequences,
 	}
 }
 

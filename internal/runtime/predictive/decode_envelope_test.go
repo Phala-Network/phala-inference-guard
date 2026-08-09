@@ -13,7 +13,7 @@ const (
 	decodePressureSource     = RequestAwarePressureSource("decode")
 )
 
-func TestV0126DecodeEnvelopeValidatesConfigurationAndCapability(t *testing.T) {
+func TestV0127DecodeEnvelopeValidatesConfigurationAndCapability(t *testing.T) {
 	if _, err := NewDecodeEnvelope(DecodeEnvelopeConfig{}); err == nil {
 		t.Fatal("zero Decode envelope budget was accepted")
 	}
@@ -35,7 +35,7 @@ func TestV0126DecodeEnvelopeValidatesConfigurationAndCapability(t *testing.T) {
 	}
 }
 
-func TestV0126DecodeEnvelopeRejectsInvalidInput(t *testing.T) {
+func TestV0127DecodeEnvelopeRejectsInvalidInput(t *testing.T) {
 	envelope, err := NewDecodeEnvelope(DecodeEnvelopeConfig{InterferenceBudgetTokens: 64 * 1024})
 	if err != nil {
 		t.Fatalf("NewDecodeEnvelope: %v", err)
@@ -55,7 +55,7 @@ func TestV0126DecodeEnvelopeRejectsInvalidInput(t *testing.T) {
 	}
 }
 
-func TestV0126PolicyBoundsDecodeInterferenceBeforeForward(t *testing.T) {
+func TestV0127PolicyBoundsDecodeInterferenceBeforeForward(t *testing.T) {
 	const (
 		kib         = int64(1024)
 		regular     = 64 * kib
@@ -136,7 +136,7 @@ func TestV0126PolicyBoundsDecodeInterferenceBeforeForward(t *testing.T) {
 	})
 }
 
-func TestV0126InterferenceGateDoesNotOwnDecodeActivity(t *testing.T) {
+func TestV0127InterferenceGateDoesNotOwnDecodeActivity(t *testing.T) {
 	gate, err := NewInterferenceGate(InterferenceGateConfig{
 		PrefillRegularTokens:         64 * 1024,
 		PrefillExclusiveTokens:       256 * 1024,
@@ -156,7 +156,7 @@ func TestV0126InterferenceGateDoesNotOwnDecodeActivity(t *testing.T) {
 	}
 }
 
-func TestV0126ManagerAtomicallyIncludesSameSnapshotReservationsInDecodeEnvelope(t *testing.T) {
+func TestV0127ManagerSumsPendingPrefillWithoutInventingDecodeUsers(t *testing.T) {
 	const kib = int64(1024)
 	policy := newPrefillRequestAwareTestPolicy(t)
 	manager := NewManager("request-aware-test", domain.VirtualState{DecodeSequences: 4})
@@ -168,7 +168,7 @@ func TestV0126ManagerAtomicallyIncludesSameSnapshotReservationsInDecodeEnvelope(
 		EffectiveSequences: 4,
 	}
 
-	for index := 1; index <= 2; index++ {
+	for index := 1; index <= 4; index++ {
 		requestID := "same-snapshot-" + string(rune('0'+index))
 		result := manager.DecideRequestAwareAndReserve(
 			time.Unix(1, 0), requestID, requestAwareManagerCost(4*kib, 0), 4*kib, policy, input,
@@ -179,18 +179,18 @@ func TestV0126ManagerAtomicallyIncludesSameSnapshotReservationsInDecodeEnvelope(
 	}
 
 	blocked := manager.DecideRequestAwareAndReserve(
-		time.Unix(1, 0), "same-snapshot-3", requestAwareManagerCost(4*kib, 0), 4*kib, policy, input,
+		time.Unix(1, 0), "same-snapshot-5", requestAwareManagerCost(4*kib, 0), 4*kib, policy, input,
 	)
 	if blocked.Reserved || blocked.Decision.Action != RequestAwareSizeProtect ||
 		blocked.Decision.Reason != decodeInterferenceReason || blocked.Decision.PressureSource != decodePressureSource ||
-		blocked.Decision.PendingPrefillTokens != 8*kib || blocked.Decision.PostAdmitPendingPrefillTokens != 12*kib ||
-		blocked.Decision.EffectiveSequences != 6 {
-		t.Fatalf("same-snapshot third decision=%+v, want atomic Decode envelope protection", blocked)
+		blocked.Decision.PendingPrefillTokens != 16*kib || blocked.Decision.PostAdmitPendingPrefillTokens != 20*kib ||
+		blocked.Decision.EffectiveSequences != 4 {
+		t.Fatalf("same-snapshot fifth decision=%+v, want phase-correct Decode envelope protection", blocked)
 	}
-	if snapshot := manager.Snapshot(); snapshot.Reservations != 2 {
-		t.Fatalf("same-snapshot manager=%+v, want exactly two reservations", snapshot)
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 4 {
+		t.Fatalf("same-snapshot manager=%+v, want exactly four reservations", snapshot)
 	}
-	for _, requestID := range []string{"same-snapshot-1", "same-snapshot-2"} {
+	for _, requestID := range []string{"same-snapshot-1", "same-snapshot-2", "same-snapshot-3", "same-snapshot-4"} {
 		if !manager.Terminate(requestID, TerminalExpired) {
 			t.Fatalf("terminate %s failed", requestID)
 		}

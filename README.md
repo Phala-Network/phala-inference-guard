@@ -1,6 +1,6 @@
 # Phala Inference Guard
 
-Phala Inference Guard (PIG) v0.12.6 is a single-upstream, predictive admission
+Phala Inference Guard (PIG) v0.12.7 is a single-upstream, predictive admission
 proxy for OpenAI-compatible vLLM services. It estimates request size before an
 upstream call, combines that estimate with one fresh vLLM observation and all
 unabsorbed reservations, and decides whether the post-admit state can preserve
@@ -19,6 +19,11 @@ interference before forwarding. It multiplies post-admit pending Prefill tokens
 by effective Decode sequences and compares the product with the immutable
 regular-Prefill budget. A rejection from this envelope is request-scoped: it
 does not close the node to a smaller request that still fits.
+
+Effective Decode sequences start from fresh backend `running` observations.
+Only a Prefill-complete local reservation not yet definitely absorbed by an
+observation adds an unobserved Decode sequence. Prefill-incomplete reservations
+still charge pending Prefill and KV, but are not double-counted as Decode users.
 
 ## Request path
 
@@ -40,12 +45,12 @@ does not create a second post-response admission controller.
 ## Production configuration
 
 Production Compose should be small. Do not spell out values that equal the
-v0.12.6 defaults.
+v0.12.7 defaults.
 
 ```yaml
 services:
   pig:
-    image: ghcr.io/phala-network/phala-inference-guard:0.12.6
+    image: ghcr.io/phala-network/phala-inference-guard:0.12.7
     environment:
       - UPSTREAM=http://backend:8000
       - TOKEN=${PIG_TOKEN}
@@ -119,11 +124,11 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image builds for
-the v0.12.6 release are run on the dedicated c21 Linux workbench. The release
+the v0.12.7 release are run on the dedicated c21 Linux workbench. The release
 plan records the exact archive hash, commands, logs, image digest, live gates,
 and production observation evidence:
 
-- [v0.12.6 QoS-constrained goodput remediation](docs/PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md)
+- [v0.12.7 QoS-constrained goodput remediation](docs/PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md)
 - [v0.12.0-v0.12.2 historical audit](docs/PREDICTIVE_ADMISSION_V0_12_1_CORRECTION_AND_LIVE_VALIDATION_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

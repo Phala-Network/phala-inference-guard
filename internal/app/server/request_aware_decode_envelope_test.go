@@ -11,7 +11,7 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-func TestV0126AdapterMapsDecodeInterferenceToRequestScopedSizePressure(t *testing.T) {
+func TestV0127AdapterMapsDecodeInterferenceToRequestScopedSizePressure(t *testing.T) {
 	decision := requestAwareAdapterProtectedDecision(runtimepredictive.RequestAwareDecision{
 		Action: runtimepredictive.RequestAwareSizeProtect,
 		Reason: runtimepredictive.RequestAwareReason("decode_interference"),
@@ -23,7 +23,7 @@ func TestV0126AdapterMapsDecodeInterferenceToRequestScopedSizePressure(t *testin
 	}
 }
 
-func TestV0126HTTPDecodeEnvelopeRejectIsObservableWithoutRouterMislock(t *testing.T) {
+func TestV0127HTTPDecodeEnvelopeRejectIsObservableWithoutRouterMislock(t *testing.T) {
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	var decisionLogs []requestAwareDecisionLogEvent
 	adapter.onDecision = func(event requestAwareDecisionLogEvent) {
@@ -107,7 +107,7 @@ func TestV0126HTTPDecodeEnvelopeRejectIsObservableWithoutRouterMislock(t *testin
 	}
 }
 
-func TestV0126ShadowDecodeEnvelopeRemainsSideEffectFree(t *testing.T) {
+func TestV0127ShadowDecodeEnvelopeRemainsSideEffectFree(t *testing.T) {
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "shadow")
 	decision := adapter.Decide(context.Background(), "shadow-decode-envelope", requestAwareAdapterInput(20*1024, 0))
 	if decision.Outcome != predictiveAdmissionOutcomeRequestReject ||

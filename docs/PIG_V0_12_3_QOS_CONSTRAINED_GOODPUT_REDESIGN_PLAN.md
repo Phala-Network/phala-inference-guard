@@ -473,7 +473,7 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] v0.12.6 raw results independently recomputed; the analyzer definition,
   continuation ordering, old-baseline calibration, and cache counters do not
   explain away the deterministic short-request over-protection.
-- [ ] v0.12.7 phase-correct active-Decode red tests fail against v0.12.6 for
+- [x] v0.12.7 phase-correct active-Decode red tests fail against v0.12.6 for
   the intended reason.
 - [ ] v0.12.7 focused implementation, source matrix, three reviews, and push
   completed on the dedicated CVM.
@@ -2952,3 +2952,36 @@ GPU gates before executing a completely new nine-repetition ordered matrix. Do
 not reuse the prior N/A measurements for promotion. Upload only the exact image
 whose new matrix passes every section 4 condition. Until then, v0.12.6 and
 v0.12.7 remain unpublished and production remains unchanged.
+
+The phase-correct test-first cycle ran only in `pig-v0124-workbench`. Red r1
+stopped before tests because the login-shell PATH omitted the installed Go tool
+directory; it is retained as invalid runner evidence. Red r2 used absolute Go
+tool paths and exited 1 for all three intended reasons: the idle 1,298-token
+burst invented active Decode users, the third 4K Prefill behind four real Decode
+users saw six rather than four effective sequences, and a second idle 99K
+Prefill was rejected by the Decode envelope instead of reaching the aggregate
+Prefill gate. Its evidence is
+`/workspace/runs/pig-v0127-phase-red-r2-d2950ba`; the `SHA256SUMS` SHA-256 is
+`e670bf31f0422cdcffb463554021e5b16a06e64c12f2b681e8aa3427960bad14`.
+
+The focused implementation replaced the Manager helper's positional return
+tuple with one internal state summary. The existing locked reservation scan now
+separately reports virtual resource state, pending Prefill ownership, and
+Prefill-complete local Decode sequences not definitely absorbed by a sample.
+`EffectiveSequences` is the saturating sum of fresh observed `running` and only
+that unobserved/ambiguous completed-Decode upper. No pure gate, public config,
+HTTP mapping, metric schema, or lifecycle transition changed.
+
+Focused r1 passed the three corrected causal tests; its `SHA256SUMS` SHA-256 is
+`71256257a9a11aa737ba334bcff979d54e7338a0bce59e9c6b19819165d6022d`.
+The complete runtime-predictive package then passed; its manifest SHA-256 is
+`d5d728c66a8481e8a37090207b59d2e2b8e593b5bfc896ff7ade412292a590e8`.
+Additional regression coverage proves an unobserved Prefill-complete Decode is
+counted, an absorbed Decode is not double-counted with observed running, and an
+ambiguous sample retains the conservative upper. Runtime, server, metrics,
+simulation, and simulation-command affected packages all passed in 6.1 seconds;
+that evidence manifest SHA-256 is
+`dd398d25c108275aedcbd05b0a8114aa7d726e4708681d229a4d6baacd04c632`.
+These are focused source results only. Commit/push, full/race/vet/build/
+benchmark matrices, exact source archive, image, GPU, and Pareto gates remain
+open.

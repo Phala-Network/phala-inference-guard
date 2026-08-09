@@ -1,6 +1,6 @@
-# PIG v0.12.6 Internal Algorithm Flow
+# PIG v0.12.7 Internal Algorithm Flow
 
-PIG v0.12.6 has one admission architecture and one upstream. Components are
+PIG v0.12.7 has one admission architecture and one upstream. Components are
 separated by ownership so request parsing, backend observation, policy,
 reservation lifecycle, proxying, and telemetry do not mutate each other's
 state.
@@ -58,7 +58,12 @@ pressure:
   Decode sequences must not exceed the immutable regular-Prefill budget;
 - any request exceeding hard post-admit KV is protected.
 
-Generation TPS remains observation-only diagnostic data in v0.12.6. It is used
+Effective Decode sequences start with fresh backend `running`. Manager adds only
+a Prefill-complete local reservation not definitely absorbed by that
+observation. A Prefill-incomplete reservation charges pending Prefill and KV but
+does not also become an active Decode user.
+
+Generation TPS remains observation-only diagnostic data in v0.12.7. It is used
 to evaluate QoS in controlled GPU experiments, but it does not authorize or
 reject a request. The Decode envelope uses only deterministic request work,
 immutable capability, coherent sequence state, and live reservations. Its

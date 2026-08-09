@@ -1,4 +1,4 @@
-# PIG v0.12.6 Advanced Configuration
+# PIG v0.12.7 Advanced Configuration
 
 This document separates production configuration from test controls. The
 loader accepts bounded overrides so the policy can be tested, but parser
@@ -10,7 +10,7 @@ A normal production deployment contains only:
 
 - `UPSTREAM`, exactly one absolute HTTP URL;
 - required authentication and attestation infrastructure;
-- a deployment choice that genuinely differs from the v0.12.6 default.
+- a deployment choice that genuinely differs from the v0.12.7 default.
 
 Do not explicitly configure predictive mode, metrics URL, polling, freshness,
 the KV hard ratio, or Prefill boundaries when the defaults are intended.
@@ -20,7 +20,7 @@ The enforce artifact must prove default behavior with
 Test and production manifests are separate artifacts. Generate production from
 the fresh live Compose and immutable image digest; do not promote a test
 manifest by only changing its mode. Before deployment, audit the effective PIG
-environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.6
+environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.7
 default and have a target-specific operational reason. Shadow may additionally
 set `PREDICTIVE_ADMISSION_MODE=shadow`; enforce must omit it.
 
@@ -45,7 +45,7 @@ not alter admission policy.
 
 ## Version defaults
 
-These values are part of the v0.12.6 behavior and should normally remain absent
+These values are part of the v0.12.7 behavior and should normally remain absent
 from production Compose.
 
 | Variable | Default | Constraint |
@@ -98,6 +98,11 @@ The regular boundary also supplies the immutable Decode-interference budget:
 charge = post_admit_pending_prefill_tokens * effective_decode_sequences
 admit when effective_decode_sequences == 0 or charge <= regular
 ```
+
+`effective_decode_sequences` is fresh backend `running` plus only those local
+Prefill-complete Decode sequences not definitely absorbed by that observation.
+Prefill-incomplete reservations contribute to `post_admit_pending_prefill_tokens`
+but not to the Decode sequence multiplier.
 
 This adds no production setting, learned rate, retry credit, or active probe.
 

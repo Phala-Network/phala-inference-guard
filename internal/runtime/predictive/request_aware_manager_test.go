@@ -92,34 +92,108 @@ func TestNilRequestAwareManagerDoesNotClaimSequenceAuthority(t *testing.T) {
 	}
 }
 
-func TestV0126RequestAwareManagerRegularBurstIsBoundedByDecodeEnvelope(t *testing.T) {
+func TestV0127RequestAwareManagerIdleRegularBurstDoesNotCreateDecodeUsers(t *testing.T) {
 	const kib = int64(1024)
 	policy := newPrefillRequestAwareTestPolicy(t)
 	manager := NewManager("request-aware-test", domain.VirtualState{})
 	input := RequestAwareInput{
 		MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * kib,
 	}
-	cost := requestAwareManagerCost(8*kib, 64)
+	cost := requestAwareManagerCost(1_298, 512)
 
-	for index := range 5 {
+	for index := range 8 {
 		result := manager.DecideRequestAwareAndReserve(
-			time.Unix(1, 0), fmt.Sprintf("regular-%d", index), cost, 8*kib, policy, input,
+			time.Unix(1, 0), fmt.Sprintf("regular-%d", index), cost, 1_298, policy, input,
 		)
-		if index < 3 {
-			if !result.Reserved || result.Decision.Action != RequestAwareAdmit {
-				t.Fatalf("fitting regular burst decision %d=%+v", index, result)
-			}
-			continue
-		}
-		if result.Reserved || result.Decision.Action != RequestAwareSizeProtect ||
-			result.Decision.Reason != RequestAwareReasonDecodeInterference ||
-			result.Decision.PressureSource != RequestAwarePressureDecode {
-			t.Fatalf("bounded regular burst decision %d=%+v", index, result)
+		if !result.Reserved || result.Decision.Action != RequestAwareAdmit ||
+			result.Decision.EffectiveSequences != 0 ||
+			result.Decision.PendingPrefillSequences != index ||
+			result.Decision.PostAdmitPendingPrefillTokens != int64(index+1)*1_298 {
+			t.Fatalf("idle regular burst decision %d=%+v", index, result)
 		}
 	}
-	if snapshot := manager.Snapshot(); snapshot.Reservations != 3 {
-		t.Fatalf("regular burst reservations=%+v want=3", snapshot)
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 8 {
+		t.Fatalf("regular burst reservations=%+v want=8", snapshot)
 	}
+}
+
+func TestV0127RequestAwareManagerCountsCompletedDecodeAcrossAssimilation(t *testing.T) {
+	const kib = int64(1024)
+	policy := newPrefillRequestAwareTestPolicy(t)
+	idle := RequestAwareInput{
+		MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * kib,
+	}
+	setupCompleted := func(t *testing.T) *Manager {
+		t.Helper()
+		manager := NewManager("request-aware-test", domain.VirtualState{})
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(1, 0), "decode", requestAwareManagerCost(4*kib, 512), 4*kib, policy, idle,
+		)
+		if !result.Reserved || !manager.MarkForwarded("decode") || !manager.MarkPrefillComplete("decode") {
+			t.Fatalf("completed Decode setup=%+v", result)
+		}
+		return manager
+	}
+
+	t.Run("unobserved completed Decode is counted", func(t *testing.T) {
+		manager := setupCompleted(t)
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(2, 0), "unobserved-probe", requestAwareManagerCost(80*kib, 0), 80*kib, policy, idle,
+		)
+		if result.Reserved || result.Decision.Reason != RequestAwareReasonDecodeInterference ||
+			result.Decision.EffectiveSequences != 1 {
+			t.Fatalf("unobserved completed Decode decision=%+v", result)
+		}
+	})
+
+	t.Run("absorbed completed Decode is not double counted", func(t *testing.T) {
+		manager := setupCompleted(t)
+		reconcileRequestAwareManagerState(t, manager, domain.VirtualState{
+			PhysicalKVUpper: 4*kib + 512, ActiveKVUpper: 4*kib + 512,
+			DecodeSequences: 1, ActiveContextTokens: 4*kib + 512,
+		})
+		observed := idle
+		observed.Running = 1
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(2, 0), "absorbed-probe", requestAwareManagerCost(40*kib, 0), 40*kib, policy, observed,
+		)
+		if !result.Reserved || result.Decision.EffectiveSequences != 1 {
+			t.Fatalf("absorbed completed Decode decision=%+v", result)
+		}
+	})
+
+	t.Run("ambiguous completed Decode keeps the safety upper", func(t *testing.T) {
+		manager := NewManager("request-aware-test", domain.VirtualState{})
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(1, 0), "decode", requestAwareManagerCost(4*kib, 512), 4*kib, policy, idle,
+		)
+		if !result.Reserved || !manager.MarkForwarded("decode") {
+			t.Fatalf("ambiguous Decode setup=%+v", result)
+		}
+		started := manager.StartSampleWindow()
+		if !manager.MarkPrefillComplete("decode") {
+			t.Fatal("ambiguous Decode did not complete Prefill")
+		}
+		if err := manager.ReconcileSample(SampleWindow{
+			Observed: domain.VirtualState{
+				PhysicalKVUpper: 4*kib + 512, ActiveKVUpper: 4*kib + 512,
+				DecodeSequences: 1, ActiveContextTokens: 4*kib + 512,
+			},
+			StartedSequence:  started,
+			FinishedSequence: manager.EventSequence(),
+		}); err != nil {
+			t.Fatalf("reconcile ambiguous Decode: %v", err)
+		}
+		observed := idle
+		observed.Running = 1
+		probe := manager.DecideRequestAwareAndReserve(
+			time.Unix(2, 0), "ambiguous-probe", requestAwareManagerCost(40*kib, 0), 40*kib, policy, observed,
+		)
+		if probe.Reserved || probe.Decision.Reason != RequestAwareReasonDecodeInterference ||
+			probe.Decision.EffectiveSequences != 2 {
+			t.Fatalf("ambiguous completed Decode decision=%+v", probe)
+		}
+	})
 }
 
 func TestRequestAwareManagerWaitingRemainsRequestSizeAware(t *testing.T) {
@@ -171,7 +245,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 		}
 	})
 
-	t.Run("same-snapshot Decode envelope sums interference estimates", func(t *testing.T) {
+	t.Run("idle same-snapshot work is bounded by Prefill aggregate only", func(t *testing.T) {
 		manager := NewManager("request-aware-test", domain.VirtualState{})
 		cost := requestAwareManagerCost(240*kib, 0)
 		first := manager.DecideRequestAwareAndReserve(
@@ -183,17 +257,19 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 		third := manager.DecideRequestAwareAndReserve(
 			time.Unix(2, 0), "divergent-weighted-third", cost, 99*kib, policy, idle,
 		)
-		if !first.Reserved || second.Reserved || second.Decision.Action != RequestAwareSizeProtect ||
-			second.Decision.Reason != RequestAwareReasonDecodeInterference ||
-			second.Decision.PressureSource != RequestAwarePressureDecode ||
+		if !first.Reserved || !second.Reserved || second.Decision.Action != RequestAwareAdmit ||
+			second.Decision.EffectiveSequences != 0 ||
 			second.Decision.PendingPrefillTokens != 99*kib ||
 			second.Decision.PostAdmitPendingPrefillTokens != 198*kib ||
-			third.Reserved || third.Decision.Reason != RequestAwareReasonDecodeInterference ||
-			third.Decision.PostAdmitPendingPrefillTokens != 198*kib {
+			third.Reserved || third.Decision.Reason != RequestAwareReasonPrefillBudget ||
+			third.Decision.PressureSource != RequestAwarePressurePrefill ||
+			third.Decision.PendingPrefillTokens != 198*kib ||
+			third.Decision.PostAdmitPendingPrefillTokens != 297*kib {
 			t.Fatalf("divergent weighted decisions first=%+v second=%+v third=%+v", first, second, third)
 		}
-		if !manager.Terminate("divergent-weighted-first", TerminalExpired) {
-			t.Fatal("divergent weighted reservation did not terminate")
+		if !manager.Terminate("divergent-weighted-first", TerminalExpired) ||
+			!manager.Terminate("divergent-weighted-second", TerminalExpired) {
+			t.Fatal("divergent weighted reservations did not terminate")
 		}
 	})
 

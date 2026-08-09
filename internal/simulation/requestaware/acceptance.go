@@ -9,18 +9,18 @@ const simulationDurationEpsilon = 0.000001
 
 func ValidateAcceptance(suite Suite) error {
 	if suite.ProductionPolicyCalls <= 0 {
-		return fmt.Errorf("production v0.12.6 Manager policy was not called")
+		return fmt.Errorf("production v0.12.7 Manager policy was not called")
 	}
 	for _, scenario := range suite.Scenarios {
 		noAdmission, noAdmissionOK := scenario.Policies[PolicyNoAdmission]
 		v0122, v0122OK := scenario.Policies[PolicyV0122]
-		candidate, candidateOK := scenario.Policies[PolicyV0126]
+		candidate, candidateOK := scenario.Policies[PolicyV0127]
 		if !noAdmissionOK || !v0122OK || !candidateOK {
 			return fmt.Errorf("scenario %s does not contain all three policies", scenario.Name)
 		}
 		if noAdmission.Arrivals != v0122.Arrivals || noAdmission.Arrivals != candidate.Arrivals {
 			return fmt.Errorf(
-				"scenario %s policies saw different arrivals no-admission/v0.12.2/v0.12.6=%d/%d/%d",
+				"scenario %s policies saw different arrivals no-admission/v0.12.2/v0.12.7=%d/%d/%d",
 				scenario.Name,
 				noAdmission.Arrivals,
 				v0122.Arrivals,
