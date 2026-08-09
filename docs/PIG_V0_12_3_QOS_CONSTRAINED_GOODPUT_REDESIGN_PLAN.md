@@ -1,8 +1,9 @@
 # PIG v0.12.7 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: v0.12.6 failed the ordered Pareto gate and remains unpublished; active
-v0.12.7 reservation-phase correction is design/red-test work only; source,
-image, GPU, Pareto, upload, and production gates remain open
+Status: v0.12.6 failed the ordered Pareto gate and remains unpublished; the
+exact v0.12.7 source correction passed its complete dedicated-CVM matrix and
+three review passes; image, GPU, Pareto, upload, and production gates remain
+open
 
 This is the only execution plan for the active PIG v0.12.7 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -2985,3 +2986,108 @@ that evidence manifest SHA-256 is
 These are focused source results only. Commit/push, full/race/vet/build/
 benchmark matrices, exact source archive, image, GPU, and Pareto gates remain
 open.
+
+## 44. v0.12.7 complete source acceptance and three review passes
+
+The executable correction was committed as
+`188e3b8de775460318e981b3bee8c84dcaf331a7` and the simulation report identity
+follow-up as `396fc049ac4936c83aacf8ce321ad0f1bed32797`. Both were pushed to
+`origin/codex/pig-v0.11.0-request-aware`. At source acceptance, the authoritative
+workbench repository was clean and both `HEAD` and its upstream resolved to
+`396fc049ac4936c83aacf8ce321ad0f1bed32797`.
+
+The exact 162-file candidate input used by the matrix was reconstructed from:
+
+```text
+/workspace/incoming/pig-v0127-396fc04-source.tar.gz
+SHA-256 d3392e6ad932f1f61f859504420cf8edb50829c19057d13d2eb82d6ee2d8d627
+```
+
+The complete matrix ran only inside `pig-v0124-workbench` on dedicated CVM
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`, using Go `1.24.13`, Linux
+`6.9.0-dstack`, and container `2c14ed1bca84`. The runner SHA-256 was
+`7ec57ca24d5b3d6c2537aaf106aa640a8d13fb3bcffb46398426b0c28c577c4f`.
+The immutable evidence is:
+
+```text
+/workspace/evidence/pig-v0127-dedicated-phase-c-r1-396fc04
+evidence-sha256 SHA-256
+  2a74cb1f99d0251f9c151b4412bedec4fd0d9c6d759cd760524aa99173ac85ca
+input-sha256 SHA-256
+  7c7081f9916ffd8a6674d69da6ed60a0eda454ef07fa8ebc9d9525584f5a5343
+```
+
+An independent `sha256sum -c evidence-sha256` passed for every recorded file,
+including the environment, exact inputs, status table, source inventory,
+production binary, both simulations, every test/race/build log, and every
+benchmark. All 28 matrix steps exited zero: environment, formatting, retired
+mode and no-active-calibration audits, Decode-envelope and phase-correct
+contracts, version identity, lexical corpus, affected and full tests, vet,
+targeted and full race, all-package build, production binary, policy-order
+tests, two simulations plus byte comparison and acceptance, B/C/C/B ordered
+benchmarks, benchmark contracts, reservation-aware HTTP benchmarks, and
+estimator benchmarks.
+
+The two deterministic simulation reports were byte-identical and the suite was
+policy-order independent. Against v0.12.2, aggregate v0.12.7 simulation metrics
+were:
+
+```text
+metric                              v0.12.2       v0.12.7
+SLO-compliant output tokens/s         84.9444       105.4187
+raw completed output tokens/s         94.1203       106.4062
+TPS-floor violation seconds           20.7            4.8
+preemptions                            1              1
+maximum idle with demand seconds       0.4            0.4
+hard-fit idle rejects                  1              1
+```
+
+This is deterministic-model evidence only. In particular, individual simulated
+large-only and low-flow-first-large outcomes remain conservative and cannot be
+used to claim GPU Pareto safety. The section 4 controlled GPU gate remains
+authoritative.
+
+Review pass 1, model and causality: the HTTP adapter still supplies a fresh
+backend observation to the Manager before every decision. The Manager now
+computes the Decode-envelope scalar as observed `running` plus only
+Prefill-complete local Decode reservations not definitely absorbed by that
+observation. Focused causal tests prove that eight same-snapshot 1,298-token
+Prefills create zero active Decode users, four real observed Decode users remain
+four while pending Prefill accumulates, an unobserved completed Prefill adds one
+Decode user, an absorbed one is not double-counted, and an ambiguous one retains
+the conservative upper. Request size, post-admit pending Prefill, resource fit,
+and the immutable profile still change the pre-forward decision. No tokenizer
+exactness, cache hit, learned rate, or synthetic Prefill claim is introduced.
+
+Review pass 2, lifecycle, safety, and SOLID: Manager remains the only owner of
+the locked decision/reservation/reconciliation transaction and produces one
+internal state summary during its existing O(live reservations) scan.
+Prefill-incomplete reservations continue to charge physical and active KV,
+future KV, pending Prefill count/tokens, class concurrency, and aggregate
+Prefill budget. Completion, absorption, ambiguity, terminal release,
+cancellation, rollback, duplicate IDs, stale observations, epoch rebase,
+saturating arithmetic, and concurrent lifecycle paths retain their existing
+owners and passed focused plus full race coverage. `DecodeEnvelope` remains a
+pure policy; no public configuration, learner, calibration, probe, cooldown,
+request mutation, cache inspection, routing, tiering, or priority state was
+added.
+
+Review pass 3, efficiency, evidence, and release: the ordered benchmark contract
+passed in both directions. Median pre-forward HTTP cost was `13,447 ns` versus
+v0.12.2's `12,750 ns` (`1.0547x`) with the same 33 allocations. Manager decision
+cost was `200.65 ns` at zero reservations, `3,385.5 ns` at 48, and `17,418.5 ns`
+at 256, with zero allocations; the 48- and 256-reservation ratios were `1.0216x`
+and `1.0044x`. The pure policy reached at most `109.15 ns` and remained
+allocation-free. Telemetry at 256 reservations was `1.0101x` baseline with zero
+allocations. Estimation medians were `0.283 us` for 1 KiB, `1.980 us` for 64 KiB,
+`28.688 us` for 1 MiB, `157.583 us` for 4 MiB, and `21.872 ms` for the adversarial
+4 MiB many-string shape, all with zero allocations and below the accepted
+100-ms extreme-input ceiling.
+
+The source layer is accepted. No image has been built or uploaded from
+`396fc04`; no PIG runtime has been replaced with v0.12.7; vLLM, the CVM,
+production Router, and `use1-cb` remain unchanged. The next gate is one local
+immutable image built from the exact clean pushed source, followed by image
+contract checks and PIG-only replacement on the dedicated CVM. Only after the
+targeted GPU suite passes may a completely new nine-repetition ordered Pareto
+matrix begin.
