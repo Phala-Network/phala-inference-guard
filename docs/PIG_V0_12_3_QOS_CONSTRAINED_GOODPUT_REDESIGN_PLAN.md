@@ -1,7 +1,7 @@
 # PIG v0.12.6 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active v0.12.6 red/green execution plan; v0.12.5 source, local image,
-and targeted-GPU evidence retained but candidate rejected before Pareto/upload
+Status: active v0.12.6 source matrix passed; local image, targeted GPU, and
+Pareto gates remain open; v0.12.5 remains rejected before Pareto/upload
 
 This is the only execution plan for the active PIG v0.12.6 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -444,10 +444,10 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
   checks completed on the dedicated CVM.
 - [x] v0.12.5 failed the repeated Decode-QoS gate and was rejected before
   near-KV, stale, Pareto, registry upload, or production promotion.
-- [ ] v0.12.6 fixed Decode-interference envelope focused red is valid.
-- [ ] v0.12.6 focused implementation, Router scope, observability, version,
+- [x] v0.12.6 fixed Decode-interference envelope focused red is valid.
+- [x] v0.12.6 focused implementation, Router scope, observability, version,
   efficiency, and SOLID green.
-- [ ] v0.12.6 complete source/race/simulation/benchmark matrix and three
+- [x] v0.12.6 complete source/race/simulation/benchmark matrix and three
   reviews passed on the dedicated CVM.
 - [ ] one immutable v0.12.6 local image passed production contract and smoke.
 - [ ] v0.12.6 targeted GPU and Pareto matrices passed on the dedicated CVM.
@@ -2459,3 +2459,96 @@ bounded reason enum. Focused and full HTTP/Manager benchmarks must show no added
 allocation and remain within section 8 limits. The plan does not promote the
 formula from design evidence; red/green, GPU, and Pareto results may still reject
 or revise it.
+
+## 39. v0.12.6 red, implementation, and complete source evidence
+
+The focused red ran only in pig-v0124-workbench on
+c21b7281-2c25-4453-8a68-f39ec42d03b4 against the pre-implementation tree.
+Runtime, server, and metrics packages each exited 1 for the intended behavior:
+the over-boundary and same-snapshot requests were admitted, quiescent ownership
+remained in the old Prefill gate, the adapter did not produce the request-scoped
+mapping, the HTTP request reached upstream, and the metrics normalizer rejected
+decode_interference. The final red fixture hashes are recorded in
+/workspace/evidence/v0126-decode-envelope-red-r2; its SHA256SUMS file SHA-256
+is 487cf4a1757f28516a53403fc5320efa16742663f831ac761be4a1e024d3606c.
+
+The coherent implementation is pushed commit
+9167c2a146ea8762b024e468f568ca5feec5b226. Its immutable source archive is
+/workspace/incoming/pig-v0126-9167c2a-source.tar.gz, SHA-256
+ceda8975ad520e49a8ffdb7e4dce026ddf1f6ebbb2f20d70feac2a6e8e1936e0.
+Focused runtime, server, and metrics tests passed before the affected-package
+matrix. The implementation and test diff contains the pure Decode envelope,
+gate precedence, Manager reservation integration, HTTP/Router projection,
+bounded observability labels, deterministic simulation identity, and version
+0.12.6; it adds no active calibration or production configuration.
+
+The first complete runner correctly passed every product test, race,
+simulation, build, and benchmark gate but reported
+decode_envelope_contract=1 because its new lexical assertion required exactly
+one space after a Go struct-field colon. gofmt inserted alignment spaces. This
+is retained as invalid runner evidence under
+/workspace/evidence/pig-v0126-dedicated-phase-c-r1-9167c2a; no status was
+edited or waived. The corrected runner uses a POSIX whitespace expression, has
+SHA-256
+97f94b04bd52e33d7db1bfd2e179cc7edc336730742c2ccbe9c58d606ba2e23a,
+and passed sh -n plus a standalone traced contract diagnostic before rerun.
+
+The authoritative complete source matrix is
+/workspace/evidence/pig-v0126-dedicated-phase-c-r2-9167c2a. It ran in
+container 2c14ed1bca84 with Go 1.24.13 on Linux 6.9.0-dstack. All 27 status
+rows are zero: environment and version identity, formatting, legacy and
+active-calibration audits, Decode-envelope wiring, lexical corpus, affected and
+full tests, vet, targeted and full race, all-package and versioned production
+builds, policy-order tests, two byte-identical simulations, simulation
+acceptance, four B/C/C/B ordered benchmark runs, both benchmark contracts,
+reservation-aware HTTP, and the estimator matrix. overall=0. Every listed
+artifact passes sha256sum -c; the evidence-sha256 file itself has SHA-256
+7f3a72bfd68fafd74bd88e1071986ff582b88c88db19e610623f06dc9545eb4d.
+
+The ordered benchmark contract retained allocation counts and passed every
+section 8 limit. Candidate full HTTP pre-forward was 13,426.5 ns/op versus
+13,122.0, ratio 1.023205, with 33 allocations for both. The zero-reservation
+Manager was 193.8 ns/op, a 71.8 ns absolute increase, with zero allocations;
+48 and 256 reservation ratios were 0.998041 and 0.987431. The worst pure-Policy
+candidate median was 109.3 ns/op, below 250 ns and less than 100 ns above
+baseline, with zero allocations. The normal 4 MiB estimator was 156,699 ns/op;
+the bounded many-string pathological case was 22.019430 ms, below the
+user-approved 100 ms ceiling, both with zero allocations.
+
+The deterministic aggregate remains diagnostic only:
+
+    metric                         v0.12.2       v0.12.6
+    SLO completion tok/s             84.944        105.339
+    raw completion tok/s             94.120        106.306
+    preemptions                           1              1
+    TPS-floor violation seconds       20.7            4.7
+    waiting seconds                     5.0           80.0
+
+The adverse large-only counterexample is retained: v0.12.2 produced
+91.898 SLO-compliant tokens/s while v0.12.6 produced 30.000. Consequently the
+source matrix does not establish Pareto safety or deployment readiness.
+Controlled targeted GPU and ordered A/B plus B/A evidence remain mandatory.
+
+Complete review pass 1, model and causality: fixed-state boundary, overflow,
+zero-Decode, quiescent, same-snapshot, and real HTTP tests prove that candidate
+size, pending Prefill work, and effective Decode users causally change the
+pre-forward decision. The initializer remains passive and the policy does not
+claim to measure or calibrate a Prefill rate.
+
+Complete review pass 2, safety and lifecycle: Resource, Prefill-interference,
+and Decode-envelope precedence is explicit. Checked arithmetic, the Manager
+lock, exact-once Prefill release, terminal/cancel/disconnect/timeout/epoch
+paths, shadow side-effect freedom, request-scoped rejection, fitting-request
+recovery, full race, and no-active-calibration audits all passed on the exact
+pushed archive.
+
+Complete review pass 3, efficiency, evidence, and operability: the pure
+envelope has no allocation or mutable owner, the full HTTP and reservation
+paths satisfy their contracts, logs and metrics expose the enforced decision
+while Router remains open, and source plus evidence identities are independently
+hashed. The running PIG remained
+f71a089b16fc2ef030d94fbd2f930eb13af0ba3599f0a256b2f70c759d9215de
+and vLLM remained
+d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552;
+both had restart count zero and OOMKilled=false. No image was built, uploaded,
+or deployed, and production Router plus use1-cb remained untouched.
