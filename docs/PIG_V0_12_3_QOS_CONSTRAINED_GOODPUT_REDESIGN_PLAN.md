@@ -1,11 +1,11 @@
 # PIG v0.12.3 Evidence-First QoS-Constrained Goodput Plan
 
-Status: active execution plan, reset 2026-08-08
+Status: active execution plan, Phase C image published 2026-08-09
 
 This is the only execution plan for PIG v0.12.3. Older v0.12 plans and the
-current uncommitted implementation are evidence, not required behavior. Detailed
-builder commands, archive hashes, retries, and live observations belong in
-ignored evidence artifacts rather than this document.
+superseded candidates are historical evidence, not required behavior. Detailed
+builder commands, complete logs, retries, and live observations belong in
+ignored evidence artifacts; their authoritative identities are recorded here.
 
 ## 1. Goal
 
@@ -22,7 +22,10 @@ The candidate stays in the v0.12 release line and is version `0.12.3`.
 
 ## 2. Current conclusion
 
-The implementation is not ready for a release or live deployment.
+Phase C source, builder, production-image, and immutable registry publication
+gates are complete. The exact image is not yet approved for deployment or live
+traffic: Phase D must still prove the Router-disabled GPU Pareto gate on
+`use1-cb` before release promotion or any Router enable.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
 default design. It limits the rate of growth but not the final Decode
@@ -368,8 +371,8 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] Phase B two-gate production candidate complete.
 - [x] Phase C full builder matrix green on the final dead-parameter-free
   candidate.
-- [ ] v0.12.3 source committed and pushed.
-- [ ] immutable v0.12.3 canary image published and verified.
+- [x] v0.12.3 source committed and pushed.
+- [x] immutable v0.12.3 canary image published and verified.
 - [ ] Phase D Router-disabled GPU Pareto gate passed.
 - [ ] exact canary digest promoted as the v0.12.3 release.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
@@ -763,3 +766,96 @@ This section is a documentation-only evidence update after r42. Before commit,
 every archive file except this plan must compare byte-identical with the current
 workspace. The Dockerfile copies only `go.mod`, `go.sum`, `cmd`, and `internal`,
 so this evidence record cannot change the tested binary or future image bytes.
+
+## 21. Exact source and builder-local production image
+
+The final executable source was committed and pushed as
+`8c0ad8953e23375179a2eb629425a1d0ac078d1d`. The local branch and
+`pig-origin/codex/pig-v0.11.0-request-aware` resolved to that same commit. The
+two unrelated untracked v0.11 plans remained excluded.
+
+r43 cloned the pushed branch afresh on the approved builder, required the local
+and remote heads to equal that exact revision, required a clean worktree and
+the frozen 158-file inventory, and built the pinned production Dockerfile with
+`SOURCE_REVISION` set to the full commit. Its identities were:
+
+```text
+runner SHA-256: 49ae6c54296d28a69d388d9377bc6921e01ba14e2d67aa63eeed18ff70eb05cd
+builder work: pig-v0123-image-r43-8c0ad895
+source archive SHA-256: 00e6872f69b86fef1cb4df9d6049bc0c4c5f55cf6bc216ff22e068482b90a922
+builder-local image: ghcr.io/phala-network/phala-inference-guard:0.12.3-8c0ad89-local
+image ID: sha256:5052355789ff387c20c704bbeab93dd2d05b792f1b07337ed153295b4b5884f7
+production binary SHA-256: 17f13486a03171e85e5d267600fc6f6d3dbf739870bfcd58d9713153046c0a35
+evidence archive SHA-256: 427e5184daae30594e181121f6228be3f5baa593dd79c06e02a143c7898f407d
+```
+
+The image passed the native-NVML production contract, `linux/amd64`, OCI
+version/revision, root user, distroless entrypoint, NVIDIA environment, default
+`enforce`, default 500-ms observer, `PIG-v0.12.3` runtime identity, `/healthz`,
+authenticated and unauthenticated metrics, and a real pre-forward transparent
+chat proxy smoke. The production CGO binary is intentionally distinct from the
+r42 non-CGO test binary; r43 proves its identity at the production-image layer.
+The independently downloaded r43 archive recomputed all 22 evidence entries.
+
+## 22. r45 red and r46 immutable registry publication
+
+r45 stopped before Docker login, tagging, or registry mutation because its
+runner incorrectly required `read:packages` to appear separately. The official
+GitHub CLI token had `write:packages`, which already authorizes package upload
+and download. The failure trap removed the isolated CLI configuration; the r45
+work contains only the masked scope evidence and created no registry tag.
+
+r46 removed only that redundant scope assertion. It used the checksum-verified
+official GitHub CLI v2.97.0 archive with SHA-256
+`a2c9b8497e1f85b1ad0dfcb78b5a622e098801b8e461e459e88e1ee12f018112`.
+The r46 runner SHA-256 was
+`ed86962283412f414723c7d070183bb3bcd083f313129b9a191d9051e9ad45af`.
+Authenticated pre-push manifest checks returned explicit `manifest unknown`
+for both targets, after which the approved builder published:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:0.12.3
+ghcr.io/phala-network/phala-inference-guard:0.12.3-8c0ad8953e23
+```
+
+Both pushes and subsequent authenticated manifest GETs resolved to:
+
+```text
+sha256:e3a0894a5e508013593f612165884d33c459f973ea3d2556ab33c253147127dd
+```
+
+r46 pulled the version tag, revision tag, and immutable digest. The registry
+image remained `linux/amd64`, image ID
+`sha256:5052355789ff387c20c704bbeab93dd2d05b792f1b07337ed153295b4b5884f7`,
+OCI version `0.12.3`, revision
+`8c0ad8953e23375179a2eb629425a1d0ac078d1d`, user `0`, entrypoint
+`/phala-inference-guard`, and `NVIDIA_VISIBLE_DEVICES=all`. Its extracted
+binary was byte-identical to r43 at SHA-256
+`17f13486a03171e85e5d267600fc6f6d3dbf739870bfcd58d9713153046c0a35`,
+and the digest reference passed the production-image contract again.
+
+The r46 evidence archive contains 24 hashed entries and has SHA-256
+`20e68add4610591b4cc27be5d7f4cb2603c9ac37a8c5c52264550555c55340dc`.
+An independent download recomputed every entry and found no unmasked credential
+pattern. Both the isolated Docker config and GitHub CLI config were absent after
+publication. The builder remained running.
+
+## 23. Publication evidence review: three passes
+
+Pass 1, identity and causality: the registry image is derived from the exact
+pushed source revision, and its image ID, labels, binary bytes, and contract
+match the independently validated builder-local image. The documentation-only
+commit that follows cannot alter those image bytes or their recorded revision.
+
+Pass 2, safety and provenance: both tags were proven absent before publication,
+resolved to one digest after publication, and were independently read through
+authenticated manifest GETs. Credentials existed only in isolated temporary
+configs, were not archived, and were verified absent after logout and cleanup.
+The r45 red had no registry side effect.
+
+Pass 3, operability and boundary: Phase C now proves source push, builder-local
+production behavior, registry availability, immutable digest identity, and
+pull-path compatibility. It proves no GPU QoS, Compose integration, CVM
+readiness, release promotion, or Router safety. Phase D must use exactly the
+recorded digest on Router-disabled `use1-cb`; no rebuild or floating-tag
+substitution is allowed.
