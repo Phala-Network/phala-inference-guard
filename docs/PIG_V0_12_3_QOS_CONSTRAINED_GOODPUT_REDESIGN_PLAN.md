@@ -304,7 +304,8 @@ Run executable checks only on the approved builder:
    escaped JSON, tools, multimodal markers, and the 650K text window;
 5. estimator benchmarks at 1 KiB, 64 KiB, 1 MiB, and 4 MiB;
 6. policy/Manager/full pre-forward benchmarks at 0, 48, and 256 reservations;
-7. production binary and image-contract tests; and
+7. production binary, then a local immutable candidate image followed by that
+   image's production-contract and smoke tests; and
 8. three reviews: objective/causality, safety/lifecycle/SOLID, and
    efficiency/evidence/operability.
 
@@ -324,10 +325,14 @@ priority over further micro-optimization; the normal 4 MiB large-string path
 is still reported separately so this exception cannot hide a broad regression.
 
 Any executable source change invalidates inherited executable evidence. After
-all Phase C gates pass on the final versioned source, commit and push it, then
-build and publish one immutable canary image on the approved builder. Record the
-source revision and digest. Do not create that image before the full matrix is
-green.
+each coherent code update passes its scoped formatting and focused tests,
+commit and push it before the next implementation iteration; never push a known
+broken intermediate state. On the final pushed source, first pass the complete
+source matrix, then build one local immutable candidate image. Run the
+production-image contract and smoke tests against that exact local image. Only
+after both source and image acceptance are green may that exact image be
+uploaded as the immutable canary. Record the source revision, local image ID,
+registry digest, and pull verification separately.
 
 ### Phase D: Router-disabled GPU validation
 
@@ -1399,12 +1404,14 @@ The active order is:
    branch, remote result, and source archive identity for every push. GitHub
    authentication uses device flow inside this CVM; never copy or reuse a host
    token.
-6. Do not upload an image for a focused-only or intermediate code update. Build
-   and push one immutable `0.12.4` image from the exact committed source only
-   after the complete source, simulation, race, benchmark, binary, image-contract,
-   and three-review acceptance matrix is green in this CVM. Record source
-   revision, local image ID, registry digest, pull verification, runtime identity,
-   and image-contract evidence.
+6. Do not upload an image for a focused-only or intermediate code update. After
+   the complete source, simulation, race, benchmark, binary, and three-review
+   acceptance matrix is green on the exact pushed source, build one local
+   immutable `0.12.4` candidate image. Run the production-image contract and
+   smoke tests against that exact local image. Upload it only if those image
+   gates are also green; never rebuild between local acceptance and upload.
+   Record source revision, local image ID, registry digest, pull verification,
+   runtime identity, and image-contract evidence.
 7. On the same isolated H200 CVM, run the targeted weighted/exclusive/quiescent
    Prefill gate, immediate completion/cancellation/timeout recovery, low-flow,
    no-demand, stale/recovery, same-snapshot burst, near-KV, and Decode QoS
