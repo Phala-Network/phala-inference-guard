@@ -25,7 +25,7 @@ feedback may update the next observation used by a decision, but it must not be
 the only protection and must not create learned parameters, reject cooldowns,
 or sticky state.
 
-The candidate stays in the v0.12 release line and is version `0.12.7`.
+The candidate stays in the v0.12 release line and is version `0.12.8`.
 
 ## 2. Current conclusion
 
@@ -61,7 +61,7 @@ Prefill-incomplete reservation as both pending Prefill work and an active Decode
 user. It therefore rejected fitting short work before any request was running
 upstream and is not promotable.
 
-The active v0.12.7 correction keeps the same immutable geometry, resource gate,
+The v0.12.7 correction kept the same immutable geometry, resource gate,
 Prefill gate, and Decode envelope. It changes only ownership of the envelope's
 active-Decode input: backend-observed `running` remains the conservative
 observed upper, and only a Prefill-complete local reservation not yet absorbed
@@ -71,6 +71,17 @@ also claim to be an active Decode user. No learner, probe, cooldown, new public
 configuration, or request mutation is introduced. Production `use1-cb` remains
 Router-disabled until a new exact image passes every source, GPU, and ordered
 Pareto gate and a later explicitly authorized canary begins.
+
+Section 48 records that v0.12.7 passed its targeted gates but failed the new
+ordered Pareto matrix. Its request-aware path continued to use the last
+published backend `running` count after absorbed local Decode requests had
+already reached terminal. Under the fixed 500-ms observation cadence, this
+stale count rejected ten requests in every second wave of the
+`sustained-regular-decode` scenario and materially reduced completed-token
+goodput. The active v0.12.8 correction is therefore limited to bounded,
+terminal-aware reconciliation of the Decode envelope. It does not relax the
+resource or Prefill gates, change the 500-ms cadence, add calibration or
+learning, or create a production parameter.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
 default design. It limits the rate of growth but not the final Decode
@@ -3369,3 +3380,216 @@ recalculation of every section 4 QoS/goodput condition. The sustained-wave
 rejections and 4K fitting-window TPS decline must remain visible in that
 decision. The candidate image is still unpublished; production Router and
 `use1-cb` remain untouched.
+
+## 48. v0.12.7 ordered Pareto rejection and v0.12.8 terminal reconciliation
+
+The completely new ordered matrix ran only on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`, using exact source
+`2b67ebb930de3f5fe9f35371bb1012ec90e25f79` and the unpublished v0.12.7 image
+ID from section 45. Its uninterrupted repetition order was:
+
+```text
+N1,N2,N3,B1,A1,A2,B2,B3,A3
+N = v0.12.7 shadow
+A = v0.12.2 enforce
+B = v0.12.7 enforce
+```
+
+The primary evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-pareto-r1-2b67ebb
+SHA256SUMS SHA-256
+  4fd95dae6d96d4c57390df8428e6a5c7929abc63dc64f061312ecba8420a0449
+```
+
+Every repetition drained, every N/A/B evidence-health check passed, vLLM
+preemptions remained zero, and the vLLM, GPU process, runtime-network, and
+bridge-only workbench identities remained unchanged. The formal analyzer
+nevertheless exited two and rejected the candidate:
+
+```text
+check                                             result
+B_has_no_preemption                              true
+B_short_slo_goodput_at_least_98pct_A             true
+B_short_lower_tps_quantiles_above_floor           true
+B_long_requests_make_progress                     true
+all_N/A/B_evidence_healthy                        true
+B_required_scenarios_not_below_A                 false
+B_has_material_gain                              false
+pareto_pass                                      false
+
+policy                         A v0.12.2       B v0.12.7
+median SLO-goodput                178.0878          136.7124
+QoS-violation Decode seconds        0.0000           10.1521
+preemptions                         0                0
+median cached prompt tokens         0                0
+
+scenario B/A ratio
+short-only                         1.082000
+long-only                          1.000157
+mixed                              0.987825
+reversed-order                     0.999767
+```
+
+An independent implementation recalculated the raw repetition records without
+calling the formal analyzer. It matched every QoS floor, scenario aggregate,
+policy aggregate, Boolean check, material-gain result, and final Pareto verdict
+with zero numeric delta:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/
+  pig-v0127-pareto-independent-audit-r1-2b67ebb
+SHA256SUMS SHA-256
+  4d0a2dc8b34513303d18797871f84a5986c4da425b456ab81011bfe9ff76e08a
+```
+
+All three B repetitions exposed the same material loss in
+`sustained-regular-decode`: 24 requests produced 14 successes and ten
+request-scoped `decode_interference` 429s, with zero preemption. The first
+twelve Decode requests had completed, but the latest published observation
+still reported `running=12`. Their terminal events removed the live local
+reservations, while `DecideRequestAwareAndReserve` continued to calculate its
+Decode envelope as backend `input.Running` plus unobserved live Decode
+reservations. It therefore admitted only two requests from the second wave and
+rejected the other ten even though the first wave no longer occupied the GPU.
+B3 additionally accumulated `1.105542162` QoS-violation seconds in
+`same-snapshot-burst` and `9.046583010` seconds in
+`sustained-regular-decode`, giving the candidate's total `10.152125172`
+seconds. This is an observation-lag correctness defect, not a reason to weaken
+the Pareto thresholds or increase queueing.
+
+The current Manager already owns the information required to correct the
+defect. A Prefill-complete reservation has an authoritative terminal event, an
+assimilation state, and event-sequence watermarks. Its bounded retired queue
+already reconciles materialized request state against observations that occur
+before, across, or after the terminal. v0.12.8 extends that existing ownership
+instead of adding a policy-local timer, cooldown, learner, or second lifecycle
+container.
+
+The v0.12.8 contract is:
+
+```text
+eligible completed Decode credit
+  = local reservation was forwarded
+  + Prefill completion was observed by PIG
+  + a completed observation had already absorbed that reservation
+  + the reservation subsequently reached TerminalCompleted
+
+effective observed active Decode
+  = max(0, last published backend running - eligible completed Decode credits)
+
+post-admit active Decode
+  = effective observed active Decode
+  + Prefill-complete local Decode reservations not yet absorbed
+```
+
+The credit is associated with the last published backend snapshot, not with a
+wall-clock duration. Reconciliation applies these rules before the observer
+publishes a replacement `RequestAwareInput`:
+
+1. If a sample finished before the terminal, the sample still predates that
+   completion, so the credit remains paired with its published `running`.
+2. If the terminal occurred at or before the sample start, the new sample is
+   post-terminal and the retired item and credit are discarded.
+3. If terminal and sample overlap, request inclusion is ambiguous. The existing
+   resource lower/upper reconciliation remains intact, but the Decode credit is
+   cleared before publishing the sample; v0.12.8 must not optimistically
+   subtract it from the ambiguous `running` count.
+4. If a scrape fails or is transient, no replacement input is published. The
+   credit remains paired with the prior input; normal freshness expiry closes
+   intake rather than extending trust in a stale snapshot.
+
+The following safety boundaries are mandatory:
+
+- Decode credit affects only the Decode-interference envelope. It does not
+  modify observed metrics, hard-KV accounting, active/physical KV gates,
+  Prefill classes, pending-Prefill budgets, Router status, or queue behavior.
+  Existing decision logs and metrics must continue to expose the raw published
+  `running` count and the reconciled `effective_sequences` used by the policy,
+  so the correction is visible without a production configuration option.
+- Only `assimilationAbsorbed` plus `PrefillComplete` can create credit.
+  Unabsorbed or ambiguous reservations create none. Client cancellation,
+  disconnect, timeout, expiry, local rejection, and upstream failure also
+  create no Decode credit because proxy termination does not prove that vLLM
+  has already stopped the request; those paths wait for the next observation.
+- A duplicate terminal cannot create duplicate credit because the first
+  terminal atomically removes the live reservation.
+- The existing fixed-size retired queue remains the only tombstone owner. It
+  maintains an O(1) aggregate Decode-credit count; an overflow drops the oldest
+  credit conservatively and increments the existing eviction counter.
+- Credit is clamped to the published non-negative `running` count before
+  subtraction. It cannot produce a negative effective Decode count or hide an
+  unowned backend request.
+- Epoch rebase clears all live reservations, retired items, and credits.
+  Epoch invalidation or adapter shutdown closes intake immediately, so no
+  credit can authorize new work while identity or lifecycle ownership is
+  invalid.
+- Check, credit consumption, decision, and reservation remain under the one
+  Manager lock. The request hot path remains O(live reservations) with no new
+  allocation; queue reconciliation remains O(bounded retired items).
+- No calibration, synthetic request, performance rate, Prefill/KV learning,
+  cache lookup, routing, TTFT gate, request mutation, tier, priority, cooldown,
+  public option, or production default is added.
+
+The test-first order is mandatory:
+
+1. Add a focused red that recreates the live failure: twelve local Decode
+   reservations are absorbed by `running=12`, all twelve terminate, and a
+   second regular wave is evaluated against that still-published observation.
+   The pre-v0.12.8 source must reproduce false `decode_interference` rejects.
+2. Add red lifecycle cases proving no credit for unabsorbed or ambiguous
+   reservations, retained credit for a sample wholly before terminal, cleared
+   credit for a sample starting after terminal, no optimistic credit for an
+   overlapping sample, no credit for any non-completed terminal cause,
+   idempotent duplicate terminal, conservative bounded eviction, and
+   epoch/reset cleanup.
+3. Implement the smallest Manager-owned extension of the retired queue and
+   request-aware snapshot. Do not change policy thresholds or add an adapter
+   timer. Bump executable, metric, log, simulation, workload, and evidence
+   identities coherently to `0.12.8`.
+4. Run affected packages, formatting, `git diff --check`, vet, race, full Go
+   tests, simulation determinism, production-binary checks, lexical retired-
+   symbol checks, and hot-path benchmarks only inside `pig-v0124-workbench`.
+   Commit and push each coherent source or documentation update.
+5. Build one local immutable v0.12.8 image from the exact accepted source. Run
+   image contract, transparent API, default-enforce, authentication,
+   observability, and PIG-only runtime replacement gates without restarting or
+   rebuilding vLLM. Keep the workbench bridge-only and the runtime network
+   limited to PIG plus vLLM.
+6. Repeat targeted lifecycle, low-flow/no-demand, same-snapshot burst,
+   sustained regular Decode, weighted/exclusive/quiescent, cancellation,
+   stale/recovery, near-KV, and Decode-QoS tests. The sustained second wave must
+   make progress without hiding QoS violations, preemption, or request-scoped
+   protection.
+7. Run a completely new ordered matrix
+   `N1,N2,N3,B1,A1,A2,B2,B3,A3`, with N and B using the exact v0.12.8 image and
+   A using v0.12.2. Independently recalculate every section 4 condition. No
+   v0.12.7 measurement is inherited as v0.12.8 acceptance evidence.
+8. Upload only if the exact image passes every source, image, targeted GPU,
+   ordered Pareto, independent-audit, and identity gate. Otherwise preserve the
+   failed evidence, leave the image local and production untouched, and begin
+   the next v0.12.x correction cycle.
+
+Plan review pass 1, model and causality: the matrix defect is caused by using a
+published backend `running` value outside the Manager's terminal reconciliation
+even though the corresponding local Decode completions are already known. A
+credit tied to that same published observation corrects the counterfactual
+post-admit Decode count; a timer or looser threshold would not.
+
+Plan review pass 2, safety and lifecycle: the first draft was tightened so an
+overlapping observation clears Decode credit before publication, failed samples
+cannot introduce a new snapshot, only absorbed Prefill-complete reservations
+with `TerminalCompleted` qualify, subtraction is clamped, queue overflow becomes
+conservative, and hard resource gates retain their existing upper-bound
+reconciliation. Cancellation, timeout, disconnect, expiry, local rejection,
+and upstream failure deliberately receive no immediate credit. Rebase,
+invalidation, duplicate terminal, and shutdown paths are explicit.
+
+Plan review pass 3, SOLID, efficiency, and evidence: the Manager remains the
+single lifecycle owner, the observer remains the snapshot owner, and the policy
+remains a pure evaluator. Reusing the bounded retired queue avoids a second
+state machine and public configuration. The red must demonstrate the exact
+causal false rejection before implementation, and complete new source plus GPU
+Pareto evidence is required before publication. v0.12.7 remains rejected and
+unpublished; production Router and `use1-cb` remain unchanged.
