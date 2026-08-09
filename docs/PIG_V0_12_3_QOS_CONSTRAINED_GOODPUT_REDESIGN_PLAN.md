@@ -1,10 +1,9 @@
-# PIG v0.12.4 Evidence-First QoS-Constrained Goodput Remediation Plan
+# PIG v0.12.5 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active execution plan, v0.12.4 source matrix, immutable image
-acceptance, publication, and registry pull-back complete; Router-disabled GPU
-acceptance pending
+Status: active v0.12.5 red/green execution plan; v0.12.4 source, image, and
+weighted-GPU evidence retained but candidate rejected before Pareto promotion
 
-This is the only execution plan for the active PIG v0.12.4 remediation. Sections
+This is the only execution plan for the active PIG v0.12.5 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
 history; section 25 and later supersede that candidate. Section 29 supersedes
 every earlier instruction to use the shared builder or the old `use1-cb` CVM as
@@ -24,20 +23,27 @@ feedback may update the next observation used by a decision, but it must not be
 the only protection and must not create learned parameters, reject cooldowns,
 or sticky state.
 
-The candidate stays in the v0.12 release line and is version `0.12.4`.
+The candidate stays in the v0.12 release line and is version `0.12.5`.
 
 ## 2. Current conclusion
 
 The exact v0.12.3 source and image completed their builder and publication
 gates, then failed the Router-disabled weighted-Prefill QoS diagnostic in
-section 25 and are not promotable. The v0.12.4 executable source is committed
-and pushed at `19574b9f9711886c3362c612317d7d64a2167798`, and section 31 records a
-complete green dedicated-CVM source matrix for that exact commit. Section 32
-records the green local production-image contract and smoke, immutable
-publication, registry pull-back, and independent identity verification. The
-Router-disabled targeted GPU and Pareto gates remain incomplete. The production
-`use1-cb` target must remain Router-disabled until the dedicated test CVM passes
-the targeted v0.12.4 gate and a later explicitly authorized canary deployment
+section 25 and are not promotable. The v0.12.4 executable source at
+`19574b9f9711886c3362c612317d7d64a2167798` completed the source and immutable
+image gates and passed the dedicated weighted-Prefill gate. It is nevertheless
+not promotable: section 33 and section 34 prove that its default startup
+calibration actively sends synthetic Prefill work and derives materially
+different policy from cold-JIT versus warm-backend samples. The v0.12.4 Pareto
+matrix is cancelled rather than treating that nondeterminism as a benchmark
+variable.
+
+The active v0.12.5 correction removes synthetic startup completions and the
+derived safe-rate state. KV geometry and model metadata are read once; a pure,
+bounded geometry function derives Prefill classes without learning or active
+performance calibration. The production `use1-cb` target remains
+Router-disabled until the dedicated test CVM passes the complete v0.12.5 source,
+image, targeted GPU, and Pareto gates and a later explicitly authorized canary
 begins.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
@@ -213,8 +219,9 @@ cycle. The envelope must:
 If no trustworthy capacity source can be obtained, keep the envelope test-only
 and do not invent a production value. A failed two-gate GPU experiment is then
 evidence that v0.12.3 is not promotable, not permission to tune the simulator.
-An active calibration probe may run only while Router is disabled; its result
-must not be silently persisted or reused after an upstream identity change.
+Any future active performance experiment is test-only and may run only while
+Router is disabled. The v0.12.5 production initializer never sends such a
+probe, persists its result, or reuses it after an upstream identity change.
 
 ## 6. SOLID ownership
 
@@ -412,7 +419,16 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] one local immutable v0.12.4 image built, production-contract and smoke
   accepted, then the same image uploaded and registry-pull identity verified.
 - [x] v0.12.4 Router-disabled targeted weighted-Prefill gate passed.
-- [ ] v0.12.4 Router-disabled Pareto matrix passed.
+- [x] v0.12.4 warm-backend PIG-only calibration diagnostic completed and proved
+  cold-start sample contamination.
+- [x] v0.12.4 Pareto matrix cancelled; the candidate is rejected from
+  promotion before that gate.
+- [ ] v0.12.5 no-active-calibration focused red is valid.
+- [ ] v0.12.5 focused implementation, version, observability, and SOLID green.
+- [ ] v0.12.5 complete source/race/simulation/benchmark matrix and three reviews
+  passed on the dedicated CVM.
+- [ ] one immutable v0.12.5 local image passed production contract and smoke.
+- [ ] v0.12.5 targeted GPU and Pareto matrices passed on the dedicated CVM.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
 
@@ -1842,9 +1858,9 @@ Metrics deltas isolated the cause: the first approximately 4K-token startup
 probe took 10.6828 seconds, or approximately 387 tokens/s, because it absorbed
 one-time long-input JIT/warmup. This made the next scale invalid. It is not a
 missing-metrics or online-learning failure. Before promotion, restart PIG only
-against the already-warm backend and determine whether calibration succeeds. If
-it does, add a bounded initialization-only warmup/discard/retry correction and
-repeat the complete source and image gates; do not introduce online learning.
+against the already-warm backend and determine whether calibration succeeds.
+Section 34 records that diagnostic and supersedes the provisional retry idea:
+no warmup/discard/retry loop may become a production startup benchmark.
 
 Targeted weighted r1 used a valid product stimulus but an invalid runner
 assertion. During the known weighted Prefill, PIG correctly projected Router
@@ -1875,3 +1891,123 @@ This closes only the targeted weighted-Prefill gate. Exclusive/quiescent test
 overrides, terminal lifecycle recovery, low-flow and no-demand non-locking,
 stale/recovery, same-snapshot burst, near-KV, Decode QoS, and the three-round
 A/B plus B/A Pareto matrix remain open. Router and `use1-cb` remain unchanged.
+
+## 34. Warm-backend diagnostic and v0.12.5 no-calibration correction
+
+The isolated warm-backend diagnostic used only
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`. It recreated PIG from the same v0.12.4
+image with `--no-deps --force-recreate --pull never`; vLLM was not restarted,
+rebuilt, or included in the Compose operation. The vLLM container ID, image ID,
+StartedAt, restart count, OOM state, and GPU process identity were byte-identical
+before and after.
+
+On the already-warm backend, the same v0.12.4 initializer changed from the cold
+run's `fallback/scale_fallback` to `startup_calibration/calibrated`. It observed
+approximately 7,943 Prefill tokens/s, stored a safety-adjusted value of 6,354,
+and derived `31744/127040/254144` with aggregate `127040`. The short static
+completion fixture returned 200, final reservations and Router backpressure
+were zero, vLLM preemptions remained zero, and both fatal scans were zero. An
+earlier inline curl returned 400 because multi-shell quoting destroyed the JSON;
+it is explicitly retained as invalid fixture evidence and is not a PIG result.
+
+The diagnostic evidence is under
+`/var/volatile/dstack/persistent/pig-v0124/evidence/calibration-warm-restart-r1`.
+Its 20-entry evidence-list SHA-256 is
+`de9bf55023867c993561dd0254d1c62dc69a41b4dbcd406a157a87d93d8551b3`,
+and summary SHA-256 is
+`49c7b9befa66445cce595935f4b528f655b481f2a653cac732d6bbc36ad56acc`.
+
+This comparison proves that active startup calibration is not an acceptable
+production default. It creates upstream work before PIG listens, consumes up to
+a 15-second initialization window, and makes policy depend on whether the first
+probe absorbs backend JIT/warmup. Adding more performance probes or retry state
+would increase startup load and complexity without making the result a stable
+capacity contract. v0.12.5 therefore removes the production completion probes,
+the observed/safe Prefill-rate profile field, and its metric. This is not a
+change from one learning algorithm to another; no learned Prefill or KV state is
+allowed.
+
+The v0.12.5 initialization contract is:
+
+```text
+startup vLLM metrics
+  -> model identity, KV capacity, block size, idle/busy state
+read-only /v1/models metadata when automatic Prefill mode is selected
+  -> max model length, with bounded geometry fallback if metadata is unavailable
+effective context span
+  = block_align_down(min(max model length, KV hard limit))
+regular
+  = block_align_down(min(64 Ki tokens, effective context span / 8))
+exclusive
+  = block_align_down(min(256 Ki tokens, effective context span / 2))
+quiescent
+  = block_align_down(min(512 Ki tokens, effective context span))
+aggregate
+  = exclusive
+```
+
+If model metadata is unavailable, effective context span is
+`min(512 Ki tokens, KV hard limit)` and the profile reason records
+`metadata_fallback`; PIG must not send a completion to recover metadata. An
+invalid span or non-strict block-aligned ordering fails initialization rather
+than inventing a rate. A complete four-value explicit Prefill override remains
+available for controlled tests; partial overrides remain invalid. KV hard limit
+continues to derive once from reported KV capacity, block size, and the fixed
+hard ratio. Backend running or waiting work does not change the derived profile:
+metadata reads are passive, so a PIG-only restart during existing work must not
+silently switch policy to a busy fallback. None of these values update after
+startup.
+
+For representative model lengths, the deterministic automatic result is:
+
+```text
+32 Ki context  -> 4 Ki / 16 Ki / 32 Ki, aggregate 16 Ki
+256 Ki context -> 32 Ki / 128 Ki / 256 Ki, aggregate 128 Ki
+650 Ki context -> 64 Ki / 256 Ki / 512 Ki, aggregate 256 Ki
+```
+
+The SOLID ownership boundary is explicit. The vLLM startup reader owns metrics
+and model identity. A metadata reader owns the bounded `/v1/models` contract. A
+pure capability-profile constructor owns geometry and validation. The Manager
+consumes the immutable profile and remains the sole owner of atomic admission
+and reservation lifecycle. Observability reports the derived source, reason,
+KV geometry, and Prefill thresholds but no synthetic performance rate.
+
+Plan review pass 1, model and causality: the measured cold-versus-warm
+divergence invalidates active startup performance sampling. The replacement
+uses only model length and KV geometry that causally bound feasible request
+size; it does not claim to predict backend throughput.
+
+Plan review pass 2, safety and lifecycle: block alignment, strict ordering,
+hard-KV capping, metadata fallback, complete explicit overrides, and busy-state
+invariance are explicit. No startup request creates a reservation, cache state,
+GPU work, cancellation path, or hidden lifecycle owner.
+
+Plan review pass 3, efficiency and evidence: automatic initialization adds at
+most one bounded read-only metadata request and no new production option. The
+hot admission path remains unchanged. v0.12.5 must produce new red/green,
+source, race, simulation, benchmark, image, and GPU evidence; no prior binary or
+image result is promoted across the executable change.
+
+The required red/green order is:
+
+1. Add a red server test proving automatic initialization performs one bounded
+   metadata read and zero completion calls even when backend work exists, plus
+   table tests for 32 Ki, 256 Ki, 650 Ki, KV-limited, metadata-fallback,
+   explicit, and invalid geometry cases.
+2. Add red observability and lexical tests proving the safe-rate profile field,
+   metric, log key, and calibration-only completion path are absent; bump every
+   executable and evidence identity to `0.12.5`.
+3. Implement the smallest metadata-plus-geometry path and delete unreachable
+   calibration code. Run formatting and affected packages first; accept and
+   push only a coherent focused green source update.
+4. Freeze that pushed source and rerun the complete source, vet, race,
+   simulation, ordered benchmark, production binary, lexical, and three-review
+   matrix. No v0.12.4 executable evidence carries across the source change.
+5. Only after complete source green, build one local immutable v0.12.5 image,
+   run production-contract and model-neutral smoke, then replace only PIG on the
+   dedicated CVM. Record unchanged vLLM identity before and after.
+6. Repeat weighted/exclusive/quiescent, lifecycle, low-flow/no-demand,
+   stale/recovery, burst, near-KV, Decode QoS, and three-round A/B plus B/A
+   Pareto gates. Upload the image only after all source, image, and GPU gates
+   accept the exact same image ID. Router and production remain unchanged.
