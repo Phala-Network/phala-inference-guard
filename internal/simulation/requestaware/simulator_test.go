@@ -37,7 +37,7 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		"prefill-quiescent-idle-650k":                     false, "prefill-quiescent-busy-650k": false,
 		"prefill-quiescent-cancel-recovery": false, "prefill-quiescent-exclusive-recovery": false,
 	}
-	wantPolicies := []PolicyName{"no_admission", "v0.12.2", "v0.12.4"}
+	wantPolicies := []PolicyName{"no_admission", "v0.12.2", "v0.12.5"}
 	for _, scenario := range suite.Scenarios {
 		if _, ok := required[scenario.Name]; ok {
 			required[scenario.Name] = true
@@ -55,7 +55,7 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 	}
 }
 
-func TestV0124SimulationUsesAtomicResourceAndPrefillGatesWithoutObservationCredit(t *testing.T) {
+func TestV0125SimulationUsesAtomicResourceAndPrefillGatesWithoutObservationCredit(t *testing.T) {
 	suite, err := RunSuite()
 	if err != nil {
 		t.Fatalf("RunSuite: %v", err)
@@ -73,9 +73,9 @@ func TestV0124SimulationUsesAtomicResourceAndPrefillGatesWithoutObservationCredi
 		if !ok {
 			continue
 		}
-		metrics, present := scenario.Policies[PolicyName("v0.12.4")]
+		metrics, present := scenario.Policies[PolicyName("v0.12.5")]
 		if !present || metrics.Admitted != expected.admitted || metrics.Rejected != expected.rejected {
-			t.Fatalf("scenario %s v0.12.4=%+v present=%t, want admitted/rejected=%d/%d",
+			t.Fatalf("scenario %s v0.12.5=%+v present=%t, want admitted/rejected=%d/%d",
 				scenario.Name, metrics, present, expected.admitted, expected.rejected)
 		}
 		delete(want, scenario.Name)
@@ -100,11 +100,11 @@ func TestDeterministicRequestAwareGoodputSuiteIsReplayable(t *testing.T) {
 }
 
 func TestDeterministicRequestAwareGoodputSuiteIsPolicyOrderIndependent(t *testing.T) {
-	forward, err := runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0124})
+	forward, err := runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0125})
 	if err != nil {
 		t.Fatalf("forward policy order: %v", err)
 	}
-	reverse, err := runSuite([]PolicyName{PolicyV0124, PolicyV0122, PolicyNoAdmission})
+	reverse, err := runSuite([]PolicyName{PolicyV0125, PolicyV0122, PolicyNoAdmission})
 	if err != nil {
 		t.Fatalf("reverse policy order: %v", err)
 	}
@@ -127,13 +127,13 @@ func TestDeterministicRequestAwareGoodputSuiteRejectsInvalidPolicyOrder(t *testi
 
 func TestCapabilityProfilesChangePreForwardPrefillDecisionUnderSameLiveState(t *testing.T) {
 	scenario := scenarioSpec{capacityTokens: 4 * 1024 * 1024}
-	slowProfile, slowPolicy, err := simulationCapabilityPolicy(scenario, 10_000)
+	shortProfile, shortPolicy, err := simulationCapabilityPolicy(scenario, 256*1024)
 	if err != nil {
-		t.Fatalf("construct slow capability policy: %v", err)
+		t.Fatalf("construct short-context capability policy: %v", err)
 	}
-	fastProfile, fastPolicy, err := simulationCapabilityPolicy(scenario, 40_000)
+	longProfile, longPolicy, err := simulationCapabilityPolicy(scenario, 650*1024)
 	if err != nil {
-		t.Fatalf("construct fast capability policy: %v", err)
+		t.Fatalf("construct long-context capability policy: %v", err)
 	}
 	input := runtimepredictive.RequestAwareInput{
 		MetricsFresh:                true,
@@ -149,16 +149,16 @@ func TestCapabilityProfilesChangePreForwardPrefillDecisionUnderSameLiveState(t *
 		PendingPrefillTokens:        32 * 1024,
 		PendingLongPrefillSequences: 1,
 	}
-	slow := slowPolicy.Evaluate(input)
-	fast := fastPolicy.Evaluate(input)
-	if slowProfile.PrefillExclusiveTokens >= input.EstimatedPrefillTokens ||
-		slow.Action != runtimepredictive.RequestAwareSizeProtect ||
-		slow.Reason != runtimepredictive.RequestAwareReasonPrefillConcurrency {
-		t.Fatalf("slow profile/decision = %+v/%+v, want exclusive-concurrency protection", slowProfile, slow)
+	short := shortPolicy.Evaluate(input)
+	long := longPolicy.Evaluate(input)
+	if shortProfile.PrefillExclusiveTokens >= input.EstimatedPrefillTokens ||
+		short.Action != runtimepredictive.RequestAwareSizeProtect ||
+		short.Reason != runtimepredictive.RequestAwareReasonPrefillConcurrency {
+		t.Fatalf("short-context profile/decision = %+v/%+v, want exclusive-concurrency protection", shortProfile, short)
 	}
-	if fastProfile.PrefillExclusiveTokens <= input.EstimatedPrefillTokens ||
-		fast.Action != runtimepredictive.RequestAwareAdmit {
-		t.Fatalf("fast profile/decision = %+v/%+v, want work-conserving admit", fastProfile, fast)
+	if longProfile.PrefillExclusiveTokens <= input.EstimatedPrefillTokens ||
+		long.Action != runtimepredictive.RequestAwareAdmit {
+		t.Fatalf("long-context profile/decision = %+v/%+v, want work-conserving admit", longProfile, long)
 	}
 }
 
@@ -172,7 +172,7 @@ func TestDeterministicRequestAwareGoodputSuiteMeetsRegisteredAcceptance(t *testi
 			"scenario=%s baseline=%+v candidate=%+v",
 			scenario.Name,
 			scenario.Policies[PolicyV0122],
-			scenario.Policies[PolicyV0124],
+			scenario.Policies[PolicyV0125],
 		)
 	}
 	if err := ValidateAcceptance(suite); err != nil {
@@ -252,7 +252,7 @@ func TestSimulationCandidateSizeAwareAdmissionContracts(t *testing.T) {
 		if !exists {
 			continue
 		}
-		candidate := scenario.Policies[PolicyV0124]
+		candidate := scenario.Policies[PolicyV0125]
 		if candidate.Admitted != contract[0] || candidate.Rejected != contract[1] {
 			t.Fatalf(
 				"scenario %s admitted/rejected=%d/%d want=%d/%d",
@@ -282,7 +282,7 @@ func acceptanceSuite(candidate Metrics) Suite {
 			Policies: map[PolicyName]Metrics{
 				PolicyNoAdmission: baseline,
 				PolicyV0122:       baseline,
-				PolicyV0124:       candidate,
+				PolicyV0125:       candidate,
 			},
 		}},
 	}

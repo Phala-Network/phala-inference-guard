@@ -99,7 +99,7 @@ func TestRequestAwareAdapterReservationUsesExistingLifecycle(t *testing.T) {
 	}
 }
 
-func TestV0124RequestAwareAdapterProjectsWeightedPrefillBeforeNextRequest(t *testing.T) {
+func TestV0125RequestAwareAdapterProjectsWeightedPrefillBeforeNextRequest(t *testing.T) {
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	weighted := adapter.Decide(
 		context.Background(), "weighted-router-projection", requestAwareAdapterInput(195*1024, 0),
@@ -134,7 +134,7 @@ func TestV0124RequestAwareAdapterProjectsWeightedPrefillBeforeNextRequest(t *tes
 	}
 }
 
-func TestV0124RequestAwareAdapterRejectsRegularDuringWeightedPrefill(t *testing.T) {
+func TestV0125RequestAwareAdapterRejectsRegularDuringWeightedPrefill(t *testing.T) {
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	weighted := adapter.Decide(
 		context.Background(), "weighted-business-gate", requestAwareAdapterInput(195*1024, 0),
@@ -171,7 +171,7 @@ func TestV0124RequestAwareAdapterRejectsRegularDuringWeightedPrefill(t *testing.
 	}
 }
 
-func TestV0124RequestAwareAdapterPrefillCompletionSupersedesRecentRejectProjection(t *testing.T) {
+func TestV0125RequestAwareAdapterPrefillCompletionSupersedesRecentRejectProjection(t *testing.T) {
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	now := time.Unix(100, 0)
 	adapter.now = func() time.Time { return now }
@@ -203,7 +203,7 @@ func TestV0124RequestAwareAdapterPrefillCompletionSupersedesRecentRejectProjecti
 	}
 }
 
-func TestV0124RequestAwareAdapterTerminalAndRebaseSupersedeRecentRejectProjection(t *testing.T) {
+func TestV0125RequestAwareAdapterTerminalAndRebaseSupersedeRecentRejectProjection(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		release func(*runtimepredictive.Manager, predictiveShadowReservation) bool
@@ -1008,7 +1008,7 @@ func requestAwareTestCapabilityProfile(capacity, blockSize, hard int64) runtimep
 		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
 		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
-		Source:                       runtimepredictive.CapabilityProfileFallback,
+		Source:                       runtimepredictive.CapabilityProfileExplicit,
 	}
 }
 

@@ -1,6 +1,6 @@
 # Phala Inference Guard
 
-Phala Inference Guard (PIG) v0.12.4 is a single-upstream, predictive admission
+Phala Inference Guard (PIG) v0.12.5 is a single-upstream, predictive admission
 proxy for OpenAI-compatible vLLM services. It estimates request size before an
 upstream call, combines that estimate with one fresh vLLM observation and all
 unabsorbed reservations, and decides whether the post-admit state can preserve
@@ -34,12 +34,12 @@ does not create a second post-response admission controller.
 ## Production configuration
 
 Production Compose should be small. Do not spell out values that equal the
-v0.12.4 defaults.
+v0.12.5 defaults.
 
 ```yaml
 services:
   pig:
-    image: ghcr.io/phala-network/phala-inference-guard:0.12.4
+    image: ghcr.io/phala-network/phala-inference-guard:0.12.5
     environment:
       - UPSTREAM=http://backend:8000
       - TOKEN=${PIG_TOKEN}
@@ -51,7 +51,11 @@ services:
 from its origin as `/metrics`. Predictive admission defaults to `enforce`, the
 observer polls every 500 ms, and the maximum observation age defaults to
 1500 ms. KV capacity, block size, protected KV limit, and Prefill thresholds
-are derived once during startup from the upstream capability profile.
+are derived once during startup from the upstream capability profile. Automatic
+Prefill initialization reads `max_model_len` once from `/v1/models` and combines
+it with the metric-reported KV geometry. It never sends a completion or active
+performance probe. If metadata is unavailable, PIG uses a bounded 512 Ki-token
+geometry fallback and records `metadata_fallback`.
 The bounded request scanner uses a 4 MiB internal ceiling so a model-neutral
 650K-token text window remains classifiable under the estimator's six-byte
 upper ratio. This safety bound is not a production Compose variable.
@@ -107,11 +111,11 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image builds for
-the v0.12.4 release are run on the approved clean Linux builder. The release
+the v0.12.5 release are run on the dedicated c21 Linux workbench. The release
 plan records the exact archive hash, commands, logs, image digest, live gates,
 and production observation evidence:
 
-- [v0.12.4 QoS-constrained goodput remediation](docs/PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md)
+- [v0.12.5 QoS-constrained goodput remediation](docs/PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md)
 - [v0.12.0-v0.12.2 historical audit](docs/PREDICTIVE_ADMISSION_V0_12_1_CORRECTION_AND_LIVE_VALIDATION_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

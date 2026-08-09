@@ -1,5 +1,11 @@
 # PIG v0.12.0 Immutable Backend Capability Profile Plan
 
+> Historical design only. Its active completion-based Prefill calibration was
+> retired by the v0.12.5 correction in section 34 of
+> `PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md`. Current production
+> initialization performs no completion or performance probe and learns neither
+> Prefill nor KV parameters.
+
 Status: source implementation and complete remote-builder matrix passed;
 exact-commit builder-local image verified; implementation commit `caaa882` and
 parameter-boundary review commit `f3d92d3` pushed; live v0.12.0 validation is

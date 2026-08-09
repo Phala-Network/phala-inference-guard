@@ -7,22 +7,13 @@ import (
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
-const (
-	CapabilityProfileSchema = "request-aware-capability-v1"
-
-	capabilityPrefillSafetyRatio = 0.80
-	capabilityRegularSeconds     = 5.0
-	capabilityExclusiveSeconds   = 20.0
-	capabilityQuiescentSeconds   = 40.0
-	capabilityAggregateSeconds   = 20.0
-)
+const CapabilityProfileSchema = "request-aware-capability-v2"
 
 type CapabilityProfileSource string
 
 const (
-	CapabilityProfileExplicit   CapabilityProfileSource = "explicit"
-	CapabilityProfileCalibrated CapabilityProfileSource = "startup_calibration"
-	CapabilityProfileFallback   CapabilityProfileSource = "fallback"
+	CapabilityProfileExplicit  CapabilityProfileSource = "explicit"
+	CapabilityProfileAutomatic CapabilityProfileSource = "automatic"
 )
 
 type PrefillTokenBounds struct {
@@ -33,13 +24,13 @@ type PrefillTokenBounds struct {
 }
 
 type CapabilityProfileInput struct {
-	ModelIdentitySHA256             string
-	KVCapacityTokens                int64
-	KVBlockSize                     int64
-	KVHardRatio                     float64
-	ObservedColdPrefillTokensPerSec float64
-	Prefill                         PrefillTokenBounds
-	Source                          CapabilityProfileSource
+	ModelIdentitySHA256 string
+	KVCapacityTokens    int64
+	KVBlockSize         int64
+	KVHardRatio         float64
+	MaxModelLen         int64
+	Prefill             PrefillTokenBounds
+	Source              CapabilityProfileSource
 }
 
 type BackendCapabilityProfile struct {
@@ -48,7 +39,6 @@ type BackendCapabilityProfile struct {
 	KVCapacityTokens             int64
 	KVBlockSize                  int64
 	KVHardLimitTokens            int64
-	SafeColdPrefillTokensPerSec  float64
 	PrefillRegularTokens         int64
 	PrefillExclusiveTokens       int64
 	PrefillQuiescentTokens       int64
@@ -75,23 +65,26 @@ func NewBackendCapabilityProfile(input CapabilityProfileInput) (BackendCapabilit
 		KVHardLimitTokens:   hard,
 		Source:              input.Source,
 	}
+	var bounds PrefillTokenBounds
 	switch input.Source {
-	case CapabilityProfileCalibrated:
-		bounds, safeRate, err := calibratedPrefillBounds(input.ObservedColdPrefillTokensPerSec, input.KVBlockSize)
+	case CapabilityProfileAutomatic:
+		var err error
+		bounds, err = automaticPrefillBounds(input.MaxModelLen, hard, input.KVBlockSize)
 		if err != nil {
 			return BackendCapabilityProfile{}, err
 		}
-		profile.SafeColdPrefillTokensPerSec = safeRate
-		profile.setPrefill(bounds)
-	case CapabilityProfileExplicit, CapabilityProfileFallback:
-		bounds := alignPrefillBounds(input.Prefill, input.KVBlockSize)
-		if err := validatePrefillBounds(bounds, input.KVBlockSize); err != nil {
-			return BackendCapabilityProfile{}, err
-		}
-		profile.setPrefill(bounds)
+	case CapabilityProfileExplicit:
+		bounds = alignPrefillBounds(input.Prefill, input.KVBlockSize)
 	default:
 		return BackendCapabilityProfile{}, fmt.Errorf("backend capability profile source is invalid")
 	}
+	if err := validatePrefillBounds(bounds, input.KVBlockSize); err != nil {
+		return BackendCapabilityProfile{}, err
+	}
+	if input.Source == CapabilityProfileAutomatic && bounds.Quiescent > hard {
+		return BackendCapabilityProfile{}, fmt.Errorf("automatic backend capability Prefill bounds exceed hard KV")
+	}
+	profile.setPrefill(bounds)
 	if err := profile.Validate(); err != nil {
 		return BackendCapabilityProfile{}, err
 	}
@@ -106,6 +99,9 @@ func (p BackendCapabilityProfile) Validate() error {
 		p.KVHardLimitTokens%p.KVBlockSize != 0 {
 		return fmt.Errorf("backend capability profile is invalid")
 	}
+	if p.Source != CapabilityProfileAutomatic && p.Source != CapabilityProfileExplicit {
+		return fmt.Errorf("backend capability profile source is invalid")
+	}
 	if err := validatePrefillBounds(PrefillTokenBounds{
 		Regular:   p.PrefillRegularTokens,
 		Exclusive: p.PrefillExclusiveTokens,
@@ -114,17 +110,8 @@ func (p BackendCapabilityProfile) Validate() error {
 	}, p.KVBlockSize); err != nil {
 		return err
 	}
-	switch p.Source {
-	case CapabilityProfileCalibrated:
-		if !requestAwareFinite(p.SafeColdPrefillTokensPerSec) || p.SafeColdPrefillTokensPerSec <= 0 {
-			return fmt.Errorf("calibrated backend capability rate is invalid")
-		}
-	case CapabilityProfileExplicit, CapabilityProfileFallback:
-		if p.SafeColdPrefillTokensPerSec != 0 {
-			return fmt.Errorf("unmeasured backend capability rate must be zero")
-		}
-	default:
-		return fmt.Errorf("backend capability profile source is invalid")
+	if p.Source == CapabilityProfileAutomatic && p.PrefillQuiescentTokens > p.KVHardLimitTokens {
+		return fmt.Errorf("automatic backend capability Prefill bounds exceed hard KV")
 	}
 	return nil
 }
@@ -140,42 +127,27 @@ func capabilityRatioTokens(capacity, blockSize int64, ratio float64) (int64, boo
 	return capabilityBlockRoundDown(int64(raw), blockSize), true
 }
 
-func calibratedPrefillBounds(observedRate float64, blockSize int64) (PrefillTokenBounds, float64, error) {
-	if !requestAwareFinite(observedRate) || observedRate <= 0 || observedRate > float64(math.MaxInt64)/capabilityQuiescentSeconds {
-		return PrefillTokenBounds{}, 0, fmt.Errorf("observed cold-Prefill rate is invalid")
+func automaticPrefillBounds(maxModelLen, hardLimit, blockSize int64) (PrefillTokenBounds, error) {
+	if maxModelLen <= 0 || maxModelLen > 1<<53 || hardLimit <= 0 || blockSize <= 0 {
+		return PrefillTokenBounds{}, fmt.Errorf("automatic backend capability span is invalid")
 	}
-	safeRate := math.Floor(observedRate * capabilityPrefillSafetyRatio)
-	if safeRate <= 0 {
-		return PrefillTokenBounds{}, 0, fmt.Errorf("safe cold-Prefill rate is invalid")
+	effectiveSpan := capabilityBlockRoundDown(minCapabilityTokens(maxModelLen, hardLimit), blockSize)
+	if effectiveSpan <= 0 {
+		return PrefillTokenBounds{}, fmt.Errorf("automatic backend capability span is empty")
 	}
-	// An idle cold-Prefill probe may tighten known-safe ceilings, but it cannot
-	// prove that wider Prefill/Decode overlap preserves QoS.
 	bounds := PrefillTokenBounds{
-		Regular: capabilityBoundedPrefillTokens(
-			safeRate, capabilityRegularSeconds, domain.DefaultPrefillRegularTokens, blockSize,
-		),
-		Exclusive: capabilityBoundedPrefillTokens(
-			safeRate, capabilityExclusiveSeconds, domain.DefaultPrefillExclusiveTokens, blockSize,
-		),
-		Quiescent: capabilityBoundedPrefillTokens(
-			safeRate, capabilityQuiescentSeconds, domain.DefaultPrefillQuiescentTokens, blockSize,
-		),
-		Aggregate: capabilityBoundedPrefillTokens(
-			safeRate, capabilityAggregateSeconds, domain.DefaultPrefillAggregateBudgetTokens, blockSize,
-		),
+		Regular: capabilityBlockRoundDown(minCapabilityTokens(
+			domain.DefaultPrefillRegularTokens, effectiveSpan/8,
+		), blockSize),
+		Exclusive: capabilityBlockRoundDown(minCapabilityTokens(
+			domain.DefaultPrefillExclusiveTokens, effectiveSpan/2,
+		), blockSize),
+		Quiescent: capabilityBlockRoundDown(minCapabilityTokens(
+			domain.DefaultPrefillQuiescentTokens, effectiveSpan,
+		), blockSize),
 	}
-	if err := validatePrefillBounds(bounds, blockSize); err != nil {
-		return PrefillTokenBounds{}, 0, err
-	}
-	return bounds, safeRate, nil
-}
-
-func capabilityBoundedPrefillTokens(rate, seconds float64, maximum, blockSize int64) int64 {
-	derived := int64(math.Floor(rate * seconds))
-	if derived > maximum {
-		derived = maximum
-	}
-	return capabilityBlockRoundDown(derived, blockSize)
+	bounds.Aggregate = bounds.Exclusive
+	return bounds, nil
 }
 
 func alignPrefillBounds(bounds PrefillTokenBounds, blockSize int64) PrefillTokenBounds {
@@ -201,6 +173,13 @@ func capabilityBlockRoundDown(tokens, blockSize int64) int64 {
 		return 0
 	}
 	return tokens - tokens%blockSize
+}
+
+func minCapabilityTokens(left, right int64) int64 {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (p *BackendCapabilityProfile) setPrefill(bounds PrefillTokenBounds) {

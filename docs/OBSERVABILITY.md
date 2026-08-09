@@ -1,4 +1,4 @@
-# PIG v0.12.4 Observability
+# PIG v0.12.5 Observability
 
 PIG exports one predictive state. The request decision, status line, backend
 projection, and Router compatibility values must come from one captured
@@ -51,8 +51,10 @@ Router backpressure.
 ## Capability and observer metrics
 
 `pig_predictive_capability_*` records the immutable startup profile: KV
-capacity, block size, aligned soft/hard limits, cold-Prefill rate, and derived
-Prefill boundaries.
+capacity, block size, aligned hard limit, and derived Prefill boundaries. The
+profile-info source is `automatic` or `explicit`; automatic reasons are
+`metadata` and `metadata_fallback`. No measured or "safe" Prefill rate is
+exported because initialization performs no active performance sampling.
 
 `pig_backend_*` records the single upstream's coherent observed state and proxy
 lifecycle: KV tokens, running, waiting, generation TPS validity, inflight,
@@ -118,7 +120,7 @@ retired architecture is exported.
 
 ## Status log
 
-The bounded periodic line starts with `PIG-v0.12.4` and includes mode, attempts,
+The bounded periodic line starts with `PIG-v0.12.5` and includes mode, attempts,
 fit/risk/unknown counts, enforced rejects, reservations, last action/reason,
 Prefill estimate, KV post-admit values, TPS proxy, Router scope and
 inspect capacity, observer freshness/identity/running/waiting, and compatibility

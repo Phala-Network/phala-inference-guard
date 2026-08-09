@@ -1,4 +1,4 @@
-# PIG v0.12.4 Advanced Configuration
+# PIG v0.12.5 Advanced Configuration
 
 This document separates production configuration from test controls. The
 loader accepts bounded overrides so the policy can be tested, but parser
@@ -10,7 +10,7 @@ A normal production deployment contains only:
 
 - `UPSTREAM`, exactly one absolute HTTP URL;
 - required authentication and attestation infrastructure;
-- a deployment choice that genuinely differs from the v0.12.4 default.
+- a deployment choice that genuinely differs from the v0.12.5 default.
 
 Do not explicitly configure predictive mode, metrics URL, polling, freshness,
 the KV hard ratio, or Prefill boundaries when the defaults are intended.
@@ -20,7 +20,7 @@ The enforce artifact must prove default behavior with
 Test and production manifests are separate artifacts. Generate production from
 the fresh live Compose and immutable image digest; do not promote a test
 manifest by only changing its mode. Before deployment, audit the effective PIG
-environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.4
+environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.5
 default and have a target-specific operational reason. Shadow may additionally
 set `PREDICTIVE_ADMISSION_MODE=shadow`; enforce must omit it.
 
@@ -45,7 +45,7 @@ not alter admission policy.
 
 ## Version defaults
 
-These values are part of the v0.12.4 behavior and should normally remain absent
+These values are part of the v0.12.5 behavior and should normally remain absent
 from production Compose.
 
 | Variable | Default | Constraint |
@@ -74,9 +74,22 @@ The startup probe requires coherent vLLM metrics for:
 - KV block size;
 - used KV, running, waiting, generation, and preemption counters.
 
-PIG then freezes one immutable capability profile. It aligns the hard KV limit
-to the upstream block size and derives Prefill classes and aggregate budget
-from the measured cold-Prefill capability. These values are not learned during
+PIG then performs at most one bounded read-only `/v1/models` request and freezes
+one immutable capability profile. It never sends a completion, warmup, or active
+performance probe. The automatic profile is derived as:
+
+```text
+effective_span = block_align_down(min(max_model_len, kv_hard_limit))
+regular        = block_align_down(min(64 Ki,  effective_span / 8))
+exclusive      = block_align_down(min(256 Ki, effective_span / 2))
+quiescent      = block_align_down(min(512 Ki, effective_span))
+aggregate      = exclusive
+```
+
+If `/v1/models` metadata is unavailable or inconsistent, `max_model_len` is
+replaced by a bounded 512 Ki-token fallback and the reason is exposed as
+`metadata_fallback`. Backend running/waiting state does not change this profile.
+KV and Prefill parameters are initialized once and are not learned during
 service.
 
 Explicit Prefill overrides are available only as a controlled test/deployment

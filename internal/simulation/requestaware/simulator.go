@@ -13,7 +13,7 @@ type PolicyName string
 const (
 	PolicyNoAdmission PolicyName = "no_admission"
 	PolicyV0122       PolicyName = "v0.12.2"
-	PolicyV0124       PolicyName = "v0.12.4"
+	PolicyV0125       PolicyName = "v0.12.5"
 )
 
 type Metrics struct {
@@ -51,7 +51,7 @@ type Suite struct {
 }
 
 func RunSuite() (Suite, error) {
-	return runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0124})
+	return runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0125})
 }
 
 func runSuite(policyOrder []PolicyName) (Suite, error) {
@@ -60,7 +60,7 @@ func runSuite(policyOrder []PolicyName) (Suite, error) {
 	}
 	suite := Suite{Seed: SimulationSeed}
 	for _, scenario := range simulationScenarios(SimulationSeed) {
-		profile, policy, err := simulationCapabilityPolicy(scenario, simulationPrefillTokensPS)
+		profile, policy, err := simulationCapabilityPolicy(scenario, 650*1024)
 		if err != nil {
 			return Suite{}, fmt.Errorf("construct scenario %s capability policy: %w", scenario.name, err)
 		}
@@ -91,7 +91,7 @@ func validatePolicyOrder(policyOrder []PolicyName) error {
 	seen := make(map[PolicyName]struct{}, 3)
 	for _, policyName := range policyOrder {
 		switch policyName {
-		case PolicyNoAdmission, PolicyV0122, PolicyV0124:
+		case PolicyNoAdmission, PolicyV0122, PolicyV0125:
 		default:
 			return fmt.Errorf("simulation policy order contains unknown policy %q", policyName)
 		}
@@ -105,19 +105,19 @@ func validatePolicyOrder(policyOrder []PolicyName) error {
 
 func simulationCapabilityPolicy(
 	scenario scenarioSpec,
-	observedColdPrefillTokensPerSecond float64,
+	maxModelLen int64,
 ) (runtimepredictive.BackendCapabilityProfile, *runtimepredictive.RequestAwarePolicy, error) {
 	capacity := scenario.capacityTokens
 	if capacity <= 0 {
 		capacity = simulationCapacityTokens
 	}
 	profile, err := runtimepredictive.NewBackendCapabilityProfile(runtimepredictive.CapabilityProfileInput{
-		ModelIdentitySHA256:             "deterministic-request-aware-simulation",
-		KVCapacityTokens:                capacity,
-		KVBlockSize:                     simulationBlockSize,
-		KVHardRatio:                     simulationHardKVRatio,
-		ObservedColdPrefillTokensPerSec: observedColdPrefillTokensPerSecond,
-		Source:                          runtimepredictive.CapabilityProfileCalibrated,
+		ModelIdentitySHA256: "deterministic-request-aware-simulation",
+		KVCapacityTokens:    capacity,
+		KVBlockSize:         simulationBlockSize,
+		KVHardRatio:         simulationHardKVRatio,
+		MaxModelLen:         maxModelLen,
+		Source:              runtimepredictive.CapabilityProfileAutomatic,
 	})
 	if err != nil {
 		return runtimepredictive.BackendCapabilityProfile{}, nil, err

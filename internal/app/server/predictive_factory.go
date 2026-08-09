@@ -29,10 +29,8 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		return nil, err
 	}
 	initialization, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
-		MetricsURL:     metricsURL,
 		UpstreamURL:    cfg.Upstream,
 		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
-		RetryInterval:  cfg.PredictiveObservationPollInterval,
 		KVHardRatio:    cfg.PredictiveKVHardRatio,
 		Prefill: runtimepredictive.PrefillTokenBounds{
 			Regular:   cfg.PredictivePrefillRegularTokens,
@@ -45,16 +43,14 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		return nil, err
 	}
 	profile := initialization.Profile
-	startup = initialization.Startup
 	log.Printf(
-		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d safe_cold_prefill_tokens_per_second=%.0f prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_aggregate_budget_tokens=%d",
+		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_aggregate_budget_tokens=%d",
 		profile.SchemaVersion,
 		profile.Source,
 		initialization.Reason,
 		profile.KVCapacityTokens,
 		profile.KVBlockSize,
 		profile.KVHardLimitTokens,
-		profile.SafeColdPrefillTokensPerSec,
 		profile.PrefillRegularTokens,
 		profile.PrefillExclusiveTokens,
 		profile.PrefillQuiescentTokens,

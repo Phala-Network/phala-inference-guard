@@ -1,6 +1,6 @@
-# PIG v0.12.4 Internal Algorithm Flow
+# PIG v0.12.5 Internal Algorithm Flow
 
-PIG v0.12.4 has one admission architecture and one upstream. Components are
+PIG v0.12.5 has one admission architecture and one upstream. Components are
 separated by ownership so request parsing, backend observation, policy,
 reservation lifecycle, proxying, and telemetry do not mutate each other's
 state.
@@ -12,11 +12,14 @@ configuration loader
   -> validate one upstream and shadow/enforce mode
   -> derive /metrics from upstream origin
   -> probe coherent vLLM identity and exact KV capability
-  -> run bounded cold-Prefill capability initialization
+  -> read max model length once from /v1/models, with bounded metadata fallback
+  -> derive block-aligned Prefill thresholds from model length and hard KV
   -> freeze KV limits and Prefill classes
   -> construct Manager, request-aware Policy, Observer, Adapter, and Proxy
 ```
 
+The startup path performs no completion, warmup, cache lookup, or performance
+probe. Backend busy/idle state therefore cannot change the immutable profile.
 The observer polls at 500 ms by default. Capability and Prefill policy are
 initialized once, not learned.
 
@@ -52,7 +55,7 @@ pressure:
 - a quiescent request requires a sufficiently idle backend;
 - any request exceeding hard post-admit KV is protected.
 
-Generation TPS remains observation-only diagnostic data in v0.12.4. It is used
+Generation TPS remains observation-only diagnostic data in v0.12.5. It is used
 to evaluate QoS in controlled GPU experiments, but it does not authorize or
 reject a request. A future Decode envelope requires causal Router-disabled A/B
 evidence rather than a synthetic per-observation credit.
@@ -122,6 +125,8 @@ authoritative Manager sequence.
 | Owner | Responsibility |
 | --- | --- |
 | `internal/app/request` | Bounded read-only request inspection and exact body restoration |
+| `internal/app/server/predictive_capability_initializer.go` | One bounded metadata read and automatic/explicit initialization selection |
+| `internal/runtime/predictive/capability_profile.go` | Pure KV geometry, block alignment, Prefill derivation, and profile validation |
 | `internal/runtime/predictive/resource_gate.go` | Pure post-admit KV fit |
 | `internal/runtime/predictive/interference_gate.go` | Pure class-aware Prefill interference |
 | `internal/runtime/predictive/request_aware_policy.go` | Two-gate decision composition |

@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,107 +14,133 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-func TestV012FactoryBuildsProfileFromOneBoundedStartupCalibration(t *testing.T) {
-	fixture := newV012CapabilityFixture(t, 0)
-	fixture.SetPostProbeKVUsage(0.10)
-	fixture.SetDelayedProbeMetrics(true)
+func TestV0125AutomaticCapabilityUsesMetadataWithoutCompletion(t *testing.T) {
+	fixture := newV0125CapabilityFixture(t, 0, 256*1024)
 	defer fixture.Close()
 
-	cfg := v012CapabilityFactoryConfig(fixture.URL())
-	shadow, err := newDefaultPredictiveShadow(cfg)
+	shadow, err := newDefaultPredictiveShadow(v0125CapabilityFactoryConfig(fixture.URL()))
 	if err != nil {
-		t.Fatalf("construct calibrated factory: %v", err)
-	}
-	adapter, ok := shadow.(*requestAwarePredictiveAdapter)
-	if !ok {
-		_ = shadow.Close()
-		t.Fatalf("calibrated adapter = %T", shadow)
+		t.Fatalf("construct metadata-derived factory: %v", err)
 	}
 	defer func() {
-		if err := adapter.Close(); err != nil {
-			t.Errorf("close calibrated adapter: %v", err)
+		if err := shadow.Close(); err != nil {
+			t.Errorf("close metadata-derived factory: %v", err)
 		}
 	}()
-	profile := adapter.PredictiveAdmissionTelemetry().CapabilityProfile
-	if profile.Source != runtimepredictive.CapabilityProfileCalibrated ||
-		profile.KVHardLimitTokens != 880_000 {
-		t.Fatalf("calibrated capability profile = %+v", profile)
-	}
-	if reason := adapter.PredictiveAdmissionTelemetry().CapabilityReason; reason != "calibrated" {
-		t.Fatalf("calibrated capability reason = %q", reason)
-	}
-	if physical := adapter.PredictiveAdmissionTelemetry().Manager.Virtual.Upper.PhysicalKVUpper; physical != 100_000 {
-		t.Fatalf("manager initial physical KV = %d, want post-probe 100000", physical)
-	}
 
 	models, completions := fixture.Calls()
-	if models != 1 || completions != 2 {
-		t.Fatalf("startup calibration calls models/completions = %d/%d, want 1/2", models, completions)
+	if models != 1 || completions != 0 {
+		t.Fatalf("automatic initialization calls models/completions = %d/%d, want 1/0", models, completions)
 	}
 	if fixture.AuthorizationSeen() {
-		t.Fatal("startup calibration forwarded an Authorization header")
+		t.Fatal("automatic metadata request forwarded an Authorization header")
 	}
-	if got := v012PrefillClass(adapter, 50_000); got != runtimepredictive.RequestAwarePrefillWeighted {
-		t.Fatalf("calibrated 50K Prefill class = %s, want weighted", got)
+	telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
+	assertV0125CapabilityProfile(t, telemetry.CapabilityProfile, "automatic", 880_000, 32_768, 131_072, 262_144, 131_072)
+	if telemetry.CapabilityReason != "metadata" {
+		t.Fatalf("automatic initialization reason = %q, want metadata", telemetry.CapabilityReason)
 	}
-	if got := v012PrefillClass(adapter, 200_000); got != runtimepredictive.RequestAwarePrefillExclusive {
-		t.Fatalf("calibrated 200K Prefill class = %s, want exclusive", got)
+}
+
+func TestV0125AutomaticCapabilityIsBusyInvariant(t *testing.T) {
+	var profiles [2]runtimepredictive.BackendCapabilityProfile
+	var reasons [2]string
+	for index, running := range []int{0, 1} {
+		fixture := newV0125CapabilityFixture(t, running, 256*1024)
+		shadow, err := newDefaultPredictiveShadow(v0125CapabilityFactoryConfig(fixture.URL()))
+		if err != nil {
+			fixture.Close()
+			t.Fatalf("construct automatic factory with running=%d: %v", running, err)
+		}
+		models, completions := fixture.Calls()
+		telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
+		profiles[index] = telemetry.CapabilityProfile
+		reasons[index] = telemetry.CapabilityReason
+		closeErr := shadow.Close()
+		fixture.Close()
+		if closeErr != nil {
+			t.Errorf("close automatic factory with running=%d: %v", running, closeErr)
+		}
+		if models != 1 || completions != 0 {
+			t.Errorf("running=%d initialization calls models/completions = %d/%d, want 1/0", running, models, completions)
+		}
 	}
-	if got := v012PrefillClass(adapter, 350_000); got != runtimepredictive.RequestAwarePrefillQuiescent {
+	if profiles[0] != profiles[1] || reasons[0] != "metadata" || reasons[1] != "metadata" {
 		t.Fatalf(
-			"calibrated 350K Prefill class = %s, want quiescent for 40000/160000/320000/160000 profile",
-			got,
+			"idle and busy startup derived different capability contracts:\nidle=%+v/%s\nbusy=%+v/%s",
+			profiles[0], reasons[0], profiles[1], reasons[1],
 		)
 	}
 }
 
-func TestV012BusyStartupUsesFallbackWithoutWaitingForCalibration(t *testing.T) {
-	fixture := newV012CapabilityFixture(t, 1)
-	defer fixture.Close()
+func TestV0125AutomaticCapabilityGeometry(t *testing.T) {
+	tests := []struct {
+		name           string
+		maxModelLen    int64
+		metadataStatus int
+		capacity       int64
+		wantHard       int64
+		wantRegular    int64
+		wantExclusive  int64
+		wantQuiescent  int64
+		wantAggregate  int64
+		wantReason     string
+	}{
+		{name: "32K context", maxModelLen: 32 * 1024, metadataStatus: http.StatusOK, capacity: 1_000_000, wantHard: 880_000, wantRegular: 4 * 1024, wantExclusive: 16 * 1024, wantQuiescent: 32 * 1024, wantAggregate: 16 * 1024, wantReason: "metadata"},
+		{name: "256K context", maxModelLen: 256 * 1024, metadataStatus: http.StatusOK, capacity: 1_000_000, wantHard: 880_000, wantRegular: 32 * 1024, wantExclusive: 128 * 1024, wantQuiescent: 256 * 1024, wantAggregate: 128 * 1024, wantReason: "metadata"},
+		{name: "650K context", maxModelLen: 650 * 1024, metadataStatus: http.StatusOK, capacity: 1_000_000, wantHard: 880_000, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantAggregate: 256 * 1024, wantReason: "metadata"},
+		{name: "KV limited", maxModelLen: 650 * 1024, metadataStatus: http.StatusOK, capacity: 300_000, wantHard: 264_000, wantRegular: 32_960, wantExclusive: 131_968, wantQuiescent: 264_000, wantAggregate: 131_968, wantReason: "metadata"},
+		{name: "metadata fallback", metadataStatus: http.StatusServiceUnavailable, capacity: 1_000_000, wantHard: 880_000, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantAggregate: 256 * 1024, wantReason: "metadata_fallback"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var models atomic.Int64
+			var completions atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/v1/models":
+					models.Add(1)
+					if test.metadataStatus != http.StatusOK {
+						w.WriteHeader(test.metadataStatus)
+						return
+					}
+					_, _ = fmt.Fprintf(w, `{"object":"list","data":[{"id":"vendor/capability-model","max_model_len":%d}]}`, test.maxModelLen)
+				case "/v1/completions":
+					completions.Add(1)
+					w.WriteHeader(http.StatusInternalServerError)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
 
-	cfg := v012CapabilityFactoryConfig(fixture.URL())
-	started := time.Now()
-	shadow, err := newDefaultPredictiveShadow(cfg)
-	if err != nil {
-		t.Fatalf("construct busy fallback factory: %v", err)
-	}
-	defer func() {
-		if err := shadow.Close(); err != nil {
-			t.Errorf("close busy fallback: %v", err)
-		}
-	}()
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("busy startup fallback took %s", elapsed)
-	}
-
-	models, completions := fixture.Calls()
-	if models != 0 || completions != 0 {
-		t.Fatalf("busy startup calibration calls models/completions = %d/%d, want 0/0", models, completions)
-	}
-	adapter := shadow.(*requestAwarePredictiveAdapter)
-	if telemetry := adapter.PredictiveAdmissionTelemetry(); telemetry.CapabilityProfile.Source != runtimepredictive.CapabilityProfileFallback || telemetry.CapabilityReason != "busy_fallback" {
-		t.Fatalf("busy capability telemetry = %+v/%q, want fallback/busy_fallback", telemetry.CapabilityProfile, telemetry.CapabilityReason)
-	}
-	if got := v012PrefillClass(adapter, 50_000); got != runtimepredictive.RequestAwarePrefillRegular {
-		t.Fatalf("fallback 50K Prefill class = %s, want regular", got)
-	}
-	if got := v012PrefillClass(adapter, 200_000); got != runtimepredictive.RequestAwarePrefillWeighted {
-		t.Fatalf("fallback 200K Prefill class = %s, want weighted", got)
-	}
-	if got := v012PrefillClass(adapter, 350_000); got != runtimepredictive.RequestAwarePrefillExclusive {
-		t.Fatalf("fallback 350K Prefill class = %s, want exclusive", got)
+			startup := v0125CapabilityStartup(test.capacity)
+			initialization, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
+				UpstreamURL: server.URL, RequestTimeout: 50 * time.Millisecond, KVHardRatio: 0.88,
+			}, startup)
+			if err != nil {
+				t.Fatalf("initialize automatic capability: %v", err)
+			}
+			if gotModels, gotCompletions := models.Load(), completions.Load(); gotModels != 1 || gotCompletions != 0 {
+				t.Fatalf("initialization calls models/completions = %d/%d, want 1/0", gotModels, gotCompletions)
+			}
+			assertV0125CapabilityProfile(t, initialization.Profile, "automatic", test.wantHard, test.wantRegular, test.wantExclusive, test.wantQuiescent, test.wantAggregate)
+			if initialization.Reason != test.wantReason {
+				t.Fatalf("initialization reason = %q, want %q", initialization.Reason, test.wantReason)
+			}
+		})
 	}
 }
 
-func TestV012CompleteExplicitPrefillProfileSkipsCalibration(t *testing.T) {
-	fixture := newV012CapabilityFixture(t, 0)
+func TestV0125CompleteExplicitPrefillProfileSkipsMetadata(t *testing.T) {
+	fixture := newV0125CapabilityFixture(t, 0, 256*1024)
 	defer fixture.Close()
-
-	cfg := v012CapabilityFactoryConfig(fixture.URL())
+	cfg := v0125CapabilityFactoryConfig(fixture.URL())
 	cfg.PredictivePrefillRegularTokens = 32_768
 	cfg.PredictivePrefillExclusiveTokens = 131_072
 	cfg.PredictivePrefillQuiescentTokens = 262_144
 	cfg.PredictivePrefillAggregateBudgetTokens = 196_608
+
 	shadow, err := newDefaultPredictiveShadow(cfg)
 	if err != nil {
 		t.Fatalf("construct explicit capability factory: %v", err)
@@ -125,54 +150,49 @@ func TestV012CompleteExplicitPrefillProfileSkipsCalibration(t *testing.T) {
 			t.Errorf("close explicit capability factory: %v", err)
 		}
 	}()
-	models, completions := fixture.Calls()
-	if models != 0 || completions != 0 {
+	if models, completions := fixture.Calls(); models != 0 || completions != 0 {
 		t.Fatalf("explicit profile calls models/completions = %d/%d, want 0/0", models, completions)
 	}
 	telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
-	profile := telemetry.CapabilityProfile
-	if profile.Source != runtimepredictive.CapabilityProfileExplicit ||
-		profile.PrefillRegularTokens != 32_768 || profile.PrefillExclusiveTokens != 131_072 ||
-		profile.PrefillQuiescentTokens != 262_144 || profile.PrefillAggregateBudgetTokens != 196_608 {
-		t.Fatalf("explicit capability profile = %+v", profile)
-	}
+	assertV0125CapabilityProfile(t, telemetry.CapabilityProfile, "explicit", 880_000, 32_768, 131_072, 262_144, 196_608)
 	if telemetry.CapabilityReason != "explicit_override" {
 		t.Fatalf("explicit capability reason = %q", telemetry.CapabilityReason)
 	}
 }
 
-func TestV012CacheHitContaminatedProbeFallsBack(t *testing.T) {
-	fixture := newV012CapabilityFixture(t, 0)
-	fixture.SetProbeCacheHit(true)
-	defer fixture.Close()
-
-	shadow, err := newDefaultPredictiveShadow(v012CapabilityFactoryConfig(fixture.URL()))
-	if err != nil {
-		t.Fatalf("construct cache-hit fallback factory: %v", err)
+func TestV0125InvalidExplicitCapabilityFailsBeforeMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*config)
+	}{
+		{name: "partial", mutate: func(cfg *config) { cfg.PredictivePrefillRegularTokens = 4 * 1024 }},
+		{name: "ordering", mutate: func(cfg *config) {
+			cfg.PredictivePrefillRegularTokens = 32 * 1024
+			cfg.PredictivePrefillExclusiveTokens = 16 * 1024
+			cfg.PredictivePrefillQuiescentTokens = 64 * 1024
+			cfg.PredictivePrefillAggregateBudgetTokens = 32 * 1024
+		}},
 	}
-	defer func() {
-		if err := shadow.Close(); err != nil {
-			t.Errorf("close cache-hit fallback factory: %v", err)
-		}
-	}()
-	models, completions := fixture.Calls()
-	if models != 1 || completions != 1 {
-		t.Fatalf("cache-hit fallback calls models/completions = %d/%d, want 1/1", models, completions)
-	}
-	telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
-	profile := telemetry.CapabilityProfile
-	if profile.Source != runtimepredictive.CapabilityProfileFallback || profile.SafeColdPrefillTokensPerSec != 0 {
-		t.Fatalf("cache-hit contaminated capability profile = %+v", profile)
-	}
-	if telemetry.CapabilityReason != "probe_fallback" {
-		t.Fatalf("cache-hit fallback reason = %q", telemetry.CapabilityReason)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newV0125CapabilityFixture(t, 0, 256*1024)
+			defer fixture.Close()
+			cfg := v0125CapabilityFactoryConfig(fixture.URL())
+			test.mutate(&cfg)
+			if _, err := newDefaultPredictiveShadow(cfg); err == nil {
+				t.Fatal("invalid explicit capability was accepted")
+			}
+			if models, completions := fixture.Calls(); models != 0 || completions != 0 {
+				t.Fatalf("invalid explicit capability calls models/completions = %d/%d, want 0/0", models, completions)
+			}
+		})
 	}
 }
 
-func TestV012CapabilityMetadataRedirectIsNotFollowed(t *testing.T) {
-	redirectCalls := 0
+func TestV0125CapabilityMetadataRedirectIsNotFollowed(t *testing.T) {
+	var redirectCalls atomic.Int64
 	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		redirectCalls++
+		redirectCalls.Add(1)
 	}))
 	defer target.Close()
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -185,23 +205,41 @@ func TestV012CapabilityMetadataRedirectIsNotFollowed(t *testing.T) {
 	defer origin.Close()
 
 	initialization, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
-		MetricsURL: origin.URL + "/metrics", UpstreamURL: origin.URL,
-		RequestTimeout: 50 * time.Millisecond, RetryInterval: 10 * time.Millisecond,
-		KVHardRatio: 0.88,
-	}, v012CapabilityStartup())
+		UpstreamURL: origin.URL, RequestTimeout: 50 * time.Millisecond, KVHardRatio: 0.88,
+	}, v0125CapabilityStartup(1_000_000))
 	if err != nil {
 		t.Fatalf("redirect fallback initialization: %v", err)
 	}
-	if redirectCalls != 0 {
-		t.Fatalf("capability client followed metadata redirect %d times", redirectCalls)
+	if redirectCalls.Load() != 0 {
+		t.Fatalf("capability client followed metadata redirect %d times", redirectCalls.Load())
 	}
-	if initialization.Profile.Source != runtimepredictive.CapabilityProfileFallback || initialization.Reason != "metadata_fallback" {
-		t.Fatalf("redirect initialization = %+v/%q, want metadata fallback", initialization.Profile, initialization.Reason)
+	if string(initialization.Profile.Source) != "automatic" || initialization.Reason != "metadata_fallback" {
+		t.Fatalf("redirect initialization = %+v/%q, want automatic/metadata_fallback", initialization.Profile, initialization.Reason)
 	}
 }
 
-func TestV012CapabilityClientBypassesEnvironmentProxy(t *testing.T) {
-	client := newPredictiveCalibrationHTTPClient()
+func TestV0125CapabilityMetadataResponseIsBounded(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, strings.Repeat("x", predictiveMetadataMaximumModelBody+1))
+	}))
+	defer server.Close()
+	initialization, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
+		UpstreamURL: server.URL, RequestTimeout: 50 * time.Millisecond, KVHardRatio: 0.88,
+	}, v0125CapabilityStartup(1_000_000))
+	if err != nil {
+		t.Fatalf("bounded metadata fallback initialization: %v", err)
+	}
+	if initialization.Reason != "metadata_fallback" {
+		t.Fatalf("oversized metadata reason = %q, want metadata_fallback", initialization.Reason)
+	}
+}
+
+func TestV0125CapabilityClientBypassesEnvironmentProxy(t *testing.T) {
+	client := newPredictiveMetadataHTTPClient()
 	defer client.CloseIdleConnections()
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
@@ -212,156 +250,95 @@ func TestV012CapabilityClientBypassesEnvironmentProxy(t *testing.T) {
 	}
 }
 
-func TestV012SubmittedProbeFailsClosedWhenFinalStateIsUnknownOrDrifts(t *testing.T) {
-	tests := []struct {
-		name       string
-		finalModel string
-		capacity   int64
-		blockSize  int
-		status     int
-	}{
-		{name: "metrics unavailable", finalModel: "vendor/capability-model", capacity: 1_000_000, blockSize: 64, status: http.StatusServiceUnavailable},
-		{name: "identity drift", finalModel: "vendor/other-model", capacity: 1_000_000, blockSize: 64, status: http.StatusOK},
-		{name: "capacity drift", finalModel: "vendor/capability-model", capacity: 2_000_000, blockSize: 64, status: http.StatusOK},
-		{name: "block-size drift", finalModel: "vendor/capability-model", capacity: 1_000_000, blockSize: 32, status: http.StatusOK},
+func TestV0125AutomaticCapabilityRejectsInvalidDerivedGeometry(t *testing.T) {
+	var completions atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"vendor/capability-model","max_model_len":32768}]}`)
+		case "/v1/completions":
+			completions.Add(1)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	startup := v0125CapabilityStartup(128)
+	if _, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
+		UpstreamURL: server.URL, RequestTimeout: 50 * time.Millisecond, KVHardRatio: 0.88,
+	}, startup); err == nil {
+		t.Fatal("invalid derived geometry was accepted")
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			var submitted atomic.Bool
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				switch r.URL.Path {
-				case "/v1/completions":
-					submitted.Store(true)
-					_, _ = io.WriteString(w, `{"choices":[{"text":"x"}]}`)
-				case "/metrics":
-					if !submitted.Load() {
-						w.WriteHeader(http.StatusInternalServerError)
-						return
-					}
-					if test.status != http.StatusOK {
-						w.WriteHeader(test.status)
-						return
-					}
-					writeV012FinalProbeMetrics(w, test.finalModel, test.capacity, test.blockSize)
-				default:
-					http.NotFound(w, r)
-				}
-			}))
-			defer server.Close()
-
-			ctx, cancel := context.WithTimeout(context.Background(), 75*time.Millisecond)
-			defer cancel()
-			result, err := runPredictiveColdPrefillProbe(ctx, &http.Client{}, predictiveColdPrefillProbeConfig{
-				MetricsURL: server.URL + "/metrics", UpstreamURL: server.URL,
-				RequestTimeout: 20 * time.Millisecond, RetryInterval: 5 * time.Millisecond,
-				ModelName: "vendor/capability-model", IdentitySHA256: predictiveModelIdentitySHA256("vendor/capability-model"),
-				CapacityTokens: 1_000_000, BlockSize: 64,
-			}, v012CapabilityStartup(), 2_048)
-			if err == nil || result.Final.ModelIdentitySHA256 != "" || !strings.Contains(err.Error(), "final state is unavailable") {
-				t.Fatalf("submitted probe result/error = %+v/%v, want fail-closed unknown final state", result, err)
-			}
-		})
+	if completions.Load() != 0 {
+		t.Fatalf("invalid geometry triggered %d completion calls", completions.Load())
 	}
 }
 
-func v012CapabilityStartup() predictiveVLLMStartup {
+func assertV0125CapabilityProfile(
+	t *testing.T,
+	profile runtimepredictive.BackendCapabilityProfile,
+	wantSource string,
+	wantHard, wantRegular, wantExclusive, wantQuiescent, wantAggregate int64,
+) {
+	t.Helper()
+	if profile.SchemaVersion != "request-aware-capability-v2" || string(profile.Source) != wantSource ||
+		profile.KVHardLimitTokens != wantHard || profile.PrefillRegularTokens != wantRegular ||
+		profile.PrefillExclusiveTokens != wantExclusive || profile.PrefillQuiescentTokens != wantQuiescent ||
+		profile.PrefillAggregateBudgetTokens != wantAggregate {
+		t.Fatalf(
+			"capability profile = %+v, want source=%s hard=%d prefill=%d/%d/%d/%d",
+			profile, wantSource, wantHard, wantRegular, wantExclusive, wantQuiescent, wantAggregate,
+		)
+	}
+}
+
+func v0125CapabilityStartup(capacity int64) predictiveVLLMStartup {
 	return predictiveVLLMStartup{
 		modelName: "vendor/capability-model", ModelIdentitySHA256: predictiveModelIdentitySHA256("vendor/capability-model"),
-		CapacityTokens: 1_000_000, BlockSize: 64, CapabilityMetricsOK: true,
+		CapacityTokens: capacity, BlockSize: 64, CapabilityMetricsOK: true,
 		ObservedAt: time.Unix(1, 0),
 	}
 }
 
-func writeV012FinalProbeMetrics(w io.Writer, model string, capacity int64, blockSize int) {
-	_, _ = fmt.Fprintf(w, `
-vllm:cache_config_info{block_size="%d",kv_cache_size_tokens="%d"} 1
-vllm:kv_cache_usage_perc 0
-vllm:num_requests_running{model_name="%s",engine="0"} 0
-vllm:num_requests_waiting{model_name="%s",engine="0"} 0
-vllm:num_preemptions_total{model_name="%s",engine="0"} 0
-vllm:generation_tokens_total{model_name="%s",engine="0"} 1
-vllm:prompt_tokens_by_source_total{model_name="%s",engine="0",source="local_compute"} 2048
-vllm:prompt_tokens_by_source_total{model_name="%s",engine="0",source="local_cache_hit"} 0
-vllm:request_prefill_time_seconds_count{model_name="%s",engine="0"} 1
-vllm:request_prefill_time_seconds_sum{model_name="%s",engine="0"} 0.2
-`, blockSize, capacity, model, model, model, model, model, model, model, model)
-}
-
-func v012PrefillClass(adapter *requestAwarePredictiveAdapter, tokens int64) runtimepredictive.RequestAwarePrefillClass {
-	decision := adapter.policy.Evaluate(runtimepredictive.RequestAwareInput{
-		MetricsFresh:           true,
-		IdentityValid:          true,
-		CapacityTokens:         1_000_000,
-		RequestReservedTokens:  tokens,
-		SelectionInputTokens:   tokens,
-		EstimatedPrefillTokens: tokens,
-	})
-	return decision.PrefillClass
-}
-
-type v012CapabilityFixture struct {
+type v0125CapabilityFixture struct {
 	t                 *testing.T
 	server            *httptest.Server
 	mu                sync.Mutex
 	running           int
+	maxModelLen       int64
 	models            int
-	probes            int
-	local             uint64
-	prefill           float64
-	cacheHit          bool
-	postProbeKVUsage  float64
-	publishedProbes   int
-	delayProbeMetrics bool
-	unpublishedProbe  int
+	completions       int
 	authorizationSeen bool
 }
 
-func newV012CapabilityFixture(t *testing.T, running int) *v012CapabilityFixture {
+func newV0125CapabilityFixture(t *testing.T, running int, maxModelLen int64) *v0125CapabilityFixture {
 	t.Helper()
-	fixture := &v012CapabilityFixture{t: t, running: running}
+	fixture := &v0125CapabilityFixture{t: t, running: running, maxModelLen: maxModelLen}
 	fixture.server = httptest.NewServer(http.HandlerFunc(fixture.ServeHTTP))
 	return fixture
 }
 
-func (f *v012CapabilityFixture) URL() string {
+func (f *v0125CapabilityFixture) URL() string {
 	return f.server.URL
 }
 
-func (f *v012CapabilityFixture) Close() {
+func (f *v0125CapabilityFixture) Close() {
 	f.server.Close()
 }
 
-func (f *v012CapabilityFixture) Calls() (models, completions int) {
+func (f *v0125CapabilityFixture) Calls() (models, completions int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.models, f.probes
+	return f.models, f.completions
 }
 
-func (f *v012CapabilityFixture) AuthorizationSeen() bool {
+func (f *v0125CapabilityFixture) AuthorizationSeen() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.authorizationSeen
 }
 
-func (f *v012CapabilityFixture) SetProbeCacheHit(enabled bool) {
-	f.mu.Lock()
-	f.cacheHit = enabled
-	f.mu.Unlock()
-}
-
-func (f *v012CapabilityFixture) SetPostProbeKVUsage(usage float64) {
-	f.mu.Lock()
-	f.postProbeKVUsage = usage
-	f.mu.Unlock()
-}
-
-func (f *v012CapabilityFixture) SetDelayedProbeMetrics(enabled bool) {
-	f.mu.Lock()
-	f.delayProbeMetrics = enabled
-	f.mu.Unlock()
-}
-
-func (f *v012CapabilityFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (f *v0125CapabilityFixture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if r.Header.Get("Authorization") != "" {
@@ -370,66 +347,34 @@ func (f *v012CapabilityFixture) ServeHTTP(w http.ResponseWriter, r *http.Request
 	switch r.URL.Path {
 	case "/metrics":
 		f.writeMetrics(w)
-		if f.unpublishedProbe > 0 {
-			f.publishProbeMetrics(f.unpublishedProbe)
-			f.unpublishedProbe = 0
-		}
 	case "/v1/models":
 		f.models++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"vendor/capability-model","max_model_len":262144}]}`)
+		_, _ = fmt.Fprintf(w, `{"object":"list","data":[{"id":"vendor/capability-model","max_model_len":%d}]}`, f.maxModelLen)
 	case "/v1/completions":
-		f.probes++
-		if f.delayProbeMetrics {
-			f.unpublishedProbe = f.probes
-		} else {
-			f.publishProbeMetrics(f.probes)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"calibration","choices":[{"text":"x","finish_reason":"length"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+		f.completions++
+		w.WriteHeader(http.StatusInternalServerError)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-func (f *v012CapabilityFixture) publishProbeMetrics(probe int) {
-	switch probe {
-	case 1:
-		f.local += 4_000
-		f.prefill += 0.4
-	case 2:
-		f.local += 40_000
-		f.prefill += 4.0
-	default:
-		f.t.Errorf("unexpected startup probe %d", probe)
-	}
-	f.publishedProbes = probe
-}
-
-func (f *v012CapabilityFixture) writeMetrics(w io.Writer) {
-	cacheHit := 0
-	if f.cacheHit {
-		cacheHit = f.publishedProbes
-	}
-	kvUsage := 0.0
-	if f.publishedProbes > 0 {
-		kvUsage = f.postProbeKVUsage
-	}
+func (f *v0125CapabilityFixture) writeMetrics(w io.Writer) {
 	_, _ = fmt.Fprintf(w, `
 vllm:cache_config_info{block_size="64",kv_cache_size_tokens="1000000",num_gpu_blocks="15625"} 1
-vllm:kv_cache_usage_perc %.6f
+vllm:kv_cache_usage_perc 0
 vllm:num_requests_running{model_name="vendor/capability-model",engine="0"} %d
 vllm:num_requests_waiting{model_name="vendor/capability-model",engine="0"} 0
 vllm:num_preemptions_total{model_name="vendor/capability-model",engine="0"} 0
-vllm:generation_tokens_total{model_name="vendor/capability-model",engine="0"} %d
-vllm:prompt_tokens_by_source_total{model_name="vendor/capability-model",engine="0",source="local_compute"} %d
-vllm:prompt_tokens_by_source_total{model_name="vendor/capability-model",engine="0",source="local_cache_hit"} %d
-vllm:request_prefill_time_seconds_count{model_name="vendor/capability-model",engine="0"} %d
-vllm:request_prefill_time_seconds_sum{model_name="vendor/capability-model",engine="0"} %.6f
-`, kvUsage, f.running, f.probes, f.local, cacheHit, f.publishedProbes, f.prefill)
+vllm:generation_tokens_total{model_name="vendor/capability-model",engine="0"} 0
+vllm:prompt_tokens_by_source_total{model_name="vendor/capability-model",engine="0",source="local_compute"} 0
+vllm:prompt_tokens_by_source_total{model_name="vendor/capability-model",engine="0",source="local_cache_hit"} 0
+vllm:request_prefill_time_seconds_count{model_name="vendor/capability-model",engine="0"} 0
+vllm:request_prefill_time_seconds_sum{model_name="vendor/capability-model",engine="0"} 0
+`, f.running)
 }
 
-func v012CapabilityFactoryConfig(upstream string) config {
+func v0125CapabilityFactoryConfig(upstream string) config {
 	cfg := testProxyConfig(upstream)
 	cfg.PredictiveAdmissionMode = "shadow"
 	cfg.PredictiveMetricsURL = upstream + "/metrics"

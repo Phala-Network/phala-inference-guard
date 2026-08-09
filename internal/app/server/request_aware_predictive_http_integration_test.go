@@ -382,7 +382,7 @@ func TestRequestAwareHTTPRegularBurstForwardsWithoutDecodePacingClamp(t *testing
 	}
 }
 
-func TestV0124RequestAwareHTTPBlocksRegularBehindWeightedPrefillAndRecovers(t *testing.T) {
+func TestV0125RequestAwareHTTPBlocksRegularBehindWeightedPrefillAndRecovers(t *testing.T) {
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	weighted := adapter.Decide(
 		context.Background(), "weighted-http-gate", requestAwareAdapterInput(195*1024, 0),

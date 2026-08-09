@@ -181,7 +181,7 @@ func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstAndBlocksShortBehindK
 	}
 }
 
-func TestV0124RequestAwarePolicyTPSIsTelemetryNotAdmissionAuthority(t *testing.T) {
+func TestV0125RequestAwarePolicyTPSIsTelemetryNotAdmissionAuthority(t *testing.T) {
 	policy := newRequestAwareTestPolicy(t)
 	healthy := requestAwareTestInput()
 	healthy.UsedTokens = 2_000
@@ -203,7 +203,7 @@ func TestV0124RequestAwarePolicyTPSIsTelemetryNotAdmissionAuthority(t *testing.T
 	}
 }
 
-func TestV0124RequestAwarePolicyPendingQuiescentProtectsRegular(t *testing.T) {
+func TestV0125RequestAwarePolicyPendingQuiescentProtectsRegular(t *testing.T) {
 	policy := newLargeRequestAwareTestPolicy(t)
 	base := requestAwareTestInput()
 	base.CapacityTokens = 4 * 1024 * 1024
@@ -233,7 +233,7 @@ func TestV0124RequestAwarePolicyPendingQuiescentProtectsRegular(t *testing.T) {
 	}
 }
 
-func TestV0124RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *testing.T) {
+func TestV0125RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *testing.T) {
 	policy := newLargeRequestAwareTestPolicy(t)
 	for _, test := range []struct {
 		name             string

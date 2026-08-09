@@ -10,22 +10,21 @@ import (
 )
 
 type PredictiveAdmissionInput struct {
-	Mode                                     string
-	CapabilityProfileSource                  string
-	CapabilityProfileSchema                  string
-	CapabilityInitializationReason           string
-	CapabilityKVCapacityTokens               int64
-	CapabilityKVBlockSize                    int64
-	CapabilityKVHardLimitTokens              int64
-	CapabilitySafeColdPrefillTokensPerSecond float64
-	CapabilityPrefillRegularTokens           int64
-	CapabilityPrefillExclusiveTokens         int64
-	CapabilityPrefillQuiescentTokens         int64
-	CapabilityPrefillAggregateBudgetTokens   int64
-	Attempts                                 uint64
-	Fits                                     uint64
-	Risks                                    uint64
-	Unknown                                  uint64
+	Mode                                   string
+	CapabilityProfileSource                string
+	CapabilityProfileSchema                string
+	CapabilityInitializationReason         string
+	CapabilityKVCapacityTokens             int64
+	CapabilityKVBlockSize                  int64
+	CapabilityKVHardLimitTokens            int64
+	CapabilityPrefillRegularTokens         int64
+	CapabilityPrefillExclusiveTokens       int64
+	CapabilityPrefillQuiescentTokens       int64
+	CapabilityPrefillAggregateBudgetTokens int64
+	Attempts                               uint64
+	Fits                                   uint64
+	Risks                                  uint64
+	Unknown                                uint64
 	// EnforcedRejects counts HTTP requests for which the proxy emitted an
 	// enforced predictive rejection. Router protection is published earlier
 	// from RouterBackpressure and must never be inferred from this counter.
@@ -145,7 +144,6 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_capability_kv_capacity_tokens %d\n", input.CapabilityKVCapacityTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_kv_block_size %d\n", input.CapabilityKVBlockSize)
 	fmt.Fprintf(w, "pig_predictive_capability_kv_hard_limit_tokens %d\n", input.CapabilityKVHardLimitTokens)
-	fmt.Fprintf(w, "pig_predictive_capability_safe_cold_prefill_tokens_per_second %.6f\n", input.CapabilitySafeColdPrefillTokensPerSecond)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_regular_tokens %d\n", input.CapabilityPrefillRegularTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_exclusive_tokens %d\n", input.CapabilityPrefillExclusiveTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_quiescent_tokens %d\n", input.CapabilityPrefillQuiescentTokens)
@@ -217,7 +215,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 
 func normalizeCapabilityProfileSource(value string) string {
 	switch value {
-	case "explicit", "startup_calibration", "fallback":
+	case "explicit", "automatic":
 		return value
 	default:
 		return "unknown"
@@ -226,7 +224,7 @@ func normalizeCapabilityProfileSource(value string) string {
 
 func normalizeCapabilityInitializationReason(value string) string {
 	switch value {
-	case "explicit_override", "busy_fallback", "metrics_fallback", "metadata_fallback", "geometry_fallback", "probe_fallback", "scale_fallback", "calibrated":
+	case "explicit_override", "metadata", "metadata_fallback":
 		return value
 	default:
 		return "unknown"
