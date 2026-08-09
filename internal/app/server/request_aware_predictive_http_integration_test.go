@@ -382,6 +382,83 @@ func TestRequestAwareHTTPRegularBurstForwardsWithoutDecodePacingClamp(t *testing
 	}
 }
 
+func TestV0124RequestAwareHTTPBlocksRegularBehindWeightedPrefillAndRecovers(t *testing.T) {
+	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
+	weighted := adapter.Decide(
+		context.Background(), "weighted-http-gate", requestAwareAdapterInput(195*1024, 0),
+	)
+	if weighted.Outcome != predictiveAdmissionOutcomeForward || weighted.Reservation == nil ||
+		!weighted.Reservation.MarkForwarded() {
+		t.Fatalf("weighted HTTP setup=%+v", weighted)
+	}
+	var decisionLogs []requestAwareDecisionLogEvent
+	adapter.onDecision = func(event requestAwareDecisionLogEvent) {
+		decisionLogs = append(decisionLogs, event)
+	}
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer backend.Close()
+	srv := newRequestAwareHTTPTestServer(t, backend.URL, adapter, "enforce")
+	defer srv.Close()
+
+	blocked := serveRequestAwareHTTP(t, srv, "regular during weighted Prefill")
+	if blocked.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("regular during weighted HTTP response/backend=%d/%d body=%q, want pre-forward 429/0",
+			blocked.Code, backendCalls, blocked.Body.String())
+	}
+	protected := adapter.PredictiveAdmissionTelemetry()
+	if protected.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
+		protected.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		protected.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
+		!protected.RouterBackpressure.Active || protected.RouterBackpressure.InspectCapacity != 0 ||
+		protected.RequestAware.PendingLongPrefillSequences != 1 ||
+		srv.predictiveEnforcedRejects.Load() != 1 || srv.total429.Load() != 1 {
+		t.Fatalf("regular during weighted HTTP telemetry=%+v enforced=%d total429=%d",
+			protected, srv.predictiveEnforcedRejects.Load(), srv.total429.Load())
+	}
+	if len(decisionLogs) != 1 || !decisionLogs[0].Enforced ||
+		decisionLogs[0].Action != runtimepredictive.RequestAwareSizeProtect ||
+		decisionLogs[0].Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		decisionLogs[0].PressureSource != runtimepredictive.RequestAwarePressurePrefill {
+		t.Fatalf("regular during weighted HTTP decision logs=%+v", decisionLogs)
+	}
+	var rendered strings.Builder
+	srv.writePredictiveAndDynamicMetrics(&rendered)
+	for _, want := range []string{
+		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="regular"} 1`,
+		"pig_predictive_request_aware_pending_long_prefill_sequences 1",
+		"pig_predictive_admission_enforced_rejects_total 1",
+		"pig_predictive_router_backpressure_active 1",
+		"pig_predictive_router_inspect_capacity 0",
+	} {
+		if !strings.Contains(rendered.String(), want) {
+			t.Fatalf("regular during weighted HTTP metrics missing %q\n%s", want, rendered.String())
+		}
+	}
+
+	if !weighted.Reservation.MarkPrefillComplete() {
+		t.Fatal("weighted HTTP Prefill did not complete")
+	}
+	postPrefill := adapter.PredictiveAdmissionTelemetry()
+	if postPrefill.RouterBackpressure.Active || postPrefill.RouterBackpressure.InspectCapacity != 0 ||
+		postPrefill.RequestAware.PendingLongPrefillSequences != 0 {
+		t.Fatalf("post-Prefill HTTP Router recovery=%+v request=%+v",
+			postPrefill.RouterBackpressure, postPrefill.RequestAware)
+	}
+	recovered := serveRequestAwareHTTP(t, srv, "regular immediately after weighted Prefill")
+	if recovered.Code != http.StatusOK || backendCalls != 1 {
+		t.Fatalf("regular after weighted HTTP response/backend=%d/%d body=%q, want 200/1",
+			recovered.Code, backendCalls, recovered.Body.String())
+	}
+	if !weighted.Reservation.Terminate(runtimepredictive.TerminalCompleted) || manager.Snapshot().Reservations != 0 {
+		t.Fatalf("weighted HTTP lifecycle leaked: %+v", manager.Snapshot())
+	}
+}
+
 func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testing.T) {
 	adapter, _ := newRequestAwareHTTPAdapter(t, "enforce")
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{

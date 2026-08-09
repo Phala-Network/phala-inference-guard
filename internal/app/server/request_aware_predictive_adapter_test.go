@@ -99,6 +99,161 @@ func TestRequestAwareAdapterReservationUsesExistingLifecycle(t *testing.T) {
 	}
 }
 
+func TestV0124RequestAwareAdapterProjectsWeightedPrefillBeforeNextRequest(t *testing.T) {
+	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
+	weighted := adapter.Decide(
+		context.Background(), "weighted-router-projection", requestAwareAdapterInput(195*1024, 0),
+	)
+	if weighted.Outcome != predictiveAdmissionOutcomeForward || weighted.Reservation == nil ||
+		!weighted.Reservation.MarkForwarded() {
+		t.Fatalf("weighted setup=%+v, want forwarded reservation", weighted)
+	}
+	protected := adapter.PredictiveAdmissionTelemetry()
+	if !protected.RouterBackpressure.Active || protected.RouterBackpressure.InspectCapacity != 0 ||
+		protected.RequestAware.PendingLongPrefillSequences != 1 {
+		t.Fatalf("weighted Router projection=%+v request=%+v, want active zero-capacity before next request", protected.RouterBackpressure, protected.RequestAware)
+	}
+	if !weighted.Reservation.MarkPrefillComplete() {
+		t.Fatal("weighted Prefill did not complete")
+	}
+	recovered := adapter.PredictiveAdmissionTelemetry()
+	if recovered.RouterBackpressure.Active || recovered.RouterBackpressure.InspectCapacity != 0 ||
+		recovered.RequestAware.PendingLongPrefillSequences != 0 {
+		t.Fatalf("post-Prefill Router projection=%+v request=%+v, want immediate recovery", recovered.RouterBackpressure, recovered.RequestAware)
+	}
+	regular := adapter.Decide(
+		context.Background(), "regular-after-weighted", requestAwareAdapterInput(8*1024, 0),
+	)
+	if regular.Outcome != predictiveAdmissionOutcomeForward || regular.Reservation == nil {
+		t.Fatalf("regular after weighted=%+v, want forward", regular)
+	}
+	if !regular.Reservation.Terminate(runtimepredictive.TerminalCompleted) ||
+		!weighted.Reservation.Terminate(runtimepredictive.TerminalCompleted) ||
+		manager.Snapshot().Reservations != 0 {
+		t.Fatalf("weighted Router lifecycle leaked: %+v", manager.Snapshot())
+	}
+}
+
+func TestV0124RequestAwareAdapterRejectsRegularDuringWeightedPrefill(t *testing.T) {
+	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
+	weighted := adapter.Decide(
+		context.Background(), "weighted-business-gate", requestAwareAdapterInput(195*1024, 0),
+	)
+	if weighted.Reservation == nil || !weighted.Reservation.MarkForwarded() {
+		t.Fatalf("weighted setup=%+v, want forwarded reservation", weighted)
+	}
+	regular := adapter.Decide(
+		context.Background(), "regular-during-weighted", requestAwareAdapterInput(8*1024, 0),
+	)
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if regular.Outcome != predictiveAdmissionOutcomeLoadProtection || regular.Reservation != nil ||
+		telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy {
+		t.Fatalf("regular during weighted decision/telemetry=%+v/%+v, want pre-forward Prefill protection", regular, telemetry.RequestAware)
+	}
+	if !weighted.Reservation.MarkPrefillComplete() {
+		t.Fatal("weighted Prefill did not complete")
+	}
+	postPrefill := adapter.PredictiveAdmissionTelemetry()
+	if postPrefill.RouterBackpressure.Active || postPrefill.RouterBackpressure.InspectCapacity != 0 {
+		t.Fatalf("post-Prefill Router projection=%+v, want immediate recovery after represented 429", postPrefill.RouterBackpressure)
+	}
+	recovery := adapter.Decide(
+		context.Background(), "regular-immediate-recovery", requestAwareAdapterInput(8*1024, 0),
+	)
+	if recovery.Outcome != predictiveAdmissionOutcomeForward || recovery.Reservation == nil {
+		t.Fatalf("regular immediate recovery=%+v, want forward", recovery)
+	}
+	if !recovery.Reservation.Terminate(runtimepredictive.TerminalCompleted) ||
+		!weighted.Reservation.Terminate(runtimepredictive.TerminalCompleted) ||
+		manager.Snapshot().Reservations != 0 {
+		t.Fatalf("weighted business lifecycle leaked: %+v", manager.Snapshot())
+	}
+}
+
+func TestV0124RequestAwareAdapterPrefillCompletionSupersedesRecentRejectProjection(t *testing.T) {
+	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
+	now := time.Unix(100, 0)
+	adapter.now = func() time.Time { return now }
+	weighted := adapter.Decide(
+		context.Background(), "weighted-reject-generation", requestAwareAdapterInput(195*1024, 0),
+	)
+	if weighted.Outcome != predictiveAdmissionOutcomeForward || weighted.Reservation == nil ||
+		!weighted.Reservation.MarkForwarded() {
+		t.Fatalf("weighted reject-generation setup=%+v", weighted)
+	}
+	rejected := adapter.Decide(
+		context.Background(), "oversized-during-weighted", requestAwareAdapterInput(4*1024*1024, 0),
+	)
+	if rejected.Outcome != predictiveAdmissionOutcomeLoadProtection || rejected.Reservation != nil {
+		t.Fatalf("reject-generation decision=%+v, want represented load protection", rejected)
+	}
+	if protected := adapter.PredictiveAdmissionTelemetry(); !protected.RouterBackpressure.Active {
+		t.Fatalf("recent reject was not projected before lifecycle recovery: %+v", protected.RouterBackpressure)
+	}
+	if !weighted.Reservation.MarkPrefillComplete() {
+		t.Fatal("weighted reject-generation Prefill did not complete")
+	}
+	recovered := adapter.PredictiveAdmissionTelemetry()
+	if recovered.RouterBackpressure.Active || recovered.RouterBackpressure.InspectCapacity != 0 {
+		t.Fatalf("post-Prefill Router projection=%+v, want lifecycle state change to supersede stale reject hold", recovered.RouterBackpressure)
+	}
+	if !weighted.Reservation.Terminate(runtimepredictive.TerminalCompleted) || manager.Snapshot().Reservations != 0 {
+		t.Fatalf("weighted reject-generation lifecycle leaked: %+v", manager.Snapshot())
+	}
+}
+
+func TestV0124RequestAwareAdapterTerminalAndRebaseSupersedeRecentRejectProjection(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		release func(*runtimepredictive.Manager, predictiveShadowReservation) bool
+	}{
+		{
+			name: "terminal",
+			release: func(_ *runtimepredictive.Manager, reservation predictiveShadowReservation) bool {
+				return reservation.Terminate(runtimepredictive.TerminalClientCancelled)
+			},
+		},
+		{
+			name: "epoch rebase",
+			release: func(manager *runtimepredictive.Manager, _ predictiveShadowReservation) bool {
+				return manager.RebaseEpoch(domainpredictive.VirtualState{}) == nil
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
+			now := time.Unix(100, 0)
+			adapter.now = func() time.Time { return now }
+			weighted := adapter.Decide(
+				context.Background(), "weighted-"+test.name, requestAwareAdapterInput(195*1024, 0),
+			)
+			if weighted.Reservation == nil || !weighted.Reservation.MarkForwarded() {
+				t.Fatalf("weighted setup=%+v", weighted)
+			}
+			rejected := adapter.Decide(
+				context.Background(), "regular-"+test.name, requestAwareAdapterInput(8*1024, 0),
+			)
+			if rejected.Outcome != predictiveAdmissionOutcomeLoadProtection || rejected.Reservation != nil {
+				t.Fatalf("regular during weighted=%+v, want represented load protection", rejected)
+			}
+			if protected := adapter.PredictiveAdmissionTelemetry(); !protected.RouterBackpressure.Active ||
+				protected.RouterBackpressure.InspectCapacity != 0 {
+				t.Fatalf("setup Router projection=%+v, want hard protection", protected.RouterBackpressure)
+			}
+			if !test.release(manager, weighted.Reservation) {
+				t.Fatalf("%s did not release weighted reservation", test.name)
+			}
+			recovered := adapter.PredictiveAdmissionTelemetry()
+			if recovered.RouterBackpressure.Active || recovered.RouterBackpressure.InspectCapacity != 0 ||
+				manager.Snapshot().Reservations != 0 {
+				t.Fatalf("post-%s Router/Manager=%+v/%+v, want immediate open without leak",
+					test.name, recovered.RouterBackpressure, manager.Snapshot())
+			}
+		})
+	}
+}
+
 func TestRequestAwareAdapterFreshCompletionSnapshotDoesNotMislockIdleBackend(t *testing.T) {
 	manager := runtimepredictive.NewManager("request-aware-http-test", domainpredictive.VirtualState{
 		PhysicalKVUpper:     2_000,
@@ -368,6 +523,28 @@ func TestRequestAwareAdapterTelemetryPublishesHardProtectionWithZeroInspectCapac
 		!snapshot.RouterBackpressure.Active || snapshot.RouterBackpressure.InspectCapacity != 0 ||
 		snapshot.RouterBackpressure.Reason != domainpredictive.ReasonKVOverBudget {
 		t.Fatalf("hard protection telemetry request=%+v Router=%+v", snapshot.RequestAware, snapshot.RouterBackpressure)
+	}
+}
+
+func TestRequestAwareAdapterCurrentHardProtectionSupersedesEqualStrengthRecentReject(t *testing.T) {
+	now := time.Unix(100, 0)
+	adapter := &requestAwarePredictiveAdapter{
+		attempts: predictiveAttemptSnapshot{
+			LastRejectReason: domainpredictive.ReasonMetricsStale,
+			LastRejectSource: runtimepredictive.PredictionSourceUnavailable,
+			LastRejectScope:  predictiveProtectionScopeAvailability,
+			LastRejectAt:     now,
+		},
+	}
+	current := requestAwareHardRouterBackpressure(
+		domainpredictive.ReasonKVOverBudget,
+		runtimepredictive.PredictionSourceDeterministic,
+		predictiveProtectionScopeLoad,
+	)
+	got := adapter.transitionRouterBackpressureLocked(now, current)
+	if got.Scope != current.Scope || got.Reason != current.Reason || got.Source != current.Source ||
+		!got.Active || got.InspectCapacity != 0 {
+		t.Fatalf("current hard projection=%+v, want current equal-strength verdict=%+v to supersede recent availability verdict", got, current)
 	}
 }
 

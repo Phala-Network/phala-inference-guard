@@ -29,14 +29,15 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		"preemption": false, "stale-recovery": false,
 		"small-large-output": false, "large-small-output": false,
 		"cancel": false, "short-completion": false, "long-streaming": false,
-		"prefill-weighted-budget": false, "prefill-long-singleton": false,
+		"prefill-weighted-budget": false, "prefill-weighted-regular-gate-recovery": false,
+		"prefill-long-singleton":                          false,
 		"prefill-live-weighted-upper-240k-estimate-99k":   false,
 		"prefill-live-exclusive-upper-690k-estimate-285k": false,
 		"prefill-quiescent-boundary-busy-512k":            false,
 		"prefill-quiescent-idle-650k":                     false, "prefill-quiescent-busy-650k": false,
 		"prefill-quiescent-cancel-recovery": false, "prefill-quiescent-exclusive-recovery": false,
 	}
-	wantPolicies := []PolicyName{"no_admission", "v0.12.2", "v0.12.3"}
+	wantPolicies := []PolicyName{"no_admission", "v0.12.2", "v0.12.4"}
 	for _, scenario := range suite.Scenarios {
 		if _, ok := required[scenario.Name]; ok {
 			required[scenario.Name] = true
@@ -54,7 +55,7 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 	}
 }
 
-func TestV0123SimulationUsesAtomicResourceAndPrefillGatesWithoutObservationCredit(t *testing.T) {
+func TestV0124SimulationUsesAtomicResourceAndPrefillGatesWithoutObservationCredit(t *testing.T) {
 	suite, err := RunSuite()
 	if err != nil {
 		t.Fatalf("RunSuite: %v", err)
@@ -63,17 +64,18 @@ func TestV0123SimulationUsesAtomicResourceAndPrefillGatesWithoutObservationCredi
 		admitted int
 		rejected int
 	}{
-		"pre-poll-burst":                   {admitted: 5, rejected: 0},
-		"prefill-regular-multimodal-burst": {admitted: 32, rejected: 8},
+		"pre-poll-burst":                         {admitted: 5, rejected: 0},
+		"prefill-regular-multimodal-burst":       {admitted: 32, rejected: 8},
+		"prefill-weighted-regular-gate-recovery": {admitted: 2, rejected: 1},
 	}
 	for _, scenario := range suite.Scenarios {
 		expected, ok := want[scenario.Name]
 		if !ok {
 			continue
 		}
-		metrics, present := scenario.Policies[PolicyName("v0.12.3")]
+		metrics, present := scenario.Policies[PolicyName("v0.12.4")]
 		if !present || metrics.Admitted != expected.admitted || metrics.Rejected != expected.rejected {
-			t.Fatalf("scenario %s v0.12.3=%+v present=%t, want admitted/rejected=%d/%d",
+			t.Fatalf("scenario %s v0.12.4=%+v present=%t, want admitted/rejected=%d/%d",
 				scenario.Name, metrics, present, expected.admitted, expected.rejected)
 		}
 		delete(want, scenario.Name)
@@ -98,11 +100,11 @@ func TestDeterministicRequestAwareGoodputSuiteIsReplayable(t *testing.T) {
 }
 
 func TestDeterministicRequestAwareGoodputSuiteIsPolicyOrderIndependent(t *testing.T) {
-	forward, err := runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0123})
+	forward, err := runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0124})
 	if err != nil {
 		t.Fatalf("forward policy order: %v", err)
 	}
-	reverse, err := runSuite([]PolicyName{PolicyV0123, PolicyV0122, PolicyNoAdmission})
+	reverse, err := runSuite([]PolicyName{PolicyV0124, PolicyV0122, PolicyNoAdmission})
 	if err != nil {
 		t.Fatalf("reverse policy order: %v", err)
 	}
@@ -170,7 +172,7 @@ func TestDeterministicRequestAwareGoodputSuiteMeetsRegisteredAcceptance(t *testi
 			"scenario=%s baseline=%+v candidate=%+v",
 			scenario.Name,
 			scenario.Policies[PolicyV0122],
-			scenario.Policies[PolicyV0123],
+			scenario.Policies[PolicyV0124],
 		)
 	}
 	if err := ValidateAcceptance(suite); err != nil {
@@ -231,25 +233,26 @@ func TestValidateAcceptanceRejectsBrokenRequestAccounting(t *testing.T) {
 	}
 }
 
-func TestSimulationCandidateSizeAwareWorkConservationContracts(t *testing.T) {
+func TestSimulationCandidateSizeAwareAdmissionContracts(t *testing.T) {
 	suite, err := RunSuite()
 	if err != nil {
 		t.Fatalf("RunSuite: %v", err)
 	}
 	want := map[string][2]int{
-		"low-flow-first-large":                 {2, 0},
-		"prefill-weighted-budget":              {1, 1},
-		"prefill-long-singleton":               {2, 1},
-		"prefill-quiescent-idle-650k":          {1, 0},
-		"prefill-quiescent-busy-650k":          {0, 1},
-		"prefill-quiescent-exclusive-recovery": {3, 1},
+		"low-flow-first-large":                   {2, 0},
+		"prefill-weighted-budget":                {1, 1},
+		"prefill-weighted-regular-gate-recovery": {2, 1},
+		"prefill-long-singleton":                 {1, 2},
+		"prefill-quiescent-idle-650k":            {1, 0},
+		"prefill-quiescent-busy-650k":            {0, 1},
+		"prefill-quiescent-exclusive-recovery":   {2, 2},
 	}
 	for _, scenario := range suite.Scenarios {
 		contract, exists := want[scenario.Name]
 		if !exists {
 			continue
 		}
-		candidate := scenario.Policies[PolicyV0123]
+		candidate := scenario.Policies[PolicyV0124]
 		if candidate.Admitted != contract[0] || candidate.Rejected != contract[1] {
 			t.Fatalf(
 				"scenario %s admitted/rejected=%d/%d want=%d/%d",
@@ -279,7 +282,7 @@ func acceptanceSuite(candidate Metrics) Suite {
 			Policies: map[PolicyName]Metrics{
 				PolicyNoAdmission: baseline,
 				PolicyV0122:       baseline,
-				PolicyV0123:       candidate,
+				PolicyV0124:       candidate,
 			},
 		}},
 	}

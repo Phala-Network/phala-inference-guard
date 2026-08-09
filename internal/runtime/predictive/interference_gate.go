@@ -137,8 +137,10 @@ func (g *InterferenceGate) protectionReason(
 	}
 	switch class {
 	case RequestAwarePrefillRegular:
-		return RequestAwareReasonPrefillBudget,
-			input.PendingLongPrefillSequences == 0 && postAdmitTokens > g.config.PrefillAggregateBudgetTokens
+		if input.PendingLongPrefillSequences > 0 {
+			return RequestAwareReasonPrefillBusy, true
+		}
+		return RequestAwareReasonPrefillBudget, postAdmitTokens > g.config.PrefillAggregateBudgetTokens
 	case RequestAwarePrefillWeighted:
 		return RequestAwareReasonPrefillBudget, postAdmitTokens > g.config.PrefillAggregateBudgetTokens
 	case RequestAwarePrefillExclusive:

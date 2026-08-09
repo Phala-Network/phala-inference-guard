@@ -69,11 +69,26 @@ func TestRequestAwareManagerUsesExistingTerminalLifecycle(t *testing.T) {
 	result := manager.DecideRequestAwareAndReserve(
 		time.Unix(1, 0), "lifecycle", requestAwareManagerCost(500, 100), 500, policy, requestAwareManagerInput(),
 	)
-	if !result.Reserved || !manager.MarkForwarded("lifecycle") || !manager.Terminate("lifecycle", TerminalCompleted) {
+	if !result.Reserved || !result.DecisionManagerSequenceValid ||
+		result.DecisionManagerSequence != manager.EventSequence() {
+		t.Fatalf("request-aware decision sequence=%+v manager=%d", result, manager.EventSequence())
+	}
+	if !manager.MarkForwarded("lifecycle") || !manager.Terminate("lifecycle", TerminalCompleted) {
 		t.Fatalf("request-aware lifecycle result=%+v", result)
 	}
 	if got := manager.Snapshot().Reservations; got != 0 {
 		t.Fatalf("terminal reservation count=%d, want 0", got)
+	}
+}
+
+func TestNilRequestAwareManagerDoesNotClaimSequenceAuthority(t *testing.T) {
+	var manager *Manager
+	result := manager.DecideRequestAware(
+		time.Unix(1, 0), "nil-manager", requestAwareManagerCost(500, 100), 500,
+		newRequestAwareTestPolicy(t), requestAwareManagerInput(),
+	)
+	if result.Decision.Reason != RequestAwareReasonUnavailable || result.DecisionManagerSequenceValid {
+		t.Fatalf("nil manager result=%+v, want unavailable without sequence authority", result)
 	}
 }
 
@@ -183,11 +198,11 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 		short := manager.DecideRequestAwareAndReserve(
 			time.Unix(3, 0), "short-during-divergent-exclusive", requestAwareManagerCost(32*kib, 0), 32*kib, policy, idle,
 		)
-		if !long.Reserved || long.Decision.PrefillClass != RequestAwarePrefillExclusive || !short.Reserved {
-			t.Fatalf("divergent exclusive/short decisions long=%+v short=%+v", long, short)
+		if !long.Reserved || long.Decision.PrefillClass != RequestAwarePrefillExclusive || short.Reserved ||
+			short.Decision.Action != RequestAwareSizeProtect || short.Decision.Reason != RequestAwareReasonPrefillBusy {
+			t.Fatalf("divergent exclusive/short decisions long=%+v short=%+v, want regular protection", long, short)
 		}
-		if !manager.Terminate("short-during-divergent-exclusive", TerminalExpired) ||
-			!manager.Terminate("divergent-exclusive", TerminalExpired) {
+		if !manager.Terminate("divergent-exclusive", TerminalExpired) {
 			t.Fatal("divergent exclusive lifecycle did not terminate")
 		}
 	})
@@ -459,7 +474,134 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 		}
 	})
 
-	t.Run("one long prefill while short remains work conserving", func(t *testing.T) {
+	t.Run("weighted prefill blocks regular until prefill complete", func(t *testing.T) {
+		manager := NewManager("request-aware-test", domain.VirtualState{})
+		weighted := manager.DecideRequestAwareAndReserve(
+			time.Unix(2, 0), "weighted-qos", requestAwareManagerCost(195*kib, 0), 195*kib, policy, input,
+		)
+		if !weighted.Reserved || !manager.MarkForwarded("weighted-qos") {
+			t.Fatalf("weighted setup=%+v, want forwarded reservation", weighted)
+		}
+		pending := manager.CurrentRequestAwarePending(policy)
+		if pending.LongPrefillSequences != 1 || pending.PrefillSequences != 1 {
+			t.Fatalf("weighted pending=%+v, want one known long Prefill", pending)
+		}
+		blocked := manager.DecideRequestAwareAndReserve(
+			time.Unix(2, 0), "regular-during-weighted", requestAwareManagerCost(8*kib, 0), 8*kib, policy, input,
+		)
+		if blocked.Reserved || blocked.Decision.Action != RequestAwareSizeProtect ||
+			blocked.Decision.Reason != RequestAwareReasonPrefillBusy {
+			t.Fatalf("regular during weighted=%+v, want pre-forward Prefill protection", blocked)
+		}
+		if !manager.MarkPrefillComplete("weighted-qos") {
+			t.Fatal("weighted Prefill did not complete")
+		}
+		recovered := manager.DecideRequestAwareAndReserve(
+			time.Unix(2, 0), "regular-after-weighted", requestAwareManagerCost(8*kib, 0), 8*kib, policy, input,
+		)
+		if !recovered.Reserved || recovered.Decision.Action != RequestAwareAdmit {
+			t.Fatalf("regular after weighted=%+v, want immediate recovery", recovered)
+		}
+		if !manager.Terminate("regular-after-weighted", TerminalExpired) ||
+			!manager.Terminate("weighted-qos", TerminalCompleted) {
+			t.Fatal("weighted QoS lifecycle did not terminate")
+		}
+	})
+
+	t.Run("weighted prefill gate releases across terminal causes", func(t *testing.T) {
+		causes := []TerminalCause{
+			TerminalCompleted,
+			TerminalLocalQoSReject,
+			TerminalClientCancelled,
+			TerminalClientDisconnected,
+			TerminalUpstreamFailure,
+			TerminalTimeout,
+			TerminalExpired,
+		}
+		for _, cause := range causes {
+			t.Run(string(cause), func(t *testing.T) {
+				manager := NewManager("request-aware-test", domain.VirtualState{})
+				requestID := "weighted-" + string(cause)
+				weighted := manager.DecideRequestAwareAndReserve(
+					time.Unix(3, 0), requestID, requestAwareManagerCost(195*kib, 0), 195*kib, policy, input,
+				)
+				if !weighted.Reserved || !manager.MarkForwarded(requestID) {
+					t.Fatalf("weighted setup cause=%s result=%+v", cause, weighted)
+				}
+				if pending := manager.CurrentRequestAwarePending(policy); pending.LongPrefillSequences != 1 {
+					t.Fatalf("weighted pending cause=%s snapshot=%+v, want one known long Prefill", cause, pending)
+				}
+				if !manager.Terminate(requestID, cause) || manager.Terminate(requestID, cause) {
+					t.Fatalf("weighted terminal cause=%s did not release exact once", cause)
+				}
+				if pending := manager.CurrentRequestAwarePending(policy); pending.LongPrefillSequences != 0 {
+					t.Fatalf("weighted terminal cause=%s leaked gate: %+v", cause, pending)
+				}
+				probeID := requestID + "-regular"
+				probe := manager.DecideRequestAwareAndReserve(
+					time.Unix(4, 0), probeID, requestAwareManagerCost(8*kib, 0), 8*kib, policy, input,
+				)
+				if !probe.Reserved || probe.Decision.Action != RequestAwareAdmit ||
+					!manager.Terminate(probeID, TerminalExpired) {
+					t.Fatalf("post-terminal regular cause=%s result=%+v", cause, probe)
+				}
+			})
+		}
+	})
+
+	t.Run("unforwarded weighted rollback releases gate", func(t *testing.T) {
+		manager := NewManager("request-aware-test", domain.VirtualState{})
+		weighted := manager.DecideRequestAwareAndReserve(
+			time.Unix(5, 0), "weighted-rollback", requestAwareManagerCost(195*kib, 0), 195*kib, policy, input,
+		)
+		if !weighted.Reserved {
+			t.Fatalf("weighted rollback setup=%+v", weighted)
+		}
+		if pending := manager.CurrentRequestAwarePending(policy); pending.LongPrefillSequences != 1 {
+			t.Fatalf("unforwarded weighted pending=%+v, want one atomic reservation", pending)
+		}
+		if !manager.Terminate("weighted-rollback", TerminalExpired) {
+			t.Fatal("unforwarded weighted rollback did not terminate")
+		}
+		regular := manager.DecideRequestAwareAndReserve(
+			time.Unix(6, 0), "regular-after-rollback", requestAwareManagerCost(8*kib, 0), 8*kib, policy, input,
+		)
+		if !regular.Reserved || regular.Decision.Action != RequestAwareAdmit ||
+			!manager.Terminate("regular-after-rollback", TerminalExpired) {
+			t.Fatalf("regular after rollback=%+v, want immediate recovery", regular)
+		}
+	})
+
+	t.Run("weighted epoch rebase clears old gate", func(t *testing.T) {
+		manager := NewManager("request-aware-test", domain.VirtualState{})
+		weighted := manager.DecideRequestAwareAndReserve(
+			time.Unix(7, 0), "weighted-old-epoch", requestAwareManagerCost(195*kib, 0), 195*kib, policy, input,
+		)
+		if !weighted.Reserved || !manager.MarkForwarded("weighted-old-epoch") {
+			t.Fatalf("weighted epoch setup=%+v", weighted)
+		}
+		if pending := manager.CurrentRequestAwarePending(policy); pending.LongPrefillSequences != 1 {
+			t.Fatalf("weighted old epoch pending=%+v, want one known long Prefill", pending)
+		}
+		if !manager.InvalidateEpoch() {
+			t.Fatal("weighted epoch invalidation did not close intake")
+		}
+		if err := manager.RebaseEpoch(domain.VirtualState{}); err != nil {
+			t.Fatalf("weighted epoch rebase: %v", err)
+		}
+		if pending := manager.CurrentRequestAwarePending(policy); pending.LongPrefillSequences != 0 {
+			t.Fatalf("weighted rebased epoch leaked gate: %+v", pending)
+		}
+		regular := manager.DecideRequestAwareAndReserve(
+			time.Unix(8, 0), "regular-after-rebase", requestAwareManagerCost(8*kib, 0), 8*kib, policy, input,
+		)
+		if !regular.Reserved || regular.Decision.Action != RequestAwareAdmit ||
+			!manager.Terminate("regular-after-rebase", TerminalExpired) {
+			t.Fatalf("regular after weighted epoch rebase=%+v", regular)
+		}
+	})
+
+	t.Run("one long prefill blocks regular until release", func(t *testing.T) {
 		manager := NewManager("request-aware-test", domain.VirtualState{})
 		first := manager.DecideRequestAwareAndReserve(
 			time.Unix(2, 0), "long-first", requestAwareManagerCost(300*kib, 0), 300*kib, policy, input,
@@ -476,10 +618,11 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 		short := manager.DecideRequestAwareAndReserve(
 			time.Unix(2, 0), "short-during-long", requestAwareManagerCost(32*kib, 0), 32*kib, policy, input,
 		)
-		if !short.Reserved {
-			t.Fatalf("32K request during 300K prefill=%+v, want ordinary admission", short)
+		if short.Reserved || short.Decision.Action != RequestAwareSizeProtect ||
+			short.Decision.Reason != RequestAwareReasonPrefillBusy {
+			t.Fatalf("32K request during 300K prefill=%+v, want known-Prefill protection", short)
 		}
-		if !manager.Terminate("short-during-long", TerminalExpired) || !manager.Terminate("long-first", TerminalExpired) {
+		if !manager.Terminate("long-first", TerminalExpired) {
 			t.Fatal("long/short reservations did not terminate")
 		}
 	})
@@ -495,8 +638,9 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 		regular := manager.DecideRequestAwareAndReserve(
 			time.Unix(3, 0), "small-during-quiescent", requestAwareManagerCost(8*kib, 0), 8*kib, policy, input,
 		)
-		if !regular.Reserved || regular.Decision.Action != RequestAwareAdmit {
-			t.Fatalf("small during 650K prefill=%+v, want bounded work-conserving admission", regular)
+		if regular.Reserved || regular.Decision.Action != RequestAwareSizeProtect ||
+			regular.Decision.Reason != RequestAwareReasonPrefillBusy {
+			t.Fatalf("small during 650K prefill=%+v, want known-Prefill protection", regular)
 		}
 		if !manager.MarkPrefillComplete("quiescent") {
 			t.Fatal("quiescent prefill did not complete")
@@ -519,7 +663,6 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 			t.Fatalf("small after 650K prefill completion=%+v, want immediate recovery", afterPrefill)
 		}
 		if !manager.Terminate("small-after-prefill", TerminalExpired) ||
-			!manager.Terminate("small-during-quiescent", TerminalExpired) ||
 			!manager.Terminate("quiescent", TerminalExpired) {
 			t.Fatal("quiescent lifecycle reservations did not terminate")
 		}

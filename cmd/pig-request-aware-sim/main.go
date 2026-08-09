@@ -29,7 +29,7 @@ func buildSimulationReport() (simulationReport, error) {
 		Suite:       suite,
 		NoAdmission: suite.Aggregate(requestaware.PolicyNoAdmission),
 		V0122:       suite.Aggregate(requestaware.PolicyV0122),
-		Candidate:   suite.Aggregate(requestaware.PolicyV0123),
+		Candidate:   suite.Aggregate(requestaware.PolicyV0124),
 		Acceptance:  "passed",
 	}, nil
 }

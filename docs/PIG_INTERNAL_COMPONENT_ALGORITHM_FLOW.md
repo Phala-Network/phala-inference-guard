@@ -1,6 +1,6 @@
-# PIG v0.12.3 Internal Algorithm Flow
+# PIG v0.12.4 Internal Algorithm Flow
 
-PIG v0.12.3 has one admission architecture and one upstream. Components are
+PIG v0.12.4 has one admission architecture and one upstream. Components are
 separated by ownership so request parsing, backend observation, policy,
 reservation lifecycle, proxying, and telemetry do not mutate each other's
 state.
@@ -45,12 +45,14 @@ The policy uses request cost, not a global request count. Under the same current
 pressure:
 
 - a regular request can fit;
+- a regular request is protected while a known local weighted-or-larger
+  Prefill is pending, but not behind another regular Prefill;
 - a weighted request consumes more aggregate Prefill budget;
 - an exclusive request requires no competing long Prefill;
 - a quiescent request requires a sufficiently idle backend;
 - any request exceeding hard post-admit KV is protected.
 
-Generation TPS remains observation-only diagnostic data in v0.12.3. It is used
+Generation TPS remains observation-only diagnostic data in v0.12.4. It is used
 to evaluate QoS in controlled GPU experiments, but it does not authorize or
 reject a request. A future Decode envelope requires causal Router-disabled A/B
 evidence rather than a synthetic per-observation credit.
@@ -105,9 +107,15 @@ internally contradictory scrape.
 Current-state inspection remains the primary Router projection. When an
 enforced load rejection is request-specific and a one-block inspect request
 still fits, the projection retains selective inspect capacity one for a bounded
-1500 ms from the original rejection. Stronger current-state capacity zero wins.
+1500 ms from the original rejection. A current verdict wins when it is equally
+restrictive; a recent verdict overrides it only when the recent verdict is
+strictly more restrictive.
 The bounded projection changes no admission input, reservation, or observer
-state and clears without another business request.
+state and clears without another business request. A Manager-mediated reject
+also records its Manager sequence; Prefill completion, terminal release, or
+epoch rebase immediately supersedes that hold. Adapter-local stale or
+unavailable rejects retain the time-bound fallback because they have no
+authoritative Manager sequence.
 
 ## Ownership map
 
@@ -118,7 +126,7 @@ state and clears without another business request.
 | `internal/runtime/predictive/interference_gate.go` | Pure class-aware Prefill interference |
 | `internal/runtime/predictive/request_aware_policy.go` | Two-gate decision composition |
 | `internal/runtime/predictive/manager.go` | Atomic reservation and reconciliation state |
-| `internal/app/server/predictive_vllm_observer.go` | Coherent vLLM observation, freshness, cooldown, epoch detection |
+| `internal/app/server/predictive_vllm_observer.go` | Coherent vLLM observation, freshness, one-sample preemption signal, epoch detection |
 | `internal/app/server/request_aware_predictive_adapter.go` | HTTP-facing decision translation and telemetry |
 | `internal/app/server/proxy.go` | Protocol handling, forward/terminal transaction |
 | `internal/app/server/metrics.go` | Single-snapshot observability projection |

@@ -143,7 +143,7 @@ func TestRequestAwarePolicyPrefillBoundaries(t *testing.T) {
 	}
 }
 
-func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstWithoutBlockingShortBehindExclusive(t *testing.T) {
+func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstAndBlocksShortBehindKnownLong(t *testing.T) {
 	policy := newLargeRequestAwareTestPolicy(t)
 	regularBurst := requestAwareTestInput()
 	regularBurst.CapacityTokens = 4 * 1024 * 1024
@@ -176,12 +176,12 @@ func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstWithoutBlockingShortB
 	withExclusive.PendingPrefillTokens = 300 * 1024
 	withExclusive.PendingLongPrefillSequences = 1
 	short := policy.Evaluate(withExclusive)
-	if short.Action != RequestAwareAdmit || short.Reason != RequestAwareReasonOpen {
-		t.Fatalf("short behind exclusive decision=%+v, want work-conserving admit/open", short)
+	if short.Action != RequestAwareSizeProtect || short.Reason != RequestAwareReasonPrefillBusy {
+		t.Fatalf("short behind exclusive decision=%+v, want known-Prefill protection", short)
 	}
 }
 
-func TestV0123RequestAwarePolicyTPSIsTelemetryNotAdmissionAuthority(t *testing.T) {
+func TestV0124RequestAwarePolicyTPSIsTelemetryNotAdmissionAuthority(t *testing.T) {
 	policy := newRequestAwareTestPolicy(t)
 	healthy := requestAwareTestInput()
 	healthy.UsedTokens = 2_000
@@ -203,7 +203,7 @@ func TestV0123RequestAwarePolicyTPSIsTelemetryNotAdmissionAuthority(t *testing.T
 	}
 }
 
-func TestV0123RequestAwarePolicyPendingQuiescentIsCandidateClassAware(t *testing.T) {
+func TestV0124RequestAwarePolicyPendingQuiescentProtectsRegular(t *testing.T) {
 	policy := newLargeRequestAwareTestPolicy(t)
 	base := requestAwareTestInput()
 	base.CapacityTokens = 4 * 1024 * 1024
@@ -218,8 +218,8 @@ func TestV0123RequestAwarePolicyPendingQuiescentIsCandidateClassAware(t *testing
 	regular.EstimatedPrefillTokens = 8 * 1024
 	regular.RequestReservedTokens = 16 * 1024
 	regularDecision := policy.Evaluate(regular)
-	if regularDecision.Action != RequestAwareAdmit {
-		t.Fatalf("regular request behind quiescent=%+v, want work-conserving admission", regularDecision)
+	if regularDecision.Action != RequestAwareSizeProtect || regularDecision.Reason != RequestAwareReasonPrefillBusy {
+		t.Fatalf("regular request behind quiescent=%+v, want known-Prefill protection", regularDecision)
 	}
 
 	exclusive := base
@@ -230,6 +230,49 @@ func TestV0123RequestAwarePolicyPendingQuiescentIsCandidateClassAware(t *testing
 	if exclusiveDecision.Action != RequestAwareSizeProtect ||
 		exclusiveDecision.Reason != RequestAwareReasonPrefillExclusive {
 		t.Fatalf("exclusive request behind quiescent=%+v, want size protection", exclusiveDecision)
+	}
+}
+
+func TestV0124RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *testing.T) {
+	policy := newLargeRequestAwareTestPolicy(t)
+	for _, test := range []struct {
+		name             string
+		pendingTokens    int64
+		pendingQuiescent int
+	}{
+		{name: "weighted", pendingTokens: 195 * 1024},
+		{name: "exclusive", pendingTokens: 300 * 1024},
+		{name: "quiescent", pendingTokens: 650 * 1024, pendingQuiescent: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := requestAwareTestInput()
+			input.CapacityTokens = 4 * 1024 * 1024
+			input.PendingPrefillSequences = 1
+			input.PendingPrefillTokens = test.pendingTokens
+			input.PendingLongPrefillSequences = 1
+			input.PendingQuiescentPrefillSequences = test.pendingQuiescent
+			input.SelectionInputTokens = 8 * 1024
+			input.EstimatedPrefillTokens = 8 * 1024
+			input.RequestReservedTokens = 16 * 1024
+
+			decision := policy.Evaluate(input)
+			if decision.Action != RequestAwareSizeProtect ||
+				decision.Reason != RequestAwareReasonPrefillBusy ||
+				decision.PressureSource != RequestAwarePressurePrefill {
+				t.Fatalf("regular behind %s Prefill=%+v, want size_protect/prefill_busy", test.name, decision)
+			}
+		})
+	}
+
+	regularBehindRegular := requestAwareTestInput()
+	regularBehindRegular.CapacityTokens = 4 * 1024 * 1024
+	regularBehindRegular.PendingPrefillSequences = 1
+	regularBehindRegular.PendingPrefillTokens = 32 * 1024
+	regularBehindRegular.SelectionInputTokens = 8 * 1024
+	regularBehindRegular.EstimatedPrefillTokens = 8 * 1024
+	regularBehindRegular.RequestReservedTokens = 16 * 1024
+	if decision := policy.Evaluate(regularBehindRegular); decision.Action != RequestAwareAdmit {
+		t.Fatalf("regular behind regular Prefill=%+v, want work-conserving admission", decision)
 	}
 }
 

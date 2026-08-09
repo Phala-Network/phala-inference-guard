@@ -57,8 +57,10 @@ func TestInterferenceGateIsCandidateClassAware(t *testing.T) {
 	regular := base
 	regular.EstimatedPrefillTokens = 63
 	regularResult := gate.Evaluate(regular)
-	if !regularResult.Admit || regularResult.PrefillClass != RequestAwarePrefillRegular {
-		t.Fatalf("regular behind quiescent result=%+v, want admit", regularResult)
+	if regularResult.Admit || regularResult.HardProtection ||
+		regularResult.Reason != RequestAwareReasonPrefillBusy ||
+		regularResult.PrefillClass != RequestAwarePrefillRegular {
+		t.Fatalf("regular behind quiescent result=%+v, want bounded Prefill protection", regularResult)
 	}
 	exclusive := base
 	exclusive.EstimatedPrefillTokens = 256

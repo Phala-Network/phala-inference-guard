@@ -1,11 +1,15 @@
-# PIG v0.12.3 Evidence-First QoS-Constrained Goodput Plan
+# PIG v0.12.4 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active execution plan, Phase C image published 2026-08-09
+Status: active execution plan, v0.12.4 dedicated-CVM matrix pending
 
-This is the only execution plan for PIG v0.12.3. Older v0.12 plans and the
-superseded candidates are historical evidence, not required behavior. Detailed
-builder commands, complete logs, retries, and live observations belong in
-ignored evidence artifacts; their authoritative identities are recorded here.
+This is the only execution plan for the active PIG v0.12.4 remediation. Sections
+8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
+history; section 25 and later supersede that candidate. Section 29 supersedes
+every earlier instruction to use the shared builder or the old `use1-cb` CVM as
+the active development environment. Older v0.12 plans and superseded candidates
+are evidence, not required behavior. Detailed commands, complete logs, retries,
+and live observations belong in ignored evidence artifacts; their authoritative
+identities are recorded here.
 
 ## 1. Goal
 
@@ -18,14 +22,17 @@ feedback may update the next observation used by a decision, but it must not be
 the only protection and must not create learned parameters, reject cooldowns,
 or sticky state.
 
-The candidate stays in the v0.12 release line and is version `0.12.3`.
+The candidate stays in the v0.12 release line and is version `0.12.4`.
 
 ## 2. Current conclusion
 
-Phase C source, builder, production-image, and immutable registry publication
-gates are complete. The exact image is not yet approved for deployment or live
-traffic: Phase D must still prove the Router-disabled GPU Pareto gate on
-`use1-cb` before release promotion or any Router enable.
+The exact v0.12.3 source and image completed their builder and publication
+gates, then failed the Router-disabled weighted-Prefill QoS diagnostic in
+section 25 and are not promotable. v0.12.4 has focused implementation evidence,
+but its dedicated-CVM complete matrix, commit, push, image, and targeted GPU
+gate remain incomplete. The production `use1-cb` target must remain
+Router-disabled until the dedicated test CVM passes the targeted v0.12.4 gate
+and a later explicitly authorized canary deployment begins.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
 default design. It limits the rate of growth but not the final Decode
@@ -79,9 +86,11 @@ SLO-compliant completed output tokens / wall-clock second
 ```
 
 For each controlled workload, freeze the Decode QoS floor before policy
-comparison at 85 percent of its matched direct-upstream per-user Decode TPS.
-This allows bounded TPS loss in exchange for higher aggregate goodput without
-turning a universal TPS number into production configuration.
+comparison at 85 percent of its matched no-enforcement per-user Decode TPS. The
+Phase D `N` reference retains the same PIG proxy and estimator path in explicit
+shadow, so only admission enforcement is removed. This allows bounded TPS loss
+in exchange for higher aggregate goodput without turning a universal TPS number
+into production configuration.
 
 Also report raw completed-token TPS, per-user Decode TPS distribution,
 preemptions, waiting, peak KV, completion counts by request-size class,
@@ -258,6 +267,10 @@ They are not required to improve by a hand-selected percentage.
 
 ## 8. Execution phases
 
+Sections 8 through 24 record the completed v0.12.3 cycle. The active v0.12.4
+execution order and release boundary are the corrective protocol in section 25;
+no historical v0.12.3 completion item satisfies a v0.12.4 gate.
+
 ### Phase A: reset evidence and repair simulation
 
 1. Freeze the exact source archive and preserve unrelated dirty files.
@@ -369,12 +382,24 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] Phase A scheduler-invariant red reproduced on the builder.
 - [x] Phase A shared simulation engine repaired and green on the builder.
 - [x] Phase B two-gate production candidate complete.
-- [x] Phase C full builder matrix green on the final dead-parameter-free
-  candidate.
-- [x] v0.12.3 source committed and pushed.
-- [x] immutable v0.12.3 canary image published and verified.
-- [ ] Phase D Router-disabled GPU Pareto gate passed.
-- [ ] exact canary digest promoted as the v0.12.3 release.
+- [x] Historical v0.12.3 Phase C matrix, source push, and immutable image
+  publication completed.
+- [x] Historical v0.12.3 failed Phase D and was rejected from promotion.
+- [x] v0.12.4 known-local weighted-or-larger Prefill focused red and r6 green.
+- [x] v0.12.4 review found and reproduced equal-strength Router verdict
+  precedence as the focused r8 red.
+- [x] v0.12.4 final focused green after the Router verdict correction.
+- [x] old shared-builder complete-matrix path cancelled and superseded by
+  section 29; this is an execution-environment change, not a failed gate.
+- [x] dedicated `h200.small` development CVM created and platform/GPU/Docker/
+  SSH/Router-isolation checks recorded.
+- [x] current 23-path tracked diff reconstructed exactly on Linux and the
+  pending telemetry benchmark plus focused packages passed in the new CVM.
+- [ ] v0.12.4 complete dedicated-CVM matrix green on the final source archive.
+- [ ] v0.12.4 source committed and pushed; immutable image published and
+  verified.
+- [ ] v0.12.4 Router-disabled targeted weighted-Prefill gate passed.
+- [ ] v0.12.4 Router-disabled Pareto matrix passed.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
 
@@ -859,3 +884,644 @@ pull-path compatibility. It proves no GPU QoS, Compose integration, CVM
 readiness, release promotion, or Router safety. Phase D must use exactly the
 recorded digest on Router-disabled `use1-cb`; no rebuild or floating-tag
 substitution is allowed.
+
+## 24. Phase D controlled-live protocol and preliminary evidence
+
+Phase D uses three explicitly named policies on the same `use1-cb` vLLM
+upstream. `N` is the v0.12.3 digest in explicit `shadow`, which retains proxy,
+inspection, and measurement overhead but never enforces admission. `A` is the
+immutable v0.12.2 digest
+`sha256:7cafb935d48175045cd355a844a3f94638fdfae16f965e2a9d7dbedeee63c4e4`
+in its production-default `enforce`. `B` is the immutable v0.12.3 digest
+`sha256:e3a0894a5e508013593f612165884d33c459f973ea3d2556ab33c253147127dd`
+in production-default `enforce`. This makes `N` a no-enforcement baseline, not
+a claim that the network proxy has been bypassed.
+
+The three matched A/B repetitions run in `B1,A1,A2,B2,B3,A3` order. Thus the
+paired orientations are B/A, A/B, and B/A while consecutive equal-policy runs
+avoid an unnecessary cold restart. N runs three nonce-separated repetitions as
+the matched no-enforcement QoS reference. Before the measured counters of every
+repetition, run the same uncounted nonce-separated 128-token short request and
+approximately 16K-token Prefill warmup, then drain. Every deployment freezes the
+complete Router enabled set, requires only `use1-cb` to remain disabled and
+drained throughout non-mutating workloads, and re-establishes exact image,
+Compose, container, readiness, and runtime identity before a repetition.
+
+The fixed workload suite is:
+
+| Workload | Fixed arrivals |
+| --- | --- |
+| short-only | 8 simultaneous approximately 1K-token prompts, 512 forced Decode tokens each |
+| long-only | 2 simultaneous approximately 195K-token cold prompts, 1 output token each |
+| mixed | 8 approximately 1K/1K Decode requests, then one approximately 195K Prefill after 1 second |
+| reversed-order | the same large Prefill first, then the 8 Decode requests after 15 seconds |
+| same-snapshot burst | 16 simultaneous small prompts with 128 forced Decode tokens each |
+| near-KV | 3 simultaneous approximately 245K-token prompts with 1 output token each |
+| quiescent-plus-short | one 4K-token Decode holder, then one approximately 215K Prefill and one 256-token short Decode after 5 seconds |
+| low flow | 4 serial approximately 1K prompts with 64 forced Decode tokens each |
+| cancellation | one 4K-token Decode cancelled after 2 seconds, followed by a 128-token recovery request |
+| sustained regular Decode | 24 approximately 1K/1K requests through a fixed concurrency of 12 |
+
+Each request has a fixed-length nonce-derived prefix that differs across
+policy, repetition, scenario, and request position. Remaining cache influence
+is measured from vLLM cached-prompt counters and reported as a confounder. The
+runner retains no prompt or response body. It records status, usage tokens,
+TTFT for diagnostics only, first-to-last-token Decode duration, per-user Decode
+TPS, wall time, and terminal reason. A 250-ms requested monitor samples PIG
+running, waiting, KV, reservations, protection, and compatibility projection;
+actual sample spacing is retained rather than assumed. vLLM prompt, cached
+prompt, generation, error, and preemption counters are captured before and
+after every policy repetition.
+
+For a successful Decode request with at least two output tokens, per-user TPS is
+`(completion_tokens - 1) / (last_token_at - first_token_at)`. For each workload,
+freeze its QoS floor at 85 percent of N's three-repetition p10 per-user Decode
+TPS. N is deliberately not called a physical direct-vLLM bypass: it retains the
+same PIG proxy and estimator path while removing enforcement, which controls
+more confounders for this admission comparison. A successful request at or
+above the floor contributes all its completed tokens to SLO-goodput; a
+QoS-violating, rejected, cancelled, or failed request contributes zero.
+Successful one-token Prefill probes have no Decode floor and contribute their
+one completion token. Report both this SLO-goodput and raw completed-token TPS
+so admission cannot appear better merely by rejecting hard work.
+
+Stop a repetition on any new preemption, backend error completion, container or
+Compose drift, target Router enablement, internal admission failure,
+reservation leak, or failure to drain within 180 seconds. Waiting and 429 are
+measurements, not automatic failures, unless they violate the section 4 Pareto
+gate or persist after demand clears. The live stale/recovery fault remains a
+separate incomplete Phase D case: do not manufacture it by stopping vLLM or
+changing production networking while throughput repetitions are in progress.
+Define and review a reversible Router-disabled injection before executing it.
+
+Evidence health is a separate executable gate. Every scenario requires at
+least three healthy monitor samples, one baseline sample before workload start,
+one sample during live demand, every required metric field, no healthy-sample
+gap above 5 seconds, no more than 25 percent failed scrapes, and observed PIG or
+backend activity whenever a request was forwarded. PIG attempt deltas must
+equal submitted requests and every enforced rejection must be represented by a
+429. The `reversed-order` case is valid only if the large request either reaches
+observable PIG/backend activity before the Decode arrivals and remains active
+when they start, or completes its pre-forward 429 before those arrivals. A
+failed evidence-health check makes the scenario and repetition red even when
+all safety counters remain green.
+
+The Router-disabled v0.12.3 preliminary gates completed on 2026-08-09. Explicit
+shadow passed readiness, protocol transparency, low-flow/cancellation/burst
+lifecycle, five request-size classes, and the counterfactual Decode-plus-large
+Prefill differential. Production-default enforce then passed exact runtime
+identity, protocol, lifecycle, and all five idle size classes. Under an existing
+Decode holder it admitted the same-pressure short request and rejected the
+approximately 215K prompt before forwarding as
+`size_protect/prefill_busy/prefill/quiescent`, with no preemption or terminal
+leak.
+
+The first enforce differential was red only because the eventually consistent
+container-log query returned before the already-emitted decision line. A second
+run proved the log but missed the bounded Router projection with a serial
+metrics scrape. The corrected run sampled `/pig/metrics` independently: all 5
+samples were healthy, 2 observed the complete
+`active=1/applied=1/inspect=1/global_limit>running` projection from
+`02:51:20.806Z` through `02:51:21.976Z`, the one 429 had one represented log
+event, and projection returned to zero after drain. Both red attempts remain
+evidence of harness timing defects and are not rewritten as green runs.
+
+The first full `B1` workload attempt at `2026-08-09T03:11:27Z` is retained
+under `tmp/pig-v0123-use1-cb-live-20260809/phase-d-B1-v0123-20260809T031127Z`
+as red exploratory evidence. All ten scenarios drained with zero preemption,
+backend error completion, internal admission failure, or container/Router
+drift. However, the 1-second `reversed-order` delay was shorter than the large
+body's approximately 3.29-second pre-forward result: the eight short requests
+reached admission first and the large request was rejected, so the intended
+large-Prefill-first workload never occurred. That scenario also recorded one
+failed metrics scrape. No result from this attempt contributes to the formal
+N/A/B repetitions; the corrected protocol uses the 15-second offset and the
+evidence-health gate above before restarting at `B1`.
+
+The first corrected `B1` start at `2026-08-09T03:27:38Z`, retained under
+`tmp/pig-v0123-use1-cb-live-20260809/phase-d-B1-v0123-corrected-r1`, stopped
+before its first scenario when a read-only `/pig/metrics` drain snapshot hit a
+transient TLS `UNEXPECTED_EOF_WHILE_READING`. No measured request was submitted;
+the before/after container and Router identities remained exact and logs had no
+fatal match. This is runner-infrastructure red evidence, not policy evidence.
+The harness now applies bounded retries only to idempotent metrics and Router
+GETs; monitored scrapes still retain failures and inference POSTs are never
+retried automatically.
+
+The next corrected start at `2026-08-09T03:31:08Z`, retained under
+`tmp/pig-v0123-use1-cb-live-20260809/phase-d-B1-v0123-corrected-r2`, stopped
+after `short-only` because one failed TLS scrape among four exceeded the
+initial 20-percent failure-rate threshold. The remaining three healthy samples
+covered baseline and live demand, contained every required field, observed
+`running=8`, and had a maximum 3.73-second healthy gap; all eight requests
+completed, with no safety failure or identity drift. The discrete 20-percent
+threshold therefore rejected usable short-workload evidence. It is corrected
+to 25 percent while retaining the independent minimum-sample, baseline,
+live-demand, field-completeness, activity, and 5-second blackout gates. This
+attempt remains runner-calibration evidence and is not a formal `B1` result.
+
+The next formal `B1` attempt at `2026-08-09T03:35:21Z`, retained under
+`tmp/pig-v0123-use1-cb-live-20260809/phase-d-B1-v0123-formal-r3`, produced the
+first valid `reversed-order` GPU evidence. The approximately 195K prompt reached
+PIG first, was observed running before the Decode arrivals, and remained active
+until about 62.03 seconds. All eight later Decode requests were admitted and
+completed, but their p10 per-user TPS was only `22.88`, versus `193.96` in the
+same repetition's decode-first `mixed` case and `190.16` in `short-only`.
+During the large-only interval the monitor observed one reservation, one
+pending Prefill, and one backend request while Router protection remained zero;
+protection became active only after the eight Decode requests had already been
+admitted. This is causal red evidence for the section 5.4 no-Decode-envelope
+candidate: the approximately 88-percent cross-order TPS collapse is not an
+acceptable interpretation of bounded QoS loss.
+
+That repetition later stopped at `same-snapshot-burst` because two of sixteen
+clients ended with transport `URLError` before reaching PIG: only 14 admission
+attempts and 14 successful completions were observed. There was no PIG internal
+failure, backend error completion, preemption, leak, fatal log, identity drift,
+or Router enablement. The whole repetition remains red and does not enter the
+formal comparison, while its already-valid `reversed-order` subcase remains
+diagnostic evidence. Future client transport errors record their nested reason
+type, but ambiguous inference POST failures are not retried.
+
+The current N/A/B matrix is paused because the exact B image has already failed
+the section 5.4 Decode-QoS decision point and cannot be promoted regardless of
+additional repetitions. Before changing executable source, run bounded
+Router-disabled diagnostics with the same approximately 195K Prefill followed
+after 15 seconds by 1, 2, and 4 regular Decode requests. Compare each with the
+valid 8-request case and clean regular-Decode controls. The purpose is only to
+determine whether a simple immutable concurrent-regular envelope can preserve
+useful TPS during active long Prefill; it is not online learning and cannot be
+silently converted into a model-specific production constant.
+
+Protocol review pass 1, objective and causality: N/A/B share one request and
+measurement implementation; request nonces prevent easy prefix reuse; QoS
+floors are frozen from N rather than tuned from candidate outcomes; and rejected
+work contributes no goodput.
+
+Protocol review pass 2, safety and lifecycle: near-KV is bounded at three
+approximately 245K prompts, every scenario begins and ends drained, cancellation
+must recover, target Router isolation is checked around each scenario, and the
+first preemption or lifecycle failure stops the repetition.
+
+Protocol review pass 3, efficiency and evidence: the suite reuses the published
+images, records actual sampling cadence and every repetition, separates raw and
+SLO-goodput, treats cache as a measured confounder, and leaves fault injection,
+release promotion, Router enablement, and production canary explicitly open.
+
+## 25. Phase D red conclusion and v0.12.4 remediation cycle
+
+The bounded diagnostic completed green as a harness run at
+`2026-08-09T03:47:16Z`; evidence is retained under
+`tmp/pig-v0123-use1-cb-live-20260809/phase-d-prefill-decode-envelope-diagnostic-r1`.
+The clean 1/2/4-request Decode controls produced p10 per-user TPS of
+`217.72/231.20/213.30`. With the same approximately 195K cold Prefill already
+active, p10 was `23.30/23.43/22.91`, respectively. Cached-prompt deltas,
+preemptions, backend error completions, internal admission failures, and leaks
+were all zero. Reducing regular concurrency from eight to one therefore did not
+restore QoS: the Prefill itself, not Decode fan-out, caused the approximately
+89-percent slowdown.
+
+For all three Prefill-first diagnostics, 9-10 healthy samples observed the
+known local Prefill reservation and backend activity before the regular Decode
+arrivals, while Router protection had zero samples before those arrivals. The
+first protection samples appeared only after admission, at approximately
+`49.19/44.13/33.30` seconds for the 1/2/4-request cases. Source review explains
+the behavior: an approximately 195K request is `weighted`; Manager does not
+count weighted reservations as pending long Prefills; regular candidates are
+explicitly work-conserving behind every known non-regular Prefill; and Router's
+synthetic inspect uses that same regular-candidate rule.
+
+The exact v0.12.3 image is therefore not promotable and the incomplete N/A/B
+matrix must not be resumed for it. The remediation stays in the `0.12` release
+line and becomes v0.12.4. Its minimal invariant is:
+
+```text
+known local pending Prefill class >= weighted
+  -> pre-forward reject new regular candidates
+  -> Router inspect capacity 0 in the same manager state
+  -> reopen immediately on PrefillComplete or terminal release
+```
+
+This is not a cooldown, per-poll credit, online learner, model-specific TPS
+constant, or permanent global lock. Weighted, exclusive, and quiescent local
+reservations count as pending long Prefills. A regular reservation does not.
+Observed-but-unattributed pending work keeps its existing conservative handling
+in this patch so an ambiguous observer sample cannot create a new low-flow
+self-lock. The same pure `InterferenceGate` owns the decision for business
+requests and Router inspect; Manager owns classification/lifecycle state; the
+adapter only maps the decision to HTTP and compatibility telemetry.
+
+The red/green implementation order is fixed:
+
+1. Add focused red tests proving a regular request is rejected behind a known
+   weighted, exclusive, or quiescent Prefill; Router inspect is active with
+   zero capacity before another request; and regular-behind-regular remains
+   admitted.
+2. Add Manager lifecycle tests proving weighted accounting is atomic and the
+   gate clears immediately on PrefillComplete, cancellation, error, timeout,
+   rollback, and epoch invalidation without waiting for a 500-ms observation.
+3. Implement the smallest gate change, bump the source/runtime identity to
+   `0.12.4`, then run focused, full, vet, race, simulation, benchmark, image
+   contract, and three SOLID/evidence reviews on the approved builder.
+4. Publish one immutable v0.12.4 image only after complete builder green and
+   deploy it to Router-disabled `use1-cb` with exact source/image provenance.
+5. Before any Pareto matrix, require a targeted live case where the long
+   Prefill is admitted, a regular request during it receives represented
+   pre-forward 429, Router protection is already active before that request,
+   Prefill completion clears protection, and the immediate recovery request is
+   admitted. Repeat cancellation and low-flow/no-demand checks to exclude
+   self-lock.
+
+For subsequent QoS accounting, a Prefill-first workload must not define its own
+degraded Decode floor. The 1/2/4/8 regular Decode requests use their matched
+clean Decode-only N controls; otherwise an 89-percent Prefill-induced collapse
+would be relabeled as acceptable merely because no-enforcement is equally bad.
+Rejected, failed, or below-floor requests still contribute zero SLO-goodput,
+and raw goodput remains reported separately. Router-disabled direct evidence
+can prove local protection and lifecycle but cannot claim cluster-level reroute
+goodput; that remains part of the later Router canary.
+
+## 26. v0.12.4 focused behavioral red evidence
+
+The first frozen attempt, r1, is retained as invalid test-infrastructure
+evidence. Its policy test omitted the closing brace for the table loop, so
+`gofmt`, policy, and Manager failed during package parsing. The three adapter
+tests did reach their intended assertions, but the mixed result is not counted
+as the release red gate and no executable source was changed from it.
+
+r3 corrected only that test fixture and froze all 158 Git-tracked files from
+base HEAD `d92b0e48ea85f5737a6bdd954c762526ea46b7fd`. The source archive SHA-256 is
+`a2a1b0c3c77761a678e02c527f8361423f215472bf0c9fb94de266160304fe2d` and
+the runner SHA-256 is
+`59e2cbac3b2e84c035a6de1e8db66fb8cd2dcb42958e31850b4b8ca073d6a029`.
+Both hashes were recomputed after transfer before execution. The two unrelated
+untracked v0.11 plan files were not present in the archive.
+
+The approved builder container `pig-v01011-builder` ran every test with
+`nice -n 19` and `GOMAXPROCS=2`. r3 produced:
+
+```text
+fmt_status=0
+policy_status=1 policy_reason_status=0
+manager_status=1 manager_reason_status=0
+adapter_status=1 adapter_reason_status=0
+http_status=1 http_reason_status=0
+```
+
+The failures are causal and specific. Policy admitted regular candidates
+behind weighted, exclusive, and quiescent Prefills. Manager reported a 195K
+weighted reservation as one pending Prefill but zero pending long Prefills for
+every tested lifecycle. Adapter did not project zero Router capacity before
+the next request, admitted the regular request, and retained a stale recent
+reject after Prefill completion. The vertical HTTP test reached the backend and
+returned `200/1`, rather than the required represented pre-forward `429/0`.
+The regular-behind-regular control remained part of the policy test and did not
+fail.
+
+Material builder log SHA-256 values are:
+
+```text
+gofmt  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+policy bca8c3c0cf77afaed1a79d1817b8d764fbc2f3757283e9de7b691a8c466cb67d
+manager 46a9f971ee2f9da9fc94ad4a213ff0c137f64b4d9aaad658f1e8db077a941754
+adapter 3d9c5796e357e6ff9f5dfce437410552691f415f0ce5e66f3461be809f4d29ec
+http c8767afa672e0192e9acd9111096666bf54fd58ec5589e37742e35834ee2de43
+```
+
+This closes the focused red gate only. No production source, version identity,
+image, registry, Compose, CVM, or Router state changed. The next action is the
+minimal Manager, InterferenceGate, and adapter lifecycle implementation, plus
+the `0.12.4` identity update; all executable green evidence remains open.
+
+## 27. v0.12.4 focused implementation and builder green
+
+The implementation remains a three-owner vertical slice. Manager classifies
+every uncompleted local weighted, exclusive, or quiescent reservation as one
+pending long Prefill. InterferenceGate returns
+`size_protect/prefill_busy/prefill` only for a regular candidate when that
+known-local count is nonzero; regular-behind-regular remains admitted subject
+to its existing aggregate budget. The adapter records whether an enforced
+reject carries an authoritative Manager event sequence. A later Prefill
+completion, terminal release, or epoch rebase changes that sequence and
+immediately supersedes the corresponding 1500-ms Router hold. Adapter-local
+stale or unavailable rejects have no Manager sequence and retain the bounded
+time fallback.
+
+r4 first proved the production slice: runtime and server/HTTP focused tests
+were green. It was not accepted because one Go struct required builder `gofmt`
+alignment and the deterministic simulation still expected the retired
+regular-behind-exclusive behavior. r5 applied those corrections and added an
+approximately 195K weighted-Prefill recovery scenario. That new scenario
+passed with two admits and one in-Prefill reject; r5 remained corrective
+evidence because the older quiescent recovery scenario still expected its
+during-Prefill short request to be admitted. Updating that exact contract from
+`3/1` to `2/2` preserved the post-Prefill recovery admit and did not relax the
+generic acceptance checks.
+
+r6 froze all 158 Git-tracked files from base HEAD
+`d92b0e48ea85f5737a6bdd954c762526ea46b7fd`. The source archive SHA-256 is
+`7088fb629f1eec32657570824aa5512eddc9a2c228889686dc3555e0bf8a54ee` and
+the runner SHA-256 is
+`468c80940409a5db2efdc783f60de7643af781f7b49bdc13d4efed82af747976`.
+The approved builder recomputed both hashes before execution and produced:
+
+```text
+fmt_status=0
+runtime_status=0
+server_status=0
+simulation_status=0
+```
+
+Material r6 log SHA-256 values are:
+
+```text
+gofmt e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+runtime baa2e635a31428c119e24047925450a6c67cc415fc539ac6ade47131f3c16f49
+server 51dde5029f97981924fb57978c002a0653d09ab5aae6d5eff331e4bb26b6cf50
+simulation 41c20baf7f8bd8610e2962a72d34aaebcd25ebb374f978ba672f066d978bf108
+```
+
+This is focused green only. At the evidence check, an unrelated vLLM NVCC
+image build was still active on the same host after approximately 3 hours 51
+minutes. It is not terminated or disturbed, and the complete test, vet, race,
+ordered benchmark, and image-contract matrix waits for an idle builder so
+resource contention cannot be mislabeled as PIG performance evidence. This
+documentation append is non-executable; the later complete matrix must freeze
+a new archive containing it rather than reusing r6 as final-source evidence.
+
+## 28. v0.12.4 three-pass review and Router-verdict correction
+
+The previously unrelated vLLM build had ended before this review resumed. The
+approved host showed no active compiler, Ninja, or NVCC process, so focused PIG
+evidence and the later complete matrix may resume without terminating or
+disturbing another build.
+
+Review pass 1, model and causality: the approximately 195K request is classified
+as weighted from the bounded model-neutral request estimate. Its atomic local
+reservation contributes one known long Prefill before forward; the same pure
+InterferenceGate blocks a regular business candidate and the Router one-block
+inspect candidate. Regular-behind-regular remains admitted within the aggregate
+budget. Observed-but-unattributed Prefill does not acquire this new regular
+global gate, so an ambiguous sample cannot create a low-flow self-lock. TPS,
+cache state, and TTFT remain diagnostics rather than fabricated admission
+authority.
+
+Review pass 2, safety and lifecycle: Manager owns check-and-reserve under one
+lock and keeps exact-once release for completion, local rejection, client
+cancellation or disconnect, upstream failure, timeout, expiration, rollback,
+and epoch rebase. Manager event-sequence validity distinguishes authoritative
+decisions from adapter-local stale or unavailable failures. PrefillComplete,
+terminal release, and rebase supersede an old Manager-mediated Router hold.
+Adapter-to-Manager lock ordering is consistent and Manager has no reverse
+adapter callback.
+
+This pass found one reporting defect outside the original weighted gate. When a
+recent verdict and the current inspect verdict both had capacity zero, the
+recent verdict replaced the equally restrictive current verdict. Capacity was
+safe, but Router scope, reason, and source could remain stale for 1500 ms. r7
+did not reproduce that exact state and passed, so it is not a behavioral red.
+r8 constructed recent `availability/metrics_stale/0` followed by current
+`load/kv_over_budget/0` and failed for the intended assertion:
+
+```text
+source SHA-256: d4e3b60d679dc825ec57a599d02323b4ae230608dbbced046259a58289e30bba
+runner SHA-256: 00d8fad9675ba142f28cfe347e228df68c6bd1731d23aa5263f2ec759fac6ec8
+tracked files: 158
+fmt_status=0
+server_status=1
+gofmt log SHA-256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+server log SHA-256: c9134144fbbc5c05a47f3430ce05b4cc4661f856c405ce63fb6f93afe43ce11e
+```
+
+The minimal correction lets a recent verdict override current state only when
+its inspect capacity is strictly lower, not equal. Focused coverage also
+requires terminal release and epoch rebase to clear a represented weighted
+Prefill reject just as PrefillComplete does.
+
+Review pass 3, SOLID, efficiency, and evidence: Manager, InterferenceGate, and
+adapter responsibilities remain separate; no learner, cache lookup, model
+special case, Decode pacer, cooldown, or generic policy framework was added.
+The executable hot-path delta is a constant-time Manager sequence read plus the
+single comparison correction; ordered same-host benchmarks must still measure
+it rather than assuming it is free. Runtime, Docker, README, simulation, and
+operator-document identity are v0.12.4. The plan header and progress ledger now
+separate historical v0.12.3 publication from incomplete v0.12.4 gates. Final
+focused green and the new complete builder archive remain open; no commit,
+push, release image, deployment, Router enable, or production traffic is
+authorized by this review.
+
+r9 attempted the reviewed focused green with source archive
+`e41dbd48e4e255a0e0beed40a9e61cb7d0bdcf8745cf10b6f36201e4137d3487`
+and runner
+`ce324cf7e75bcaf132f44c453f85b6b3bf007746cf9a1f220570f22a0554541b`.
+Formatting, runtime, and simulation returned zero, but server test compilation
+returned one because the new table helper accepted the concrete adapter
+reservation while the decision exposes the existing `predictiveShadowReservation`
+interface. The server log SHA-256 is
+`550decf9660f4f4e5dd3bf8c67bec1cf12b783bfbbcec861e0a8638f2178a69e`.
+This is invalid green evidence and not a production behavior failure. The test
+helper now depends on the existing lifecycle interface, preserving the SOLID
+boundary; a new archive and complete focused run are required.
+
+r10 froze the corrected interface-based test and the completed review record in
+all 158 tracked files. The approved builder recomputed the source and runner
+hashes and returned zero for all four focused rows:
+
+```text
+source SHA-256: a5eae10fc9f425e4c1cebc3788f9a5d1bb562e82750a595cf9074373eacbf13b
+runner SHA-256: ffba7639d948e799495bf1aec46032cb61d2ea2875445557996be47e32286362
+fmt_status=0
+runtime_status=0
+server_status=0
+simulation_status=0
+gofmt log SHA-256: e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+runtime log SHA-256: 7163531d0ae730077c2f2100b88c9df3ccf620d5562372a8b5bfa99aa82aa0a4
+server log SHA-256: 4c7895cbb4ffc15ed115d79befa683a4c46e50ef3e15586e1dd132b82c5767f9
+simulation log SHA-256: a21e7ae45c8014432cc5d4aff94475a4edd8e6364e3750e6bb9978fd0442c8f0
+```
+
+This closes the final focused gate only. The documentation append changes the
+source archive, so the complete matrix must freeze a new archive containing it.
+No full test, vet, race, ordered benchmark, image contract, commit, push,
+release image, deployment, or live conclusion is inherited from r10.
+
+## 29. Dedicated h200.small development and GPU environment
+
+This section is the active execution protocol and supersedes every earlier
+instruction to resume work on the shared builder. The shared builder and its
+`pig-v01011-builder` container are retired from the v0.12.4 workflow. No new
+source archive, test, benchmark, image build, or publication step may run there.
+The already recorded r10 focused green remains valid evidence for that frozen
+archive only; it does not satisfy any complete-matrix gate in this section.
+
+Create one isolated CVM using the non-secret infrastructure shape of reference
+CVM `a0f0bfb3-e46f-4b22-814e-24872f251193`, with these deliberate differences:
+
+- instance type `h200.small`;
+- OS image exactly `dstack-nvidia-dev-0.5.9`;
+- a distinct development name and persistent development workspace;
+- no production endpoint, Router registration, or real traffic;
+- persistent disk sufficient for source, Go caches, Docker layers, candidate
+  images, model assets, and evidence; and
+- SSH access through the current authorized public key, with secret values kept
+  in sealed environment storage and never copied into this plan or logs.
+
+Local Windows is limited to this plan edit, read-only source/archive inspection,
+Git bookkeeping, sanitized CVM control, and transfer of the frozen tracked-source
+archive. All formatting, Go/native execution, focused/full tests, vet, race,
+simulation, benchmarks, production-binary and image-contract checks, Docker
+build/push, and GPU validation run inside the new CVM. Do not fall back to local
+Windows or the retired builder when a command fails; diagnose and repair the new
+CVM environment itself.
+
+The active order is:
+
+1. Create the CVM and record its CVM ID, instance type, OS, region/node, disk,
+   live Compose hash, and Router isolation without recording secret values.
+2. Verify platform progress, SSH, persistent workspace, Docker/BuildKit, disk,
+   NVIDIA runtime, H200 visibility, clock, network, and a pinned Go 1.24.x
+   toolchain or builder container.
+3. Clone the repository at base HEAD
+   `d92b0e48ea85f5737a6bdd954c762526ea46b7fd`, then overlay a newly frozen
+   archive containing only the current Git-tracked PIG source. Preserve the two
+   unrelated untracked v0.11 plan files locally and exclude them from the
+   archive. Record the archive SHA-256 and exact tracked-file inventory.
+4. Compile and run the pending telemetry benchmark first as a validity check,
+   then run formatting, focused/full tests, vet, race, deterministic simulation,
+   lexical corpus, ordered v0.12.2 comparison benchmarks, the v0.12.4 benchmark
+   contracts including the bounded many-short-string 4 MiB case, production
+   binary, image contract, and the three recorded reviews. Record commands,
+   exit statuses, environment identity, and material log SHA-256 values.
+5. Every accepted code update must be committed and pushed before beginning the
+   next implementation iteration. An update is accepted only after its scoped
+   formatting and focused tests are green; invalid red fixtures and known-broken
+   intermediate states are evidence, not push candidates. Record commit,
+   branch, remote result, and source archive identity for every push. GitHub
+   authentication uses device flow inside this CVM; never copy or reuse a host
+   token.
+6. Do not upload an image for a focused-only or intermediate code update. Build
+   and push one immutable `0.12.4` image from the exact committed source only
+   after the complete source, simulation, race, benchmark, binary, image-contract,
+   and three-review acceptance matrix is green in this CVM. Record source
+   revision, local image ID, registry digest, pull verification, runtime identity,
+   and image-contract evidence.
+7. On the same isolated H200 CVM, run the targeted weighted/exclusive/quiescent
+   Prefill gate, immediate completion/cancellation/timeout recovery, low-flow,
+   no-demand, stale/recovery, same-snapshot burst, near-KV, and Decode QoS
+   controls. The admission target is PIG's production-like chain, while the CVM
+   itself remains absent from Router.
+8. Only after the targeted gate and Pareto evidence pass may a separate,
+   explicitly recorded step consider deploying the exact digest to disabled
+   production target `use1-cb`. Router enable and 30-minute actual-traffic
+   observation remain later production gates; they are not implied by success
+   in the dedicated CVM.
+
+The CVM is a long-lived test appliance, not a disposable build job. After its
+initial platform creation, ordinary iterations must not use a platform Compose
+redeploy or CVM restart. Keep the vLLM container, loaded model, Docker daemon,
+and GPU allocation running; rebuild the candidate image and replace only the
+PIG service with a service-scoped `docker compose up` or equivalent container
+operation. Before and after every PIG-only replacement, record the vLLM image,
+container identity/start time, model readiness, and GPU process identity to
+prove vLLM was not rebuilt. A full CVM restart is allowed only for a specific
+platform, host, GPU-driver, Docker-daemon, or persistent-disk fault that cannot
+be repaired at container scope, and the fault evidence must be recorded first.
+
+The dstack root filesystem is intentionally small and read-only. Put source,
+toolchains, build caches, Docker data, model assets, Compose files, and evidence
+under `/var/volatile/dstack/persistent`. Use a persistent workbench container
+for Git, Go, GitHub CLI, and matrix execution. Runtime test Compose is managed
+from that persistent workspace on the already-running host so a PIG source
+iteration cannot trigger a platform reboot or discard a loaded vLLM model.
+
+Creation, `status=running`, SSH reachability, `nvidia-smi`, a green focused test,
+or a locally built image is not completion. The release gate requires the full
+source matrix, immutable image provenance, functional PIG/backend compatibility,
+GPU lifecycle evidence, metrics/log coherence, no unexplained protection or
+low-flow self-lock, and no admission-caused preemption. If GitHub authorization
+is the only missing step, pause at the device flow and wait for the user rather
+than weakening or bypassing authentication.
+
+## 30. Dedicated-CVM bootstrap and first scoped acceptance
+
+The dedicated environment was created without modifying the reference CVM or
+the retired builder:
+
+```text
+CVM UUID: c21b7281-2c25-4453-8a68-f39ec42d03b4
+name: pig-v0124-h200-dev-use1
+resource: h200.small / 24 vCPU / 192 GB RAM / 500 GB ZFS / 1 x H200
+node and region: gpu-use1 / US-EAST-1
+OS: dstack-nvidia-dev-0.5.9
+KMS: phala
+platform Compose hash: c8217429be1f86d7c7561a11c2de24feac93ebecc33d3bec139931d3741e918d
+Docker Compose hash: b6fd423f2ce3d5b6c6b2570c487bdbaec8d7040e91ff4fabda07da2efec29a9d
+pre-launch script hash: 24d363e17b26dabdbf287588c1e1968fd7fdfef10954123b99ff6c6a837c5692
+```
+
+Platform reached `running` with no operation in progress. SSH, outbound GitHub,
+Docker 25.0.3, Compose 2.26.0, persistent workspace, and the NVIDIA container
+runtime passed. Both host and an isolated CUDA container reported `NVIDIA H200`,
+`143771 MiB`, and driver `580.95.05`. The persistent filesystem had 480.6 GB
+available. The platform Compose contains only an unexposed keepalive container.
+A read-only Router inventory at `2026-08-09T07:28:09Z` returned matching config
+digests and zero upstream or route matches for the new name, UUID, or app ID.
+Thus the CVM is isolated from production traffic. The host Docker CLI lacks the
+optional buildx plugin; install it under persistent storage or use a pinned CLI
+container before the image gate. This does not affect source tests and is not a
+reason to restart the CVM.
+
+The persistent workbench uses the same pinned Go image as the production
+Dockerfile:
+
+```text
+source image: golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+local image ID: sha256:e0cffc405270b9114fac7706d07c373727d1b42b0e47c525b9cd1ab1097779ff
+Go: go1.24.13 linux/amd64
+Git: 2.39.5
+GitHub CLI: 2.23.0
+```
+
+GitHub device authorization completed inside this workbench and the repository
+API reports write access. No token is copied into source, evidence, this plan,
+or operator output.
+
+The first direct tracked-file archive is invalid migration evidence. Although
+its 158-path inventory and SHA-256
+`d8cccd1bcf6272377588f701b379592e443b305be66dda45a29f65c89648f18c`
+were valid, Windows checkout line endings made three unchanged files appear
+modified on Linux. It is not tested, committed, or reused.
+
+r2 instead exported the normalized full-index binary diff, applied it to a
+fresh Linux clone at base `d92b0e48ea85f5737a6bdd954c762526ea46b7fd`, and
+regenerated the archive in the CVM:
+
+```text
+local diff SHA-256: 51be45bb87cf05b9c153db0d737edd5628dcc7a9274f2af9c6d2e12f700a7d93
+remote diff SHA-256: 51be45bb87cf05b9c153db0d737edd5628dcc7a9274f2af9c6d2e12f700a7d93
+tracked files: 158
+modified paths: 23
+r2 archive SHA-256: 096516714db2aa9c91f22f9af6f54e68f573d344001933a555561ba343d112a9
+```
+
+The first new-CVM scoped run then returned zero for formatting, the pending
+telemetry benchmark, runtime/predictive tests, server tests, and deterministic
+simulation package tests. Material log SHA-256 values are:
+
+```text
+gofmt e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+telemetry benchmark 25fca1de0280cba0e228a937166395c8da57f7cc94cbf960f6e5975a75ce4f63
+runtime 55fa714a703aef3d66761db71b82a7daac5192e04dacc0305fdefc859bc526ae
+server 4cfd582c7e34c893f20428a52aee7d15e5f5613789f4df4e3ddd234781f00a0e
+simulation ecaef9ba3acdb4c5dd4b20bef9e97baad00fd1d37fc1ac95cb0f62fa5d265aa3
+```
+
+The telemetry benchmark measured approximately 580 ns, 11.5 us, and 61.0 us
+at 0, 48, and 256 reservations, with zero allocations. This path intentionally
+collects `CurrentRequestAwarePending` and `Manager.Snapshot`, both of which
+aggregate live reservations for metrics and Router status. It is not the
+business-request pre-forward decision path and is called on the observation
+cadence. The result is acceptable scoped evidence, not proof of no regression:
+the ordered v0.12.2 comparison and additional benchmark contract remain part of
+the complete matrix. No image was built or uploaded, and no PIG, vLLM, Router,
+reference CVM, or production traffic state changed.

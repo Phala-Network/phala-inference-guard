@@ -7,9 +7,10 @@ import (
 )
 
 type RequestAwareManagerResult struct {
-	Decision                RequestAwareDecision
-	Reserved                bool
-	DecisionManagerSequence uint64
+	Decision                     RequestAwareDecision
+	Reserved                     bool
+	DecisionManagerSequence      uint64
+	DecisionManagerSequenceValid bool
 }
 
 func (m *Manager) DecideRequestAwareAndReserve(
@@ -44,20 +45,20 @@ func (m *Manager) decideRequestAware(
 	reserve bool,
 ) RequestAwareManagerResult {
 	if m == nil {
-		return requestAwareManagerFailure(RequestAwareReasonUnavailable, 0)
+		return requestAwareManagerFailure(RequestAwareReasonUnavailable, 0, false)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	if !m.intakeOpen || policy == nil {
-		return requestAwareManagerFailure(RequestAwareReasonUnavailable, m.eventSequence)
+		return requestAwareManagerFailure(RequestAwareReasonUnavailable, m.eventSequence, true)
 	}
 	if m.manifestID == "" || cost.ManifestID == "" || cost.ManifestID != m.manifestID ||
 		requestID == "" || selectionInputTokens <= 0 || !validRequestCost(cost) {
-		return requestAwareManagerFailure(RequestAwareReasonInvalid, m.eventSequence)
+		return requestAwareManagerFailure(RequestAwareReasonInvalid, m.eventSequence, true)
 	}
 	if _, exists := m.reservations[requestID]; exists {
-		return requestAwareManagerFailure(RequestAwareReasonDuplicate, m.eventSequence)
+		return requestAwareManagerFailure(RequestAwareReasonDuplicate, m.eventSequence, true)
 	}
 
 	state, pendingPrefillTokens, pendingLong, pendingQuiescent, pendingUnknown := m.requestAwareStateLocked(policy)
@@ -86,8 +87,9 @@ func (m *Manager) decideRequestAware(
 	decision := policy.Evaluate(input)
 	if decision.Action != RequestAwareAdmit || !reserve {
 		return RequestAwareManagerResult{
-			Decision:                decision,
-			DecisionManagerSequence: m.eventSequence,
+			Decision:                     decision,
+			DecisionManagerSequence:      m.eventSequence,
+			DecisionManagerSequenceValid: true,
 		}
 	}
 
@@ -101,9 +103,10 @@ func (m *Manager) decideRequestAware(
 		Assimilation:              assimilationUnabsorbed,
 	}
 	return RequestAwareManagerResult{
-		Decision:                decision,
-		Reserved:                true,
-		DecisionManagerSequence: m.eventSequence,
+		Decision:                     decision,
+		Reserved:                     true,
+		DecisionManagerSequence:      m.eventSequence,
+		DecisionManagerSequenceValid: true,
 	}
 }
 
@@ -131,7 +134,7 @@ func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) (domain.Vi
 		case RequestAwarePrefillQuiescent:
 			pendingQuiescent = addIntSaturating(pendingQuiescent, 1)
 			pendingLong = addIntSaturating(pendingLong, 1)
-		case RequestAwarePrefillExclusive:
+		case RequestAwarePrefillWeighted, RequestAwarePrefillExclusive:
 			pendingLong = addIntSaturating(pendingLong, 1)
 		}
 	}
@@ -154,12 +157,13 @@ func (m *Manager) CurrentRequestAwarePending(policy *RequestAwarePolicy) Request
 	}
 }
 
-func requestAwareManagerFailure(reason RequestAwareReason, sequence uint64) RequestAwareManagerResult {
+func requestAwareManagerFailure(reason RequestAwareReason, sequence uint64, sequenceValid bool) RequestAwareManagerResult {
 	return RequestAwareManagerResult{
 		Decision: RequestAwareDecision{
 			Action: RequestAwareHardProtect,
 			Reason: reason,
 		},
-		DecisionManagerSequence: sequence,
+		DecisionManagerSequence:      sequence,
+		DecisionManagerSequenceValid: sequenceValid,
 	}
 }

@@ -1,4 +1,4 @@
-# PIG v0.12.3 Observability
+# PIG v0.12.4 Observability
 
 PIG exports one predictive state. The request decision, status line, backend
 projection, and Router compatibility values must come from one captured
@@ -91,12 +91,15 @@ Shadow always publishes inactive predictive Router backpressure and cannot
 reduce capacity.
 
 Enforce keeps a real load rejection visible as selective Router backpressure
-for a bounded 1500 ms after the pre-forward decision when the current
-one-block inspect probe would otherwise report open. This lets the live
-1000-ms Router poll observe the protection while retaining inspect capacity one
-for short traffic. A current snapshot that requires capacity zero remains
-authoritative, and a fresh open snapshot clears the projection automatically
-at the hold boundary. Scrapes and successful requests do not extend the hold.
+for a bounded 1500 ms after the pre-forward decision when the current one-block
+inspect probe would otherwise report open. A known local weighted-or-larger
+Prefill makes the current inspect capacity zero and remains authoritative until
+its Prefill lifecycle ends. Manager-mediated reject holds are discarded as
+soon as the Manager sequence changes on Prefill completion, terminal release,
+or epoch rebase; adapter-local stale or unavailable rejects retain the bounded
+time fallback. A current verdict wins at equal inspect capacity; a recent
+verdict overrides current state only when it is strictly more restrictive.
+Scrapes and successful requests do not extend the hold.
 
 The current Router parser still requires six compatibility names:
 
@@ -115,7 +118,7 @@ retired architecture is exported.
 
 ## Status log
 
-The bounded periodic line starts with `PIG-v0.12.3` and includes mode, attempts,
+The bounded periodic line starts with `PIG-v0.12.4` and includes mode, attempts,
 fit/risk/unknown counts, enforced rejects, reservations, last action/reason,
 Prefill estimate, KV post-admit values, TPS proxy, Router scope and
 inspect capacity, observer freshness/identity/running/waiting, and compatibility
