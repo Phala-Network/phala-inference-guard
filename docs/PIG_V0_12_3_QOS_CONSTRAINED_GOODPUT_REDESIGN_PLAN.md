@@ -1,6 +1,7 @@
 # PIG v0.12.4 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active execution plan, v0.12.4 dedicated-CVM matrix pending
+Status: active execution plan, v0.12.4 source matrix and push complete; local
+image acceptance pending
 
 This is the only execution plan for the active PIG v0.12.4 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -28,11 +29,14 @@ The candidate stays in the v0.12 release line and is version `0.12.4`.
 
 The exact v0.12.3 source and image completed their builder and publication
 gates, then failed the Router-disabled weighted-Prefill QoS diagnostic in
-section 25 and are not promotable. v0.12.4 has focused implementation evidence,
-but its dedicated-CVM complete matrix, commit, push, image, and targeted GPU
-gate remain incomplete. The production `use1-cb` target must remain
-Router-disabled until the dedicated test CVM passes the targeted v0.12.4 gate
-and a later explicitly authorized canary deployment begins.
+section 25 and are not promotable. The v0.12.4 executable source is committed
+and pushed at `19574b9f9711886c3362c612317d7d64a2167798`, and section 31 records a
+complete green dedicated-CVM source matrix for that exact commit. No v0.12.4
+image has been built or uploaded, and the production-image contract, smoke,
+targeted GPU, and Pareto gates remain incomplete. The production `use1-cb`
+target must remain Router-disabled until the dedicated test CVM passes the
+targeted v0.12.4 gate and a later explicitly authorized canary deployment
+begins.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
 default design. It limits the rate of growth but not the final Decode
@@ -400,9 +404,11 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
   SSH/Router-isolation checks recorded.
 - [x] current 23-path tracked diff reconstructed exactly on Linux and the
   pending telemetry benchmark plus focused packages passed in the new CVM.
-- [ ] v0.12.4 complete dedicated-CVM matrix green on the final source archive.
-- [ ] v0.12.4 source committed and pushed; immutable image published and
-  verified.
+- [x] v0.12.4 complete dedicated-CVM source matrix green on the final executable
+  source archive.
+- [x] v0.12.4 executable source committed and pushed.
+- [ ] one local immutable v0.12.4 image built, production-contract and smoke
+  accepted, then the same image uploaded and registry-pull identity verified.
 - [ ] v0.12.4 Router-disabled targeted weighted-Prefill gate passed.
 - [ ] v0.12.4 Router-disabled Pareto matrix passed.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
@@ -1532,3 +1538,121 @@ cadence. The result is acceptable scoped evidence, not proof of no regression:
 the ordered v0.12.2 comparison and additional benchmark contract remain part of
 the complete matrix. No image was built or uploaded, and no PIG, vLLM, Router,
 reference CVM, or production traffic state changed.
+
+## 31. v0.12.4 final dedicated-CVM source matrix
+
+The first complete-matrix run, r1, froze pushed source commit
+`421d2a8841986f4540996fda716c6a2750401d60` as candidate archive SHA-256
+`3a7858cc2cbb46219ff149d4a583067639979a4bc2b4e82dccdb8eb2bae59f3c` and
+used v0.12.2 baseline SHA-256
+`96d38a1b9371e7af3fec445f87fcf6f2ecd8becb24c97b377cf934703444d0d9`.
+Source, simulation, race, build, candidate benchmark, and estimator rows passed,
+but both ordered baseline benchmark rows and the additional benchmark contract
+failed. This was a fixture-validity failure, not an algorithm regression: the
+v0.12.2 baseline's own TPS gate rejected the second synthetic reservation with
+`request_size_at_pressure`, so it could not construct the required 48- and
+256-reservation telemetry states.
+
+The corrected baseline-only overlay disables that unrelated TPS authority while
+seeding the telemetry benchmark. Its SHA-256 is
+`c7d5a3f84241fee0a842a58cf1543f48cacdef21f676161ba28ccfc74781d185`.
+The focused baseline then measured 514.4 ns, 11.177 us, and 57.146 us at 0, 48,
+and 256 reservations with zero allocations. r2 reused the same frozen candidate
+and baseline archives with the corrected overlay. All 24 r2 status rows passed;
+its status SHA-256 is
+`5d6cc0da1bb7995f776375324783edc59ab5f8602db8bab7a858429db644e2ad`.
+This validates the behavior and benchmark harness for that archive, but it does
+not close the final release gate because the subsequent evidence-identity review
+found that the simulator still emitted `v0_12_3_aggregate` while executing
+`PolicyV0124`.
+
+The evidence-identity defect was converted into
+`TestSimulationReportUsesCurrentCandidateVersionKey`. The intentional red run in
+`/workspace/evidence/pig-v0124-sim-key-red-r1` exited 1 because the current
+candidate field was missing; its test-patch SHA-256 is
+`5afce2e043e59fb300b702c9fc1b61a48c33ca6af0b54a1e1c67b6e2dc23078e`.
+The minimal correction renamed only the JSON field to `v0_12_4_aggregate` and
+added the permanent regression test. The focused green run recorded zero for
+formatting, test, two simulations, byte comparison, new-key presence, old-key
+absence, and acceptance. Its source-patch SHA-256 is
+`19561ea1c5bd659b47e0fcac1cd68a567740db1875e3799a08b868dc4fe14de3`,
+and the accepted executable source was committed and pushed as
+`19574b9f9711886c3362c612317d7d64a2167798` on
+`codex/pig-v0.11.0-request-aware`.
+
+r3 is the final complete source matrix. It froze all 158 Git-tracked files from
+that exact pushed commit:
+
+```text
+candidate archive SHA-256: 44f6dde568bb900343f7f9c64c130503bed12cdf4fb4061854d2e4c2329b933a
+baseline archive SHA-256: 96d38a1b9371e7af3fec445f87fcf6f2ecd8becb24c97b377cf934703444d0d9
+runner SHA-256: 36a390bb7f822c7995afcba8ba9f1f2ba18c2662bec42e07b2af231ad3484e7b
+environment: Go 1.24.13 / linux/amd64 / Linux 6.9.0-dstack
+evidence: /workspace/evidence/pig-v0124-dedicated-phase-c-r3-19574b9
+```
+
+All 24 status rows returned zero: environment, formatting, legacy audit,
+lexical-shape corpus, affected packages, full tests, vet, targeted and full
+race, all builds, versioned binary, policy-order simulation tests, two
+simulations, byte comparison, simulation acceptance, both B/C/C/B benchmark
+orders, primary benchmark contract, reservation-aware HTTP benchmark, estimator
+benchmark, and additional benchmark contract. The final binary SHA-256 is
+`279442b030175b68d28ddc54935c8258f73d6fb7757de399aa6da82f74745f3d`;
+the status file SHA-256 is
+`5d6cc0da1bb7995f776375324783edc59ab5f8602db8bab7a858429db644e2ad`.
+
+The two simulation JSON files are byte-identical at SHA-256
+`5a6c513d6816238e41a74529be9a41708f4849c9d84d599265878dd8bf5df8f4`.
+The final report contains exactly one `v0_12_4_aggregate`, no
+`v0_12_3_aggregate`, and `"acceptance": "passed"`. Simulation remains a
+deterministic diagnostic and does not substitute for the Router-disabled GPU
+gate.
+
+The ordered benchmark contracts passed. Relevant medians are:
+
+```text
+HTTP pre-forward: 12.628 us baseline -> 13.441 us candidate, +6.44%, 33 allocations unchanged
+Manager active-0: 121.4 ns -> 170.8 ns, +49.4 ns, zero allocations
+Manager active-48: 3.296 us -> 3.294 us, zero allocations
+Manager active-256: 17.223 us -> 16.972 us, zero allocations
+Telemetry active-0: 509.4 ns -> 579.5 ns, +70.1 ns, zero allocations
+Telemetry active-48: 10.996 us -> 11.532 us, +4.88%, zero allocations
+Telemetry active-256: 57.362 us -> 60.057 us, +4.70%, zero allocations
+Estimator 4 MiB normal: 154.633 us, zero allocations
+Estimator 4 MiB many strings: 21.411 ms, zero allocations
+HTTP pre-forward with 48 reservations: 16.629 us median
+HTTP pre-forward with 256 reservations: 31.467 us median
+```
+
+Final review pass 1, model and causality: the bounded model-neutral estimator
+produces the request-size signal consumed by the actual HTTP decision; the
+Manager computes post-admit KV and Prefill state including every live
+reservation; the enforce result returns 429 before any upstream call. TPS is
+telemetry rather than admission authority, and no exact tokenizer, cache lookup,
+learning, TTFT gate, request mutation, or routing behavior was introduced.
+
+Final review pass 2, safety, lifecycle, and SOLID: the Manager lock covers
+observation, decision, and reservation as one transaction. Known weighted,
+exclusive, and quiescent Prefill reservations block new regular work until
+Prefill completion or terminal release. Completion, local reject, cancellation,
+disconnect, upstream failure, timeout, expiry, unforwarded rollback, and epoch
+rebase have exact-once release and immediate-recovery coverage. Request
+classification, resource fit, Prefill interference, lifecycle ownership, and
+HTTP/Router reporting remain separate responsibilities.
+
+Final review pass 3, efficiency, evidence, and operability: the request-aware
+Manager and telemetry scans are linear only in live reservations and allocate
+zero in their measured paths. The full pre-forward path remains tens of
+microseconds at 256 reservations; the bounded estimator remains below the
+user-accepted 100-ms extreme-input ceiling. Logs, metrics, `/upstream/status`,
+and Router-compatible capacity project the same enforce verdict, while Manager
+sequence identity prevents a prior reject from masking completion or recovery.
+The red/green and r3 artifacts bind behavior, version label, source commit,
+archive, environment, and hashes without claiming GPU or production success.
+
+This documentation append is non-executable and does not change the r3-tested
+binary. It must be committed and pushed separately for durable audit history,
+but the local candidate image must still be built from exact executable commit
+`19574b9f9711886c3362c612317d7d64a2167798`. No local candidate image, registry
+upload, Compose update, PIG replacement, vLLM load, Router change, or production
+traffic action has occurred yet.
