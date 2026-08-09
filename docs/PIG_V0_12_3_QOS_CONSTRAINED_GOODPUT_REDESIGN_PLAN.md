@@ -411,7 +411,7 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] v0.12.4 executable source committed and pushed.
 - [x] one local immutable v0.12.4 image built, production-contract and smoke
   accepted, then the same image uploaded and registry-pull identity verified.
-- [ ] v0.12.4 Router-disabled targeted weighted-Prefill gate passed.
+- [x] v0.12.4 Router-disabled targeted weighted-Prefill gate passed.
 - [ ] v0.12.4 Router-disabled Pareto matrix passed.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
@@ -1794,3 +1794,84 @@ restart, Router mutation, `use1-cb` enable, or production inference traffic
 occurred. Phase D must use the exact published digest on the Router-isolated
 dedicated H200 CVM and still complete the targeted GPU and Pareto gates before
 any production canary is considered.
+
+## 33. Dedicated-CVM runtime readiness and targeted weighted gate
+
+All subsequent source, simulation, image, and GPU testing is pinned to CVM
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`. Reference CVM
+`a0f0bfb3-e46f-4b22-814e-24872f251193` is read-only configuration reference
+only and must not receive test traffic or mutation. The retired builder remains
+out of scope. Ordinary iterations replace only PIG; the loaded vLLM container
+must not be rebuilt or restarted.
+
+The dedicated runtime uses loopback-only bindings and is absent from Router.
+Its frozen identities are:
+
+```text
+PIG source: 19574b9f9711886c3362c612317d7d64a2167798
+PIG registry digest: sha256:455534e0c84014e083fefced342e8c4728c27c8334ff0e2ed1675d90057be621
+PIG image ID: sha256:63356c2ca3e9168d0224eed8bb4cbf7f601fbb72fce33d609f0b2cc312b668c4
+PIG container: 702e8334f83ed6b5c38809eb53b86a9bcfc4300e0c8551aa3c0de5065d7bd5f8
+vLLM registry digest: sha256:485ec89ea08e6b4ead55f4721b01c053264d747bde685de04cd7d5b114d219fe
+vLLM image ID: sha256:f90fe278def6819e682889f6b7dd41a4ba9a1faa0e65c1bddf602fea9754a5c2
+vLLM container: d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552
+vLLM StartedAt: 2026-08-09T10:03:59.648050825Z
+model: google/gemma-4-31B-it
+root checkpoint: RedHatAI/gemma-4-31B-it-FP8-block
+max model length: 262144
+KV capacity / block size: 862437 / 64
+```
+
+The vLLM readiness set is under
+`/var/volatile/dstack/persistent/pig-v0124/evidence/vllm-readiness-r1`;
+its evidence-list SHA-256 is
+`979e8b6a424b4aa2e3f23c90ce727f49adc83ae60f7efed4a1fbeb79412289c2`.
+The PIG readiness set is under
+`/var/volatile/dstack/persistent/pig-v0124/evidence/pig-v0124-readiness-r1`;
+its evidence-list SHA-256 is
+`2435af634aa7649951edb16b4ea23cc481216377fbc15f0a4e045be3d5138ca3`.
+Together they prove backend health and a functional short completion, PIG
+default `enforce`, the 500-ms observer, metrics 401 without authentication and
+200 with authentication, zero residual reservation, no low-flow self-lock, no
+restart, no OOM, and unchanged vLLM identity.
+
+Initialization discovered KV capacity `862437` and derived hard limit `758912`,
+but Prefill calibration returned `source=fallback`, `reason=scale_fallback` and
+the fixed `65536/262144/524288` thresholds with aggregate budget `262144`.
+Metrics deltas isolated the cause: the first approximately 4K-token startup
+probe took 10.6828 seconds, or approximately 387 tokens/s, because it absorbed
+one-time long-input JIT/warmup. This made the next scale invalid. It is not a
+missing-metrics or online-learning failure. Before promotion, restart PIG only
+against the already-warm backend and determine whether calibration succeeds. If
+it does, add a bounded initialization-only warmup/discard/retry correction and
+repeat the complete source and image gates; do not introduce online learning.
+
+Targeted weighted r1 used a valid product stimulus but an invalid runner
+assertion. During the known weighted Prefill, PIG correctly projected Router
+inspect capacity zero and `/v1/upstream-status=2`, meaning intake closed. The
+runner incorrectly expected status `1`; r1 is retained as runner evidence and
+is not a product red.
+
+Targeted weighted r2 changed only that runner assertion. The runner SHA-256 is
+`eb3f3df11aaaaf9331609e1098d8a212d1ee6598c45b1ce851cdb493c7881cf4`.
+It ran from `2026-08-09T10:30:12Z` through `2026-08-09T10:31:24Z` against the
+same immutable runtime and exited zero. The 81,920-word, 409,792-byte request
+was classified weighted and reached the backend. While its Prefill reservation
+was live, the snapshot taken before the short request already exposed Router
+backpressure active and inspect capacity zero. The short request then received
+pre-forward 429 and the coherent verdict was `action=size_protect`,
+`reason=prefill_busy`, `pressure_source=prefill`, and upstream status `2`. When
+Prefill completed while Decode remained live, the immediate short request
+returned 200. Cancellation then returned reservations and Router backpressure
+to zero, and the recovery request returned 200. vLLM preemptions stayed `0`,
+both container identities were byte-identical before and after, and the log
+window contained no fatal, OOM, or restart evidence.
+
+The r2 evidence is under
+`/var/volatile/dstack/persistent/pig-v0124/evidence/targeted-weighted-r2`.
+Its evidence-list SHA-256 is
+`836602925666aa4375e11a6d7f009691bc1eeb47fe3a4dcaecc00b48dd80cad2`.
+This closes only the targeted weighted-Prefill gate. Exclusive/quiescent test
+overrides, terminal lifecycle recovery, low-flow and no-demand non-locking,
+stale/recovery, same-snapshot burst, near-KV, Decode QoS, and the three-round
+A/B plus B/A Pareto matrix remain open. Router and `use1-cb` remain unchanged.
