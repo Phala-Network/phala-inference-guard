@@ -1,8 +1,8 @@
 # PIG v0.12.6 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active v0.12.6 source, local-image, and dedicated-runtime gates passed;
-targeted GPU and Pareto gates remain open; v0.12.5 remains rejected before
-Pareto/upload
+Status: active v0.12.6 source, local-image, dedicated-runtime, and targeted GPU
+gates passed; ordered Pareto and upload remain open; v0.12.5 remains rejected
+before Pareto/upload
 
 This is the only execution plan for the active PIG v0.12.6 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -56,8 +56,7 @@ or create a production configuration knob. A request rejected only by this
 envelope is request-scoped: its HTTP response, decision log, and metrics expose
 the protection, while Router intake remains open for smaller requests. The
 production `use1-cb` target remains Router-disabled until the dedicated test CVM
-passes the complete v0.12.6 source, image, targeted GPU, and Pareto gates and a
-later explicitly authorized canary begins.
+passes the ordered Pareto gate and a later explicitly authorized canary begins.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
 default design. It limits the rate of growth but not the final Decode
@@ -453,7 +452,10 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] one immutable v0.12.6 local image passed production contract and smoke.
 - [x] the exact local v0.12.6 image replaced only PIG on the dedicated CVM and
   passed runtime identity, readiness, authentication, and no-calibration gates.
-- [ ] v0.12.6 targeted GPU and Pareto matrices passed on the dedicated CVM.
+- [x] v0.12.6 targeted GPU lifecycle, stale/recovery, near-KV, and repeated
+  Decode-QoS gates passed on the dedicated CVM.
+- [ ] v0.12.6 no-enforcement/v0.12.2/v0.12.6 ordered Pareto matrix passed on
+  the dedicated CVM.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
 
@@ -2692,3 +2694,103 @@ and `use1-cb` remain untouched. This closes only dedicated runtime deployment
 and readiness. Weighted/exclusive/quiescent, burst, terminal, low-flow and
 no-demand, stale/recovery, near-KV, repeated four-Decode-user QoS, and ordered
 Pareto gates remain open.
+
+## 42. v0.12.6 targeted GPU acceptance
+
+All targeted tests in this section ran only on dedicated CVM
+`c21b7281-2c25-4453-8a68-f39ec42d03b4` against the exact unpublished image from
+section 40. PIG remained container
+`b30bc5316755dec0dbd8847ffa23633dc75739fe87da3ef1cc0c3844b71087ab`
+on image ID
+`sha256:7d8c34f580b5b4d3358b5b89b0a4b99ab1a196fd1fd7c948bba734730a729f3c`.
+vLLM remained container
+`d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552`
+on image ID
+`sha256:f90fe278def6819e682889f6b7dd41a4ba9a1faa0e65c1bddf602fea9754a5c2`.
+Both retained their section 41 StartedAt values, restart count zero, running
+state, and `OOMKilled=false`; GPU process PID 65953 remained
+`VLLM::EngineCore`.
+
+The first targeted group is
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-targeted-phase1-r3-8dec49f`.
+All six raw JSON results report `overall=true`: twenty-request low flow without
+false locking, same-observation burst accounting, upstream 404 terminal release,
+weighted zero-Decode progress, exclusive Prefill cancellation, and weighted
+plus quiescent Decode-envelope rejection. The weighted attempt was estimated at
+70,297 Prefill tokens and rejected in 1.502 ms; the quiescent attempt was
+estimated at 271,665 and rejected in 3.880 ms. Both were pre-forward,
+request-scoped, left Router green, allowed the fitting 4K request, and ended
+without preemption or reservation. All 34 manifest rows pass `sha256sum -c`;
+the `SHA256SUMS` SHA-256 is
+`257dc43c7b73183946e6d36dde1a300e25a67f5579371d81b1cf5a783414681e`.
+The earlier r1 and r2 control directories remain unchanged as invalid-runner
+evidence.
+
+The stale/recovery group is
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-targeted-stale-r2-8dec49f`.
+After the test paused only the vLLM container, Router became
+availability-protected after 11 polls at 100 ms. The stale request returned
+pre-forward 429 in 0.642 ms and did not change the vLLM prompt-token counter.
+After unpause, Router returned to green after 15 polls at 100 ms; the recovery
+request returned 200 in 34.065 ms. PIG and vLLM identities were unchanged,
+vLLM was not left paused, and final preemption and reservation counts were zero.
+All 39 manifest rows pass;
+the `SHA256SUMS` SHA-256 is
+`aa96e7c3590392e958c93c5d1155a86892493f33033c0ce4618fad9255d8a38b`.
+The r1 expectation failure remains preserved and is not acceptance evidence.
+
+The near-KV group is
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-targeted-nearkv-r1-8dec49f`.
+Three concurrent 245K-word requests produced exactly one 200 and two
+pre-forward 429 responses in 18.492 and 10.342 ms. The prompt-token delta was
+245,052, proving only one request reached vLLM. Peak KV was 25.148 percent,
+peak running was one, waiting remained zero, and there was no preemption,
+reservation leak, restart, or Router residue. All 24 manifest rows pass; the
+`SHA256SUMS` SHA-256 is
+`47593ecadcf1666a13f37af02ded131dee00e8618ea90a7817b3487700a3a0e5`.
+
+The final repeated Decode-QoS group is
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-targeted-decode-qos-r1-8dec49f`.
+Before execution, the evidence path did not exist; runner and harness SHA-256
+values were respectively
+`905e055deada2d9432827445540ddb4bbec296317156d04fd8d19d737905deb7`
+and
+`915f48a3e95d81d94d88c9a75ab868f6ab468daccbefe06547cbba39de979add`.
+The runner used boolean `overall=1` in its summary, while each raw JSON reports
+`overall=true` and the independent process `exit-code.txt` is zero.
+
+Each repetition held four successful streaming Decode users active, admitted a
+4K fitting request, and proved all four users emitted tokens during that request.
+It then froze a per-user floor at 85 percent of a stable protected baseline and
+attempted 8K, 16K, 32K, and 49K requests in separate two-second windows:
+
+```text
+run  initial median TPS  protected median TPS  4K wall ms  reject wall ms, 8K/16K/32K/49K  minimum window TPS
+r1               42.925                42.319      380.491  0.978/1.089/1.379/1.715                    41.981
+r2               43.798                42.986      384.630  0.986/0.977/1.160/1.544                    42.980
+r3               43.674                42.986      377.266  0.918/0.969/1.275/1.443                    42.980
+```
+
+All twelve oversized attempts returned 429 below 100 ms with estimated Prefill
+tokens 12,121/23,449/48,409/70,297. Every attempt reported
+`decode_interference`, `pressure_source=decode`, and request scope; each exact
+before/after prompt counter was equal, so none reached vLLM. Every two-second
+per-user Decode window remained above its repetition's frozen floor. PIG
+enforced-reject counters increased by exactly twelve, while Router activation
+count remained 14 and final Router active/applied/inspect-capacity values were
+zero. A fitting request after the attempts returned 200.
+
+Independent post-run inspection confirmed zero PIG reservations, zero vLLM
+running/waiting/KV gauges, zero preemptions, identical PIG/vLLM/GPU identities,
+and empty fatal/error scans. The workbench had only its original `bridge`
+network both before and after; the current runtime network contains only PIG and
+vLLM. All 31 manifest rows pass `sha256sum -c`; the `SHA256SUMS` SHA-256 is
+`0ffc4ae527f33dc8be78bd38b13df9ae5da40863cd675ecad5b49bcab07c7e4b`.
+
+These results close the targeted GPU gate, including low-flow non-locking,
+request lifecycle, stale recovery, hard capacity, and repeated Decode QoS. They
+do not establish Pareto safety: the section 39 adverse large-only simulation
+counterexample remains binding. The next executable gate is the ordered
+no-enforcement/v0.12.2/v0.12.6 GPU matrix from sections 4 and 38. The image
+remains unpublished, production Router and `use1-cb` remain untouched, and no
+production traffic has been sent.
