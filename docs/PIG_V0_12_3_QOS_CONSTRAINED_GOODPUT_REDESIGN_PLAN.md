@@ -1,9 +1,9 @@
 # PIG v0.12.7 Evidence-First QoS-Constrained Goodput Remediation Plan
 
 Status: v0.12.6 failed the ordered Pareto gate and remains unpublished; the
-exact v0.12.7 source correction and immutable local image passed their complete
-dedicated-CVM gates; targeted GPU, Pareto, upload, and production gates remain
-open
+exact v0.12.7 source correction, immutable local image, dedicated-CVM runtime,
+and targeted GPU gates passed; ordered Pareto, upload, and production gates
+remain open
 
 This is the only execution plan for the active PIG v0.12.7 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -476,10 +476,12 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
   explain away the deterministic short-request over-protection.
 - [x] v0.12.7 phase-correct active-Decode red tests fail against v0.12.6 for
   the intended reason.
-- [ ] v0.12.7 focused implementation, source matrix, three reviews, and push
+- [x] v0.12.7 focused implementation, source matrix, three reviews, and push
   completed on the dedicated CVM.
-- [ ] one exact v0.12.7 local image passes runtime, targeted GPU, and complete
-  ordered Pareto gates before upload.
+- [x] one exact v0.12.7 local image passed image contract, dedicated-CVM
+  runtime, and targeted GPU gates.
+- [ ] the completely new v0.12.7 ordered Pareto matrix passes every section 4
+  condition before upload.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
 
@@ -3226,4 +3228,144 @@ network retained exactly PIG and vLLM.
 This accepts deployment readiness on the dedicated CVM only. Targeted GPU QoS,
 near-KV, lifecycle, low-flow, stale/recovery, and ordered Pareto gates remain
 open. The image is still local and unpublished; production Router and
+`use1-cb` remain untouched.
+
+## 47. v0.12.7 targeted GPU and candidate-only workload acceptance
+
+All executable work in this section ran only on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`. The running candidate remained image
+ID `sha256:5fc2613c11748c62059b849c56c042456b26c561fade9a8f289af925283abd7e`;
+the vLLM container remained
+`d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552`
+with its original image and StartedAt. Neither container restarted, neither was
+OOM-killed, and the vLLM compute-process identity remained unchanged. No CVM,
+vLLM, production Router, or `use1-cb` mutation occurred.
+
+The first phase-one runner is invalid evidence rather than a PIG failure. It
+attempted to use the CVM host's reduced Python installation, which lacks
+`concurrent.futures`, and failed during module import before constructing a
+scenario. Its exit code is one and it produced no scenario JSON. The directory
+is preserved unchanged at:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-targeted-phase1-r1-92e20b2
+classification
+  runner environment failure before workload; not a PIG result
+```
+
+The corrected Python runners used the already-local vLLM image as an ephemeral,
+read-only, capability-dropped helper with host networking. The helper was
+removed after each scenario and never used the Docker socket. The persistent
+workbench remained connected only to `bridge`; it was never connected to the
+PIG/vLLM runtime network. The stale/recovery runner remained host-shell-only and
+used a trap-protected vLLM pause/unpause, never a restart or rebuild.
+
+The accepted targeted evidence is:
+
+```text
+phase one
+  /var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-targeted-phase1-r2-92e20b2
+  runner SHA-256  2fe8fb5bb9635f2f03cb73165a9c1afde7dac302591c65f8e384b29d4efd3f27
+  harness SHA-256 5d60a736a613be4fdf70e7d9c3c1f06cd64e4869f3090b56a2b1520d7f72d3ce
+  SHA256SUMS SHA-256 3b68e05ec43b939c6bbf17dede1bbb1f0d3bca20e9e95e99c944fa29dba88321
+
+near KV
+  /var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-targeted-nearkv-r1-92e20b2
+  runner SHA-256  c5e13bb979823ff56017664ed564af1750614bb15615ddafe384f90e7e9f5e3b
+  harness SHA-256 5d60a736a613be4fdf70e7d9c3c1f06cd64e4869f3090b56a2b1520d7f72d3ce
+  SHA256SUMS SHA-256 6e4a3d883d30fef5ec8040f4ca0b3c72b93eda8d70e30b3230a800f11719cc25
+
+Decode QoS
+  /var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-targeted-decode-qos-r1-92e20b2
+  runner SHA-256  0e8813366431248ade6bd0abc866e9ea7d4515e2ee865b5ee8e79d78f61a31b2
+  harness SHA-256 5d60a736a613be4fdf70e7d9c3c1f06cd64e4869f3090b56a2b1520d7f72d3ce
+  SHA256SUMS SHA-256 c7b5983a37d6df36d3cba3ed315970d0960ff80a5e9596bcf10b01a969663257
+
+stale and recovery
+  /var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-targeted-stale-r1-92e20b2
+  runner SHA-256 c1b44e38fe25849339de4ddab708a2a5c82ef95f74aad9a1c8b7829c18f0fa75
+  SHA256SUMS SHA-256 3e18dcbb42b639cf7788e780273918923a694fa300f7c66ffaa84295938d8208
+
+candidate-only named workloads
+  /var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-targeted-workloads-r1-92e20b2
+  runner SHA-256  036dd4948405b893957817e11e9aa29face62a7ddc14cac2e94024375c09b328
+  harness SHA-256 dec70804ec9acb937ea3d01243e515f8227e923c3a7ad64b68dd0b4c9c282ada
+  SHA256SUMS SHA-256 ba957bb0cb6bc848edaeab254c5d8a06056b3b4da4824268f9d1efcfa4074364
+```
+
+Independent `sha256sum -c` verification passed every manifest. The phase-one
+JSON results all reported `overall=true`:
+
+- low flow completed 20 of 20 requests with Router status zero throughout, then
+  completed a recovery request after an invalid-model terminal path;
+- the same-snapshot regular burst admitted five of twelve and rejected seven
+  pre-forward in `19.805--26.546 ms`, with exact reject-counter agreement;
+- weighted and exclusive reservations exposed the intended class, blocked
+  conflicting work, released on cancellation, and admitted recovery work;
+- the weighted and quiescent Decode-envelope attempts were request-scoped 429s
+  in `1.924 ms` and `7.520 ms`, did not reach vLLM, left Router green, and
+  allowed fitting 4K requests; and
+- every case ended with zero reservations and zero preemptions.
+
+Three simultaneous 245K-word requests produced exactly one 200 and two 429s in
+`7.346 ms` and `7.409 ms`. The prompt-token delta was `245051`, peak KV was
+`0.251480`, peak running was one, waiting stayed zero, and no preemption or
+reservation residue occurred.
+
+The repeated Decode-QoS results were:
+
+```text
+run  initial median event TPS  4K wall ms  max reject ms  minimum reject-window/floor ratio
+r1                     43.424      382.0          2.257                              1.158
+r2                     44.297      374.0          1.877                              1.158
+r3                     43.923      368.0          1.953                              1.167
+```
+
+All four Decode users progressed during each fitting 4K request. All twelve
+8K/16K/32K/49K attempts were pre-forward request-scoped 429s, did not change the
+prompt counter, and left Router green. Each two-second rejected-attempt window
+remained above its repetition's frozen 85-percent floor. The shorter 4K fitting
+windows themselves had minimum per-user event rates of only
+`15.696/13.360/10.867`; section 5.4 requires progress rather than the frozen
+floor during this fitting request, so the targeted gate passes, but this result
+is not evidence of complete TPS protection. The ordered Pareto matrix must still
+account for any QoS-violation seconds caused by admitted work.
+
+The controlled stale case reached Router status two on the fifteenth 100-ms
+poll. Its request was rejected in `0.636 ms` and the exact vLLM prompt counter
+did not change. After unpause, Router returned to zero on the fifteenth poll and
+a recovery request returned 200 in `34.168 ms`. vLLM was confirmed unpaused and
+all PIG, vLLM, GPU, preemption, reservation, and network identities remained
+unchanged.
+
+The candidate-only workload harness was byte-identical to the prior accepted
+Pareto harness except for adding the `v0.12.7` policy identity and updating its
+evidence schema. It retained no request or response bodies and reported all
+safety and evidence checks true:
+
+```text
+workload                 success/requests  429  Decode p10/p50  raw completed-token TPS
+short-only                           8/8     0  204.899/205.252                 1193.762
+mixed                                8/9     1  202.613/203.001                 1377.490
+sustained-regular-decode            14/24    10  180.854/189.413                 1305.107
+```
+
+The mixed 195K long request was rejected while all eight Decode requests
+completed. In sustained regular Decode, the first twelve requests completed;
+the second worker wave began before the 500-ms observation had retired the old
+`running=12` snapshot, so two more requests were admitted and ten were rejected
+as `decode_interference` with request scope. This is materially better than the
+prior v0.12.6 candidate's five-of-twenty-four result, but it may still be an
+observation-lag throughput loss. One `0.252 s` Router-active sample occurred
+earlier during real load at `running=9`, `waiting=3`, twelve reservations, and
+eleven pending Prefills; it was not residue from the second-wave request-scoped
+rejections and final Router state was green.
+
+This accepts the targeted safety, lifecycle, request-scope, near-KV, stale, and
+named-workload evidence layers only. It does not accept candidate throughput or
+promotion. The next gate is a completely new ordered matrix
+`N1,N2,N3,B1,A1,A2,B2,B3,A3`, with `B=v0.12.7`, followed by independent
+recalculation of every section 4 QoS/goodput condition. The sustained-wave
+rejections and 4K fitting-window TPS decline must remain visible in that
+decision. The candidate image is still unpublished; production Router and
 `use1-cb` remain untouched.
