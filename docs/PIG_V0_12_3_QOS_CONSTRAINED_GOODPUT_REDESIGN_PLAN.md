@@ -1,9 +1,9 @@
-# PIG v0.12.5 Evidence-First QoS-Constrained Goodput Remediation Plan
+# PIG v0.12.6 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active v0.12.5 red/green execution plan; v0.12.4 source, image, and
-weighted-GPU evidence retained but candidate rejected before Pareto promotion
+Status: active v0.12.6 red/green execution plan; v0.12.5 source, local image,
+and targeted-GPU evidence retained but candidate rejected before Pareto/upload
 
-This is the only execution plan for the active PIG v0.12.5 remediation. Sections
+This is the only execution plan for the active PIG v0.12.6 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
 history; section 25 and later supersede that candidate. Section 29 supersedes
 every earlier instruction to use the shared builder or the old `use1-cb` CVM as
@@ -23,7 +23,7 @@ feedback may update the next observation used by a decision, but it must not be
 the only protection and must not create learned parameters, reject cooldowns,
 or sticky state.
 
-The candidate stays in the v0.12 release line and is version `0.12.5`.
+The candidate stays in the v0.12 release line and is version `0.12.6`.
 
 ## 2. Current conclusion
 
@@ -38,13 +38,25 @@ different policy from cold-JIT versus warm-backend samples. The v0.12.4 Pareto
 matrix is cancelled rather than treating that nondeterminism as a benchmark
 variable.
 
-The active v0.12.5 correction removes synthetic startup completions and the
-derived safe-rate state. KV geometry and model metadata are read once; a pure,
-bounded geometry function derives Prefill classes without learning or active
-performance calibration. The production `use1-cb` target remains
-Router-disabled until the dedicated test CVM passes the complete v0.12.5 source,
-image, targeted GPU, and Pareto gates and a later explicitly authorized canary
-begins.
+The v0.12.5 correction removed synthetic startup completions and the derived
+safe-rate state. KV geometry and model metadata are read once; a pure, bounded
+geometry function derives Prefill classes without learning or active performance
+calibration. Its source and local-image gates passed, but section 38 proves that
+the two-gate policy admitted a 49K weighted Prefill while four Decode users were
+active and reduced their output rate to only `7.18%--7.80%` of the immediately
+preceding baseline in three repetitions. The exact local image is unpublished
+and v0.12.5 is rejected before near-KV, stale, Pareto, or production promotion.
+
+The active v0.12.6 correction keeps the passive v0.12.5 initializer and adds a
+fixed Decode-interference envelope derived from the immutable `regular` Prefill
+geometry. It bounds total pending Prefill work multiplied by the Decode users it
+can disturb. It does not learn, probe, persist a measured rate, add a cooldown,
+or create a production configuration knob. A request rejected only by this
+envelope is request-scoped: its HTTP response, decision log, and metrics expose
+the protection, while Router intake remains open for smaller requests. The
+production `use1-cb` target remains Router-disabled until the dedicated test CVM
+passes the complete v0.12.6 source, image, targeted GPU, and Pareto gates and a
+later explicitly authorized canary begins.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
 default design. It limits the rate of growth but not the final Decode
@@ -428,7 +440,17 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] v0.12.5 complete source/race/simulation/benchmark matrix and three reviews
   passed on the dedicated CVM.
 - [x] one immutable v0.12.5 local image passed production contract and smoke.
-- [ ] v0.12.5 targeted GPU and Pareto matrices passed on the dedicated CVM.
+- [x] v0.12.5 PIG-only runtime readiness and positive targeted GPU lifecycle
+  checks completed on the dedicated CVM.
+- [x] v0.12.5 failed the repeated Decode-QoS gate and was rejected before
+  near-KV, stale, Pareto, registry upload, or production promotion.
+- [ ] v0.12.6 fixed Decode-interference envelope focused red is valid.
+- [ ] v0.12.6 focused implementation, Router scope, observability, version,
+  efficiency, and SOLID green.
+- [ ] v0.12.6 complete source/race/simulation/benchmark matrix and three
+  reviews passed on the dedicated CVM.
+- [ ] one immutable v0.12.6 local image passed production contract and smoke.
+- [ ] v0.12.6 targeted GPU and Pareto matrices passed on the dedicated CVM.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
 
@@ -2259,3 +2281,181 @@ StartedAt values, zero restart count, and non-OOM state. This closes only the
 local image gate. The image remains deliberately unpublished and undeployed;
 the next step may replace only PIG on the dedicated CVM, then must complete the
 targeted GPU and ordered Pareto matrices before any upload.
+
+## 38. v0.12.5 dedicated runtime rejection and v0.12.6 Decode envelope
+
+The exact local image from section 37 was deployed only to
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`. The deployment runner verified the
+original Compose SHA-256
+`408480f4b66f6785a05500f81eb0737059c72b3522e7b80d541278d8ce1aa0b2`,
+created exact rollback and candidate copies, proved that the only candidate
+change was `pig.image`, fixed the original Compose project and working directory,
+and ran `up -d --no-deps --force-recreate --pull never pig`. It neither named nor
+recreated vLLM. The runner SHA-256 is
+`671ca8455732584aa94336a3bb83ba4149a520aeafdd3f4b08d3baed2352edd6`.
+
+The vLLM identity remained exactly
+`d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552`,
+StartedAt `2026-08-09T10:03:59.648050825Z`, restart count zero, and non-OOM.
+The running PIG changed to container
+`f71a089b16fc2ef030d94fbd2f930eb13af0ba3599f0a256b2f70c759d9215de`
+on image ID
+`sha256:8096b132425648f609f2257436ed58e9d2cdb738b55ef7ed0c0f7081d5f9abdf`.
+Health, model identity, transparent chat, metrics authentication `401/200`,
+default `enforce`, 500-ms observation, zero Router protection, and fatal scans
+all passed. The live automatic profile was `request-aware-capability-v2`,
+source/reason `automatic/metadata`, hard KV `758912`, and Prefill bounds
+`32768/131072/262144/131072`. The 38-file evidence manifest SHA-256 is
+`d48427e729636edf3ab987a3d96b0d6609d4158c7f1c12bf4a0cc70d6ea1fc89`
+under
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0125-runtime-r1-045591c`.
+
+Positive targeted checks used nonce-separated requests through the real PIG and
+vLLM chain:
+
+- weighted Prefill protection, cancellation, post-Prefill progress, Router
+  recovery, and zero preemption passed;
+- a 12-request same-snapshot 16K burst admitted seven and rejected five in at
+  most `20.36 ms`, with peak pending Prefill `130053`, no preemption, and exact
+  terminal release;
+- the 120K fixture reached the exclusive class; a second exclusive request was
+  rejected as `prefill_concurrency` in `4.01 ms`, a regular request was protected
+  during Prefill, and both immediate post-Prefill and post-cancel progress passed;
+- a 270K quiescent candidate was rejected pre-forward during Decode in
+  `10.52 ms` with zero vLLM prompt-token delta, while a regular request progressed;
+  a successful quiescent GPU request cannot exist on this target because its
+  automatic quiescent threshold equals `max_model_len=262144`; and
+- twenty low-flow requests all returned 200 with Router protection continuously
+  zero; an upstream 404 released its reservation and the next request returned
+  200 without a business-request-dependent unlock.
+
+The mechanical summaries above passed, but they did not assert the product
+Decode floor. The dedicated Decode-QoS diagnostic then held four streaming
+Decode users active and admitted one 49K weighted Prefill. Three repetitions
+produced:
+
+```text
+run   baseline per-user event TPS   Prefill TPS   ratio    recovery TPS
+r1                         43.570         3.350   7.69%          42.250
+r2                         44.572         3.201   7.18%          43.250
+r3                         44.898         3.502   7.80%          43.574
+```
+
+The independent vLLM generation counter agreed: baseline aggregate Decode was
+`866--891 tokens/s`, fell to `67--71 tokens/s` during Prefill, and recovered to
+`838--865 tokens/s`. Preemptions remained zero. Summary SHA-256 values for the
+three repetitions are
+`ca1ca35d261bf532e9a4a5b642dc0ed6621e270784589859c52f87d3a7d2090f`,
+`fa267fd96f969dab5e7d6f5acc68ed3d7cfde8c33f527f3cda2174a3ddd9d467`,
+and `fd1d8ded14c13a8dbad389d92b58bec44e673efd4cf4935c54d7cc1dd3621dab`.
+The candidate therefore fails Decode QoS; recovery after the damage does not
+make a pre-forward policy protective.
+
+A bounded Router-disabled impact curve confirmed that merely lowering the
+weighted boundary is insufficient. With the same four Decode users, sequential
+4K, 8K, 16K, and 32K Prefill fixtures left respectively `26.72%`, `19.84%`,
+`13.28%`, and `9.45%` of baseline output rate during their Prefill intervals.
+Their intervals were `1.44 s` for four 4K requests, `2.15 s` for three 8K,
+`3.04 s` for two 16K, and `3.59 s` for one 32K. This is diagnostic evidence for
+a bounded exposure rule, not a production startup calibration and not a learned
+rate. The exact fixture script SHA-256 is
+`ed833365463d18e24dc8d558443256e0f6d3bda0b06c0dc5504032cdbdab357e`.
+
+The v0.12.5 near-KV, stale/recovery, and Pareto matrices are cancelled because
+the executable candidate is already rejected and the correction changes its
+pre-forward decisions. The local image remains unpublished. Production Router,
+`use1-cb`, and actual traffic were not touched.
+
+The active v0.12.6 envelope is deterministic:
+
+```text
+active_decode_sequences = reconciled effective Decode sequences
+post_admit_prefill_tokens = pending Prefill tokens plus the candidate
+decode_interference_budget = immutable profile regular Prefill tokens
+
+if active_decode_sequences == 0:
+    no Decode-interference restriction
+else:
+    decode_interference_charge =
+        post_admit_prefill_tokens * active_decode_sequences
+    admit only when decode_interference_charge <= decode_interference_budget
+```
+
+Multiplication is checked for overflow. Equality admits. The Manager's atomic
+state includes every unabsorbed local reservation before this calculation, so a
+same-snapshot burst cannot bypass the total-work bound. Zero Decode remains
+work-conserving and the existing Prefill-vs-Prefill and hard-KV gates remain
+authoritative. No wall-clock Prefill rate, probe, learned multiplier, cooldown,
+retry credit, cache state, tier, priority, or new production environment option
+is introduced.
+
+`DecodeEnvelope` owns only the product above. `InterferenceGate` owns only
+Prefill-vs-Prefill serialization and budget; it no longer independently checks
+Decode activity for quiescent requests. `ResourceGate` retains first precedence,
+then Prefill interference, then Decode interference. The policy reports reason
+`decode_interference`, pressure source `decode`, and charge/budget ratio through
+the existing pressure field. Existing metrics already expose the immutable
+regular budget, effective Decode sequences, post-admit pending Prefill tokens,
+reason, source, action, and enforced-reject count; the decision log exposes the
+same values.
+
+A Decode-envelope rejection is request-scoped. It returns pre-forward 429 and
+increments rejection telemetry, but does not activate node-wide Router
+backpressure: the same backend may still fit a smaller request. Pending-Prefill,
+hard-KV, preemption, stale, and unavailable conditions retain their existing
+load/availability Router scope. Focused HTTP tests must prove both halves:
+the oversized request never reaches upstream and is visible in log/metrics,
+while `/v1/upstream-status` remains zero and a fitting request progresses.
+
+The v0.12.6 execution order is:
+
+1. Commit and push this evidence/design update without executable changes.
+2. Add focused red tests for envelope boundaries, overflow, atomic reservations,
+   quiescent ownership, HTTP enforcement, metrics/log projection, request-scoped
+   Router behavior, low-flow recovery, and no active calibration.
+3. Implement the smallest vertical slice, set every runtime/image identity to
+   `0.12.6`, run formatting and affected packages, then commit and push coherent
+   focused green.
+4. On that exact pushed source, rerun full tests, vet, race, deterministic
+   simulation, ordered benchmarks, lexical corpus, production build, and the
+   three reviews. No v0.12.5 executable result closes a v0.12.6 gate.
+5. Build one new local immutable image without push; pass image contract and
+   smoke, then replace only PIG on the dedicated CVM while preserving exact vLLM
+   identity.
+6. Rerun weighted/exclusive/quiescent, burst, terminal, low-flow/no-demand,
+   stale/recovery, near-KV, and Decode-QoS. With four Decode users, a fitting 4K
+   request must preserve progress; requests above the fixed envelope must be
+   pre-forward request-scoped rejects, leave Router open for a fitting request,
+   and keep the attempted-request Decode window above the frozen floor because
+   no Prefill reaches vLLM.
+7. Only after targeted green, run at least three no-enforcement/v0.12.2/v0.12.6
+   repetitions in A/B and B/A order. The section 4 goodput and QoS thresholds
+   remain unchanged; the envelope is rejected if it protects Decode by
+   materially reducing SLO-goodput or creating long-request starvation.
+8. Upload only the exact image ID that passes every source, image, GPU, and
+   Pareto gate. Production remains unchanged until a later authorized canary.
+
+Review pass 1, model and causality: the repeated GPU result proves a causal hole
+in the current pre-forward decision: `EffectiveSequences` was observed but did
+not constrain weighted/exclusive arrivals. The new formula makes request size,
+all pending Prefill reservations, and affected Decode users change the current
+decision before upstream work. It does not claim context geometry predicts a
+Prefill rate. The Pareto gate remains mandatory because the proposed regular
+budget may be too strict under sustained Decode demand.
+
+Review pass 2, safety and lifecycle: checked addition already constructs
+post-admit Prefill work; checked multiplication prevents overflow; Manager lock
+scope makes the decision and reservation atomic; every existing terminal,
+cancellation, disconnect, timeout, rollback, stale, and epoch path retains one
+owner. Zero Decode bypasses only the new envelope, not hard KV, freshness, or
+Prefill interference. A request-scoped reject creates no reservation, cooldown,
+Router hold, or future-request unlock dependency.
+
+Review pass 3, SOLID, efficiency, and operability: a separate pure envelope
+prevents Decode policy from leaking back into Prefill classification. It adds
+constant-time integer work and no map, allocation, learner, sampler, goroutine,
+or production knob. Existing observability fields carry the full formula and a
+bounded reason enum. Focused and full HTTP/Manager benchmarks must show no added
+allocation and remain within section 8 limits. The plan does not promote the
+formula from design evidence; red/green, GPU, and Pareto results may still reject
+or revise it.
