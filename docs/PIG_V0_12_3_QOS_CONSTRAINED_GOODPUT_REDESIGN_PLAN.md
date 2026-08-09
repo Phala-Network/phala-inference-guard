@@ -1,7 +1,8 @@
 # PIG v0.12.6 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active v0.12.6 source and local-image gates passed; targeted GPU and
-Pareto gates remain open; v0.12.5 remains rejected before Pareto/upload
+Status: active v0.12.6 source, local-image, and dedicated-runtime gates passed;
+targeted GPU and Pareto gates remain open; v0.12.5 remains rejected before
+Pareto/upload
 
 This is the only execution plan for the active PIG v0.12.6 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -450,6 +451,8 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] v0.12.6 complete source/race/simulation/benchmark matrix and three
   reviews passed on the dedicated CVM.
 - [x] one immutable v0.12.6 local image passed production contract and smoke.
+- [x] the exact local v0.12.6 image replaced only PIG on the dedicated CVM and
+  passed runtime identity, readiness, authentication, and no-calibration gates.
 - [ ] v0.12.6 targeted GPU and Pareto matrices passed on the dedicated CVM.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
@@ -2627,3 +2630,65 @@ This closes only the local-image gate. The image remains unpublished and
 undeployed. The next step may replace only PIG on the dedicated CVM while
 preserving exact vLLM identity, then must complete targeted GPU and ordered
 Pareto validation before any registry upload.
+
+## 41. v0.12.6 dedicated runtime deployment acceptance
+
+The first PIG-only deployment runner correctly created exact candidate and
+rollback Compose copies, changed only `pig.image`, started the accepted v0.12.6
+image, and preserved the vLLM identity and inference counters. It then failed
+its own authentication assertion because it queried transparent upstream path
+`/metrics` instead of protected PIG path `/pig/metrics`. The 200 response and
+Python metrics body were therefore expected vLLM proxy behavior, not an
+authentication regression. The runner automatically restored v0.12.5 and did
+not name or restart vLLM. This r1 attempt is invalid as deployment acceptance;
+its directory and runner are preserved unchanged at
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-runtime-r1-8dec49f`
+and runner SHA-256
+`91075fc8ada5bdf2b57ac5dd4037cda5474321580705cd2b1347241000d80a6d`.
+
+The corrected r2 runner started from the exact r1 rollback Compose, generated a
+fresh evidence directory, and again proved that its only Compose delta was the
+PIG image. It used the fixed project name and working directory and ran
+`up -d --no-deps --force-recreate --pull never pig`; vLLM was never an
+operation target. It replaced PIG with exact local image ID
+`sha256:7d8c34f580b5b4d3358b5b89b0a4b99ab1a196fd1fd7c948bba734730a729f3c`.
+The resulting PIG container is
+`b30bc5316755dec0dbd8847ffa23633dc75739fe87da3ef1cc0c3844b71087ab`,
+StartedAt `2026-08-09T16:35:46.387891422Z`, restart count zero, and non-OOM.
+
+The exact vLLM container remained
+`d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552`
+on image ID
+`sha256:f90fe278def6819e682889f6b7dd41a4ba9a1faa0e65c1bddf602fea9754a5c2`,
+StartedAt `2026-08-09T10:03:59.648050825Z`, restart count zero, and non-OOM.
+The GPU process remained PID 65953 `VLLM::EngineCore`. Prompt-token,
+generation-token, and completion counters were byte-identical before PIG
+replacement and after startup, proving zero startup inference calls.
+
+Runtime contract checks passed with no predictive override:
+
+- health became ready on poll two of the one-second loop;
+- local `/pig/metrics` and combined `/v1/metrics` returned 401 without the
+  token and 200 with it, and the combined endpoint contained both PIG and vLLM
+  metrics;
+- mode was `enforce`, observer cadence was 500 ms, model discovery returned
+  200, the authenticated one-token chat returned 200, and Router status was 0;
+- the immutable automatic/metadata profile retained KV capacity 862,437,
+  block size 64, hard limit 758,912, and Prefill bounds
+  32,768/131,072/262,144/131,072; and
+- startup logs and metrics contained no retired safe-rate or active-calibration
+  state, while PIG/vLLM fatal and OOM scans were empty.
+
+The accepted r2 evidence is under
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-runtime-r2-8dec49f`.
+All 50 manifest rows pass `sha256sum -c`. Material SHA-256 values are:
+
+    r2 runner        6c5f6f192fe7ce7e623f3b44c43f657b8035c7be9fef0a5c99dcf411ad1355f7
+    SHA256SUMS       8590fb843ba9097df8fe31fca0f31c178ac774c17e48ed08ab4772f67352b810
+    summary          65ccf2aceb462883c024668d8342fe7fb3f6bbce7ad7ba745daa462b7c29e53f
+
+The image still has no registry digest and was not uploaded. Production Router
+and `use1-cb` remain untouched. This closes only dedicated runtime deployment
+and readiness. Weighted/exclusive/quiescent, burst, terminal, low-flow and
+no-demand, stale/recovery, near-KV, repeated four-Decode-user QoS, and ordered
+Pareto gates remain open.
