@@ -1,10 +1,10 @@
-# PIG v0.12.6 Evidence-First QoS-Constrained Goodput Remediation Plan
+# PIG v0.12.7 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active v0.12.6 source, local-image, dedicated-runtime, and targeted GPU
-gates passed; ordered Pareto and upload remain open; v0.12.5 remains rejected
-before Pareto/upload
+Status: v0.12.6 failed the ordered Pareto gate and remains unpublished; active
+v0.12.7 reservation-phase correction is design/red-test work only; source,
+image, GPU, Pareto, upload, and production gates remain open
 
-This is the only execution plan for the active PIG v0.12.6 remediation. Sections
+This is the only execution plan for the active PIG v0.12.7 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
 history; section 25 and later supersede that candidate. Section 29 supersedes
 every earlier instruction to use the shared builder or the old `use1-cb` CVM as
@@ -24,7 +24,7 @@ feedback may update the next observation used by a decision, but it must not be
 the only protection and must not create learned parameters, reject cooldowns,
 or sticky state.
 
-The candidate stays in the v0.12 release line and is version `0.12.6`.
+The candidate stays in the v0.12 release line and is version `0.12.7`.
 
 ## 2. Current conclusion
 
@@ -48,15 +48,28 @@ active and reduced their output rate to only `7.18%--7.80%` of the immediately
 preceding baseline in three repetitions. The exact local image is unpublished
 and v0.12.5 is rejected before near-KV, stale, Pareto, or production promotion.
 
-The active v0.12.6 correction keeps the passive v0.12.5 initializer and adds a
+The v0.12.6 correction kept the passive v0.12.5 initializer and added a
 fixed Decode-interference envelope derived from the immutable `regular` Prefill
 geometry. It bounds total pending Prefill work multiplied by the Decode users it
 can disturb. It does not learn, probe, persist a measured rate, add a cooldown,
 or create a production configuration knob. A request rejected only by this
 envelope is request-scoped: its HTTP response, decision log, and metrics expose
 the protection, while Router intake remains open for smaller requests. The
-production `use1-cb` target remains Router-disabled until the dedicated test CVM
-passes the ordered Pareto gate and a later explicitly authorized canary begins.
+ordered matrix in section 43 proved that its Manager incorrectly treated every
+Prefill-incomplete reservation as both pending Prefill work and an active Decode
+user. It therefore rejected fitting short work before any request was running
+upstream and is not promotable.
+
+The active v0.12.7 correction keeps the same immutable geometry, resource gate,
+Prefill gate, and Decode envelope. It changes only ownership of the envelope's
+active-Decode input: backend-observed `running` remains the conservative
+observed upper, and only a Prefill-complete local reservation not yet absorbed
+by an observation adds an unobserved Decode sequence. A Prefill-incomplete
+reservation continues to charge atomic KV and pending-Prefill demand but cannot
+also claim to be an active Decode user. No learner, probe, cooldown, new public
+configuration, or request mutation is introduced. Production `use1-cb` remains
+Router-disabled until a new exact image passes every source, GPU, and ordered
+Pareto gate and a later explicitly authorized canary begins.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
 default design. It limits the rate of growth but not the final Decode
@@ -454,8 +467,18 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
   passed runtime identity, readiness, authentication, and no-calibration gates.
 - [x] v0.12.6 targeted GPU lifecycle, stale/recovery, near-KV, and repeated
   Decode-QoS gates passed on the dedicated CVM.
-- [ ] v0.12.6 no-enforcement/v0.12.2/v0.12.6 ordered Pareto matrix passed on
-  the dedicated CVM.
+- [x] v0.12.6 no-enforcement/v0.12.2/v0.12.6 ordered Pareto matrix executed on
+  the dedicated CVM and failed the short, required-scenario, and material-gain
+  gates.
+- [x] v0.12.6 raw results independently recomputed; the analyzer definition,
+  continuation ordering, old-baseline calibration, and cache counters do not
+  explain away the deterministic short-request over-protection.
+- [ ] v0.12.7 phase-correct active-Decode red tests fail against v0.12.6 for
+  the intended reason.
+- [ ] v0.12.7 focused implementation, source matrix, three reviews, and push
+  completed on the dedicated CVM.
+- [ ] one exact v0.12.7 local image passes runtime, targeted GPU, and complete
+  ordered Pareto gates before upload.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
 
@@ -2794,3 +2817,138 @@ counterexample remains binding. The next executable gate is the ordered
 no-enforcement/v0.12.2/v0.12.6 GPU matrix from sections 4 and 38. The image
 remains unpublished, production Router and `use1-cb` remain untouched, and no
 production traffic has been sent.
+
+## 43. v0.12.6 ordered Pareto rejection and v0.12.7 phase correction
+
+The ordered matrix ran only on dedicated CVM
+`c21b7281-2c25-4453-8a68-f39ec42d03b4` with unchanged vLLM and GPU identities.
+The original run completed `N1,N2,N3,B1,A1,A2,B2,B3`; its A3 control assertion
+failed after the old v0.12.2 policy was ready but before any measured A3 request.
+The trap restored v0.12.6. The continuation verified the complete original
+manifest, copied the eight raw files by hash, recorded the unmeasured switch,
+ran A3 with the same warmup and ten scenarios, restored v0.12.6, disconnected
+the workbench from the runtime network, and analyzed all nine repetitions.
+
+The immutable evidence directories and manifest identities are:
+
+```text
+original eight repetitions plus failed A3 control
+  /var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-pareto-r1-f2c97aa
+  SHA256SUMS SHA-256 fd6740a2f10b8b1f0ed7fbb95393036eb172b30f5b6bfb7e041d5e0c713f6f88
+
+A3 continuation plus complete nine-run analysis
+  /var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-pareto-a3-continuation-r2-f2c97aa
+  SHA256SUMS SHA-256 f7c42b7f4537e6b4bd96f188203f86ff7851b4e65038777eb7b627a40d263ffa
+
+independent raw-JSON recomputation
+  /var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-pareto-independent-audit-r4-f2c97aa
+  SHA256SUMS SHA-256 943b880b0d2de36e8daaad0a59f4b1df06ca7d7bac74a609b2fcc9b5e16d54a1
+```
+
+Audit r1 and r2 stopped on audit-fixture contract assertions and remain
+preserved as invalid audit-run evidence. Audit r3 deliberately used linear p10
+interpolation and still returned the same red conclusion. Audit r4 used the
+matrix's declared nearest-rank p10 definition, independently recomputed request
+TPS and wall time from raw records, and matched the original analyzer with zero
+QoS-floor and aggregate-median delta. Both valid statistical conventions reject
+v0.12.6.
+
+All nine repetitions and all ninety scenarios passed evidence-health and safety
+checks. There was no preemption, restart, OOM, backend error, reservation leak,
+undrained terminal state, or nonzero final Router projection. Every scenario's
+cached-prompt-token delta was zero, so cache reuse did not cause the policy
+difference. Median metrics were:
+
+```text
+metric                                      v0.12.2 A       v0.12.6 B       B/A
+short-only SLO-goodput                       1177.993          901.767     0.7655
+mixed SLO-goodput                            1368.807          970.607     0.7091
+reversed-order SLO-goodput                      0.017624         0.017645  1.0012
+long-only SLO-goodput                           0.017609         0.017635  1.0014
+all-scenario aggregate SLO-goodput            177.950           81.982     0.4607
+QoS-violation Decode seconds                    0.408            3.499
+preemptions                                      0                0
+```
+
+The B short-request success TPS quantiles remained above the frozen floor, but
+that does not rescue rejected work. Every B short-only repetition admitted only
+five of eight requests and rejected three. Every B sustained-regular repetition
+admitted only five of twenty-four and rejected nineteen. Every B mixed
+repetition admitted five short requests, rejected three short requests, and
+correctly rejected the interfering long request. A admitted all corresponding
+short requests. B's median total prompt-token delta was therefore only 662,138
+versus A's 689,309; this is rejection, not cache efficiency. The checks for
+short SLO-goodput, required scenarios, and material gain all fail.
+
+The extra unmeasured switch before A3 and the old baseline's startup calibration
+are real baseline confounders, but they cannot explain the candidate failure.
+B1, B2, and B3 each produced the same five-success short and sustained outcome
+before A3 existed, and B also loses against A1/A2 alone. The red result is a
+product-policy failure, not an analyzer-definition or continuation-order bug.
+
+The causal B1 decision was recorded while backend `running=0`, `waiting=0`:
+
+```text
+selection_input_tokens=1298
+pending_prefill_sequences=5
+pending_prefill_tokens=6490
+post_admit_pending_prefill_tokens=7788
+effective_sequences=5
+regular Decode-interference budget=32768
+pressure=(7788 * 5) / 32768=1.188354
+reason=decode_interference
+```
+
+`Manager.requestAwareStateLocked` adds `DecodeSequencesUpper=1` for every local
+reservation before forwarding, while also retaining that reservation as pending
+Prefill work. `DecideRequestAware` then derives `EffectiveSequences` from this
+virtual total. The Decode envelope therefore treats five Prefill-incomplete
+requests as five active Decode users even though no request is running upstream.
+This double phase ownership caused the sixth and later small requests to be
+rejected.
+
+The v0.12.7 correction is intentionally narrow and keeps SOLID ownership:
+
+1. Manager produces one internal request-aware state summary during its existing
+   reservation scan. It continues to own lifecycle and assimilation state.
+2. Pending-Prefill tokens and classes include every Prefill-incomplete
+   reservation exactly as before.
+3. The Decode envelope's active sequence count starts from the fresh
+   backend-observed `running` count, not virtual future Decode demand.
+4. A Prefill-complete local reservation that is not definitely absorbed by the
+   observation adds its Decode sequence upper bound. An absorbed reservation is
+   already represented by observed running and is not added again.
+5. A Prefill-incomplete reservation never adds an active Decode sequence. It
+   still charges KV, future KV, Prefill concurrency, and aggregate Prefill
+   budget atomically.
+6. Ambiguous assimilation uses the conservative upper and counts the completed
+   local Decode. Saturating arithmetic preserves overflow safety.
+7. `DecodeEnvelope` remains a pure policy component and receives only the
+   corrected scalar. No public parameter, calibration, learning, cooldown,
+   Router-wide rejection, or request mutation is added.
+8. The Manager scan remains O(live reservations), allocation-free, and under the
+   existing decision lock; no second scan or unbounded state is introduced.
+
+Before implementation, focused red tests must prove against v0.12.6 that:
+
+- an idle same-snapshot regular burst does not create active Decode users from
+  its own Prefill-incomplete reservations;
+- pending Prefill tokens still sum atomically when real Decode users exist;
+- a Prefill-complete unobserved local reservation protects its Decode user;
+- an absorbed local Decode is not double-counted with observed running;
+- weighted/exclusive/quiescent Prefill concurrency, hard KV, cancellation,
+  terminal release, stale state, and same-request duplication are unchanged;
+- corrected decision telemetry exposes the phase-correct
+  `effective_sequences`; and
+- the release version and all user-visible surfaces consistently report
+  `0.12.7`.
+
+After focused green, run formatting, affected packages, full Go tests, race,
+static analysis, deterministic simulations, benchmarks, source-surface scans,
+and the three review passes on the dedicated CVM. Build one new local image only
+from the exact clean pushed source. Re-run targeted short-only, mixed,
+sustained-regular, Decode-QoS, near-KV, low-flow, cancellation, and stale/recovery
+GPU gates before executing a completely new nine-repetition ordered matrix. Do
+not reuse the prior N/A measurements for promotion. Upload only the exact image
+whose new matrix passes every section 4 condition. Until then, v0.12.6 and
+v0.12.7 remain unpublished and production remains unchanged.
