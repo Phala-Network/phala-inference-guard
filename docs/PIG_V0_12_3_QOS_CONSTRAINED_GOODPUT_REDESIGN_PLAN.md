@@ -425,7 +425,7 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
   promotion before that gate.
 - [x] v0.12.5 no-active-calibration focused red is valid.
 - [x] v0.12.5 focused implementation, version, observability, and SOLID green.
-- [ ] v0.12.5 complete source/race/simulation/benchmark matrix and three reviews
+- [x] v0.12.5 complete source/race/simulation/benchmark matrix and three reviews
   passed on the dedicated CVM.
 - [ ] one immutable v0.12.5 local image passed production contract and smoke.
 - [ ] v0.12.5 targeted GPU and Pareto matrices passed on the dedicated CVM.
@@ -2080,3 +2080,102 @@ contract, the pure profile constructor owns geometry, the factory owns assembly,
 and Manager ownership is unchanged. Focused green does not satisfy the complete
 source, race, benchmark, image, GPU, Pareto, registry, or production gates; those
 remain pending in the exact order above.
+
+## 36. v0.12.5 complete source matrix and three-pass review
+
+The complete Phase C source matrix ran only in `pig-v0124-workbench` on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`. The authoritative repository was clean,
+and both HEAD and its upstream were
+`0668c3876dd64ba1c0862eb92ad36a2489d96cad`. The exact pushed source archive was
+`/workspace/incoming/pig-v0125-0668c38-source.tar.gz`, SHA-256
+`5fdd99d16c60741513ff1637ec21e1a7db6fb1333b28b8a728cb51230a1b7da0`.
+The runner used Go `1.24.13` on Linux `6.9.0-dstack` in workbench container
+`2c14ed1bca84` and wrote evidence to
+`/workspace/evidence/pig-v0125-dedicated-phase-c-r1-0668c38`.
+
+All 26 registered steps exited `0`: environment and version identity, formatting,
+legacy and active-calibration audits, lexical corpus, affected and full tests,
+vet, targeted and full race, full build, versioned binary, policy-order tests,
+two deterministic simulations plus byte comparison, ordered baseline/candidate
+benchmarks in both orders, benchmark contract, reservation HTTP benchmark,
+estimator benchmark, and the additional benchmark contract. A fresh
+`sha256sum -c` verified every file in the evidence manifest. Material hashes are:
+
+```text
+binary                 97a0ce94ab046c2408b30483b17731d17a69b04b0d755e471620043a042f4d9e
+statuses.tsv            7772aedb8a74f69107ac6882992bceea2d5b49e995cd49328f61a002c410ab0d
+evidence-sha256         c718da5a3ee14e9750fff896d8bc1ddb70c44c22fd168ddad157bd251cbb9456
+simulation-1.json       6077516956d4b01d093bf7523745547fe7243f202ca3a6165e37c8f5a7bcdcb1
+simulation-2.json       6077516956d4b01d093bf7523745547fe7243f202ca3a6165e37c8f5a7bcdcb1
+```
+
+Ordered benchmark medians remained within the section 8 contract. Full HTTP
+pre-forward cost changed from `12.895 us` to `13.520 us` (`+4.85%`) with
+allocations unchanged at `33`. Manager active-48 changed from `3319 ns` to
+`3317.5 ns`; active-256 changed from `17364.5 ns` to `17020 ns`. Candidate pure
+Policy cases were `83-88 ns`, zero-allocation, below the `250 ns` absolute cap;
+their roughly `2.0-2.74x` ratio to the simpler v0.12.2 helper is not an HTTP
+latency regression. Candidate telemetry was approximately `607 ns`, `12.077 us`,
+and `62.815 us` at 0, 48, and 256 reservations, with zero allocations.
+
+The model-neutral estimator remained zero-allocation. Representative medians
+were approximately `279 ns` at 1 KiB, `1.975 us` at 64 KiB, `27.817 us` at
+1 MiB, `158.476 us` for a normal 4 MiB body, and `22.005 ms` for the pathological
+4 MiB many-short-string body. The last value is below the explicitly accepted
+`100 ms` extreme-input ceiling and does not relax the normal-body result.
+
+Deterministic aggregate results must be read in both directions:
+
+```text
+metric                         v0.12.2       v0.12.5
+admitted                            145            205
+completed                           123            134
+completion tokens/s               94.12          98.23
+SLO completion tokens/s           84.94          88.12
+preemptions                            1              1
+TPS-floor violation seconds       20.70          25.00
+waiting seconds                     5.00          80.60
+maximum idle with demand            0.40           0.40
+peak KV tokens                    798446         798446
+```
+
+Thus the deterministic model shows higher raw and SLO-compliant goodput with no
+preemption, KV, or low-flow self-lock regression, but materially worse waiting
+and a `4.3 s` increase in synthetic TPS-floor violation. The simulation contract
+intentionally treats those two values as diagnostics because its synthetic
+coefficients cannot establish GPU QoS. This result closes the source simulation
+gate but is not Pareto acceptance; the Router-disabled Decode-QoS and ordered GPU
+matrix must reject the candidate if the same degradation appears without the
+required goodput tradeoff.
+
+Complete review pass 1, objective and causality: the real HTTP integration proves
+that the approximate request-size signal changes the enforce decision before an
+upstream call. Automatic capability initialization performs at most one passive,
+bounded `/v1/models` read, and a same-state profile test proves geometry can
+change a pre-forward class decision. It does not send completions or claim that
+context length predicts Prefill rate. A read-only check against the unchanged
+dedicated vLLM returned the single served identity and `max_model_len=262144`,
+matching the initializer contract.
+
+Complete review pass 2, safety, lifecycle, and SOLID: the pure profile constructor
+owns alignment and invariants; the metadata reader owns bounded I/O and fallback;
+ResourceGate owns post-admit KV fit; InterferenceGate owns request-class policy;
+Manager owns the atomic decision/reservation transaction; and the adapter owns
+HTTP projection and lifecycle. Redirects, environment proxies, authorization
+forwarding, oversized bodies, partial overrides, invalid geometry, busy startup,
+metadata failure, duplicate IDs, stale observations, cancellation, epoch reset,
+and concurrent lifecycle paths are covered. Both race matrices passed. No
+learner, active calibration, cache inspection, routing, TTFT gate, request
+mutation, or tier/priority injection was reintroduced.
+
+Complete review pass 3, efficiency, evidence, and operability: the archive,
+binary, statuses, deterministic outputs, and evidence manifest are independently
+hashed; ordered performance contracts pass with no added hot-path allocation;
+and the pathological estimator remains below the user-approved ceiling. vLLM
+and the existing v0.12.4 PIG runtime retained their prior container IDs,
+StartedAt values, zero restart count, and non-OOM state throughout the matrix and
+review. The next commit changes only this plan, so executable evidence remains
+attached to `0668c38`; its diff must be audited as documentation-only before the
+local image build. Image construction, image contract, smoke, PIG replacement,
+GPU/Pareto validation, registry upload, Router integration, and production proof
+remain explicitly open.
