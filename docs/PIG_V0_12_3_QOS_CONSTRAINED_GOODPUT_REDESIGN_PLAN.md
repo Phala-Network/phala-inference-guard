@@ -1,7 +1,8 @@
 # PIG v0.12.4 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active execution plan, v0.12.4 source matrix and push complete; local
-image acceptance pending
+Status: active execution plan, v0.12.4 source matrix, immutable image
+acceptance, publication, and registry pull-back complete; Router-disabled GPU
+acceptance pending
 
 This is the only execution plan for the active PIG v0.12.4 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -31,11 +32,12 @@ The exact v0.12.3 source and image completed their builder and publication
 gates, then failed the Router-disabled weighted-Prefill QoS diagnostic in
 section 25 and are not promotable. The v0.12.4 executable source is committed
 and pushed at `19574b9f9711886c3362c612317d7d64a2167798`, and section 31 records a
-complete green dedicated-CVM source matrix for that exact commit. No v0.12.4
-image has been built or uploaded, and the production-image contract, smoke,
-targeted GPU, and Pareto gates remain incomplete. The production `use1-cb`
-target must remain Router-disabled until the dedicated test CVM passes the
-targeted v0.12.4 gate and a later explicitly authorized canary deployment
+complete green dedicated-CVM source matrix for that exact commit. Section 32
+records the green local production-image contract and smoke, immutable
+publication, registry pull-back, and independent identity verification. The
+Router-disabled targeted GPU and Pareto gates remain incomplete. The production
+`use1-cb` target must remain Router-disabled until the dedicated test CVM passes
+the targeted v0.12.4 gate and a later explicitly authorized canary deployment
 begins.
 
 The `one regular credit per 500-ms observation` Decode pacer is rejected as the
@@ -407,7 +409,7 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] v0.12.4 complete dedicated-CVM source matrix green on the final executable
   source archive.
 - [x] v0.12.4 executable source committed and pushed.
-- [ ] one local immutable v0.12.4 image built, production-contract and smoke
+- [x] one local immutable v0.12.4 image built, production-contract and smoke
   accepted, then the same image uploaded and registry-pull identity verified.
 - [ ] v0.12.4 Router-disabled targeted weighted-Prefill gate passed.
 - [ ] v0.12.4 Router-disabled Pareto matrix passed.
@@ -1656,3 +1658,139 @@ but the local candidate image must still be built from exact executable commit
 `19574b9f9711886c3362c612317d7d64a2167798`. No local candidate image, registry
 upload, Compose update, PIG replacement, vLLM load, Router change, or production
 traffic action has occurred yet.
+
+## 32. v0.12.4 immutable image acceptance and publication
+
+The image gate ran on the dedicated H200 CVM without restarting the CVM or its
+long-lived workbench. The host Docker CLI initially lacked buildx. Image r1
+therefore stopped before producing an image with explicit
+`BuildKit is enabled but the buildx component is missing or broken`. Its runner
+SHA-256 is
+`a2ee30df6a4777f56fa63e9a56f1cce01117bddc0c7d4dda853b12df440d27d3`,
+and its build-log SHA-256 is
+`90bd9f73d5cf9c8b8e23d90cfc91e206f07d802c22f4e74919da012f92931d64`.
+This is an environment failure, not image or PIG evidence. The failed run and
+control files remain separately archived.
+
+The host then installed the official buildx `v0.36.1` Linux amd64 plugin under
+the persistent Docker configuration. The GitHub release API and the official
+checksums file independently identify the plugin as SHA-256
+`48af8a397ebd60178778bf63611dbcebe5f5e7a9be90eb9147b24b9587455778`;
+the checksums file is SHA-256
+`abeea7a52865e60e1af4995d2449cdbaca762dc99689a829f15f0fd760766413`.
+The plugin reported buildx `v0.36.1`, and the existing Docker driver reported
+BuildKit `v0.12.5` with `linux/amd64` support. No CVM restart or platform
+Compose operation was used.
+
+Image r2 created a detached clean worktree at exact executable commit
+`19574b9f9711886c3362c612317d7d64a2167798`, verified all 158 tracked files,
+and reproduced source archive SHA-256
+`44f6dde568bb900343f7f9c64c130503bed12cdf4fb4061854d2e4c2329b933a`.
+The only candidate image build produced:
+
+```text
+local image: ghcr.io/phala-network/phala-inference-guard:0.12.4-19574b9-local
+image ID: sha256:63356c2ca3e9168d0224eed8bb4cbf7f601fbb72fce33d609f0b2cc312b668c4
+binary SHA-256: 5c61f559a2f6c815200c23e81800b32f2e039504cffde37ab26f12cd784ccd26
+build-log SHA-256: a14a563fab9792d3f8fffa8f8b74efed2a7cc33789d421715cd6503636143c45
+production-contract log SHA-256: 1a502077f979551c39889cff08c56f4ec30e8bfa901ff223f2ef2c24a86ca285
+```
+
+The production-image contract was green, including `linux/amd64`, OCI version
+`0.12.4`, exact full revision, root distroless entrypoint, native CGO/NVML, and
+`NVIDIA_VISIBLE_DEVICES=all`. r2 then exited 127 before smoke because its test
+fixture used a login shell whose PATH omitted `/usr/local/go/bin`. This was a
+harness-only failure after the image and contract had completed. The fixture
+compiler was changed to the workbench's verified absolute Go 1.24.13 path. The
+candidate image was not rebuilt.
+
+r3 continued against the same immutable image ID and reached the protected
+metrics state: the 3.5 MiB request returned pre-forward 429, its upstream call
+count remained unchanged, Router status was yellow, and protection metrics
+were active and applied. r3 stopped only because its runner expected
+`pressure_source="kv"`. The source contract and permanent HTTP integration test
+instead require `pressure_source="none"` for hard-KV rejection: no pre-existing
+Prefill pressure caused this decision, while `reason="kv"` and Router
+`reason="kv_over_budget"` carry the actual rejection cause. The r3 runner
+SHA-256 is
+`3c4070823261fa4e7113401b58d1ebf05fb44f02a704fb2b201a8f95251ed2f5`.
+The failure is preserved as invalid runner evidence and caused no source or
+image change.
+
+r4 corrected only that runner assertion and completed the local-image gate
+against the unchanged image ID. It proved default `enforce`, the default
+500-ms observer, initialization-only `fallback/busy_fallback` capability,
+H200 runtime through `--gpus all`, health 200, unauthenticated metrics 401,
+authenticated metrics 200, and a transparent chat 200. The 3.5 MiB hard-KV
+request returned 429 in approximately 20.3 ms without reaching the upstream.
+The protected state exposed enforced reject count 1, active/applied Router
+backpressure, yellow upstream status, request class `quiescent`, observed
+running 1, and effective Router limit 2. After two seconds it exposed inactive
+backpressure, green upstream status, and effective Router limit 0. Thus the
+same verdict was visible in the HTTP result, logs, metrics, status, and Router
+capacity projection, and it cleared without a low-flow self-lock.
+
+r4 contains 31 hashed evidence entries. Its evidence-list SHA-256 is
+`14e66b9888badad08259711b23daeb1ccccb1ab1c79f84a02a7b39508a657204`,
+and summary SHA-256 is
+`172b1e641f4142b66c20628b55cf948274992358e3a9476cb4a3476fee2d1cf3`.
+An independent verifier recomputed every entry, independently extracted the
+image binary, reran the production-image contract, and confirmed the local
+image had no registry digest or registry authentication state. Its verification
+set and summary SHA-256 values are
+`ab792dda3f967e76cb3c8ff564c0b54c0212240726f967eeb10649f63a5a89d8`
+and `13d7782808ae42a1df397a93a4f2622661d1d044df85287f4bb06cff90a21bf7`.
+
+Only after that independent local acceptance did r5 authenticate. Authenticated
+pre-push checks returned explicit `manifest unknown` for both intended tags.
+r5 tagged the exact accepted image ID without rebuilding and published:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:0.12.4
+ghcr.io/phala-network/phala-inference-guard:0.12.4-19574b9f9711
+```
+
+Both tags and the immutable digest reference resolve to:
+
+```text
+sha256:455534e0c84014e083fefced342e8c4728c27c8334ff0e2ed1675d90057be621
+```
+
+r5 pulled the version tag, revision tag, and digest reference. All three
+resolved to local image ID
+`sha256:63356c2ca3e9168d0224eed8bb4cbf7f601fbb72fce33d609f0b2cc312b668c4`
+with the exact OCI labels and binary SHA-256
+`5c61f559a2f6c815200c23e81800b32f2e039504cffde37ab26f12cd784ccd26`.
+The digest reference passed the production-image contract again. r5 contains
+22 hashed evidence entries; its evidence-list and summary SHA-256 values are
+`cde2494953e7b959d7ed579e41101b600cb7663d9e514982f691ed2abff0fa11`
+and `aad6b9d93d4d50137b3fa93ca18e5e30edf0ccd4953eba43d6af7b96b8d6cd5f`.
+
+An independent authenticated registry verifier resolved each reference to the
+same digest, repeated all three pulls, extracted the digest binary, reran the
+contract, recomputed all 22 publication entries, and found no credential
+pattern. It removed its isolated Docker authentication configuration. Its
+verification set and summary SHA-256 values are
+`8dcee91ffbe0499f837609458d58de78351a8a1e8ff9fcafdc40409e2af3ecc0`
+and `14624ed5ddb67c7874f3a9884ae9fdce2ebd781931630ea3fd886cb497ebcb19`.
+The workbench restart count remained zero.
+
+Release review pass 1, provenance: the source archive, executable commit,
+single local build, image ID, binary, OCI labels, registry digest, and every
+pull-back reference form one exact identity chain. r3, r4, and r5 never rebuilt
+the r2 image.
+
+Release review pass 2, behavior: the production contract and model-neutral
+smoke prove default production configuration, authenticated observability,
+transparent forwarding, pre-forward hard-KV rejection, coherent Router
+projection, and timed recovery. This is image-level evidence, not a GPU
+goodput or Decode-QoS conclusion.
+
+Release review pass 3, security and boundary: each Docker/GHCR authentication
+configuration remained isolated and was removed; the workbench's GitHub CLI
+Device Flow login remains only for authorized source pushes. Evidence passed
+credential scanning. No Compose update, PIG deployment, vLLM load, CVM
+restart, Router mutation, `use1-cb` enable, or production inference traffic
+occurred. Phase D must use the exact published digest on the Router-isolated
+dedicated H200 CVM and still complete the targeted GPU and Pareto gates before
+any production canary is considered.
