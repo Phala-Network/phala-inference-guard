@@ -427,7 +427,7 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] v0.12.5 focused implementation, version, observability, and SOLID green.
 - [x] v0.12.5 complete source/race/simulation/benchmark matrix and three reviews
   passed on the dedicated CVM.
-- [ ] one immutable v0.12.5 local image passed production contract and smoke.
+- [x] one immutable v0.12.5 local image passed production contract and smoke.
 - [ ] v0.12.5 targeted GPU and Pareto matrices passed on the dedicated CVM.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
@@ -2179,3 +2179,83 @@ attached to `0668c38`; its diff must be audited as documentation-only before the
 local image build. Image construction, image contract, smoke, PIG replacement,
 GPU/Pareto validation, registry upload, Router integration, and production proof
 remain explicitly open.
+
+## 37. v0.12.5 immutable local image acceptance
+
+After section 36 was committed and pushed as documentation-only commit
+`045591cde89f554c4daef81ce4ddb14b737a7b1d`, the authoritative repository was
+clean and byte-identical to its upstream. The image runner proved that the only
+delta from executable commit `0668c38` was this plan, created a detached clean
+worktree at `045591c`, and archived all 158 tracked files as SHA-256
+`77b0d3034f82bb5509c01a9622d5c8c13d13cb78b04859a69643b9c6327ac819`.
+It used the previously verified buildx `v0.36.1` through a new Docker config
+with no registry authentication and built exactly once with no pull or push.
+
+The accepted local image is:
+
+```text
+tag:       ghcr.io/phala-network/phala-inference-guard:0.12.5-045591c-local
+image ID:  sha256:8096b132425648f609f2257436ed58e9d2cdb738b55ef7ed0c0f7081d5f9abdf
+binary:    72919a08859e0ed8c5e6f3ad1738c405dbec4209e53e0c00d532a906fa136bfc
+platform:  linux/amd64
+OCI:       version=0.12.5, revision=045591cde89f554c4daef81ce4ddb14b737a7b1d
+runtime:   root distroless entrypoint, native CGO/NVML, NVIDIA_VISIBLE_DEVICES=all
+registry:  RepoDigests=[], auth absent, upload not attempted
+```
+
+The production-image contract passed twice against that same image ID: once in
+the primary run and once in independent verification. Default production smoke
+used no predictive override. It proved `enforce`, the 500-ms observer,
+`request-aware-capability-v2`, source `automatic`, reason `metadata`, and derived
+Prefill bounds `65536/262144/524288/262144`. The fixture exposed
+`max_model_len=1000000`; startup inference-call count remained zero, proving the
+metadata read did not become a completion probe. The retired safe-rate metric
+and calibration log vocabulary were absent.
+
+Health returned 200, unauthenticated metrics 401, authenticated metrics 200,
+and transparent chat 200. A 3.5 MiB model-neutral request returned pre-forward
+429 in `21.045 ms`; the upstream inference-call count remained one from the
+prior chat. The HTTP response, enforced-reject counter, request-aware action and
+reason, load-scoped Router backpressure, inspect capacity, upstream status, and
+decision log all reported the same hard-KV protection. The smoke container ran
+with the GPU device request and no fatal, panic, OOM, or retired-calibration
+pattern.
+
+Primary evidence is under
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0125-image-r1-045591c`.
+All 42 evidence rows and all four independent-verification rows passed fresh
+`sha256sum -c`. Material hashes are:
+
+```text
+runner                         351c81474d007445d314e3c3246e9166022597cb283c7e68e5e3906bb81fc88c
+build.log                      33696fbb2efad7d537dbbe37f6ce559a8bf53760260908f3152e8098902d72c0
+production-image-contract     067b57cc9d558e3afe2ff845e884b43aed8a6ba2d4d3cdc7dd9f98d3f907ca0d
+evidence-sha256               e0ce1481489162c9178348c8907d47c5a0d884cfec008d8aed50f1a9469f27d4
+independent sha256sums         13e657688801d26464ccee7739208a44ed5696361c7bdcbd1928e7f4e562c8c5
+summary                        f21f1daa6d813a871ee62e9db0a61374c51b9d947865299dd4b20a8fcc66c149
+```
+
+The primary runner's functional recovery assertion passed, but its displayed
+`0.000000 s` used BusyBox `date` with an unsupported nanosecond formatter and is
+not latency evidence. A no-rebuild continuation therefore repeated the same
+hard-KV and Router-recovery path against the exact image ID. Startup inference
+calls again remained zero, the 3.5 MiB request returned pre-forward 429 in
+`20.605 ms`, protected status was 1, and status returned to 0 on poll 15 of a
+100-ms loop, establishing a `1.5 s` polling upper bound consistent with the
+fixed projection hold. Metrics were active before and inactive after recovery;
+the request never reached the fixture.
+
+The continuation evidence is under
+`/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0125-image-r2-recovery-045591c`.
+Its runner, evidence manifest, manifest-check, and summary SHA-256 values are
+`317f582f9734538dad300404b4236ff611e901215df128fc6b4f021d6ffdbda6`,
+`6d4009cd843c684318caa1321cccce1b65dc237066c1f276dadf79e6d87061db`,
+`4049f4a198ae5cd1938de63a81bd849f37e4b87a3c0c04cf2520947e5278b548`,
+and `41aac707214f69a06222e5b5bba3762bc1f4569cbe6aa7690b882949dd7f384b`.
+
+The smoke and audit left no temporary container or fixture process. The existing
+vLLM, v0.12.4 PIG, and workbench retained their exact container and image IDs,
+StartedAt values, zero restart count, and non-OOM state. This closes only the
+local image gate. The image remains deliberately unpublished and undeployed;
+the next step may replace only PIG on the dedicated CVM, then must complete the
+targeted GPU and ordered Pareto matrices before any upload.
