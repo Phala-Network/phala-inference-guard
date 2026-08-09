@@ -423,8 +423,8 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
   cold-start sample contamination.
 - [x] v0.12.4 Pareto matrix cancelled; the candidate is rejected from
   promotion before that gate.
-- [ ] v0.12.5 no-active-calibration focused red is valid.
-- [ ] v0.12.5 focused implementation, version, observability, and SOLID green.
+- [x] v0.12.5 no-active-calibration focused red is valid.
+- [x] v0.12.5 focused implementation, version, observability, and SOLID green.
 - [ ] v0.12.5 complete source/race/simulation/benchmark matrix and three reviews
   passed on the dedicated CVM.
 - [ ] one immutable v0.12.5 local image passed production contract and smoke.
@@ -2011,3 +2011,72 @@ The required red/green order is:
    stale/recovery, burst, near-KV, Decode QoS, and three-round A/B plus B/A
    Pareto gates. Upload the image only after all source, image, and GPU gates
    accept the exact same image ID. Router and production remain unchanged.
+
+## 35. v0.12.5 no-calibration focused implementation
+
+The test-first red was run only in the `pig-v0124-workbench` container on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`, against base HEAD
+`6d5fc0bef14c2dc5c927c2c3a00dce3ce6624a2e`. The capability-contract,
+server-initialization, and observability tests each exited `1` for the intended
+reason: observed/safe rate fields remained, automatic startup still submitted
+completion work or changed under busy state, and the safe-rate metric remained
+in production output. The red evidence is under
+`/var/volatile/dstack/persistent/pig-v0124/evidence/v0125-no-calibration-red-r1`;
+its `SHA256SUMS` file hash is
+`c65d0455e7eccc3a621f68a49e45219377f603bfb59c49a50999e39219545e2d`.
+
+The implementation replaced `predictive_capability_calibrator.go` with a
+metadata-only initializer and changed the pure capability constructor to schema
+`request-aware-capability-v2`. Automatic profiles now have source `automatic`
+and reason `metadata` or `metadata_fallback`; explicit profiles retain source
+`explicit` and reason `explicit_override`. The initializer performs at most one
+bounded `/v1/models` request and contains no completion, warmup, retry, cache,
+or performance-probe path. The safe-rate field, production log key, and metric
+were deleted. Runtime, Docker, README, observability, algorithm, and simulation
+identities are `0.12.5`.
+
+The first affected-package run found an incorrect KV-limited test expectation:
+`264000 / 2` must be aligned down to `131968` at a 64-token block size. The
+subsequent server-wide run exposed two old-calibration assumptions. First,
+`CapabilityMetricsOK` represented optional performance-calibration counters and
+must not gate metadata-plus-KV initialization. Second, quiescent-at-or-below-hard
+is an automatic-profile invariant, not a blanket restriction on controlled
+explicit test profiles; the hard resource gate remains authoritative. Both
+ownership errors were corrected rather than hidden by narrower tests.
+
+The final focused r3 gate ran `gofmt`, `git diff --check`, a production-source
+retired-symbol scan, and these five packages with `-count=1`:
+
+```text
+./internal/runtime/predictive
+./internal/app/server
+./internal/observability/metrics
+./internal/simulation/requestaware
+./cmd/pig-request-aware-sim
+```
+
+All five exited `0`. The evidence is under
+`/var/volatile/dstack/persistent/pig-v0124/evidence/v0125-focused-green-r3`.
+The pre-commit tracked patch SHA-256 is
+`793237fd174af89bee91d32497212f6aad0157c5a4520da9c217ce6364de655c`,
+and the evidence `SHA256SUMS` file hash is
+`d63266e9c66e025cd128ae01376a6651e4345410bb2642214482812bd75533e3`.
+The 25-path coherent source was committed as
+`26e5369` (`fix:v0.12.5-no-calibration-capability`) and pushed to
+`origin/codex/pig-v0.11.0-request-aware`.
+
+Focused review pass 1, model and causality: request size policy remains on the
+pre-forward path; model length and KV geometry bound request classes without
+claiming to measure throughput. Busy and idle startup derive byte-identical
+profiles, and automatic/explicit/fallback calls are counted explicitly.
+
+Focused review pass 2, safety and lifecycle: automatic bounds are block-aligned,
+strictly ordered, and capped by hard KV. Metadata failure is bounded and passive.
+No startup request creates GPU work, reservation, cancellation, or reconciliation
+state, and no runtime PIG or vLLM container was restarted or replaced.
+
+Focused review pass 3, SOLID and evidence: the metadata reader owns one HTTP
+contract, the pure profile constructor owns geometry, the factory owns assembly,
+and Manager ownership is unchanged. Focused green does not satisfy the complete
+source, race, benchmark, image, GPU, Pareto, registry, or production gates; those
+remain pending in the exact order above.
