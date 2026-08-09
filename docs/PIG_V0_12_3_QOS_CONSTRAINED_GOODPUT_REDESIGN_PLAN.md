@@ -1,8 +1,8 @@
 # PIG v0.12.7 Evidence-First QoS-Constrained Goodput Remediation Plan
 
 Status: v0.12.6 failed the ordered Pareto gate and remains unpublished; the
-exact v0.12.7 source correction passed its complete dedicated-CVM matrix and
-three review passes; image, GPU, Pareto, upload, and production gates remain
+exact v0.12.7 source correction and immutable local image passed their complete
+dedicated-CVM gates; targeted GPU, Pareto, upload, and production gates remain
 open
 
 This is the only execution plan for the active PIG v0.12.7 remediation. Sections
@@ -3091,3 +3091,71 @@ immutable image built from the exact clean pushed source, followed by image
 contract checks and PIG-only replacement on the dedicated CVM. Only after the
 targeted GPU suite passes may a completely new nine-repetition ordered Pareto
 matrix begin.
+
+## 45. v0.12.7 immutable local image acceptance
+
+The section 44 documentation-only source-acceptance update was committed and
+pushed as `92e20b2e8211b179eac578fda2442b6ecfb4f0ea`. Before construction, the
+image runner proved that `HEAD` and its upstream both resolved to that clean
+commit and that its only delta from matrix-tested executable commit `396fc04`
+was this plan. It created one detached source tree, archived all 162 tracked
+files, and built exactly one local image without pull or push. The accepted
+identity is:
+
+```text
+tag
+  ghcr.io/phala-network/phala-inference-guard:0.12.7-92e20b2-local
+image ID
+  sha256:5fc2613c11748c62059b849c56c042456b26c561fade9a8f289af925283abd7e
+binary SHA-256
+  c4be7f5a9c9133845acc532970245b29dad3801107ecec5304aa0e53b0924ea7
+source archive SHA-256
+  fb317b119beaf99bd6e74890de1daa5a14008fa2bc2a8e4799cf0febf340f921
+platform and OCI
+  linux/amd64, version=0.12.7,
+  revision=92e20b2e8211b179eac578fda2442b6ecfb4f0ea
+registry
+  RepoDigests=[], isolated auth absent, upload not attempted
+```
+
+The image runner SHA-256 is
+`e547d27771515fae217395b7a4bc9eb3d5aab098045f0dca9a56796c05ade0cc`.
+Its immutable evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-image-r1-92e20b2
+evidence-sha256 SHA-256
+  daffe500c141e2ceec3b8afd0152804c3b007b2838e6619d39989d186f33bf59
+independent-verification/sha256sums SHA-256
+  00a5157930592ff2b8e1d966922491cc7e788187e15f82ded93c152f54bd92eb
+```
+
+Independent `sha256sum -c` verification passed all 60 primary files and all
+four independent-verification files. The production-image contract passed
+twice against the same image ID and extracted binary hash. The image is root
+distroless with `/phala-inference-guard` entrypoint, native CGO/NVML support,
+and all-GPU visibility.
+
+Default-config smoke used no predictive algorithm overrides. It proved
+`enforce`, the 500-ms observer, automatic metadata initialization, derived
+`65536/262144/524288/262144` Prefill bounds, zero startup inference calls, and
+absence of the retired safe-rate metric and calibration vocabulary. Health was
+200; unauthenticated metrics were 401; authenticated metrics and transparent
+chat were 200.
+
+A 384-KiB request was rejected pre-forward by request-scoped Decode protection
+in `1.258 ms`; it did not reach the upstream, did not activate Router
+backpressure, exposed the same reason in HTTP, decision metrics, last-reject
+metrics, and logs, and a subsequent fitting request returned 200. A 3.5-MiB
+request was rejected pre-forward by hard KV in `19.344 ms`, activated the
+load-scoped Router projection, and recovered green within 15 100-ms polls, an
+observed upper bound of 1.5 seconds.
+
+The smoke container used host networking only for its isolated fixture. The
+workbench remained connected only to `bridge`; the existing runtime network
+retained exactly the running PIG and vLLM. Their IDs, images, StartedAt values,
+restart counts, and OOM states were byte-identical before and after. The image
+is accepted locally but remains unpublished and has not replaced the running
+PIG. The next step is PIG-only replacement on the dedicated CVM, followed by
+runtime identity/authentication/observability checks and the complete targeted
+GPU suite. vLLM and the CVM must not be restarted.
