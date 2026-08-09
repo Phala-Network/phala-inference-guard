@@ -13,7 +13,7 @@ type simulationReport struct {
 	Suite       requestaware.Suite   `json:"suite"`
 	NoAdmission requestaware.Metrics `json:"no_admission_aggregate"`
 	V0122       requestaware.Metrics `json:"v0_12_2_aggregate"`
-	Candidate   requestaware.Metrics `json:"v0_12_3_aggregate"`
+	Candidate   requestaware.Metrics `json:"v0_12_4_aggregate"`
 	Acceptance  string               `json:"acceptance"`
 }
 

@@ -26,3 +26,20 @@ func TestWriteSimulationReportIsAcceptedAndDeterministic(t *testing.T) {
 		t.Fatalf("incomplete accepted report: %+v", report)
 	}
 }
+
+func TestSimulationReportUsesCurrentCandidateVersionKey(t *testing.T) {
+	var output bytes.Buffer
+	if err := writeSimulationReport(&output); err != nil {
+		t.Fatalf("write report: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(output.Bytes(), &fields); err != nil {
+		t.Fatalf("decode report fields: %v", err)
+	}
+	if _, exists := fields["v0_12_4_aggregate"]; !exists {
+		t.Fatal("current candidate field is missing")
+	}
+	if _, exists := fields["v0_12_3_aggregate"]; exists {
+		t.Fatal("superseded candidate field is still present")
+	}
+}
