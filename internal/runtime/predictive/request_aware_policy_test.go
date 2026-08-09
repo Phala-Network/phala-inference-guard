@@ -48,8 +48,10 @@ func TestRequestAwarePolicyDifferentiatesByPrefillWorkUnderSameBackendState(t *t
 	if smallDecision.Action != RequestAwareAdmit || largeDecision.Action != RequestAwareSizeProtect {
 		t.Fatalf("same-pressure decisions small=%+v large=%+v, want admit/size_protect", smallDecision, largeDecision)
 	}
-	if largeDecision.Reason != RequestAwareReasonPrefillBusy || largeDecision.PrefillClass != RequestAwarePrefillQuiescent {
-		t.Fatalf("large request protection=%+v, want quiescent Prefill-busy", largeDecision)
+	if largeDecision.Reason != RequestAwareReasonDecodeInterference ||
+		largeDecision.PressureSource != RequestAwarePressureDecode ||
+		largeDecision.PrefillClass != RequestAwarePrefillQuiescent {
+		t.Fatalf("large request protection=%+v, want quiescent Decode protection", largeDecision)
 	}
 }
 
@@ -90,16 +92,19 @@ func TestRequestAwarePolicyProtectsQuiescentPrefillBeforeFeedback(t *testing.T) 
 	localDecode.EffectiveSequences = 1
 	localDecodeDecision := policy.Evaluate(localDecode)
 	if localDecodeDecision.Action != RequestAwareSizeProtect ||
-		localDecodeDecision.Reason != RequestAwareReasonPrefillBusy {
-		t.Fatalf("local decode plus 650K decision=%+v, want pre-forward busy protection", localDecodeDecision)
+		localDecodeDecision.Reason != RequestAwareReasonDecodeInterference ||
+		localDecodeDecision.PressureSource != RequestAwarePressureDecode {
+		t.Fatalf("local decode plus 650K decision=%+v, want pre-forward Decode protection", localDecodeDecision)
 	}
 
 	busy := input
 	busy.Running = 20
 	busy.EffectiveSequences = 20
 	busyDecision := policy.Evaluate(busy)
-	if busyDecision.Action != RequestAwareSizeProtect {
-		t.Fatalf("busy 650K decision=%+v, want pre-forward size protection before TPS feedback", busyDecision)
+	if busyDecision.Action != RequestAwareSizeProtect ||
+		busyDecision.Reason != RequestAwareReasonDecodeInterference ||
+		busyDecision.PressureSource != RequestAwarePressureDecode {
+		t.Fatalf("busy 650K decision=%+v, want pre-forward Decode protection before TPS feedback", busyDecision)
 	}
 }
 
@@ -109,9 +114,9 @@ func TestRequestAwarePolicyPrefillBoundaries(t *testing.T) {
 	base.CapacityTokens = 4 * 1024 * 1024
 	base.UsedTokens = 0
 	base.ReservedTokens = 0
-	base.Running = 20
+	base.Running = 0
 	base.Waiting = 0
-	base.EffectiveSequences = 20
+	base.EffectiveSequences = 0
 	base.AggregateTPSProxy = 0
 	base.MeanActiveTPSProxy = 0
 	base.TPSValid = false
@@ -127,8 +132,8 @@ func TestRequestAwarePolicyPrefillBoundaries(t *testing.T) {
 		{name: "below 256K", tokens: 256*1024 - 1, wantClass: RequestAwarePrefillWeighted, wantAction: RequestAwareAdmit},
 		{name: "at 256K", tokens: 256 * 1024, wantClass: RequestAwarePrefillExclusive, wantAction: RequestAwareAdmit},
 		{name: "below 512K", tokens: 512*1024 - 1, wantClass: RequestAwarePrefillExclusive, wantAction: RequestAwareAdmit},
-		{name: "at 512K", tokens: 512 * 1024, wantClass: RequestAwarePrefillQuiescent, wantAction: RequestAwareSizeProtect},
-		{name: "at 650K", tokens: 650 * 1024, wantClass: RequestAwarePrefillQuiescent, wantAction: RequestAwareSizeProtect},
+		{name: "at 512K", tokens: 512 * 1024, wantClass: RequestAwarePrefillQuiescent, wantAction: RequestAwareAdmit},
+		{name: "at 650K", tokens: 650 * 1024, wantClass: RequestAwarePrefillQuiescent, wantAction: RequestAwareAdmit},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			input := base
@@ -152,6 +157,8 @@ func TestRequestAwarePolicyCapsAggregateRegularPrefillBurstAndBlocksShortBehindK
 	regularBurst.RequestReservedTokens = 8 * 1024
 	regularBurst.SelectionInputTokens = 8 * 1024
 	regularBurst.EstimatedPrefillTokens = 8 * 1024
+	regularBurst.Running = 0
+	regularBurst.EffectiveSequences = 0
 	regularBurst.PendingPrefillSequences = 32
 	regularBurst.PendingPrefillTokens = 256*1024 - 4*1024
 	regularBurst.AggregateTPSProxy = 0
@@ -247,6 +254,8 @@ func TestV0125RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *tes
 		t.Run(test.name, func(t *testing.T) {
 			input := requestAwareTestInput()
 			input.CapacityTokens = 4 * 1024 * 1024
+			input.Running = 0
+			input.EffectiveSequences = 0
 			input.PendingPrefillSequences = 1
 			input.PendingPrefillTokens = test.pendingTokens
 			input.PendingLongPrefillSequences = 1
@@ -266,6 +275,8 @@ func TestV0125RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *tes
 
 	regularBehindRegular := requestAwareTestInput()
 	regularBehindRegular.CapacityTokens = 4 * 1024 * 1024
+	regularBehindRegular.Running = 0
+	regularBehindRegular.EffectiveSequences = 0
 	regularBehindRegular.PendingPrefillSequences = 1
 	regularBehindRegular.PendingPrefillTokens = 32 * 1024
 	regularBehindRegular.SelectionInputTokens = 8 * 1024

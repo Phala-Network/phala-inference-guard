@@ -20,7 +20,7 @@ func TestRequestAwareManagerRequestSizeChangesRealReservation(t *testing.T) {
 	}
 
 	small := smallManager.DecideRequestAwareAndReserve(
-		time.Unix(1, 0), "small", requestAwareManagerCost(32*kib, 100), 32*kib, policy, input,
+		time.Unix(1, 0), "small", requestAwareManagerCost(8*kib, 100), 8*kib, policy, input,
 	)
 	large := largeManager.DecideRequestAwareAndReserve(
 		time.Unix(1, 0), "large", requestAwareManagerCost(650*kib, 100), 650*kib, policy, input,
@@ -92,7 +92,7 @@ func TestNilRequestAwareManagerDoesNotClaimSequenceAuthority(t *testing.T) {
 	}
 }
 
-func TestRequestAwareManagerRegularBurstUsesOnlyResourceAndPrefillGates(t *testing.T) {
+func TestV0126RequestAwareManagerRegularBurstIsBoundedByDecodeEnvelope(t *testing.T) {
 	const kib = int64(1024)
 	policy := newPrefillRequestAwareTestPolicy(t)
 	manager := NewManager("request-aware-test", domain.VirtualState{})
@@ -105,12 +105,20 @@ func TestRequestAwareManagerRegularBurstUsesOnlyResourceAndPrefillGates(t *testi
 		result := manager.DecideRequestAwareAndReserve(
 			time.Unix(1, 0), fmt.Sprintf("regular-%d", index), cost, 8*kib, policy, input,
 		)
-		if !result.Reserved || result.Decision.Action != RequestAwareAdmit {
-			t.Fatalf("regular burst decision %d=%+v", index, result)
+		if index < 3 {
+			if !result.Reserved || result.Decision.Action != RequestAwareAdmit {
+				t.Fatalf("fitting regular burst decision %d=%+v", index, result)
+			}
+			continue
+		}
+		if result.Reserved || result.Decision.Action != RequestAwareSizeProtect ||
+			result.Decision.Reason != RequestAwareReasonDecodeInterference ||
+			result.Decision.PressureSource != RequestAwarePressureDecode {
+			t.Fatalf("bounded regular burst decision %d=%+v", index, result)
 		}
 	}
-	if snapshot := manager.Snapshot(); snapshot.Reservations != 5 {
-		t.Fatalf("regular burst reservations=%+v want=5", snapshot)
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 3 {
+		t.Fatalf("regular burst reservations=%+v want=3", snapshot)
 	}
 }
 
@@ -150,11 +158,8 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 
 	t.Run("classification follows interference estimate", func(t *testing.T) {
 		manager := NewManager("request-aware-test", domain.VirtualState{})
-		busy := idle
-		busy.Running = 1
-		busy.EffectiveSequences = 1
 		result := manager.DecideRequestAwareAndReserve(
-			time.Unix(1, 0), "divergent-class", requestAwareManagerCost(690*kib, 0), 285*kib, policy, busy,
+			time.Unix(1, 0), "divergent-class", requestAwareManagerCost(690*kib, 0), 285*kib, policy, idle,
 		)
 		if !result.Reserved || result.Decision.Action != RequestAwareAdmit ||
 			result.Decision.PrefillClass != RequestAwarePrefillExclusive ||
@@ -166,7 +171,7 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 		}
 	})
 
-	t.Run("aggregate budget sums interference estimates", func(t *testing.T) {
+	t.Run("same-snapshot Decode envelope sums interference estimates", func(t *testing.T) {
 		manager := NewManager("request-aware-test", domain.VirtualState{})
 		cost := requestAwareManagerCost(240*kib, 0)
 		first := manager.DecideRequestAwareAndReserve(
@@ -178,15 +183,17 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 		third := manager.DecideRequestAwareAndReserve(
 			time.Unix(2, 0), "divergent-weighted-third", cost, 99*kib, policy, idle,
 		)
-		if !first.Reserved || !second.Reserved || second.Decision.PostAdmitPendingPrefillTokens != 198*kib ||
-			third.Reserved || third.Decision.Action != RequestAwareSizeProtect ||
-			third.Decision.Reason != RequestAwareReasonPrefillBudget ||
-			third.Decision.PostAdmitPendingPrefillTokens != 297*kib {
+		if !first.Reserved || second.Reserved || second.Decision.Action != RequestAwareSizeProtect ||
+			second.Decision.Reason != RequestAwareReasonDecodeInterference ||
+			second.Decision.PressureSource != RequestAwarePressureDecode ||
+			second.Decision.PendingPrefillTokens != 99*kib ||
+			second.Decision.PostAdmitPendingPrefillTokens != 198*kib ||
+			third.Reserved || third.Decision.Reason != RequestAwareReasonDecodeInterference ||
+			third.Decision.PostAdmitPendingPrefillTokens != 198*kib {
 			t.Fatalf("divergent weighted decisions first=%+v second=%+v third=%+v", first, second, third)
 		}
-		if !manager.Terminate("divergent-weighted-first", TerminalExpired) ||
-			!manager.Terminate("divergent-weighted-second", TerminalExpired) {
-			t.Fatal("divergent weighted reservations did not terminate")
+		if !manager.Terminate("divergent-weighted-first", TerminalExpired) {
+			t.Fatal("divergent weighted reservation did not terminate")
 		}
 	})
 
@@ -251,16 +258,17 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 		afterPrefill := manager.DecideRequestAwareAndReserve(
 			time.Unix(6, 0), "divergent-prefill-after", cost, 285*kib, policy, idle,
 		)
-		if !afterPrefill.Reserved || afterPrefill.Decision.PendingPrefillTokens != 0 ||
+		if afterPrefill.Reserved || afterPrefill.Decision.Reason != RequestAwareReasonDecodeInterference ||
+			afterPrefill.Decision.PressureSource != RequestAwarePressureDecode ||
+			afterPrefill.Decision.PendingPrefillTokens != 0 ||
 			afterPrefill.Decision.PendingLongPrefillSequences != 0 {
-			t.Fatalf("post-prefill divergent decision=%+v, want interference budget released", afterPrefill)
+			t.Fatalf("post-prefill divergent decision=%+v, want Prefill budget released but Decode protected", afterPrefill)
 		}
 		snapshot := manager.Snapshot()
-		if snapshot.Reservations != 2 || snapshot.Virtual.Upper.ActiveKVUpper != 2*690*kib {
-			t.Fatalf("post-prefill safety ownership=%+v, want both KV reservations retained", snapshot)
+		if snapshot.Reservations != 1 || snapshot.Virtual.Upper.ActiveKVUpper != 690*kib {
+			t.Fatalf("post-prefill safety ownership=%+v, want original KV reservation retained", snapshot)
 		}
-		if !manager.Terminate("divergent-prefill-after", TerminalExpired) ||
-			!manager.Terminate("divergent-prefill", TerminalCompleted) {
+		if !manager.Terminate("divergent-prefill", TerminalCompleted) {
 			t.Fatal("divergent prefill reservations did not terminate")
 		}
 	})
@@ -649,8 +657,9 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 			time.Unix(4, 0), "quiescent-during-local-decode", requestAwareManagerCost(650*kib, 0), 650*kib, policy, input,
 		)
 		if secondQuiescent.Reserved || secondQuiescent.Decision.Action != RequestAwareSizeProtect ||
-			secondQuiescent.Decision.Reason != RequestAwareReasonPrefillBusy {
-			t.Fatalf("second 650K during unobserved local decode=%+v, want busy protection", secondQuiescent)
+			secondQuiescent.Decision.Reason != RequestAwareReasonDecodeInterference ||
+			secondQuiescent.Decision.PressureSource != RequestAwarePressureDecode {
+			t.Fatalf("second 650K during unobserved local decode=%+v, want Decode protection", secondQuiescent)
 		}
 		reconcileRequestAwareManagerState(t, manager, domain.VirtualState{
 			PhysicalKVUpper: 650 * kib, ActiveKVUpper: 650 * kib,
@@ -684,8 +693,9 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 			time.Unix(5, 0), "quiescent-before-idle-poll", requestAwareManagerCost(650*kib, 0), 650*kib, policy, observedBusy,
 		)
 		if beforeIdlePoll.Reserved || beforeIdlePoll.Decision.Action != RequestAwareSizeProtect ||
-			beforeIdlePoll.Decision.Reason != RequestAwareReasonPrefillBusy {
-			t.Fatalf("quiescent request with stale busy snapshot=%+v, want prefill busy protection", beforeIdlePoll)
+			beforeIdlePoll.Decision.Reason != RequestAwareReasonDecodeInterference ||
+			beforeIdlePoll.Decision.PressureSource != RequestAwarePressureDecode {
+			t.Fatalf("quiescent request with stale busy snapshot=%+v, want Decode protection", beforeIdlePoll)
 		}
 		afterIdlePoll := manager.DecideRequestAwareAndReserve(
 			time.Unix(5, 0), "quiescent-after-cancel", requestAwareManagerCost(650*kib, 0), 650*kib, policy, input,
@@ -742,7 +752,7 @@ func TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle(t *testi
 func TestRequestAwareManagerConcurrentRebaseInvalidatesEveryOldHandle(t *testing.T) {
 	for _, concurrency := range []int{1, 16, 64, 256} {
 		t.Run(fmt.Sprintf("concurrency_%d", concurrency), func(t *testing.T) {
-			policy := newRequestAwareTestPolicy(t)
+			policy := newRebaseStressRequestAwareTestPolicy(t)
 			manager := NewManager("request-aware-test", domain.VirtualState{
 				DecodeSequences: 4,
 			})
@@ -755,7 +765,7 @@ func TestRequestAwareManagerConcurrentRebaseInvalidatesEveryOldHandle(t *testing
 			for index := range concurrency {
 				requestIDs[index] = fmt.Sprintf("old-epoch-%d", index)
 				result := manager.DecideRequestAwareAndReserve(
-					time.Unix(1, 0), requestIDs[index], cost, 3, policy, input,
+					time.Unix(1, 0), requestIDs[index], cost, 1, policy, input,
 				)
 				if !result.Reserved {
 					t.Fatalf("setup reservation %d=%+v", index, result)
@@ -818,6 +828,22 @@ func newRequestAwareTestManager(usedTokens int64) *Manager {
 		DecodeSequences:     4,
 		ActiveContextTokens: usedTokens,
 	})
+}
+
+func newRebaseStressRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {
+	t.Helper()
+	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
+		HardKVLimitTokens:            8_992,
+		BlockSize:                    16,
+		PrefillRegularTokens:         1024 * 1024,
+		PrefillExclusiveTokens:       2 * 1024 * 1024,
+		PrefillQuiescentTokens:       4 * 1024 * 1024,
+		PrefillAggregateBudgetTokens: 2 * 1024 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("NewRequestAwarePolicy for rebase stress: %v", err)
+	}
+	return policy
 }
 
 func newPrefillRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {

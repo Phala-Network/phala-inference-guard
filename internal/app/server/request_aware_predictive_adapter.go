@@ -657,6 +657,8 @@ func requestAwareTelemetryObservation(
 func requestAwareAdapterProtectedDecision(decision runtimepredictive.RequestAwareDecision) predictiveAdmissionDecision {
 	source := runtimepredictive.PredictionSourceDeterministic
 	switch decision.Reason {
+	case runtimepredictive.RequestAwareReasonDecodeInterference:
+		return requestAwareAdapterFailure(predictiveAdmissionOutcomeRequestReject, domainpredictive.ReasonRequestSizeAtPressure, source)
 	case runtimepredictive.RequestAwareReasonPrefillBudget,
 		runtimepredictive.RequestAwareReasonPrefillConcurrency,
 		runtimepredictive.RequestAwareReasonPrefillExclusive,

@@ -243,8 +243,9 @@ func TestRequestAwareHTTPEnforceDifferentiatesSmallAndLargeBeforeUpstream(t *tes
 	}
 	telemetry := adapter.PredictiveAdmissionTelemetry()
 	if telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
-		telemetry.RouterBackpressure.InspectCapacity != 1 || !telemetry.RouterBackpressure.Active ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
+		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressureDecode ||
+		telemetry.RouterBackpressure.InspectCapacity != 0 || telemetry.RouterBackpressure.Active ||
 		telemetry.Attempts.Attempts != 2 || telemetry.Attempts.Fits != 1 || telemetry.Attempts.Risks != 1 {
 		t.Fatalf("enforce HTTP telemetry=%+v", telemetry)
 	}
@@ -254,8 +255,9 @@ func TestRequestAwareHTTPEnforceDifferentiatesSmallAndLargeBeforeUpstream(t *tes
 	var metrics strings.Builder
 	srv.writePredictiveAndDynamicMetrics(&metrics)
 	for _, want := range []string{
-		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="quiescent"} 1`,
-		"pig_predictive_router_inspect_capacity 1",
+		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="decode_interference",pressure_source="decode",prefill_class="quiescent"} 1`,
+		"pig_predictive_router_backpressure_active 0",
+		"pig_predictive_router_inspect_capacity 0",
 		"pig_predictive_admission_attempts_total 2",
 		`pig_predictive_admission_decisions_total{decision="fit"} 1`,
 		`pig_predictive_admission_decisions_total{decision="risk"} 1`,
@@ -384,6 +386,7 @@ func TestRequestAwareHTTPRegularBurstForwardsWithoutDecodePacingClamp(t *testing
 
 func TestV0125RequestAwareHTTPBlocksRegularBehindWeightedPrefillAndRecovers(t *testing.T) {
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
+	setRequestAwareAdapterObservation(t, adapter, manager, 0, 0, 0)
 	weighted := adapter.Decide(
 		context.Background(), "weighted-http-gate", requestAwareAdapterInput(195*1024, 0),
 	)
@@ -488,8 +491,8 @@ func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testi
 	}
 	telemetry := adapter.PredictiveAdmissionTelemetry()
 	if telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
-		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
+		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressureDecode ||
 		telemetry.RequestAware.PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
 		telemetry.RequestAware.EstimatedPrefillTokens < 16 ||
 		telemetry.RequestAware.PostAdmitPendingPrefillTokens != 0 ||
@@ -498,13 +501,14 @@ func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testi
 		t.Fatalf("long-prefill telemetry=%+v", telemetry)
 	}
 	if len(decisionLogs) != 1 || !decisionLogs[0].Enforced ||
-		decisionLogs[0].Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		decisionLogs[0].Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
+		decisionLogs[0].PressureSource != runtimepredictive.RequestAwarePressureDecode ||
 		decisionLogs[0].PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
 		decisionLogs[0].EstimatedPrefillTokens < 16 {
 		t.Fatalf("long-prefill decision logs=%+v", decisionLogs)
 	}
 	line := requestAwareDecisionLogLine(decisionLogs[0])
-	for _, want := range []string{"reason=prefill_busy", "pressure_source=prefill", "prefill_class=quiescent", "estimated_prefill_tokens="} {
+	for _, want := range []string{"reason=decode_interference", "pressure_source=decode", "prefill_class=quiescent", "estimated_prefill_tokens="} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("long-prefill log missing %q: %s", want, line)
 		}
@@ -512,7 +516,7 @@ func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testi
 	var rendered strings.Builder
 	srv.writePredictiveAndDynamicMetrics(&rendered)
 	for _, want := range []string{
-		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="quiescent"} 1`,
+		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="decode_interference",pressure_source="decode",prefill_class="quiescent"} 1`,
 		"pig_predictive_request_aware_estimated_prefill_tokens ",
 		"pig_predictive_request_aware_post_admit_pending_prefill_tokens ",
 		"pig_predictive_router_inspect_capacity 0",
@@ -564,7 +568,8 @@ func TestRequestAwareHTTPSeparatesPrefillInterferenceEstimateFromKVUpper(t *test
 			lowTelemetry.RequestAware.EstimatedPrefillTokens != lowTelemetry.RequestAware.SelectionInputTokens ||
 			lowTelemetry.RequestAware.ReservedTokens <= lowTelemetry.RequestAware.EstimatedPrefillTokens*10 ||
 			highTelemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-			highTelemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+			highTelemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
+			highTelemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressureDecode ||
 			highTelemetry.RequestAware.PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
 			highTelemetry.RequestAware.EstimatedPrefillTokens < 512*1024 ||
 			highTelemetry.RequestAware.EstimatedPrefillTokens != highTelemetry.RequestAware.SelectionInputTokens ||

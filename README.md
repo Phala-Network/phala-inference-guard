@@ -1,6 +1,6 @@
 # Phala Inference Guard
 
-Phala Inference Guard (PIG) v0.12.5 is a single-upstream, predictive admission
+Phala Inference Guard (PIG) v0.12.6 is a single-upstream, predictive admission
 proxy for OpenAI-compatible vLLM services. It estimates request size before an
 upstream call, combines that estimate with one fresh vLLM observation and all
 unabsorbed reservations, and decides whether the post-admit state can preserve
@@ -14,13 +14,19 @@ A known local weighted, exclusive, or quiescent Prefill temporarily protects
 new regular requests until Prefill completion or terminal release. Regular
 requests remain work-conserving behind other regular Prefills.
 
+When Decode users are active, PIG also bounds the candidate's total Decode
+interference before forwarding. It multiplies post-admit pending Prefill tokens
+by effective Decode sequences and compares the product with the immutable
+regular-Prefill budget. A rejection from this envelope is request-scoped: it
+does not close the node to a smaller request that still fits.
+
 ## Request path
 
 ```text
 bounded read-only JSON scan
   -> model-agnostic lexical input and output-horizon estimate
   -> fresh vLLM KV, running, waiting, generation and preemption snapshot
-  -> current reservations and post-admit KV and Prefill gates
+  -> current reservations and post-admit KV, Prefill and Decode-interference gates
   -> atomic enforce decision and reservation
   -> unchanged request bytes forwarded to the single upstream
   -> Prefill completion and exact-once terminal release
@@ -34,12 +40,12 @@ does not create a second post-response admission controller.
 ## Production configuration
 
 Production Compose should be small. Do not spell out values that equal the
-v0.12.5 defaults.
+v0.12.6 defaults.
 
 ```yaml
 services:
   pig:
-    image: ghcr.io/phala-network/phala-inference-guard:0.12.5
+    image: ghcr.io/phala-network/phala-inference-guard:0.12.6
     environment:
       - UPSTREAM=http://backend:8000
       - TOKEN=${PIG_TOKEN}
@@ -87,7 +93,9 @@ policy overrides is not promoted unchanged to production. See
   OpenAI-compatible HTTP 400 before prediction and never reaches the upstream.
 - An enforce protection returns HTTP 429 before forwarding and is reflected in
   decision metrics, bounded logs, upstream status, and Router compatibility
-  metrics from the same predictive snapshot.
+  metrics from the same predictive snapshot. A request-scoped
+  `decode_interference` rejection keeps upstream status green and Router
+  backpressure inactive so a fitting smaller request can proceed.
 - Valid supported requests are forwarded with their original application body
   bytes and `Content-Length`.
 - Valid unsupported JSON shapes and unknown models remain upstream protocol
@@ -111,11 +119,11 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image builds for
-the v0.12.5 release are run on the dedicated c21 Linux workbench. The release
+the v0.12.6 release are run on the dedicated c21 Linux workbench. The release
 plan records the exact archive hash, commands, logs, image digest, live gates,
 and production observation evidence:
 
-- [v0.12.5 QoS-constrained goodput remediation](docs/PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md)
+- [v0.12.6 QoS-constrained goodput remediation](docs/PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md)
 - [v0.12.0-v0.12.2 historical audit](docs/PREDICTIVE_ADMISSION_V0_12_1_CORRECTION_AND_LIVE_VALIDATION_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

@@ -26,6 +26,7 @@ const (
 	RequestAwareReasonPrefillConcurrency RequestAwareReason = "prefill_concurrency"
 	RequestAwareReasonPrefillExclusive   RequestAwareReason = "prefill_exclusive"
 	RequestAwareReasonPrefillBusy        RequestAwareReason = "prefill_busy"
+	RequestAwareReasonDecodeInterference RequestAwareReason = "decode_interference"
 	RequestAwareReasonDuplicate          RequestAwareReason = "duplicate"
 	RequestAwareReasonUnavailable        RequestAwareReason = "unavailable"
 	RequestAwareReasonInvalid            RequestAwareReason = "invalid"
@@ -36,6 +37,7 @@ type RequestAwarePressureSource string
 const (
 	RequestAwarePressureNone    RequestAwarePressureSource = "none"
 	RequestAwarePressurePrefill RequestAwarePressureSource = "prefill"
+	RequestAwarePressureDecode  RequestAwarePressureSource = "decode"
 )
 
 type RequestAwarePrefillClass string
@@ -68,6 +70,9 @@ func (c RequestAwareConfig) Validate() error {
 	if err := validateInterferenceGateConfig(c.interferenceGateConfig()); err != nil {
 		return fmt.Errorf("request-aware policy configuration is invalid: %w", err)
 	}
+	if err := validateDecodeEnvelopeConfig(c.decodeEnvelopeConfig()); err != nil {
+		return fmt.Errorf("request-aware policy configuration is invalid: %w", err)
+	}
 	return nil
 }
 
@@ -85,6 +90,10 @@ func (c RequestAwareConfig) interferenceGateConfig() InterferenceGateConfig {
 		PrefillQuiescentTokens:       c.PrefillQuiescentTokens,
 		PrefillAggregateBudgetTokens: c.PrefillAggregateBudgetTokens,
 	}
+}
+
+func (c RequestAwareConfig) decodeEnvelopeConfig() DecodeEnvelopeConfig {
+	return DecodeEnvelopeConfig{InterferenceBudgetTokens: c.PrefillRegularTokens}
 }
 
 type RequestAwareInput struct {
@@ -134,6 +143,7 @@ type RequestAwareDecision struct {
 type RequestAwarePolicy struct {
 	resourceGate     ResourceGate
 	interferenceGate InterferenceGate
+	decodeEnvelope   DecodeEnvelope
 }
 
 func NewRequestAwarePolicy(config RequestAwareConfig) (*RequestAwarePolicy, error) {
@@ -143,6 +153,7 @@ func NewRequestAwarePolicy(config RequestAwareConfig) (*RequestAwarePolicy, erro
 	return &RequestAwarePolicy{
 		resourceGate:     ResourceGate{config: config.resourceGateConfig()},
 		interferenceGate: InterferenceGate{config: config.interferenceGateConfig()},
+		decodeEnvelope:   DecodeEnvelope{config: config.decodeEnvelopeConfig()},
 	}, nil
 }
 
@@ -150,7 +161,9 @@ func (p *RequestAwarePolicy) MatchesCapability(profile BackendCapabilityProfile)
 	if p == nil || profile.Validate() != nil {
 		return false
 	}
-	return p.resourceGate.MatchesCapability(profile) && p.interferenceGate.MatchesCapability(profile)
+	return p.resourceGate.MatchesCapability(profile) &&
+		p.interferenceGate.MatchesCapability(profile) &&
+		p.decodeEnvelope.MatchesCapability(profile)
 }
 
 func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecision {
@@ -210,6 +223,21 @@ func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecis
 		decision.Action = RequestAwareSizeProtect
 		decision.PressureSource = RequestAwarePressurePrefill
 		decision.Pressure = 1
+		decision.AllowanceTokens = 0
+		return decision
+	}
+	decode := p.decodeEnvelope.Evaluate(DecodeEnvelopeInput{
+		PostAdmitPrefillTokens: interference.PostAdmitPendingPrefillTokens,
+		ActiveDecodeSequences:  input.EffectiveSequences,
+	})
+	if !decode.Admit {
+		decision.Reason = decode.Reason
+		if decode.HardProtection {
+			return decision
+		}
+		decision.Action = RequestAwareSizeProtect
+		decision.PressureSource = RequestAwarePressureDecode
+		decision.Pressure = decode.RejectedPressure
 		decision.AllowanceTokens = 0
 		return decision
 	}

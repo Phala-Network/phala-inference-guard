@@ -1,6 +1,6 @@
-# PIG v0.12.5 Internal Algorithm Flow
+# PIG v0.12.6 Internal Algorithm Flow
 
-PIG v0.12.5 has one admission architecture and one upstream. Components are
+PIG v0.12.6 has one admission architecture and one upstream. Components are
 separated by ownership so request parsing, backend observation, policy,
 reservation lifecycle, proxying, and telemetry do not mutate each other's
 state.
@@ -35,6 +35,7 @@ HTTP admitted path
   -> Manager combines physical observation with every live reservation
   -> ResourceGate evaluates post-admit hard KV fit
   -> InterferenceGate evaluates class-aware Prefill interference
+  -> DecodeEnvelope bounds post-admit Prefill work across effective Decode users
   -> Manager atomically decides and reserves in enforce
   -> proxy forwards unchanged request, or returns predictive HTTP 429
 ```
@@ -52,13 +53,16 @@ pressure:
   Prefill is pending, but not behind another regular Prefill;
 - a weighted request consumes more aggregate Prefill budget;
 - an exclusive request requires no competing long Prefill;
-- a quiescent request requires a sufficiently idle backend;
+- a quiescent request requires no active Decode and no competing Prefill;
+- with active Decode, post-admit pending Prefill tokens multiplied by effective
+  Decode sequences must not exceed the immutable regular-Prefill budget;
 - any request exceeding hard post-admit KV is protected.
 
-Generation TPS remains observation-only diagnostic data in v0.12.5. It is used
+Generation TPS remains observation-only diagnostic data in v0.12.6. It is used
 to evaluate QoS in controlled GPU experiments, but it does not authorize or
-reject a request. A future Decode envelope requires causal Router-disabled A/B
-evidence rather than a synthetic per-observation credit.
+reject a request. The Decode envelope uses only deterministic request work,
+immutable capability, coherent sequence state, and live reservations. Its
+promotion still requires causal Router-disabled A/B evidence.
 
 ## Lifecycle
 
@@ -107,12 +111,14 @@ predictive admission metrics
 This prevents a poll or request completion between writers from producing an
 internally contradictory scrape.
 
-Current-state inspection remains the primary Router projection. When an
-enforced load rejection is request-specific and a one-block inspect request
-still fits, the projection retains selective inspect capacity one for a bounded
-1500 ms from the original rejection. A current verdict wins when it is equally
-restrictive; a recent verdict overrides it only when the recent verdict is
-strictly more restrictive.
+Current-state inspection remains the primary Router projection. Load-scoped
+Prefill, KV, stale, preemption, and unavailable protection can retain a bounded
+recent Router verdict when the underlying scope requires it. A
+`decode_interference` rejection is request-scoped and never activates Router
+backpressure: upstream status remains green while the rejected request and its
+reason remain visible in decision logs and metrics. A current verdict wins when
+it is equally restrictive; a recent load-scoped verdict overrides it only when
+the recent verdict is strictly more restrictive.
 The bounded projection changes no admission input, reservation, or observer
 state and clears without another business request. A Manager-mediated reject
 also records its Manager sequence; Prefill completion, terminal release, or
@@ -129,7 +135,8 @@ authoritative Manager sequence.
 | `internal/runtime/predictive/capability_profile.go` | Pure KV geometry, block alignment, Prefill derivation, and profile validation |
 | `internal/runtime/predictive/resource_gate.go` | Pure post-admit KV fit |
 | `internal/runtime/predictive/interference_gate.go` | Pure class-aware Prefill interference |
-| `internal/runtime/predictive/request_aware_policy.go` | Two-gate decision composition |
+| `internal/runtime/predictive/decode_envelope.go` | Pure deterministic Decode-interference product bound |
+| `internal/runtime/predictive/request_aware_policy.go` | Three-gate decision composition and precedence |
 | `internal/runtime/predictive/manager.go` | Atomic reservation and reconciliation state |
 | `internal/app/server/predictive_vllm_observer.go` | Coherent vLLM observation, freshness, one-sample preemption signal, epoch detection |
 | `internal/app/server/request_aware_predictive_adapter.go` | HTTP-facing decision translation and telemetry |

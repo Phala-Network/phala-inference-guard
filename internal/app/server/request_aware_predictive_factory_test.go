@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 func TestDefaultPredictiveFactoryUsesDeterministicRequestAwareStack(t *testing.T) {
@@ -51,7 +53,8 @@ vllm:generation_tokens_total{model_name="vendor/arbitrary-model-v17",engine="0"}
 				t.Fatalf("deterministic adapter is incomplete: mode=%q manager=%p policy=%p", adapter.mode, adapter.manager, adapter.policy)
 			}
 			decision := adapter.Decide(context.Background(), "factory-prefill-"+mode, requestAwareAdapterInput(4*1024, 0))
-			if decision.Outcome != predictiveAdmissionOutcomeLoadProtection || decision.Reservation != nil {
+			if decision.Outcome != predictiveAdmissionOutcomeRequestReject || decision.Reservation != nil ||
+				decision.Reason != domainpredictive.ReasonRequestSizeAtPressure {
 				_ = adapter.Close()
 				t.Fatalf("factory did not wire custom quiescent prefill threshold: %+v", decision)
 			}

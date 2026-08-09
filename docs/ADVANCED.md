@@ -1,4 +1,4 @@
-# PIG v0.12.5 Advanced Configuration
+# PIG v0.12.6 Advanced Configuration
 
 This document separates production configuration from test controls. The
 loader accepts bounded overrides so the policy can be tested, but parser
@@ -10,7 +10,7 @@ A normal production deployment contains only:
 
 - `UPSTREAM`, exactly one absolute HTTP URL;
 - required authentication and attestation infrastructure;
-- a deployment choice that genuinely differs from the v0.12.5 default.
+- a deployment choice that genuinely differs from the v0.12.6 default.
 
 Do not explicitly configure predictive mode, metrics URL, polling, freshness,
 the KV hard ratio, or Prefill boundaries when the defaults are intended.
@@ -20,7 +20,7 @@ The enforce artifact must prove default behavior with
 Test and production manifests are separate artifacts. Generate production from
 the fresh live Compose and immutable image digest; do not promote a test
 manifest by only changing its mode. Before deployment, audit the effective PIG
-environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.5
+environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.6
 default and have a target-specific operational reason. Shadow may additionally
 set `PREDICTIVE_ADMISSION_MODE=shadow`; enforce must omit it.
 
@@ -45,7 +45,7 @@ not alter admission policy.
 
 ## Version defaults
 
-These values are part of the v0.12.5 behavior and should normally remain absent
+These values are part of the v0.12.6 behavior and should normally remain absent
 from production Compose.
 
 | Variable | Default | Constraint |
@@ -91,6 +91,15 @@ replaced by a bounded 512 Ki-token fallback and the reason is exposed as
 `metadata_fallback`. Backend running/waiting state does not change this profile.
 KV and Prefill parameters are initialized once and are not learned during
 service.
+
+The regular boundary also supplies the immutable Decode-interference budget:
+
+```text
+charge = post_admit_pending_prefill_tokens * effective_decode_sequences
+admit when effective_decode_sequences == 0 or charge <= regular
+```
+
+This adds no production setting, learned rate, retry credit, or active probe.
 
 Explicit Prefill overrides are available only as a controlled test/deployment
 exception:

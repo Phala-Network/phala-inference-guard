@@ -146,8 +146,7 @@ func (g *InterferenceGate) protectionReason(
 	case RequestAwarePrefillExclusive:
 		return RequestAwareReasonPrefillConcurrency, input.PendingLongPrefillSequences > 0
 	case RequestAwarePrefillQuiescent:
-		return RequestAwareReasonPrefillBusy, input.Running > 0 || input.Waiting > 0 ||
-			input.EffectiveSequences > 0 || input.PendingPrefillSequences > 0
+		return RequestAwareReasonPrefillBusy, input.PendingPrefillSequences > 0
 	default:
 		return RequestAwareReasonInvalid, true
 	}

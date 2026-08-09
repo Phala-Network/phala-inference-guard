@@ -1,4 +1,4 @@
-# PIG v0.12.5 Observability
+# PIG v0.12.6 Observability
 
 PIG exports one predictive state. The request decision, status line, backend
 projection, and Router compatibility values must come from one captured
@@ -79,6 +79,11 @@ action, reason, pressure source, and Prefill class. Numeric gauges expose:
 These fields explain why two requests can receive different decisions under the
 same current backend pressure.
 
+`decode_interference` is a bounded reason with pressure source `decode`. Its
+pressure is the rejected post-admit Prefill-times-Decode charge divided by the
+immutable regular-Prefill budget. It is an enforced, client-visible request
+rejection but not node-wide Router pressure.
+
 ## Router projection
 
 The authoritative fields are:
@@ -92,16 +97,23 @@ The authoritative fields are:
 Shadow always publishes inactive predictive Router backpressure and cannot
 reduce capacity.
 
-Enforce keeps a real load rejection visible as selective Router backpressure
-for a bounded 1500 ms after the pre-forward decision when the current one-block
-inspect probe would otherwise report open. A known local weighted-or-larger
-Prefill makes the current inspect capacity zero and remains authoritative until
-its Prefill lifecycle ends. Manager-mediated reject holds are discarded as
-soon as the Manager sequence changes on Prefill completion, terminal release,
-or epoch rebase; adapter-local stale or unavailable rejects retain the bounded
-time fallback. A current verdict wins at equal inspect capacity; a recent
-verdict overrides current state only when it is strictly more restrictive.
-Scrapes and successful requests do not extend the hold.
+Enforce keeps a real load-scoped rejection visible as selective Router
+backpressure for a bounded 1500 ms after the pre-forward decision when the
+current one-block inspect probe would otherwise report open. A known local
+weighted-or-larger Prefill makes the current inspect capacity zero and remains
+authoritative until its Prefill lifecycle ends. Manager-mediated load-scoped
+reject holds are discarded as soon as the Manager sequence changes on Prefill
+completion, terminal release, or epoch rebase; adapter-local stale or
+unavailable rejects retain the bounded time fallback. A current verdict wins at
+equal inspect capacity; a recent verdict overrides current state only when it
+is strictly more restrictive. Scrapes and successful requests do not extend
+the hold.
+
+A `decode_interference` 429 is intentionally request-scoped. It increments
+attempt, risk and enforced-reject metrics and appears in the decision log, but
+publishes `pig_predictive_router_backpressure_active 0`, inspect capacity zero,
+and `/v1/upstream-status` code `0`. This means the rejected request did not fit;
+it does not claim that no request can fit.
 
 The current Router parser still requires six compatibility names:
 
@@ -120,7 +132,7 @@ retired architecture is exported.
 
 ## Status log
 
-The bounded periodic line starts with `PIG-v0.12.5` and includes mode, attempts,
+The bounded periodic line starts with `PIG-v0.12.6` and includes mode, attempts,
 fit/risk/unknown counts, enforced rejects, reservations, last action/reason,
 Prefill estimate, KV post-admit values, TPS proxy, Router scope and
 inspect capacity, observer freshness/identity/running/waiting, and compatibility
@@ -136,4 +148,7 @@ Every actual enforce protection must agree across:
 6. the six compatibility values in the same scrape.
 
 A disagreement is a release stop condition because Router may otherwise keep
-sending traffic to a node that PIG has already protected.
+sending traffic to a node that PIG has already protected. For request-scoped
+`decode_interference`, agreement means HTTP 429 plus decision telemetry while
+Router remains explicitly green; for load-scoped reasons it means the matching
+non-green Router projection.
