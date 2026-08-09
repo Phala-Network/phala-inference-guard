@@ -1,6 +1,6 @@
 # PIG v0.12.6 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: active v0.12.6 source matrix passed; local image, targeted GPU, and
+Status: active v0.12.6 source and local-image gates passed; targeted GPU and
 Pareto gates remain open; v0.12.5 remains rejected before Pareto/upload
 
 This is the only execution plan for the active PIG v0.12.6 remediation. Sections
@@ -449,7 +449,7 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
   efficiency, and SOLID green.
 - [x] v0.12.6 complete source/race/simulation/benchmark matrix and three
   reviews passed on the dedicated CVM.
-- [ ] one immutable v0.12.6 local image passed production contract and smoke.
+- [x] one immutable v0.12.6 local image passed production contract and smoke.
 - [ ] v0.12.6 targeted GPU and Pareto matrices passed on the dedicated CVM.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
@@ -2552,3 +2552,78 @@ and vLLM remained
 d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552;
 both had restart count zero and OOMKilled=false. No image was built, uploaded,
 or deployed, and production Router plus use1-cb remained untouched.
+
+## 40. v0.12.6 immutable local image acceptance
+
+After section 39 was committed and pushed as documentation-only commit
+8dec49f6a87bf83b807f565226baa74ec109d1d4, the authoritative worktree was
+clean and byte-identical to upstream. The image runner created a detached clean
+worktree at that revision and proved that its only delta from tested executable
+commit 9167c2a146ea8762b024e468f568ca5feec5b226 was this plan document.
+The 162-file archive has SHA-256
+8b69fb92a5f945de63bf8c6aa0f5d4ea4b60b702fe4a9d70e38b5714d9437808.
+The isolated Docker configuration contained no registry authentication. The
+runner used the verified buildx installation and performed exactly one local
+build with pull disabled and no push.
+
+The accepted local image is:
+
+    tag:       ghcr.io/phala-network/phala-inference-guard:0.12.6-8dec49f-local
+    image ID:  sha256:7d8c34f580b5b4d3358b5b89b0a4b99ab1a196fd1fd7c948bba734730a729f3c
+    binary:    fce70fd67b68efc2a264cf038643a5964e2e56ce1e044b91aa831bb5904b35d6
+    platform:  linux/amd64
+    OCI:       version=0.12.6, revision=8dec49f6a87bf83b807f565226baa74ec109d1d4
+    runtime:   root distroless entrypoint, native CGO/NVML, NVIDIA_VISIBLE_DEVICES=all
+    registry:  RepoDigests=[], auth absent, upload not attempted
+
+The primary r1 runner SHA-256 is
+37a26ab43f566329d3322e84fcbf6e6de9d8aaf502c45b87e970708711219879.
+Its build log and first production-image contract passed with SHA-256 values
+d3e16f9a423cb56da455dad43ac152a119b2e7a8daa548d51020c5ed5b4d5273 and
+d1f30f6e625214b8a9d849bd79c619e8a51cbc8d318cc4cfa4de302c8024a4c2.
+The first Decode smoke also returned pre-forward 429 in 1.284 ms, did not
+increase upstream calls, kept Router status zero, and exported
+decode_interference with request scope. r1 nevertheless exited 1 because the
+runner incorrectly expected the live post-admit pending-Prefill gauge to retain
+the rejected request. The correct live value was zero because no reservation
+was created; the last-decision counterfactual gauge retained 98,316 tokens.
+The r1 failure and original runner are preserved rather than edited or waived.
+
+The no-rebuild r2 verifier pinned the exact image ID and corrected that metric
+ownership assertion. It reran the production-image contract twice, extracted
+the same binary, and repeated the complete default smoke with no predictive
+override. Startup inference calls remained zero; mode was enforce; observer
+cadence was 500 ms; capability was automatic/metadata with Prefill bounds
+65,536/262,144/524,288/262,144; the retired safe-rate metric and calibration
+log vocabulary were absent.
+
+With the fixture reporting one Decode user, a request estimated at 98,316
+Prefill tokens returned pre-forward 429 in 1.208 ms. It created no reservation,
+did not reach upstream, exported reason decode_interference and pressure source
+decode, and kept Router green. A fitting request immediately after it returned
+200 and reached upstream. The 3.5 MiB hard-KV request then returned pre-forward
+429 in 19.598 ms, activated load-scoped Router protection, and did not reach
+upstream. Router returned to green on poll 15 of a 100-ms loop, a 1.5-second
+polling upper bound. Health was 200, unauthenticated metrics 401, authenticated
+metrics 200, the smoke used the GPU device request, and fatal/OOM scans were
+clean.
+
+Authoritative acceptance evidence is under
+/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0126-image-r2-verification-8dec49f.
+All 43 evidence rows pass sha256sum -c. Material SHA-256 values are:
+
+    r2 runner                       85e07314650337c0b47632e1199f28fb259c79561399b6c8c34dd90cf2a117a6
+    evidence-sha256                 a95e42d6d5e1e6fccf2324b68d957bda0eed62ad07ed7a25c314203011986f95
+    evidence-sha256-check           81ea590827491aea6b907074fc4b4cc168bd44b899d7b1565af38382ebe95b62
+    summary                         4e8affca1309dab9aa7820c63677323de676a70e0ca4ecd2e831772892f06f8e
+    production contract, each       d1f30f6e625214b8a9d849bd79c619e8a51cbc8d318cc4cfa4de302c8024a4c2
+
+Both smoke containers and fixture processes were removed. The existing PIG
+remained f71a089b16fc2ef030d94fbd2f930eb13af0ba3599f0a256b2f70c759d9215de
+and vLLM remained
+d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552;
+both retained their StartedAt values, restart count zero, and OOMKilled=false.
+This closes only the local-image gate. The image remains unpublished and
+undeployed. The next step may replace only PIG on the dedicated CVM while
+preserving exact vLLM identity, then must complete targeted GPU and ordered
+Pareto validation before any registry upload.
