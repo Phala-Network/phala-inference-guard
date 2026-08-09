@@ -3159,3 +3159,71 @@ is accepted locally but remains unpublished and has not replaced the running
 PIG. The next step is PIG-only replacement on the dedicated CVM, followed by
 runtime identity/authentication/observability checks and the complete targeted
 GPU suite. vLLM and the CVM must not be restarted.
+
+## 46. v0.12.7 dedicated-CVM runtime acceptance
+
+The first runtime runner stopped before `DEPLOYED=1`. It inherited a YAML line
+replacement assertion while the authoritative current Compose was JSON, so it
+created only its candidate/rollback copies and pre-deployment evidence. The
+running v0.12.6 PIG ID, image, StartedAt, health, and the vLLM identity remained
+unchanged. The invalid runner evidence is preserved without modification at:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-runtime-r1-92e20b2
+runner SHA-256
+  35f70895a517fb0056cbdbc7819f723f9f61f66722cad2f9440a2ce80c8acca2
+exit code
+  1
+classification
+  pre-deployment runner format mismatch; not a PIG result
+```
+
+The r2 runner used `jq` to verify and update only `.services.pig.image`, retained
+an exact byte copy of the current JSON for rollback, and compared sorted JSON to
+prove the candidate changed one field. Its SHA-256 was
+`f867d93bd6e97f1fde218a4e80d421d9bee85f7cf4a0378f9e6bdfa3c08b2c7d`.
+Preflight revalidated the old PIG image, new exact image ID, unchanged vLLM ID,
+current health, and current Compose SHA-256
+`c431685f47300f042b0335d11e0ae72a1e5109ae41bd10ba0a6209fdb0b5d852`.
+
+The only mutation was:
+
+```text
+docker compose --project-name pig-v0124-runtime \
+  --project-directory /var/volatile/dstack/persistent/pig-v0124/runtime \
+  -f candidate-compose.json \
+  up -d --no-deps --force-recreate --pull never pig
+```
+
+The exact Compose diff replaced
+`0.12.6-8dec49f-local` with `0.12.7-92e20b2-local`; no environment, network,
+backend, port, volume, restart, or GPU option changed. The valid evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0127-runtime-r2-92e20b2
+SHA256SUMS SHA-256
+  58f482387239ebae61c60e9047cabf21c35c7a799e1c6703c090d2b9e849ba7c
+```
+
+Independent `sha256sum -c SHA256SUMS` passed every file. The running PIG is now
+the accepted image ID
+`sha256:5fc2613c11748c62059b849c56c042456b26c561fade9a8f289af925283abd7e`,
+reports `PIG-v0.12.7`, revision `92e20b2`, restart count zero, running true,
+and OOM false. The vLLM container remained exactly
+`d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552`
+with the same image, StartedAt, restart count, OOM state, and compute-process
+identity. Its inference counters were byte-identical before and after PIG
+startup, proving zero startup inference work.
+
+The default runtime has no explicit predictive algorithm overrides and proved
+`enforce`, 500-ms observation, automatic metadata profile, expected KV geometry
+and `32768/131072/262144/131072` Prefill bounds, and no active calibration.
+Metrics authentication was 401/200, combined metrics were 401/200, models and a
+representative chat were 200, upstream status was green, and fatal scans across
+PIG and vLLM were empty. The workbench remained bridge-only and the runtime
+network retained exactly PIG and vLLM.
+
+This accepts deployment readiness on the dedicated CVM only. Targeted GPU QoS,
+near-KV, lifecycle, low-flow, stale/recovery, and ordered Pareto gates remain
+open. The image is still local and unpublished; production Router and
+`use1-cb` remain untouched.
