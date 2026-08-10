@@ -4,11 +4,11 @@ Status: active architecture reset. This document is the only execution plan for
 the current goal. Historical v0.12 plans, images, runtime results, and rejected
 source experiments remain evidence only; they are not implementation authority.
 
-The last executable development HEAD is `6d2c0e1`; the architecture-reset plan
-is commit `021f146`. Later status-only or executable commits do not inherit old
-evidence automatically. No next `0.12.x` version is assigned. No image may be
-built, uploaded, or deployed until every pre-version gate in section 13 passes
-on one exact pushed commit.
+The current executable development HEAD is `d93ea02`; the architecture-reset
+plan is commit `021f146`. Later status-only or executable commits do not inherit
+old evidence automatically. No next `0.12.x` version is assigned. No image may
+be built, uploaded, or deployed until every pre-version gate in section 13
+passes on one exact pushed commit.
 
 After context compression, resume from sections 3, 8, 11, and 14. Re-read the
 current Git status before inheriting any checklist item.
@@ -64,7 +64,7 @@ CVM             c21b7281-2c25-4453-8a68-f39ec42d03b4
 workbench       pig-v0124-workbench
 repository      /workspace/src/phala-inference-guard-r3
 branch                  codex/pig-v0.11.0-request-aware
-last executable HEAD    6d2c0e1
+executable HEAD         d93ea02
 architecture plan       021f146
 ```
 
@@ -78,6 +78,9 @@ runtime gate may replace only PIG on c21 with `--no-deps`.
 - `378584d`: raw vLLM phase facts, canonical probe scope, and current-capacity
   ownership are documented.
 - `6d2c0e1`: production-shaped shared-worker simulator is available.
+- `d93ea02`: Observer samples and reservation state are atomically owned by the
+  Manager; Adapter decisions and Router inspection no longer read a separate
+  Observer snapshot.
 - Frozen old-policy simulator result: 24 arrivals, 14 admits, 10 size protects,
   14 completions, zero preemptions, and exact final drain.
 
@@ -111,6 +114,31 @@ must not be uploaded as source.
 
 The running c21 PIG remains the rejected, unpublished local v0.12.9 image. No
 source in this plan has been built or deployed.
+
+### 3.4 Observation-contract source gate
+
+The focused old path failed exactly because Adapter converted an unreadable
+Observer snapshot into `metrics_stale`. At `d93ea02`, the same test admits from
+the Manager-owned observation and creates one reservation. Validation on c21:
+
+```text
+go test ./internal/runtime/predictive \
+  -run TestCurrentRequestAwareDecisionUsesAtomicallyPublishedObservation -count=1
+
+go test ./internal/app/server \
+  -run TestRequestAwareAdapterDecisionDoesNotReadObserverSnapshot -count=1
+
+go test ./... -count=1
+go test -race ./internal/runtime/predictive ./internal/app/server \
+  ./internal/simulation/requestaware -count=1
+go vet ./...
+go build ./...
+
+result: all green
+```
+
+This proves the observation ownership slice only. It does not accept the old
+reservation assimilation model or the old admission policy.
 
 ## 4. Reflection: why repeated patch versions failed
 
@@ -675,7 +703,8 @@ separately authorized boundary.
 - [x] fixed portable size bands replace context `/8` and `/2` scaling.
 - [x] architecture-reset plan committed and pushed alone as `021f146`.
 - [x] dirty Gate/Manager experiment saved, hashed, and removed from worktree.
-- [ ] Observation/Controller slice passes focused/race gates and is pushed.
+- [x] Observation/Controller slice passes focused/full/race/vet/build gates and
+  is pushed as `d93ea02`.
 - [ ] positive reservation overlay slice passes lifecycle/race gates and is
   pushed.
 - [ ] capability/profile and pure policy slices pass and are pushed.
