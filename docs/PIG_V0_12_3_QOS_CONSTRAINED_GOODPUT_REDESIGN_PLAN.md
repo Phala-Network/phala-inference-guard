@@ -2,8 +2,9 @@
 
 Status: v0.12.8 reproduced the sustained-wave throughput defect in its first
 targeted GPU gate and remains unpublished; the v0.12.9 response-EOF lifecycle
-correction is planned, and focused red, source, image, dedicated-CVM, targeted
-GPU, ordered Pareto, independent audit, upload, and production gates remain open
+focused red, minimal implementation, and affected source gates are green, while
+complete source, image, dedicated-CVM, targeted GPU, ordered Pareto, independent
+audit, upload, and production gates remain open
 
 This is the only execution plan for the active PIG v0.12.9 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -494,11 +495,19 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] the completely new v0.12.7 ordered Pareto matrix and independent audit
   rejected the candidate for required-scenario loss and no material gain.
 - [x] v0.12.8 completed-Decode terminal reconciliation focused red is valid.
-- [ ] v0.12.8 focused implementation, complete source matrix, three reviews,
-  and push pass on the dedicated CVM.
-- [ ] one exact v0.12.8 local image passes image contract, dedicated-CVM
-  runtime, and targeted GPU gates.
-- [ ] the completely new v0.12.8 ordered Pareto matrix passes every section 4
+- [x] v0.12.8 focused implementation, complete source matrix, three reviews,
+  and push passed on the dedicated CVM.
+- [x] one exact local-only v0.12.8 image passed image contract and the
+  dedicated-CVM runtime baseline.
+- [x] v0.12.8 failed the first sustained-wave targeted GPU gate and was
+  rejected before remaining targeted, Pareto, audit, or upload gates.
+- [x] v0.12.9 response-EOF lifecycle focused red is valid.
+- [x] v0.12.9 minimal implementation, affected tests, race, build, simulation,
+  and three review passes are green on the dedicated CVM.
+- [ ] v0.12.9 clean pushed source and complete source matrix pass.
+- [ ] one exact v0.12.9 local image passes image contract, dedicated-CVM
+  runtime, and every targeted GPU gate.
+- [ ] the completely new v0.12.9 ordered Pareto matrix passes every section 4
   condition before upload.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
@@ -4081,3 +4090,78 @@ remains pure. The hot response path adds at most one EOF branch and two bounded
 `sync.Once` operations without scanning or allocating per chunk. v0.12.8 is
 rejected before the remaining targeted and Pareto gates; no prior green is
 inherited, and production remains unchanged.
+
+## 50. v0.12.9 focused response-EOF implementation
+
+The focused work ran only in `pig-v0124-workbench` on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4` from clean pushed base
+`2075b44625fb5eed92b8908d1cf5e9c44af4bc48`. No image, running PIG, vLLM,
+CVM, Router, `use1-cb`, or production traffic was changed.
+
+The focused test first attached the real request-aware reservation to a 2xx
+HTTP response, consumed its first byte, reconciled that Decode into the still-
+published `running=1` observation, and then consumed the clean EOF before the
+proxy-handler defer. Against v0.12.8 it retained one reservation at EOF. Three
+additional positive contracts also failed for the intended missing signal:
+
+```text
+clean EOF reservations before defer        1, want 0
+bytes-plus-EOF lifecycle                    prefill, want prefill then completed
+repeated EOF completed calls                0, want 1
+empty successful EOF completed calls        0, want 1
+```
+
+The negative Close-before-EOF, upstream body read error, non-2xx EOF, canceled
+context, and expired context cases all passed without an early terminal call.
+The red therefore isolates successful response-body terminal ordering rather
+than compilation, fixture, Manager, or failure-path behavior. Its immutable
+evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/evidence/
+  v0129-response-eof-red-r1
+SHA256SUMS SHA-256
+  da67506912e504fc793d23912ffff6086f552787fa02110e16d755aea3f88542
+```
+
+The implementation replaces the first-byte-only body wrapper with one response
+lifecycle wrapper. It retains the existing first-byte `sync.Once`, adds one
+independent completion `sync.Once`, runs Prefill notification before terminal
+notification when a read returns bytes plus `io.EOF`, and delegates `Close`
+without completing. `modifyBackendResponse` provides a completion callback only
+for 2xx responses; the callback requires an uncanceled, non-expired response
+context and calls only `TerminalCompleted`. The outer handler defer is unchanged
+and Manager's existing idempotent terminal operation remains the final owner of
+release and completed-Decode credit.
+
+The corrected focused set and the preceding first-byte regression passed. The
+complete server package, affected server/runtime/simulation/CLI packages, race
+tests for server/runtime/simulation, `go vet ./...`, and `go build ./...` also
+passed. The deterministic simulator reported `acceptance=passed`; review found
+and corrected one evidence-identity omission where the policy key was v0.12.9
+but the top-level JSON field still said `v0_12_8_aggregate`. The field is now
+`v0_12_9_aggregate`, active current-version text and symbols are consistently
+v0.12.9, while historical v0.12.8 test names and audit evidence remain intact.
+
+Review pass 1, model and causality: the real-reservation test holds the backend
+observation constant and changes only whether authoritative EOF has reached the
+Manager. It proves that EOF removes the absorbed reservation and lets the next
+80-Ki-token replacement pass pre-forward admission. No threshold, synthetic
+rate, cache assumption, or fabricated Manager state is involved.
+
+Review pass 2, safety and lifecycle: exact `io.EOF` is required. First byte is
+ordered before completion; zero-byte EOF releases without marking Prefill;
+repeated EOF is bounded; Close, read error, non-2xx, cancel, and timeout remain
+deferred. The existing defer covers every ambiguous or failure path, and the
+Manager still rejects duplicate terminal release. No request or response is
+mutated beyond the existing transparent body observation.
+
+Review pass 3, SOLID, efficiency, and evidence: body event detection remains in
+the body wrapper, HTTP eligibility remains in the proxy response hook, Manager
+remains the only reservation/credit owner, and policy remains pure. The steady
+body-read path retains its previous first-byte `sync.Once` check and adds no
+scan, per-chunk allocation, timer, goroutine, option, learner, calibration, or
+policy branch; only clean EOF performs the second once. These are affected
+source results only. A clean pushed executable commit, exact archive, complete
+28-row source matrix, immutable evidence, local image, GPU workload, Pareto,
+audit, and upload gates remain mandatory and unproven.

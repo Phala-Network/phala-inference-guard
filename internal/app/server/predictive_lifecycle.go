@@ -9,25 +9,34 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-type predictiveFirstBodyReadCloser struct {
+type predictiveResponseBodyReadCloser struct {
 	io.ReadCloser
-	once    sync.Once
-	onFirst func()
+	firstOnce    sync.Once
+	completeOnce sync.Once
+	onFirst      func()
+	onComplete   func()
 }
 
-func (r *predictiveFirstBodyReadCloser) Read(buffer []byte) (int, error) {
+func (r *predictiveResponseBodyReadCloser) Read(buffer []byte) (int, error) {
 	read, err := r.ReadCloser.Read(buffer)
-	if read > 0 {
-		r.once.Do(r.onFirst)
+	if read > 0 && r.onFirst != nil {
+		r.firstOnce.Do(r.onFirst)
+	}
+	if err == io.EOF && r.onComplete != nil {
+		r.completeOnce.Do(r.onComplete)
 	}
 	return read, err
 }
 
-func observePredictiveFirstBodyRead(body io.ReadCloser, onFirst func()) io.ReadCloser {
-	if body == nil || onFirst == nil {
+func observePredictiveResponseBody(body io.ReadCloser, onFirst, onComplete func()) io.ReadCloser {
+	if body == nil || (onFirst == nil && onComplete == nil) {
 		return body
 	}
-	return &predictiveFirstBodyReadCloser{ReadCloser: body, onFirst: onFirst}
+	return &predictiveResponseBodyReadCloser{
+		ReadCloser: body,
+		onFirst:    onFirst,
+		onComplete: onComplete,
+	}
 }
 
 type predictiveAvailabilityProvider interface {

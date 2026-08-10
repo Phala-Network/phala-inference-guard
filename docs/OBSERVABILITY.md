@@ -1,4 +1,4 @@
-# PIG v0.12.8 Observability
+# PIG v0.12.9 Observability
 
 PIG exports one predictive state. The request decision, status line, backend
 projection, and Router compatibility values must come from one captured
@@ -139,7 +139,7 @@ retired architecture is exported.
 
 ## Status log
 
-The bounded periodic line starts with `PIG-v0.12.8` and includes mode, attempts,
+The bounded periodic line starts with `PIG-v0.12.9` and includes mode, attempts,
 fit/risk/unknown counts, enforced rejects, reservations, last action/reason,
 Prefill estimate, KV post-admit values, TPS proxy, Router scope and
 inspect capacity, observer freshness/identity/running/waiting, and compatibility

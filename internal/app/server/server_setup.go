@@ -11,6 +11,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
+	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 type predictiveReservationContextKey struct{}
@@ -83,9 +84,20 @@ func (s *proxyServer) modifyBackendResponse(response *http.Response) error {
 	s.classifyUpstreamErrorResponse(response)
 	if response != nil && response.Request != nil {
 		if reservation, ok := response.Request.Context().Value(predictiveReservationContextKey{}).(predictiveShadowReservation); ok && reservation != nil {
-			response.Body = observePredictiveFirstBodyRead(response.Body, func() {
-				reservation.MarkPrefillComplete()
-			})
+			var onComplete func()
+			if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+				responseContext := response.Request.Context()
+				onComplete = func() {
+					if responseContext.Err() == nil {
+						reservation.Terminate(runtimepredictive.TerminalCompleted)
+					}
+				}
+			}
+			response.Body = observePredictiveResponseBody(
+				response.Body,
+				func() { reservation.MarkPrefillComplete() },
+				onComplete,
+			)
 		}
 	}
 	return nil

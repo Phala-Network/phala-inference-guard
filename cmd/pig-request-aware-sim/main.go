@@ -13,7 +13,7 @@ type simulationReport struct {
 	Suite       requestaware.Suite   `json:"suite"`
 	NoAdmission requestaware.Metrics `json:"no_admission_aggregate"`
 	V0122       requestaware.Metrics `json:"v0_12_2_aggregate"`
-	Candidate   requestaware.Metrics `json:"v0_12_8_aggregate"`
+	Candidate   requestaware.Metrics `json:"v0_12_9_aggregate"`
 	Acceptance  string               `json:"acceptance"`
 }
 
@@ -29,7 +29,7 @@ func buildSimulationReport() (simulationReport, error) {
 		Suite:       suite,
 		NoAdmission: suite.Aggregate(requestaware.PolicyNoAdmission),
 		V0122:       suite.Aggregate(requestaware.PolicyV0122),
-		Candidate:   suite.Aggregate(requestaware.PolicyV0128),
+		Candidate:   suite.Aggregate(requestaware.PolicyV0129),
 		Acceptance:  "passed",
 	}, nil
 }
