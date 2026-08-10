@@ -106,15 +106,14 @@ func BenchmarkRequestAwareManagerDecide(b *testing.B) {
 	if err != nil {
 		b.Fatalf("NewRequestAwarePolicy: %v", err)
 	}
-	for _, activeReservations := range []int{0, 48, 256} {
+	for _, activeReservations := range []int{0, 1, 48, 256, 4_096} {
 		b.Run(fmt.Sprintf("active-%d", activeReservations), func(b *testing.B) {
 			manager := newRequestAwareTestManager(0)
 			for index := range activeReservations {
 				requestID := fmt.Sprintf("active-%d", index)
 				manager.reservations[requestID] = reservation{
-					ID:           requestID,
-					Cost:         requestAwareManagerCost(8*1024, 1024),
-					Assimilation: assimilationUnabsorbed,
+					ID:   requestID,
+					Cost: requestAwareManagerCost(8*1024, 1024),
 				}
 			}
 			input := requestAwareManagerInput()

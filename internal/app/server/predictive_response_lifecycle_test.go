@@ -50,7 +50,7 @@ func TestV0121PrefillCompletesOnFirstResponseBodyByteNotHeaders(t *testing.T) {
 	}
 }
 
-func TestV0129SuccessfulResponseEOFReleasesBeforeProxyHandlerDefer(t *testing.T) {
+func TestSuccessfulResponseEOFReleasesReservationWithoutRewritingObservation(t *testing.T) {
 	const kib = int64(1024)
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	setRequestAwareAdapterObservation(t, adapter, manager, 0, 0, 0)
@@ -87,11 +87,18 @@ func TestV0129SuccessfulResponseEOFReleasesBeforeProxyHandlerDefer(t *testing.T)
 		t.Fatal("handler-defer fallback terminated an already completed reservation twice")
 	}
 
+	stale := adapter.Decide(
+		context.Background(), "response-eof-stale", requestAwareAdapterInput(80*kib, 0),
+	)
+	if stale.Outcome != predictiveAdmissionOutcomeRequestReject || stale.Reservation != nil {
+		t.Fatalf("decision against stale observation=%+v, want no fabricated completion credit", stale)
+	}
+	setRequestAwareAdapterObservation(t, adapter, manager, 0, 0, 0)
 	replacement := adapter.Decide(
 		context.Background(), "response-eof-replacement", requestAwareAdapterInput(80*kib, 0),
 	)
 	if replacement.Outcome != predictiveAdmissionOutcomeForward || replacement.Reservation == nil {
-		t.Fatalf("replacement after authoritative EOF=%+v, want pre-forward admission", replacement)
+		t.Fatalf("replacement after next idle observation=%+v, want pre-forward admission", replacement)
 	}
 	if !replacement.Reservation.Terminate(runtimepredictive.TerminalExpired) || manager.Snapshot().Reservations != 0 {
 		t.Fatalf("replacement cleanup leaked reservation: %+v", manager.Snapshot())

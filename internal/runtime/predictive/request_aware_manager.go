@@ -38,8 +38,6 @@ type requestAwareStateSnapshot struct {
 	PendingQuiescentPrefillSequences int
 	PendingUnknownPrefillSequences   int
 	UnobservedActiveDecodeSequences  int
-	CompletedDecodeCredits           int
-	ObservationSequence              uint64
 }
 
 func (m *Manager) DecideRequestAwareAndReserve(
@@ -150,11 +148,7 @@ func (m *Manager) decideRequestAwareLocked(
 	}
 	input.UsedTokens = effectiveKV
 	input.ReservedTokens = 0
-	observedActiveDecodeSequences := input.Running
-	if input.ObservationSequence == state.ObservationSequence {
-		observedActiveDecodeSequences = subtractIntFloorZero(input.Running, state.CompletedDecodeCredits)
-	}
-	input.EffectiveSequences = addIntSaturating(observedActiveDecodeSequences, state.UnobservedActiveDecodeSequences)
+	input.EffectiveSequences = addIntSaturating(input.Running, state.UnobservedActiveDecodeSequences)
 	input.RequestReservedTokens = requestReservedTokens
 	input.SelectionInputTokens = selectionInputTokens
 	input.EstimatedPrefillTokens = selectionInputTokens
@@ -180,7 +174,6 @@ func (m *Manager) decideRequestAwareLocked(
 		Cost:                      cost,
 		PrefillInterferenceTokens: selectionInputTokens,
 		AdmittedSequence:          m.eventSequence,
-		Assimilation:              assimilationUnabsorbed,
 	}
 	return RequestAwareManagerResult{
 		Decision:                     decision,
@@ -275,8 +268,6 @@ func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) requestAwa
 	snapshot := requestAwareStateSnapshot{
 		PendingPrefillTokens:           state.Upper.UncachedPrefillTokens,
 		PendingUnknownPrefillSequences: state.Upper.PendingPrefillSequences,
-		CompletedDecodeCredits:         m.retired.CompletedDecodeSequences(),
-		ObservationSequence:            m.observationSequence,
 	}
 	// Existing backend work has no attributable lexical estimate, so preserve
 	// its observed safety upper. Local reservations replace only their own
@@ -284,7 +275,7 @@ func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) requestAwa
 	for _, item := range m.reservations {
 		addReservationToStateInterval(&state, &item)
 		if item.PrefillComplete {
-			if item.Assimilation != assimilationAbsorbed {
+			if !item.InputCoveredByObservation {
 				snapshot.UnobservedActiveDecodeSequences = addIntSaturating(
 					snapshot.UnobservedActiveDecodeSequences,
 					item.Cost.DecodeSequencesUpper,

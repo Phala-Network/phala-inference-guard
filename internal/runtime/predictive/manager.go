@@ -31,14 +31,6 @@ func (c TerminalCause) Validate() error {
 	}
 }
 
-type assimilationState uint8
-
-const (
-	assimilationUnabsorbed assimilationState = iota
-	assimilationAmbiguous
-	assimilationAbsorbed
-)
-
 type reservation struct {
 	ID                        string
 	Created                   time.Time
@@ -49,68 +41,7 @@ type reservation struct {
 	AdmittedSequence          uint64
 	ForwardedSequence         uint64
 	PrefillCompletedSequence  uint64
-	Assimilation              assimilationState
-	BackendPresenceAbsorbed   bool
-	ActiveDecodeAbsorbed      bool
-}
-
-const maximumRetiredReservations = 4_096
-
-type retiredReservation struct {
-	CompletedSequence        uint64
-	MaterializedFloor        domain.RequestCost
-	CompletedDecodeSequences int
-}
-
-type retiredReservationQueue struct {
-	items                    []retiredReservation
-	head                     int
-	size                     int
-	completedDecodeSequences int
-}
-
-func (q *retiredReservationQueue) Push(item retiredReservation) bool {
-	if item.CompletedDecodeSequences < 0 {
-		item.CompletedDecodeSequences = 0
-	}
-	if q.items == nil {
-		q.items = make([]retiredReservation, maximumRetiredReservations)
-	}
-	if q.size < len(q.items) {
-		q.items[(q.head+q.size)%len(q.items)] = item
-		q.size++
-		q.completedDecodeSequences = addIntSaturating(q.completedDecodeSequences, item.CompletedDecodeSequences)
-		return false
-	}
-	q.completedDecodeSequences = subtractIntFloorZero(
-		q.completedDecodeSequences,
-		q.items[q.head].CompletedDecodeSequences,
-	)
-	q.items[q.head] = item
-	q.head = (q.head + 1) % len(q.items)
-	q.completedDecodeSequences = addIntSaturating(q.completedDecodeSequences, item.CompletedDecodeSequences)
-	return true
-}
-
-func (q *retiredReservationQueue) Pop() (retiredReservation, bool) {
-	if q.size == 0 {
-		return retiredReservation{}, false
-	}
-	item := q.items[q.head]
-	q.completedDecodeSequences = subtractIntFloorZero(q.completedDecodeSequences, item.CompletedDecodeSequences)
-	q.items[q.head] = retiredReservation{}
-	q.head = (q.head + 1) % len(q.items)
-	q.size--
-	if q.size == 0 {
-		q.head = 0
-	}
-	return item, true
-}
-
-func (q *retiredReservationQueue) Len() int { return q.size }
-
-func (q *retiredReservationQueue) CompletedDecodeSequences() int {
-	return q.completedDecodeSequences
+	InputCoveredByObservation bool
 }
 
 type SampleWindow struct {
@@ -127,8 +58,6 @@ type Manager struct {
 	intakeOpen                 bool
 	base                       domain.VirtualStateInterval
 	reservations               map[string]reservation
-	retired                    retiredReservationQueue
-	retiredEvictions           uint64
 	eventSequence              uint64
 	pendingPrefillSequence     uint64
 	lastSampleFinished         uint64
@@ -147,10 +76,11 @@ type Snapshot struct {
 	ForwardedPendingPrefillTokens   int64
 	ForwardedPendingPrefillSequence uint64
 	EventSequence                   uint64
-	RetiredReservations             int
-	RetiredEvictions                uint64
-	CompletedDecodeCredits          int
-	Virtual                         domain.VirtualStateInterval
+	// Deprecated compatibility fields; positive-only reservations keep them zero.
+	RetiredReservations    int
+	RetiredEvictions       uint64
+	CompletedDecodeCredits int
+	Virtual                domain.VirtualStateInterval
 }
 
 type RequestAwarePendingSnapshot struct {
@@ -229,22 +159,6 @@ func (m *Manager) Terminate(requestID string, cause TerminalCause) bool {
 	if item.Forwarded && !item.PrefillComplete {
 		m.advancePendingPrefillEpisodeLocked()
 	}
-	if item.Assimilation == assimilationAbsorbed && item.PrefillComplete {
-		materialized := materializedStateFloor(item.Cost)
-		m.base.Lower = subtractState(m.base.Lower, materialized)
-		m.base.Upper = subtractState(m.base.Upper, materialized)
-		completedDecodeSequences := 0
-		if cause == TerminalCompleted && item.ActiveDecodeAbsorbed {
-			completedDecodeSequences = item.Cost.DecodeSequencesUpper
-		}
-		if m.retired.Push(retiredReservation{
-			CompletedSequence:        m.eventSequence,
-			MaterializedFloor:        materialized,
-			CompletedDecodeSequences: completedDecodeSequences,
-		}) {
-			m.retiredEvictions++
-		}
-	}
 	delete(m.reservations, requestID)
 	return true
 }
@@ -274,7 +188,6 @@ func (m *Manager) RebaseEpoch(observed domain.VirtualState) error {
 	m.advancePendingPrefillEpisodeLocked()
 	m.base = domain.VirtualStateInterval{Lower: observed, Upper: observed}
 	clear(m.reservations)
-	m.retired = retiredReservationQueue{}
 	m.lastSampleFinished = m.eventSequence
 	m.observationSequence = 0
 	m.hasSample = true
@@ -320,81 +233,12 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 		!validRequestAwareObservationForSample(*sample.RequestAwareObservation, sample) {
 		return fmt.Errorf("predictive request-aware observation is inconsistent with sample")
 	}
-	previousBase := m.base.Upper
 	m.base = domain.VirtualStateInterval{Lower: sample.Observed, Upper: sample.Observed}
-	previousPresence := domain.RequestCost{}
-	newPresence := domain.RequestCost{}
-	for _, item := range m.reservations {
-		materialized := materializedStateFloor(item.Cost)
-		switch {
-		case item.BackendPresenceAbsorbed:
-			addMaterializedFloor(&previousPresence, materialized)
-		case reservationEligibleForBackendObservation(item, sample):
-			addMaterializedFloor(&newPresence, materialized)
-		}
-	}
-	observedActiveDecodeSequences := sample.Observed.DecodeSequences - sample.Observed.PendingPrefillSequences
-	previousActiveDecodeSequences := subtractIntFloorZero(
-		previousBase.DecodeSequences,
-		previousBase.PendingPrefillSequences,
-	)
-	previousUnowned := domain.RequestCost{
-		KV: domain.KVIncrement{
-			PhysicalKVUpper: subtractFloorZero(previousBase.PhysicalKVUpper, previousPresence.KV.PhysicalKVUpper),
-			ActiveKVUpper:   subtractFloorZero(previousBase.ActiveKVUpper, previousPresence.KV.ActiveKVUpper),
-		},
-		DecodeSequencesUpper: subtractIntFloorZero(previousActiveDecodeSequences, previousPresence.DecodeSequencesUpper),
-		ActiveContextTokensUpper: subtractFloorZero(
-			previousBase.ActiveContextTokens,
-			previousPresence.ActiveContextTokensUpper,
-		),
-	}
-	retainedPresenceObserved := previousPresence.DecodeSequencesUpper > 0 && observationCoversMaterialized(
-		sample.Observed, observedActiveDecodeSequences, previousUnowned, previousPresence,
-	)
-	newPresenceObserved := newPresence.DecodeSequencesUpper > 0 && observationCoversMaterialized(
-		sample.Observed, observedActiveDecodeSequences, previousUnowned, previousPresence, newPresence,
-	)
 	for id, item := range m.reservations {
-		switch {
-		case item.BackendPresenceAbsorbed:
-			item.BackendPresenceAbsorbed = retainedPresenceObserved
-		case reservationEligibleForBackendObservation(item, sample):
-			item.BackendPresenceAbsorbed = newPresenceObserved
-		default:
-			item.BackendPresenceAbsorbed = false
+		if item.PrefillComplete && item.PrefillCompletedSequence <= sample.StartedSequence {
+			item.InputCoveredByObservation = true
+			m.reservations[id] = item
 		}
-		item.ActiveDecodeAbsorbed = false
-		switch {
-		case !item.Forwarded || !item.PrefillComplete:
-			item.Assimilation = assimilationUnabsorbed
-		case reservationAbsorbedBySample(item, sample):
-			item.Assimilation = assimilationAbsorbed
-			item.ActiveDecodeAbsorbed = item.BackendPresenceAbsorbed
-		case item.ForwardedSequence > sample.FinishedSequence || item.PrefillCompletedSequence > sample.FinishedSequence:
-			item.Assimilation = assimilationUnabsorbed
-		default:
-			item.Assimilation = assimilationAmbiguous
-		}
-		m.reservations[id] = item
-	}
-	retiredCount := m.retired.Len()
-	for range retiredCount {
-		item, ok := m.retired.Pop()
-		if !ok {
-			break
-		}
-		switch {
-		case item.CompletedSequence <= sample.StartedSequence:
-			continue
-		case item.CompletedSequence > sample.FinishedSequence:
-			m.base.Lower = subtractState(m.base.Lower, item.MaterializedFloor)
-			m.base.Upper = subtractState(m.base.Upper, item.MaterializedFloor)
-		default:
-			m.base.Lower = subtractState(m.base.Lower, item.MaterializedFloor)
-			item.CompletedDecodeSequences = 0
-		}
-		m.retired.Push(item)
 	}
 	m.lastSampleFinished = sample.FinishedSequence
 	m.observationSequence = sample.ObservationSequence
@@ -404,41 +248,6 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 		m.hasRequestAwareObservation = true
 	}
 	return nil
-}
-
-func reservationAbsorbedBySample(item reservation, sample SampleWindow) bool {
-	return item.Forwarded && item.PrefillComplete &&
-		item.ForwardedSequence <= sample.StartedSequence &&
-		item.PrefillCompletedSequence <= sample.StartedSequence
-}
-
-func reservationEligibleForBackendObservation(item reservation, sample SampleWindow) bool {
-	return item.Forwarded && item.ForwardedSequence <= sample.StartedSequence
-}
-
-func addMaterializedFloor(total *domain.RequestCost, increment domain.RequestCost) {
-	total.KV.PhysicalKVUpper = addInt64Saturating(total.KV.PhysicalKVUpper, increment.KV.PhysicalKVUpper)
-	total.KV.ActiveKVUpper = addInt64Saturating(total.KV.ActiveKVUpper, increment.KV.ActiveKVUpper)
-	total.DecodeSequencesUpper = addIntSaturating(total.DecodeSequencesUpper, increment.DecodeSequencesUpper)
-	total.ActiveContextTokensUpper = addInt64Saturating(
-		total.ActiveContextTokensUpper,
-		increment.ActiveContextTokensUpper,
-	)
-}
-
-func observationCoversMaterialized(
-	observed domain.VirtualState,
-	observedActiveDecodeSequences int,
-	components ...domain.RequestCost,
-) bool {
-	required := domain.RequestCost{}
-	for _, component := range components {
-		addMaterializedFloor(&required, component)
-	}
-	return observedActiveDecodeSequences >= required.DecodeSequencesUpper &&
-		observed.PhysicalKVUpper >= required.KV.PhysicalKVUpper &&
-		observed.ActiveKVUpper >= required.KV.ActiveKVUpper &&
-		observed.ActiveContextTokens >= required.ActiveContextTokensUpper
 }
 
 func (m *Manager) Snapshot() Snapshot {
@@ -452,9 +261,6 @@ func (m *Manager) Snapshot() Snapshot {
 		Reservations:                    len(m.reservations),
 		ForwardedPendingPrefillSequence: m.pendingPrefillSequence,
 		EventSequence:                   m.eventSequence,
-		RetiredReservations:             m.retired.Len(),
-		RetiredEvictions:                m.retiredEvictions,
-		CompletedDecodeCredits:          m.retired.CompletedDecodeSequences(),
 		Virtual:                         m.virtualStateIntervalLocked(),
 	}
 	for _, item := range m.reservations {
@@ -488,22 +294,18 @@ func (m *Manager) virtualStateIntervalLocked() domain.VirtualStateInterval {
 }
 
 func addReservationToStateInterval(state *domain.VirtualStateInterval, item *reservation) {
-	switch item.Assimilation {
-	case assimilationUnabsorbed:
-		cost := fullReservationStateCost(item)
-		state.Lower = addState(state.Lower, cost)
-		state.Upper = addState(state.Upper, cost)
-		if !item.PrefillComplete {
-			state.Lower.PendingPrefillSequences = addIntSaturating(state.Lower.PendingPrefillSequences, 1)
-			state.Upper.PendingPrefillSequences = addIntSaturating(state.Upper.PendingPrefillSequences, 1)
-		}
-	case assimilationAmbiguous:
-		state.Lower = addState(state.Lower, futureReservationStateCost(item))
-		state.Upper = addState(state.Upper, fullReservationStateCost(item))
-	case assimilationAbsorbed:
+	if item.InputCoveredByObservation {
 		cost := futureReservationStateCost(item)
 		state.Lower = addState(state.Lower, cost)
 		state.Upper = addState(state.Upper, cost)
+		return
+	}
+	cost := fullReservationStateCost(item)
+	state.Lower = addState(state.Lower, cost)
+	state.Upper = addState(state.Upper, cost)
+	if !item.PrefillComplete {
+		state.Lower.PendingPrefillSequences = addIntSaturating(state.Lower.PendingPrefillSequences, 1)
+		state.Upper.PendingPrefillSequences = addIntSaturating(state.Upper.PendingPrefillSequences, 1)
 	}
 }
 
@@ -519,17 +321,6 @@ func futureReservationStateCost(item *reservation) domain.RequestCost {
 	return domain.RequestCost{KV: item.Cost.FutureKV, ActiveContextTokensUpper: item.Cost.FutureContextTokensUpper}
 }
 
-func materializedStateFloor(cost domain.RequestCost) domain.RequestCost {
-	return domain.RequestCost{
-		KV: domain.KVIncrement{
-			PhysicalKVUpper: cost.KV.PhysicalKVUpper - cost.FutureKV.PhysicalKVUpper,
-			ActiveKVUpper:   cost.KV.ActiveKVUpper - cost.FutureKV.ActiveKVUpper,
-		},
-		DecodeSequencesUpper:     cost.DecodeSequencesUpper,
-		ActiveContextTokensUpper: cost.ActiveContextTokensUpper - cost.FutureContextTokensUpper,
-	}
-}
-
 func addState(state domain.VirtualState, cost domain.RequestCost) domain.VirtualState {
 	state.PhysicalKVUpper = addInt64Saturating(state.PhysicalKVUpper, cost.KV.PhysicalKVUpper)
 	state.ActiveKVUpper = addInt64Saturating(state.ActiveKVUpper, cost.KV.ActiveKVUpper)
@@ -537,29 +328,6 @@ func addState(state domain.VirtualState, cost domain.RequestCost) domain.Virtual
 	state.ActiveContextTokens = addInt64Saturating(state.ActiveContextTokens, cost.ActiveContextTokensUpper)
 	state.UncachedPrefillTokens = addInt64Saturating(state.UncachedPrefillTokens, cost.UncachedPrefillUpper)
 	return state
-}
-
-func subtractState(state domain.VirtualState, cost domain.RequestCost) domain.VirtualState {
-	state.PhysicalKVUpper = subtractFloorZero(state.PhysicalKVUpper, cost.KV.PhysicalKVUpper)
-	state.ActiveKVUpper = subtractFloorZero(state.ActiveKVUpper, cost.KV.ActiveKVUpper)
-	state.DecodeSequences = subtractIntFloorZero(state.DecodeSequences, cost.DecodeSequencesUpper)
-	state.ActiveContextTokens = subtractFloorZero(state.ActiveContextTokens, cost.ActiveContextTokensUpper)
-	state.UncachedPrefillTokens = subtractFloorZero(state.UncachedPrefillTokens, cost.UncachedPrefillUpper)
-	return state
-}
-
-func subtractFloorZero(value, decrement int64) int64 {
-	if decrement >= value {
-		return 0
-	}
-	return value - decrement
-}
-
-func subtractIntFloorZero(value, decrement int) int {
-	if decrement >= value {
-		return 0
-	}
-	return value - decrement
 }
 
 func validVirtualState(state domain.VirtualState) bool {

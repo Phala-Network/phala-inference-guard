@@ -87,7 +87,7 @@ func TestV0128SimulationUsesAtomicResourcePrefillAndDecodeGates(t *testing.T) {
 	}
 }
 
-func TestV0128SimulationReusesCompletedDecodeCapacityBeforeNextPoll(t *testing.T) {
+func TestSimulationDoesNotFabricateCapacityBeforeNextPoll(t *testing.T) {
 	suite, err := RunSuite()
 	if err != nil {
 		t.Fatalf("RunSuite: %v", err)
@@ -97,8 +97,9 @@ func TestV0128SimulationReusesCompletedDecodeCapacityBeforeNextPoll(t *testing.T
 			continue
 		}
 		candidate := scenario.Policies[PolicyV0129]
-		if candidate.Arrivals != 7 || candidate.Admitted != 7 || candidate.Rejected != 0 {
-			t.Fatalf("completion-before-next-poll candidate=%+v, want arrivals/admitted/rejected=7/7/0", candidate)
+		if candidate.Arrivals != 7 || candidate.Admitted != 2 || candidate.Rejected != 5 ||
+			candidate.HardProtects != 0 || candidate.Preemptions != 0 {
+			t.Fatalf("completion-before-next-poll candidate=%+v, want 7 arrivals, 2 admits, 5 size protects, and no hard protection/preemption", candidate)
 		}
 		return
 	}

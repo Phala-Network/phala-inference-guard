@@ -117,7 +117,7 @@ func TestV0127RequestAwareManagerIdleRegularBurstDoesNotCreateDecodeUsers(t *tes
 	}
 }
 
-func TestV0127RequestAwareManagerCountsCompletedDecodeAcrossAssimilation(t *testing.T) {
+func TestRequestAwareManagerCountsCompletedDecodeAcrossObservationCoverage(t *testing.T) {
 	const kib = int64(1024)
 	policy := newPrefillRequestAwareTestPolicy(t)
 	idle := RequestAwareInput{
@@ -196,7 +196,7 @@ func TestV0127RequestAwareManagerCountsCompletedDecodeAcrossAssimilation(t *test
 	})
 }
 
-func TestV0128RequestAwareManagerRetiresCompletedDecodeFromPublishedRunning(t *testing.T) {
+func TestRequestAwareManagerKeepsPublishedRunningUntilNextObservation(t *testing.T) {
 	const (
 		kib      = int64(1024)
 		waveSize = 12
@@ -234,11 +234,15 @@ func TestV0128RequestAwareManagerRetiresCompletedDecodeFromPublishedRunning(t *t
 	stale.Running = waveSize
 	secondWave := make([]string, 0, waveSize)
 	protected := 0
+	firstEffective := -1
 	for index := range waveSize {
 		requestID := fmt.Sprintf("stale-second-wave-%d", index)
 		result := manager.DecideRequestAwareAndReserve(
 			time.Unix(2, int64(index)), requestID, cost, 4*kib, policy, stale,
 		)
+		if index == 0 {
+			firstEffective = result.Decision.EffectiveSequences
+		}
 		if result.Reserved {
 			secondWave = append(secondWave, requestID)
 			continue
@@ -252,13 +256,13 @@ func TestV0128RequestAwareManagerRetiresCompletedDecodeFromPublishedRunning(t *t
 			t.Fatalf("second-wave cleanup failed for %s", requestID)
 		}
 	}
-	if len(secondWave) != waveSize || protected != 0 {
-		t.Fatalf("stale completed Decode blocked second wave: admitted=%d protected=%d, want %d/0",
-			len(secondWave), protected, waveSize)
+	if firstEffective != waveSize || len(secondWave)+protected != waveSize {
+		t.Fatalf("stale published running was rewritten: effective=%d admitted=%d protected=%d, want effective %d",
+			firstEffective, len(secondWave), protected, waveSize)
 	}
 }
 
-func TestV0128RequestAwareManagerCompletedDecodeCreditReconciliation(t *testing.T) {
+func TestRequestAwareManagerDoesNotCreateCompletionCredits(t *testing.T) {
 	const kib = int64(1024)
 	policy := newPrefillRequestAwareTestPolicy(t)
 	input := RequestAwareInput{
@@ -275,13 +279,13 @@ func TestV0128RequestAwareManagerCompletedDecodeCreditReconciliation(t *testing.
 		return result.Decision.EffectiveSequences
 	}
 
-	t.Run("completed terminal retires from the still-published sample", func(t *testing.T) {
+	t.Run("completed terminal preserves the still-published sample", func(t *testing.T) {
 		manager := setupV0128AbsorbedDecode(t, policy)
 		if !manager.Terminate("absorbed-decode", TerminalCompleted) {
 			t.Fatal("completed terminal failed")
 		}
-		if got := probeEffective(t, manager, "completed-terminal-probe"); got != 0 {
-			t.Fatalf("effective Decode sequences=%d, want 0 after attributable completion", got)
+		if got := probeEffective(t, manager, "completed-terminal-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want stale observed 1 until the next sample", got)
 		}
 	})
 
@@ -314,8 +318,8 @@ func TestV0128RequestAwareManagerCompletedDecodeCreditReconciliation(t *testing.
 			t.Fatalf("mismatched observation decision=%+v, want raw running preserved", mismatched)
 		}
 		matched := decisionFor(2, "matched-observation-probe")
-		if matched.Decision.Action != RequestAwareAdmit || matched.Decision.EffectiveSequences != 0 {
-			t.Fatalf("matched observation decision=%+v, want attributable completion credit", matched)
+		if matched.Decision.Action != RequestAwareAdmit || matched.Decision.EffectiveSequences != 1 {
+			t.Fatalf("matched observation decision=%+v, want raw running preserved", matched)
 		}
 	})
 
@@ -328,8 +332,8 @@ func TestV0128RequestAwareManagerCompletedDecodeCreditReconciliation(t *testing.
 		if !manager.Terminate("absorbed-decode", TerminalCompleted) {
 			t.Fatal("completed terminal after sample failed")
 		}
-		if got := probeEffective(t, manager, "before-terminal-probe"); got != 0 {
-			t.Fatalf("effective Decode sequences=%d, want 0 for sample before terminal", got)
+		if got := probeEffective(t, manager, "before-terminal-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want sample value preserved after terminal", got)
 		}
 	})
 
@@ -391,8 +395,8 @@ func TestV0128RequestAwareManagerCompletedDecodeCreditReconciliation(t *testing.
 		if !manager.Terminate("observed-prefill-decode", TerminalCompleted) {
 			t.Fatal("observed Prefill terminal failed")
 		}
-		if got := probeEffective(t, manager, "observed-prefill-probe"); got != 0 {
-			t.Fatalf("effective Decode sequences=%d, want no double-counted local Decode", got)
+		if got := probeEffective(t, manager, "observed-prefill-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want stale observed Decode preserved", got)
 		}
 	})
 
@@ -519,8 +523,8 @@ func TestV0128RequestAwareManagerCompletedDecodeCreditReconciliation(t *testing.
 			manager.Terminate("absorbed-decode", TerminalCompleted) {
 			t.Fatal("duplicate terminal idempotence failed")
 		}
-		if got := probeEffective(t, manager, "duplicate-terminal-probe"); got != 0 {
-			t.Fatalf("effective Decode sequences=%d, want exactly one completion credit", got)
+		if got := probeEffective(t, manager, "duplicate-terminal-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want raw running without completion credit", got)
 		}
 	})
 
@@ -539,8 +543,8 @@ func TestV0128RequestAwareManagerCompletedDecodeCreditReconciliation(t *testing.
 	})
 }
 
-func TestV0128RequestAwareManagerCompletedDecodeCreditIsBounded(t *testing.T) {
-	const requests = maximumRetiredReservations + 1
+func TestRequestAwareManagerDoesNotRetainCompletedReservationState(t *testing.T) {
+	const requests = 4_097
 	policy := newPrefillRequestAwareTestPolicy(t)
 	manager := NewManager("request-aware-test", domain.VirtualState{})
 	idle := RequestAwareInput{MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * 1024}
@@ -564,18 +568,18 @@ func TestV0128RequestAwareManagerCompletedDecodeCreditIsBounded(t *testing.T) {
 			t.Fatalf("bounded terminal failed for %s", requestID)
 		}
 	}
-	if snapshot := manager.Snapshot(); snapshot.RetiredReservations != maximumRetiredReservations ||
-		snapshot.RetiredEvictions != 1 || snapshot.CompletedDecodeCredits != maximumRetiredReservations {
-		t.Fatalf("bounded retired queue=%+v", snapshot)
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.RetiredReservations != 0 ||
+		snapshot.RetiredEvictions != 0 || snapshot.CompletedDecodeCredits != 0 {
+		t.Fatalf("completed reservations retained state=%+v", snapshot)
 	}
 	input := idle
 	input.Running = requests
 	result := manager.DecideRequestAware(
 		time.Unix(2, 0), "bounded-credit-probe", requestAwareManagerCost(1, 0), 1, policy, input,
 	)
-	if result.Decision.EffectiveSequences != 1 {
-		t.Fatalf("bounded effective Decode sequences=%d, want conservative 1 after oldest eviction",
-			result.Decision.EffectiveSequences)
+	if result.Decision.EffectiveSequences != requests {
+		t.Fatalf("effective Decode sequences=%d, want unchanged observed %d",
+			result.Decision.EffectiveSequences, requests)
 	}
 }
 
@@ -804,10 +808,9 @@ func TestRequestAwareManagerSeparatesPrefillInterferenceEstimateFromSafetyUpper(
 	t.Run("missing interference metadata falls back to safety upper", func(t *testing.T) {
 		manager := NewManager("request-aware-test", domain.VirtualState{})
 		manager.reservations["legacy-without-interference"] = reservation{
-			ID:           "legacy-without-interference",
-			Created:      time.Unix(9, 0),
-			Cost:         requestAwareManagerCost(690*kib, 0),
-			Assimilation: assimilationUnabsorbed,
+			ID:      "legacy-without-interference",
+			Created: time.Unix(9, 0),
+			Cost:    requestAwareManagerCost(690*kib, 0),
 		}
 		weighted := manager.DecideRequestAwareAndReserve(
 			time.Unix(9, 0), "weighted-behind-legacy", requestAwareManagerCost(99*kib, 0), 99*kib, policy, idle,
