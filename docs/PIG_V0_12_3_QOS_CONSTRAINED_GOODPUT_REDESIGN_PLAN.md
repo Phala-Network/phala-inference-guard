@@ -2,9 +2,9 @@
 
 Status: v0.12.8 reproduced the sustained-wave throughput defect in its first
 targeted GPU gate and remains unpublished; the v0.12.9 response-EOF lifecycle
-source and independent source audit are accepted, while image, dedicated-CVM,
-targeted GPU, ordered Pareto, image/runtime independent audit, upload, and
-production gates remain open
+source, independent source audit, exact local image, and isolated image smoke
+are accepted, while dedicated-CVM runtime, targeted GPU, ordered Pareto,
+runtime independent audit, upload, and production gates remain open
 
 This is the only execution plan for the active PIG v0.12.9 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -505,8 +505,9 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] v0.12.9 minimal implementation, affected tests, race, build, simulation,
   and three review passes are green on the dedicated CVM.
 - [x] v0.12.9 clean pushed source and complete source matrix pass.
-- [ ] one exact v0.12.9 local image passes image contract, dedicated-CVM
-  runtime, and every targeted GPU gate.
+- [x] one exact v0.12.9 local-only image passes image contract and isolated
+  smoke without changing the running stack.
+- [ ] the same image passes dedicated-CVM runtime and every targeted GPU gate.
 - [ ] the completely new v0.12.9 ordered Pareto matrix passes every section 4
   condition before upload.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
@@ -4260,3 +4261,67 @@ non-executable and must be committed separately. The next local image must be
 built from exact executable commit
 `28f73288d5ef593b0df1ceba061ffd938426f188`, not from the later documentation
 commit or an unverified working tree.
+
+## 52. v0.12.9 exact local-image acceptance
+
+One image was built locally on c21 from the exact accepted 162-file source
+archive for executable commit
+`28f73288d5ef593b0df1ceba061ffd938426f188`. The later documentation commit
+`995cfb8c810ce48f74f5998f3fd4bd7b8c8e5dd3` was not used as executable
+input; its only delta from the executable commit was this plan document. The
+accepted local-only artifact is:
+
+```text
+image
+  ghcr.io/phala-network/phala-inference-guard:0.12.9-28f7328-local
+image ID
+  sha256:4df379aaeab8747d13171899ac412101e69214e7f14948bc410c8af7e9eb6a73
+platform
+  linux/amd64
+binary SHA-256
+  8706b9fa469ff9231d6dbabe5268230dc2f568c2cf409b21dd3eebbed67b00f2
+runtime version
+  PIG-v0.12.9
+runtime revision
+  28f73288d5ef593b0df1ceba061ffd938426f188
+```
+
+The production-image contract passed for the root distroless entrypoint and
+the expected version and revision. `RepoDigests` remained empty, the isolated
+Docker configuration contained no registry authentication file, and no upload
+was attempted. The immutable evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/
+  pig-v0129-image-r1-28f7328
+evidence-sha256 SHA-256
+  8d2ba9112abd7c3efdacf816fe5cc8dff6c77b250d9927dcb627f32cebe66d0e
+independent-verification/sha256sums SHA-256
+  d1eb9e9bf0d919a3e2f1d29470c31c274d8abb5e33bc1a08afba60f954ec7684
+evidence/runner.sh SHA-256
+  8909fe73855ff22bcae663f0ab10b19fd55690581b5795d4ee74af3b1368298c
+```
+
+Fresh independent `sha256sum -c` verification passed every entry in both
+manifests. The isolated smoke used a fixture upstream, not vLLM. It proved
+default `enforce`, the 500-ms observer, automatic metadata-derived capability,
+zero startup inference calls, health 200, metrics 401 without authentication
+and 200 with authentication, and a transparent chat response at HTTP 200. No
+retired safe-rate metric or calibration vocabulary was present.
+
+The request-aware protection contract also passed. Decode-interference
+protection rejected pre-forward in `1.230 ms` with request-scoped Router
+projection, did not call the fixture upstream, and admitted a fitting request
+after recovery. The hard-KV crossing rejected pre-forward in `20.258 ms`, did
+not call the fixture upstream, projected Router pressure, and recovered after
+15 100-ms polls, bounded by 1.5 seconds. Both stay below the accepted 100-ms
+extreme-input ceiling.
+
+The already-running v0.12.8 PIG and vLLM container IDs, image IDs, StartedAt,
+restart counts, OOM state, workbench bridge-only attachment, and two-member
+runtime network were byte-identical before and after. The temporary smoke PIG
+and fixture were removed. The v0.12.9 image remains local and unpublished; it
+has not replaced the dedicated runtime. The next gate is a trap-protected
+PIG-only replacement on c21, followed by runtime identity/readiness checks and
+the sustained `24/24`, zero-429, zero-preemption workload before any other GPU
+gate.
