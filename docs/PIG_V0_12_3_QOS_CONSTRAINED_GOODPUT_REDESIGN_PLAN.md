@@ -1,909 +1,740 @@
 # PIG v0.12 Architecture-First QoS-Constrained Goodput Plan
 
-Status: active architecture redesign. The last executable baseline remains
-`cc412649ddb30bb808053f1e3945e8cb818b3dc6`; the documentation-only commit for
-this plan may move branch HEAD without changing executable evidence. The running
-c21 PIG is the rejected, unpublished local v0.12.9 image. No next patch version
-is assigned. No image may be built until the architecture, production-shaped
-simulator, and pre-version source gates in this document pass.
+Status: active architecture reset. This document is the only execution plan for
+the current goal. Historical v0.12 plans, images, runtime results, and rejected
+source experiments remain evidence only; they are not implementation authority.
 
-This file is the only current execution plan. Historical v0.12.3 through
-v0.12.9 design and evidence remain available in Git history; they are not active
-instructions. After context compression, resume from sections 3, 9, 12, and 15
-instead of inheriting a historical candidate.
+Current pushed development HEAD is `6d2c0e1`. No next `0.12.x` version is
+assigned. No image may be built, uploaded, or deployed until every pre-version
+gate in section 13 passes on one exact pushed commit.
 
-## 1. Objective
+After context compression, resume from sections 3, 8, 11, and 14. Re-read the
+current Git status before inheriting any checklist item.
 
-Maximize SLO-compliant completed-token goodput while:
+## 1. Objective and decision priority
+
+PIG must maximize SLO-compliant completed-token goodput while:
 
 - preventing admission-caused KV exhaustion and preemption;
-- bounding per-user Decode TPS degradation rather than demanding zero loss;
-- keeping an available upstream work-conserving for requests that fit current
-  resource and QoS budgets; and
-- making every authoritative decision before the request is forwarded.
+- keeping long-window per-user Decode TPS acceptably stable;
+- allowing occasional short TPS dips instead of treating every low sample as a
+  failure;
+- remaining work-conserving for every request that fits the current resource
+  and QoS budgets; and
+- making the authoritative admit/protect decision before forwarding.
 
-The optimization order is:
+The order is:
 
-1. hard safety: no candidate-caused KV overflow, preemption, restart, or leaked
-   reservation;
-2. QoS: per-user Decode TPS stays above the workload's frozen acceptance floor;
-3. goodput: maximize SLO-compliant completed output tokens per wall-clock second;
-4. efficiency: keep classification and admission overhead negligible relative
-   to inference.
+1. resource and lifecycle safety;
+2. sustained Decode QoS, not instantaneous perfection;
+3. maximum completed-token goodput among candidates satisfying 1 and 2;
+4. bounded classification and decision overhead.
 
-Backend observations update the next counterfactual state. They are not a
-cooldown, retry trigger, learned coefficient, or substitute for pre-forward
-prediction.
+Backend feedback updates the next current-state prediction. It is not a retry,
+cooldown, learned coefficient, delayed lock, or substitute for the pre-forward
+counterfactual.
 
-For each controlled GPU workload, freeze the Decode QoS floor before candidate
-measurement at 85% of the matched no-enforcement shadow reference's per-user
-Decode TPS p10. SLO-goodput counts completed output tokens only while the request
-meets that floor. Report the raw token rate as a separate diagnostic.
+## 2. Scope and non-goals
 
-A candidate is Pareto-promotable only when all repetitions have no candidate-
-caused preemption, restart, fatal signal, or lifecycle failure; short-only median
-SLO-goodput is at least 98% of v0.12.2; mixed and long-workload median
-SLO-goodput is not below v0.12.2; and at least one material gain exists: 5%
-higher median SLO-goodput, fewer preemptions, or fewer QoS-violation seconds
-without lower goodput. Run at least three repetitions in both A/B and B/A order
-and report every repetition.
-
-## 2. Explicit non-goals
-
-This release does not add:
+This goal changes only PIG in the nested `phala-inference-guard` repository. It
+does not add or change:
 
 - routing or backend selection;
 - cache or prefix-hit inspection;
-- a model-specific tokenizer, template, or asset bundle;
+- model-specific tokenizer assets or templates;
 - request mutation, tiering, or priority injection;
 - TTFT admission protection;
-- online learning or active calibration;
-- a TPS feedback controller;
-- retry loops, reject cooldowns, or a long local request queue; or
-- production Router or canary changes.
+- online learning, active calibration, or a TPS feedback controller;
+- retries, reject cooldowns, or a long local request queue;
+- Router source, production Compose, vLLM, or another CVM.
 
-Default operation is `enforce`; `shadow` exists only as an explicit test mode.
-The default observer interval is 500 ms. Production configuration should set
-only deployment-specific endpoints, authentication, and secrets; algorithm
-defaults should normally remain implicit.
+The default mode is `enforce`; `shadow` is an explicit test-only setting. The
+default observation interval is 500 ms. Production configuration should contain
+only deployment-specific endpoints, authentication, and secrets unless an
+all-or-none test override is deliberately selected.
 
 ## 3. Current truth and stop boundary
 
 ### 3.1 Authoritative environment
 
 ```text
-CVM
-  c21b7281-2c25-4453-8a68-f39ec42d03b4
-
-workbench
-  pig-v0124-workbench
-
-repository
-  /workspace/src/phala-inference-guard-r3
-
-branch
-  codex/pig-v0.11.0-request-aware
-
-last executable baseline and upstream parent
-  cc412649ddb30bb808053f1e3945e8cb818b3dc6
+CVM             c21b7281-2c25-4453-8a68-f39ec42d03b4
+workbench       pig-v0124-workbench
+repository      /workspace/src/phala-inference-guard-r3
+branch          codex/pig-v0.11.0-request-aware
+pushed HEAD     6d2c0e1
 ```
 
-The plan-only commit that contains this document is not a new executable
-baseline. Record its resulting HEAD after push, but keep every source, image,
-and runtime claim anchored to `cc41264` until executable source is committed.
+Do not run Go, race, simulation, benchmark, binary, or image gates on Windows.
+Do not use the old builder. Do not restart the CVM or vLLM. A later accepted
+runtime gate may replace only PIG on c21 with `--no-deps`.
 
-Do not use the old builder. Do not run executable Go or image gates on local
-Windows. Do not restart the CVM or vLLM. A later runtime gate may replace only
-PIG on c21.
+### 3.2 Accepted evidence at `6d2c0e1`
 
-### 3.2 Running stack
+- `7115dbe`: HTTP and simulator share the canonical `RequestCost` builder.
+- `378584d`: raw vLLM phase facts, canonical probe scope, and current-capacity
+  ownership are documented.
+- `6d2c0e1`: production-shaped shared-worker simulator is available.
+- Frozen old-policy simulator result: 24 arrivals, 14 admits, 10 size protects,
+  14 completions, zero preemptions, and exact final drain.
+
+The old-policy red report is:
 
 ```text
-PIG image
-  ghcr.io/phala-network/phala-inference-guard:0.12.9-28f7328-local
-
-PIG container ID
-  503dccc4241350de304f687fd28cdb878499412b3720b1b3f8bbf8b37c554ee7
-
-vLLM container
-  d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552
+/workspace/evidence/pig-v012-worker-oldred-r1-378584d/report.json
+SHA-256 a461a8923ae7d0f5f2954d41b9636725854ee72236bc8df52d1a73ce72e59b22
 ```
 
-The PIG image is local and unpublished. vLLM has not been restarted.
+### 3.3 Unaccepted source state
 
-### 3.3 Rejected runtime result
-
-The first mandatory sustained gate rejected v0.12.9:
+The remote worktree currently contains an uncommitted Gate/Manager experiment:
 
 ```text
-requests                         24
-successes                        14
-request-scoped 429               10
-other failures                    0
-Decode p10/p50          183.669/187.798
-completed-token goodput    1303.997 token/s
-peak running/waiting             12/0
-peak reservations/KV       12/13.495%
-preemptions                       0
-final reservations/waiting        0/0
-final Router status               0
-fatal scan                         0
+modified
+  internal/runtime/predictive/admission_gates_test.go
+  internal/runtime/predictive/request_aware_manager.go
+  internal/runtime/predictive/request_aware_manager_test.go
+  internal/runtime/predictive/request_aware_policy.go
+
+deleted
+  internal/runtime/predictive/decode_envelope.go
+  internal/runtime/predictive/decode_envelope_test.go
+  internal/runtime/predictive/interference_gate.go
+
+untracked
+  internal/runtime/predictive/prefill_qos_gate.go
+  internal/runtime/predictive/prefill_qos_gate_test.go
 ```
 
-With a 1,298-token candidate and twelve active Decode requests, v0.12.9 used:
+It is not accepted architecture and must not be completed incrementally. First
+save its exact patch and hash under `/workspace/evidence`; then restore the
+worktree to `6d2c0e1`. The Windows `tmp/pig-arch-source-r1` copy is scratch
+evidence only and must not be uploaded as source.
 
-```text
-(post-admit total pending Prefill tokens) * active Decode sequences
+The running c21 PIG remains the rejected, unpublished local v0.12.9 image. No
+source in this plan has been built or deployed.
 
-2 pending: 2596 * 12 = 31152 -> admit
-3 pending: 3894 * 12 = 46728 -> reject
-```
+## 4. Reflection: why repeated patch versions failed
 
-A rejected worker immediately submitted its next queued request, causing the
-ten-request 429 cascade. EOF lifecycle timing was not the root cause.
+The prior loop versioned local hypotheses before validating the state model:
 
-### 3.4 Uncommitted experiment
-
-Exactly three executable files are dirty. They change the Decode formula to
-`candidate Prefill * active Decode sequences` and add focused tests:
-
-```text
-internal/runtime/predictive/decode_envelope.go
-internal/runtime/predictive/decode_envelope_test.go
-internal/runtime/predictive/request_aware_policy.go
-```
-
-This experiment is not accepted. It fixes the observed overprotection but can
-underprotect when many individually small Prefills accumulate. Keep it
-uncommitted until the architecture in section 9 replaces or rejects it. Do not
-run the prepared v0.12.10 identity script.
-
-The exact old-source focused red is retained at:
-
-```text
-/workspace/evidence/pig-vnext-marginal-cascade-red-r1-cc41264
-SHA256SUMS SHA-256
-  e29428f1773ee27fb1989f1e03514e68949cdd03f0c32d3462ea183bd58c2c8a
-```
-
-The production-shaped shared-worker simulator independently reproduces the
-same 14/24 outcome on the unchanged state-total policy at `378584d`:
-
-```text
-/workspace/evidence/pig-v012-worker-oldred-r1-378584d
-report.json SHA-256
-  a461a8923ae7d0f5f2954d41b9636725854ee72236bc8df52d1a73ce72e59b22
-
-arrivals/admitted/rejected/size-protect/completed
-  24/14/10/10/14
-```
-
-The isolated old-policy worktree passed the full Go test, vet, build, and
-affected simulator race matrix. This validates the simulator red baseline, not
-the rejected policy.
-
-## 4. Reflection: why the prior loop failed
-
-The v0.12.3 through v0.12.9 sequence repeatedly followed the wrong order:
-
-1. a local symptom received a narrow source fix;
-2. focused and full source tests passed;
+1. one runtime symptom received a narrow formula or lifecycle patch;
+2. focused source tests passed;
 3. a patch version and image were created;
-4. only then did a production-shaped workload test the architectural premise;
-5. the next patch repaired the newly exposed symptom while retaining most of
-   the same unproven state model.
+4. only then did a production-shaped workload test the architecture;
+5. the next patch retained most of the same ownership and state assumptions.
 
-Specific examples were missing Decode protection, double-counted phase state,
-stale terminal accounting, successful EOF timing, and finally the state-total
-Decode multiplier. Each red was useful, but the process versioned hypotheses
-before testing the decisive workload.
+That exposed missing Decode protection, phase double counting, stale terminal
+accounting, EOF timing, an invalid state-total multiplier, and finally a 14/24
+overprotection cascade.
 
-The previous plan also grew into an audit log of many superseded versions. Its
-top-level conclusion and later corrective sections could disagree after context
-compression. This document therefore keeps only the current contract, current
-evidence, and next gates. Git history remains the historical record.
+The current source still has four architectural liabilities:
 
-One additional architecture defect and one unmeasured efficiency risk were
-hidden by the patch loop:
+- the Adapter reads an Observer snapshot before entering the Manager lock, so
+  observation fields and reservation state can come from different moments;
+- the Manager tries to infer request ownership inside aggregate vLLM metrics
+  and maintains assimilation plus retired negative credits;
+- `waiting > 0` is being turned into an unconditional new-intake lock even when
+  a small request still fits bounded contention budgets; and
+- automatic Prefill limits divide context span by 8 and 2, which has no causal
+  relationship to Prefill interference and produced unnecessarily strict
+  32K/131K limits on c21.
 
-- the production HTTP adapter and simulator construct materially different
-  `RequestCost` values; and
-- the Manager recomputes admission state by scanning every live reservation on
-  every decision. That is O(n), but it is not a demonstrated bottleneck at the
-  supported concurrency and must be benchmarked before adding cached counters.
+The reset removes those assumptions instead of wrapping another Gate around
+them.
 
 ## 5. End-to-end architecture
 
-The only supported production transaction is:
-
 ```text
-HTTP path/auth/body bound
-  -> request classifier and model-neutral estimator
-  -> immutable backend capability profile
-  -> fresh vLLM observation
-  -> Manager atomic counterfactual and reservation
-  -> pure ordered admission policy
-  -> one decision outcome and protection scope
-  -> HTTP forward or immediate 429
-  -> reservation forward commit
-  -> first upstream response bytes mark Prefill complete
-  -> clean 2xx EOF or fallback terminal releases exactly once
-  -> observer reconciliation updates the next counterfactual
-  -> the request decision feeds logs/metrics; current Manager inspection feeds
-     status and Router projection
+bounded HTTP classification
+  -> model-neutral lexical work estimate
+  -> canonical RequestCost
+  -> AdmissionController atomic transaction
+       latest coherent observation
+       + reservation overlay
+       -> derived counterfactual
+       -> ResourceSafetyGate
+       -> PrefillQoSGate
+       -> candidate/probe scope proof
+       -> optional reservation
+  -> immutable AdmissionDecisionRecord
+  -> forward or immediate OpenAI-compatible 429
+  -> lifecycle events update reservation
+  -> Observer atomically replaces current observation
+  -> CurrentCapacityRecord drives status and Router compatibility
 ```
 
 ### 5.1 Ownership
 
 | Component | Owns | Must not own |
 |---|---|---|
-| Request classifier | admitted paths, bounded body read, protocol validation, output horizon field extraction | policy, backend state |
-| Work estimator | model-neutral Prefill selection estimate and conservative input safety upper | exact token IDs, cache state, admission |
-| RequestCost builder | one canonical rolling KV/Decode-horizon cost contract | HTTP, scheduler simulation, policy thresholds |
-| Capability initializer | immutable model identity, KV capacity/block size/hard limit, size geometry | active probing, learned speed, runtime threshold mutation |
-| vLLM observer | fresh raw KV/running/waiting/generation/preemption facts and identity epoch | naming running as Decode, phase inference, reservations, admission |
-| Manager | atomic observed-plus-reserved state, phase upper bounds, lifecycle, reconciliation, bounded aggregates, current-capacity inspection | HTTP mapping, policy threshold choice |
-| ResourceSafetyGate | post-admit hard KV fit | Prefill classes, TPS, Router status |
-| PrefillQoSGate | request class, pending Prefill work, Decode-active Prefill budget, long-request exclusivity | KV safety, lifecycle, HTTP mapping |
-| AdmissionPolicy | ordered Gate evaluation and candidate-versus-minimum-probe scope proof on one snapshot | lifecycle, HTTP, telemetry state |
-| Adapter | translate the semantic policy outcome to HTTP and expose its immutable request decision | reason-to-scope guessing, hidden policy, delayed unlock state |
-| Reporting | request-decision logs/metrics plus current-capacity status and Router projection | rerunning Gates from partial fields, changing a decision |
-| Simulator | deterministic arrival, scheduler, lifecycle, and objective replay using production contracts | claiming GPU capacity from synthetic constants |
+| Request classifier | supported paths, bounded body read, protocol validation, output horizon extraction | backend state or policy |
+| Work estimator | model-neutral selection estimate and conservative KV input estimate | token IDs, cache state, admission |
+| RequestCost builder | block-rounded input KV, rolling Decode horizon, manifest identity | HTTP, observations, policy |
+| Capability initializer | immutable KV geometry, model context ceiling, reachable size bands | runtime learning or threshold mutation |
+| Observer | raw coherent vLLM sample and sample watermarks | reservations, phase ownership, decisions |
+| AdmissionController | latest observation, reservation lifecycle, one atomic decision/capacity transaction | HTTP mapping or telemetry formatting |
+| State projector | pure `observation + overlay -> DerivedState` | mutation or policy |
+| ResourceSafetyGate | post-admit hard KV fit | Prefill class or HTTP scope |
+| PrefillQoSGate | contention regime, pending Prefill budget, long-request ownership | KV, lifecycle, telemetry |
+| AdmissionPolicy | ordered pure Gate evaluation and canonical-probe scope proof | mutation or HTTP |
+| Adapter | classification result mapping, forward/429, lifecycle guard | observation reads, reason-based scope guessing |
+| Reporting | logs/metrics/status from immutable records | rerunning policy or holding stale rejects |
+| Simulator | deterministic workers, scheduler, lifecycle, and objective replay using production contracts | synthetic GPU claims |
 
-One mutable quantity has one owner. A value may be copied into telemetry, but
-two policy components may not independently charge the same risk under different
-names.
+One mutable fact has one owner. Observer samples are pushed into the Controller;
+the Adapter no longer passes a separately read `RequestAwareInput` into a
+decision.
 
-## 6. Request work model
+## 6. Request work and immutable capability
 
-The estimator deliberately produces two different input quantities:
+### 6.1 Request estimates
+
+The estimator produces two independent quantities:
 
 ```text
 selection_prefill_tokens
-  bounded model-neutral lexical estimate used for Prefill/QoS admission
+  fast model-neutral lexical estimate used for request-size differentiation
 
 safety_input_tokens
-  max(whole-body conservative upper, selection estimate), used for hard KV
+  conservative input estimate used only for hard KV accounting
 ```
 
-For recognized multimodal inputs, the conservative input upper replaces the
-lexical URL/marker estimate for Prefill selection. Unsupported, malformed,
-overflowing, unknown-length, oversized, or classifier-saturated request shapes
-fail closed before forwarding.
+The current approximate lexical scan is intentionally model-neutral. It does no
+vocabulary lookup, model asset load, template execution, FFI, network request,
+or request mutation. Exact tokenizer parity is not required. Unsupported,
+malformed, overflowing, unknown-length, or classifier-saturated inputs fail
+before forwarding. Recognized multimodal inputs use the conservative estimate
+for both quantities because URL length is not media expansion cost.
 
-The current lexical estimator is intentionally approximate. It traverses the
-bounded JSON body, samples at most 64 bytes in up to four windows per string,
-adds message/template evidence, and does no vocabulary lookup, model asset load,
-FFI, network call, or request mutation. Exact tokenizer parity is not required
-for this release.
+Without a model tokenizer, `safety_input_tokens` is a conservative forecast,
+not a mathematical token-count upper bound. Safety claims therefore combine
+that forecast with immutable KV headroom and controlled estimator-error tests.
+Before versioning, report underestimation and overestimation separately for
+multilingual prose, code, JSON/tool schemas, escape-heavy strings, high-entropy
+or base64-like content, and maximum-body inputs. Any tested underestimation that
+can consume the hard headroom blocks release; do not hide it by renaming the
+point estimate an exact token count.
 
-### 6.1 Canonical RequestCost
-
-The HTTP path and simulator must call one pure RequestCost builder with:
+The canonical builder receives selection estimate, safety estimate, bounded
+rolling Decode horizon, KV block size, and manifest epoch. It returns:
 
 ```text
-selection Prefill estimate
-safety input upper
-bounded rolling Decode horizon
-KV block size
-manifest/identity epoch
+input KV          = round_up(safety input, block)
+total KV          = round_up(safety input + Decode horizon, block)
+future KV         = total KV - input KV
+active context    = safety input + Decode horizon
+future context    = Decode horizon
+Decode sequences  = 1
 ```
 
-It produces:
+The default 256-token Decode horizon is rolling, not the declared full output
+maximum. A fresh observation materializes generated KV while each live Decode
+reservation retains the future horizon.
+
+### 6.2 Startup-only adaptive profile
+
+The immutable profile is initialized once per model identity epoch from vLLM:
+
+- model identity and `max_model_len`;
+- exact KV token capacity and block size;
+- block-aligned hard KV limit;
+- maximum admissible input after the default rolling horizon.
+
+`max_model_len` has no silent 512K fallback. If coherent model metadata is not
+available, enforce initialization remains unavailable unless a complete,
+explicit capability override is supplied. A guessed context ceiling cannot
+authorize a long request.
+
+Prefill size semantics remain portable and understandable:
 
 ```text
-input KV              = round_up(safety input, block)
-total reserved KV     = round_up(safety input + Decode horizon, block)
-future rolling KV     = total reserved KV - input KV
-active context        = safety input + Decode horizon
-future context        = Decode horizon
-Decode sequences      = 1
+regular       < 64K
+weighted      64K .. <256K
+exclusive     256K .. <512K
+quiescent     >=512K
 ```
 
-The default 256 Decode tokens are a rolling reservation horizon, not the full
-declared output maximum. After each fresh observation, materialized KV moves to
-the observed base while the live request retains the future horizon. Tests must
-prove that this horizon is neither dropped nor double-counted.
+The numeric boundaries are block-aligned when materialized in a capability
+profile. Their semantic values do not otherwise change with context length.
 
-The same builder also creates one immutable minimum-production probe for
-current-capacity inspection. It uses a one-token selection/safety input and the
-production default rolling Decode horizon, then applies the same KV block
-rounding as a real request. A hand-written one-block probe with a zero Decode
-horizon is invalid because it can advertise capacity that normal traffic cannot
-actually reserve.
+The upstream ceiling makes unsupported bands unreachable; it does not rescale
+64K to `context/8` or 256K to `context/2`. Therefore a 262K upstream supports
+regular, weighted, and a narrow exclusive band, while 512K/650K behavior must
+be tested on an upstream that can actually fit it.
 
-The simulator's current behavior of using `reservedTokens` as `InputTokens`
-while setting future KV, future context, and Decode horizon to zero is invalid
-and must be removed.
-
-## 7. Immutable capability and observations
-
-At startup PIG obtains from vLLM metrics:
-
-- backend kind and model identity;
-- exact KV capacity in tokens;
-- KV block size;
-- current KV, running, waiting, generation, and preemption counters.
-
-It obtains `max_model_len` from model metadata when available and otherwise uses
-the bounded fallback. The capability profile is immutable for one identity
-epoch:
+Initial budgets are:
 
 ```text
-hard KV limit = block_align_down(KV capacity * 0.88)
-effective span = min(max model length, hard KV limit)
-regular        = min(64K, effective span / 8)
-exclusive      = min(256K, effective span / 2)
-quiescent      = min(512K, effective span)
-aggregate      = exclusive
+contended pending-Prefill budget = min(64K, maximum admissible input)
+open aggregate Prefill budget    = min(256K, maximum admissible input)
 ```
 
-These are geometry defaults, not measurements of Prefill speed or guaranteed
-TPS. Explicit overrides remain a complete all-or-none test/deployment escape
-hatch, but production should normally omit them.
+KV geometry and reachability adapt at startup; Prefill thresholds do not learn
+or mutate. Complete all-or-none overrides remain a test escape hatch. The hard
+KV ratio remains the current conservative default until controlled GPU evidence
+justifies one explicit design change; it is not searched online.
 
-The current c21 profile is:
+## 7. Atomic observation and reservation model
+
+### 7.1 Observation contract
+
+One coherent observation contains:
 
 ```text
-KV capacity       862437
-KV block size          64
-hard KV limit      758912
-regular             32768
-exclusive          131072
-quiescent          262144
-aggregate          131072
+identity epoch, observation sequence, observed time
+sample start and finish Manager sequences
+KV capacity, block size, used KV
+raw running, raw waiting
+generation delta and preemption delta
+freshness and validity
 ```
 
-Its geometry implies an effective model span and quiescent boundary of 262,144
-tokens. Therefore c21 cannot serve as evidence for a 512K/650K upstream contract.
-Those classes remain in the portable design and require a later upstream whose
-declared model context and hard KV capacity actually support them.
+`running` is not renamed Decode and `waiting` is not renamed executing Prefill.
+They are raw scheduler facts. Identity/capacity drift, counter reset, or stale
+age closes availability for the epoch.
 
-The observer polls every 500 ms. A sample is usable only if identity, capacity,
-block size, counters, and freshness remain coherent. Identity/capacity drift or
-counter reset closes intake for that epoch; transient fetch failure becomes
-stale only after the maximum age.
+The Observer calls `AdmissionController.UpdateObservation`. Publication and
+reconciliation happen under the Controller lock as one operation. There is no
+second Observer snapshot read in the request path.
 
-vLLM `num_requests_running` is a raw scheduler fact, not a Decode-phase metric:
-it can contain both Prefill and Decode work. Likewise, `num_requests_waiting`
-means queued work that is receiving no scheduler service; it is future unknown
-Prefill demand, not an executing Prefill. The observer must preserve those raw
-names and must not manufacture phase certainty.
+An enforce-mode ownership epoch starts only after one coherent observation with
+`running=0` and `waiting=0`. This proves that no unknown request from before a
+PIG restart remains in vLLM. After ownership is established, every forwarded
+request must have a live PIG reservation. A sample that cannot be reconciled
+with that ingress contract becomes availability protection until a coherent
+idle rebase; PIG must not invent the token cost of opaque upstream work. This is
+a startup/epoch safety condition, not the normal policy for tracked waiting.
 
-The Manager derives a conservative Decode upper bound from raw observation and
-its own lifecycle evidence:
+### 7.2 Reservation lifecycle
 
 ```text
-observed Decode upper
-  = max(0,
-      observed running
-      - same-observation completed Decode credits
-      - backend-absorbed local requests still known to be in Prefill)
-
-effective Decode upper
-  = observed Decode upper
-    + local Prefill-complete requests not yet absorbed by that observation
+Reserved -> ForwardedPrefill -> ActiveDecode -> Terminal
 ```
 
-Only a reservation whose backend presence is proven by reconciliation may be
-subtracted as known Prefill. Ambiguous or unattributed running remains in the
-Decode upper bound. The policy consumes only `decode_active_upper =
-(effective Decode upper > 0)`; it must not attach false precision to an exact
-Decode user count. Queued unknown work remains a separate load condition.
+- admission and reservation creation are atomic;
+- `MarkForwarded`, first response bytes, and terminal are monotonic/idempotent;
+- streaming first bytes are the available Prefill-complete evidence;
+- non-streaming responses remain Prefill-pending until body bytes or terminal;
+- cancel, disconnect, error, timeout, expiry, epoch invalidation, and shutdown
+  release exactly once.
 
-`AggregateTPSProxy`, `MeanActiveTPSProxy`, and `TPSValid` are diagnostics only.
-No current Gate consumes them. This release must not be described as a runtime
-TPS predictor. Decode TPS is a controlled acceptance metric; runtime protection
-comes from the pre-forward Prefill budget in section 9.
+The non-streaming rule is deliberately conservative and can reduce admission
+while a long response is generated. Its goodput impact must be measured as a
+separate mandatory workload. PIG may not guess an individual phase from an
+aggregate generation counter or mutate a non-streaming request into streaming.
 
-## 8. Atomic state and lifecycle
+### 7.3 Conservative overlay, without inferred subtraction
 
-The Manager is the single synchronization boundary. Under one lock it must:
-
-1. validate manifest, epoch, request ID, and canonical RequestCost;
-2. combine the last coherent observation with all not-yet-absorbed reservations;
-3. derive phase-safe current state and construct the post-admit
-   counterfactual;
-4. run the pure policy for the actual candidate and, only when needed, the
-   canonical minimum-production probe on that exact same pre-admit snapshot;
-5. create a reservation only for an enforce-mode admit; and
-6. return the immutable admission decision, protection scope, counterfactual,
-   and monotonic manager sequence.
-
-The Manager also exposes a read-only current-capacity inspection. It evaluates
-only the canonical minimum-production probe under the same lock and returns a
-`CurrentCapacityRecord`; it never creates a reservation. Reporting may consume
-that record but may not reconstruct policy state independently.
-
-The request lifecycle is:
+Derived state is always the latest observed state plus positive reservation
+charges. It never subtracts guessed request ownership from aggregate metrics.
 
 ```text
-Reserved
-  -> ForwardedPrefill
-  -> ActiveDecode
-  -> Terminal
+Reserved or ForwardedPrefill
+  charge full RequestCost
+
+ActiveDecode before a sample whose start follows first-byte sequence
+  charge full RequestCost
+
+ActiveDecode after such a sample
+  charge only rolling future KV/context
+
+Terminal
+  remove reservation; a stale observation may temporarily overcount it until
+  the next 500-ms sample, but no retired negative credit is applied
 ```
 
-Every transition is monotonic and idempotent at the adapter guard. Terminal
-causes include completed, local reject, client cancel/disconnect, upstream
-failure, timeout, expiry, epoch invalidation, and shutdown. Every path releases
-exactly once. Duplicate or impossible transitions fail without reusing state.
+This may conservatively double count materializing Prefill KV for at most the
+Prefill phase. It cannot undercount by falsely declaring a request absorbed.
+The 500-ms observation and immediate lifecycle events bound normal recovery.
 
-For streaming responses, first response body bytes are the available proxy for
-Prefill completion. For non-streaming responses, vLLM may not emit body bytes
-until generation is complete; PIG must keep the request conservatively pending
-until the first byte or terminal event rather than inventing a phase transition.
-Error bodies must not leave an active Decode reservation after terminal release.
-Streaming and non-streaming lifecycle tests are both mandatory.
+Pending Prefill work is the sum of selection estimates for all non-terminal
+reservations that have not reached first bytes, including admitted requests not
+yet forwarded. No O(n) cache is added until benchmarks show the simple scan
+violates the decision budget.
 
-Observation reconciliation uses sample start/finish watermarks. A reservation
-can move from locally unabsorbed to backend-absorbed only when the sample window
-and observed materialized floor can cover it. Ambiguity remains conservative.
-If an absorbed request terminates before the next observation, a bounded retired
-ledger subtracts its materialized floor from the stale sample until a later
-sample covers the terminal event.
+## 8. Admission policy
 
-### 8.1 Hot-path efficiency decision
+### 8.1 Derived state
 
-The current Manager recomputes its counterfactual by scanning live reservations.
-This keeps one source of truth and avoids a second mutable counter ledger, but
-cost grows linearly with concurrency. Do not replace it speculatively.
-
-First benchmark admission with 1, 48, 256, and 4,096 live reservations. If the
-supported production range remains below the section 12 latency budget, keep
-recomputation for simplicity and correctness. Only a measured failure may
-introduce incremental aggregates. That follow-up must keep a slow recomputation
-oracle in tests and prove equality after reserve, forward, Prefill-complete,
-terminal, reconciliation, cancellation, epoch, overflow, and race transitions.
-
-## 9. Admission policy redesign
-
-The old state-total Decode multiplier is rejected because it produced the live
-2-admit/10-reject cascade. The uncommitted candidate-only multiplier is also not
-the target architecture because many small candidates can accumulate without a
-combined Decode-QoS bound.
-
-The next candidate removes `DecodeEnvelope` as an independent multiplier. One
-`PrefillQoSGate` owns both aggregate pending Prefill work and the stricter
-Decode-active Prefill budget.
-
-### 9.1 Counterfactual inputs
+The Controller constructs one immutable pre-admit state:
 
 ```text
-candidate selection Prefill tokens
-post-admit pending Prefill tokens and class counts
-post-admit hard KV
-Decode-active upper-bound boolean
-queued unknown sequences
-fresh preemption delta
-immutable capability geometry
+effective KV
+pending Prefill tokens and class ownership
+local ActiveDecode count
+raw observed running/waiting
+recent-sample generation/preemption evidence
+capability profile and observation freshness
 ```
 
-The counterfactual is split before Gate evaluation so each Gate receives only
-what it owns:
+`contended` is true when any local Decode is active or the fresh observation
+shows running, waiting, generation progress, or a preemption delta. It is a
+regime selector, not a full-intake lock and not an exact Decode-user count.
+This rule applies after the ownership epoch in section 7.1 is established.
 
-```text
-ResourceSafetyInput = current effective KV + candidate reserved KV + hard limit
-PrefillQoSInput      = candidate class + post-admit pending work
-                       + Decode-active upper + queued unknown + preemption delta
-```
-
-Raw running, raw waiting, TPS proxies, HTTP fields, and Router fields do not
-enter either Gate. They remain observation or reporting data.
-
-### 9.2 Ordered decisions
+### 8.2 Ordered decision
 
 1. **Validity and availability**
 
-   Invalid request cost, stale metrics, identity drift, closed epoch, overflow,
-   or impossible state returns availability or request protection before any
-   upstream call.
+   Invalid cost or request shape is request protection. Stale metrics, identity
+   drift, closed epoch, or impossible state is availability protection.
 
 2. **Hard resource safety**
 
-   Protect when conservative post-admit KV exceeds the immutable hard KV limit.
-   This Gate uses safety input and rolling Decode horizon, never the smaller
-   lexical estimate. It does not choose request versus load scope; scope is
-   proven by the canonical minimum-production probe in step 5.
-
-3. **Prefill class and long-request ownership**
-
-   - regular: may coexist only while the applicable aggregate budget fits and
-     no exclusive/quiescent owner is pending;
-   - weighted: uses the aggregate budget and is blocked by pending exclusive or
-     quiescent work;
-   - exclusive: at most one long Prefill and no active Decode;
-   - quiescent: requires no active Decode, waiting, or pending Prefill.
-
-   Queued or otherwise unknown pending work cannot be assigned a token budget.
-   It therefore load-protects every new admission until a fresh observation
-   clears it; this state has no timer or sticky latch. Unknown running is not
-   silently converted to a token budget and remains in the Decode upper bound.
-
-   A fresh preemption delta may only tighten non-regular admission until the
-   next coherent sample. It does not create a cooldown or learned parameter.
-
-4. **Decode-active Prefill budget**
-
-   When `decode_active_upper` is true:
+   Protect when:
 
    ```text
-   candidate selection Prefill <= regular
-   post-admit total pending Prefill <= regular
+   observed used KV + live reservation overlay + candidate total KV
+     > immutable hard KV limit
    ```
 
-   When no Decode is active, the normal aggregate and long-request rules apply.
+   This uses `safety_input_tokens` and the rolling Decode horizon.
 
-5. **Protection scope proof**
+3. **Prefill QoS and size differentiation**
 
-   Availability and malformed/unsupported request failures have direct
-   availability or request scope. Every otherwise valid resource or QoS
-   protection is classified on the same atomic snapshot:
+   In a contended state:
+
+   - only regular candidates are eligible;
+   - post-admit pending Prefill must stay within the contended budget;
+   - `waiting > 0`, ambiguous running, or one fresh preemption does not by
+     itself reject a fitting regular request.
+
+   In an open state:
+
+   - regular and weighted requests share the open aggregate budget;
+   - an exclusive request requires no pending Prefill and becomes the sole
+     long-Prefill owner;
+   - a quiescent request requires no pending Prefill, local Decode, raw running,
+     or raw waiting;
+   - pending exclusive/quiescent work blocks new work until first bytes or
+     terminal.
+
+   A request above the upstream maximum admissible input is request protection.
+   A preemption delta only selects the contended regime for its owning fresh
+   sample; it creates no timer, cooldown, or learned state.
+
+4. **Protection scope on the same snapshot**
+
+   For a valid resource or QoS protection, evaluate the immutable canonical
+   minimum-production probe against the same pre-admit state:
 
    ```text
-   minimum-production probe admits -> request_protect
-   minimum-production probe rejects -> load_protect
+   probe admits  -> request_protect
+   probe rejects -> load_protect
    ```
 
-   This rule applies uniformly to hard KV, aggregate budget, long-request
-   ownership, and fresh-preemption protection. It avoids both failure modes:
-   closing the node because one large request does not fit, and leaving the node
-   open when even normal minimum traffic cannot fit. Scope is part of the
-   policy result; the Adapter must not infer it later from a reason string.
+   The probe uses a one-token selection/safety input, production rolling Decode
+   horizon, and the same KV block rounding as real traffic. Availability and
+   malformed request outcomes keep direct scope.
 
-This design deliberately does not multiply pending Prefill by Decode count. The
-linear multiplier has no established vLLM scheduler or GPU-capacity meaning.
-The active/non-active regime protects Decode structurally while the single
-Prefill owner bounds accumulation.
+### 8.3 Work-conserving invariants
 
-### 9.3 Required examples on c21 geometry
+- one large rejected request cannot close capacity for a following small one;
+- a historical reject cannot outlive its Manager sequence;
+- waiting or ambiguous running may reduce the eligible class/budget but cannot
+  unconditionally lock all minimum traffic;
+- no empty-state cooldown, retry timer, or traffic-dependent unlock exists;
+- current capacity reopens immediately when lifecycle or observation state
+  makes the canonical probe fit.
+
+### 8.4 Required examples
 
 ```text
-12 replacement requests, each 1298 tokens
-  post-admit pending = 15576 <= regular 32768
-  expected: all fitting replacements admit, subject to hard KV
+12 workers x 2 requests, each about 1298 input tokens
+  all 24 should fit the 64K contended pending budget and complete
 
-49K request with four active Decode users
-  candidate = 50176 > regular 32768
-  expected: request-scoped pre-forward protection
+49K candidate with active Decode
+  regular and eligible if aggregate pending remains <=64K and hard KV fits
+
+96K candidate with active Decode
+  weighted and request-protected; a fitting minimum probe keeps node capacity
+  open
 
 many small Prefills with active Decode
-  cumulative pending cannot exceed 32768
-  expected: no candidate-only accumulation bypass; a rejected candidate is
-  request-scoped while the canonical minimum-production probe still fits and
-  load-scoped only after that probe also fails
+  admit until cumulative pending reaches 64K, then protect without sticky lock
 
-650K request on an upstream whose model context and hard KV both fit
-  quiescent class
-  expected: only when Decode, waiting, and pending Prefill are all zero and hard
-  KV fits; otherwise immediate request/load protection without a local queue
+256K..512K request
+  exclusive; only on an otherwise open Prefill state and no active contention
+
+>512K request on a capable upstream
+  quiescent; only when Decode, waiting, running, and pending Prefill are empty
 ```
 
-These are architecture expectations, not accepted behavior. Production-shaped
-simulation and controlled GPU tests must decide whether the budget is Pareto-
-safe. Do not weaken the threshold merely to make a required scenario green.
+These expectations are structural. Controlled GPU evidence decides whether the
+static 64K/256K budgets satisfy the long-window QoS contract; thresholds are not
+weakened merely to make one scenario green.
 
-## 10. Decision, HTTP, and reporting contract
+## 9. Decision, HTTP, reporting, and Router contract
 
-The Manager returns one immutable `AdmissionDecisionRecord` for each request:
+Each request returns one immutable `AdmissionDecisionRecord`:
 
 ```text
-admit
-request_protect
-load_protect
-availability_protect
+outcome: admit | request_protect | load_protect | availability_protect
+reason, manager sequence, observation sequence
+candidate cost, derived pre-state, post-admit counterfactual
 ```
 
-with one reason, manager sequence, and counterfactual snapshot. Scope has already
-been proven by the Policy against the canonical probe; the Adapter maps all
-protect outcomes to immediate OpenAI-compatible 429 responses in enforce mode.
-Shadow mode records the decision but creates no reservation and forwards.
+In enforce mode, protect outcomes map to immediate OpenAI-compatible 429. In
+shadow mode the same pure policy is evaluated, no reservation is created, and
+the request forwards. Shadow validates policy causality, not enforce lifecycle.
 
-That request record must update:
+The decision record is the only source for request logs and decision counters.
+Every enforced protection must be visible with reason and scope in both logs and
+metrics.
 
-- decision log and suppression counters;
-- attempt, fit, risk, reject, reason, and scope metrics;
-- last decision and last enforced reject state;
+Status and Router compatibility do not reuse the last request decision. The
+Controller evaluates the canonical probe without reserving and emits one
+immutable `CurrentCapacityRecord` with the owning Manager/observation sequences.
 
-Current reservation/pending metrics, `/v1/upstream-status`, and
-Router-compatible running/waiting/global-limit projection instead consume one
-immutable `CurrentCapacityRecord` from Manager inspection. This distinction is
-required because completion, cancellation, reconciliation, or a new observation
-can change current capacity without creating another request decision.
+- request protection leaves the node open for smaller work;
+- load protection advertises no additional capacity while retaining current
+  running accounting;
+- availability protection advertises unavailable;
+- a new lifecycle or observation sequence recomputes capacity immediately.
 
-Request-scoped protection must not close the node, because a smaller request may
-fit. Load protection projects constrained capacity. Availability protection
-projects unavailable. The current-capacity record carries its owning manager and
-observation sequences so reporting cannot combine fields from different states.
-No reporting component may recompute policy from partial fields or keep
-protection active after the owning manager sequence changes. Remove the fixed
-1,500-ms recent-reject projection hold: current Manager inspection, not the last
-request decision, owns Router compatibility. Historical reject time remains
-telemetry only and cannot delay recovery beyond fresh state.
+Delete the fixed 1,500-ms recent-reject hold. Reject timestamps remain
+telemetry only. Reporting may format records but may not rerun Gates, infer
+scope from reason strings, or merge fields from different sequences.
 
-## 11. Production-shaped deterministic simulator
+## 10. QoS and goodput acceptance contract
 
-The simulator is a contract and causality test, not a GPU oracle.
+Hard safety remains strict in every repetition:
 
-### 11.1 Required structure
+- zero admission-caused preemptions, KV-limit violations, restart, or fatal;
+- zero reservation leak, double release, impossible transition, or final
+  running/waiting mismatch caused by PIG.
 
-- Use the production RequestCost builder from section 6.
-- Represent clients as deterministic workers with per-worker request queues.
-- A completion, cancellation, failure, or 429 releases that worker's next
-  request at the same simulated time before the next observation poll.
-- Define a stable tie-break order for poll, terminal, worker release, arrival,
-  decision, and scheduler service; replay in alternate policy orders must be
-  byte-identical.
-- Keep running and waiting disjoint.
-- Give Prefill and Decode service only to requests selected by the simulated
-  scheduler; waiting requests receive neither service nor materialized KV.
-- Exercise the real Manager lifecycle and reporting scope mapping.
-- Separate structural assertions from synthetic goodput diagnostics.
+Decode QoS is intentionally statistical. A single low sample, p10 dip, warmup
+transition, or request boundary does not reject a candidate.
 
-### 11.2 Mandatory scenarios before versioning
+For each controlled workload, freeze a matched shadow/no-enforcement reference
+before comparing candidates. Use test-client lifecycle to determine active
+Decode users and compute time-weighted per-user Decode TPS. Report p10, p50,
+minimum, and every raw repetition, but accept QoS using sustained windows:
 
-1. twelve workers, two requests per worker, exact 1,298-input selection and
-   1,024 requested output with the production rolling Decode horizon;
-2. frozen old source reproduces two second-wave admits and ten cascading 429s;
-3. new candidate produces 24/24 admission, no cascade, and exact final drain;
-4. many individually fitting small Prefills stop at the Decode-active aggregate
-   budget and later recover without low-flow self-lock;
-5. 49K with four active Decode users is protected before forwarding;
-6. weighted, exclusive, quiescent, waiting, stale, preemption, cancellation,
-   disconnect, timeout, duplicate terminal, observation overlap, and epoch drift;
-7. near-KV concurrent arrivals never exceed the hard limit;
-8. no running/waiting double count and no service for waiting requests;
-9. a backend-absorbed local Prefill is removed from the raw-running Decode
-   upper, while ambiguous or unattributed running remains conservatively
-   Decode-active;
-10. hard-KV, aggregate, long-owner, and preemption protection are request-scoped
-    whenever the canonical minimum-production probe fits the same snapshot, and
-    load-scoped only when that probe also fails;
-11. the minimum-production probe includes the production rolling Decode horizon
-    and block rounding; a one-block zero-horizon probe is rejected by parity
-    tests;
-12. current Router/status capacity recovers on the owning Manager sequence with
-    no fixed recent-reject hold and no stale last-decision projection;
-13. Manager state remains exact across all lifecycle transitions; if benchmark
-   evidence requires cached aggregates, they equal the slow oracle;
-14. decision outcome, HTTP scope, logs, metrics, status, and Router projection
-    remain coherent for request, load, and availability protection.
+- candidate whole-run time-weighted mean is at least 85% of the matched
+  reference in the median of at least three repetitions;
+- for sustained runs containing at least ten valid 30-second rolling windows,
+  no more than 10% of those windows are below 70% of the matched reference; and
+- one isolated low window is diagnostic, while two or more consecutive low
+  windows require causal review before promotion.
 
-Synthetic Prefill speed and Decode TPS constants may test deterministic
-scheduler mechanics. They cannot prove real per-user TPS, model portability, or
-GPU throughput.
+For workloads with fewer than ten valid rolling windows, use the whole
+active-Decode interval plus the consecutive-window review; do not turn one
+instantaneous sample into a hard gate.
 
-## 12. Implementation boundaries and SOLID
+Goodput is completed output tokens per wall-clock second. SLO-compliant goodput
+counts a workload repetition when its sustained QoS contract passes; it does
+not discard individual tokens because one instantaneous TPS sample was low.
+Among safe, QoS-compliant candidates, select the highest median goodput. Raw
+throughput, rejection count, GPU utilization, and p10 remain separate
+diagnostics.
 
-Implement only vertical slices that reach the real pre-forward decision path.
+Run A/B and B/A order with at least three repetitions. Any hard-safety incident
+fails the candidate. A noisy single QoS repetition does not automatically fail
+when the median, rolling-window budget, and order check pass; retain and explain
+all repetitions.
 
-- **Single responsibility:** estimator estimates; RequestCost builder normalizes;
-  Manager owns mutable state; pure Gates decide; adapter maps; reporting reports.
-- **Open/closed:** policy tests use interfaces and immutable inputs; adding a
-  future Gate must not change lifecycle ownership.
-- **Liskov:** for the same explicit snapshot and counterfactual, shadow and
-  enforce call the same pure policy. Shadow deliberately creates no reservation,
-  so later concurrent state differs; shadow evidence cannot prove enforce-mode
-  lifecycle behavior.
-- **Interface segregation:** Gates receive only fields they consume. Remove TPS,
-  running, or other telemetry fields from Gate inputs when unused.
-- **Dependency inversion:** HTTP and simulation depend on the canonical
-  RequestCost builder and policy interfaces rather than duplicating formulas.
+## 11. Deterministic simulation and required scenarios
 
-Efficiency gates on c21 workbench:
+The simulator is a structural causality test, not a GPU performance oracle. It
+must use production `RequestCost`, Controller, Policy, lifecycle, decision
+records, and capacity records.
 
-- supported maximum-body classification plus estimation p99 below 100 ms;
-- pure policy plus Manager decision p99 below 100 microseconds at the tested
-  production concurrency range;
-- pure Gate evaluation has zero allocations and an admitted reservation has a
-  small, measured, bounded allocation cost;
-- decision latency is reported at 1, 48, 256, and 4,096 live reservations; and
-- maps, retired state, log labels, and metric cardinality remain bounded.
+Required scenarios before versioning:
 
-The user accepts sub-100-ms extreme-input classification latency. Correctness
-and bounded behavior take priority over optimizing the already-small lexical
-hint.
+1. 12 workers x 2 requests reproduce frozen old 14/24 and new 24/24 behavior.
+2. Many small Prefills stop at 64K under contention and recover on lifecycle,
+   with no no-flow or low-flow self-lock.
+3. Waiting/ambiguous running still permit a fitting regular minimum request.
+4. A 96K contended candidate is request-protected while the next 1K request
+   admits on the same observation.
+5. Weighted, exclusive, quiescent, and above-upstream-ceiling cases obey the
+   class table and do not globally lock request-scoped failures.
+6. Near-KV concurrent arrivals cannot exceed the hard counterfactual.
+7. Observation publication and decision cannot mix sequences.
+8. Enforce startup waits for one coherent idle ownership sample; after
+   ownership, tracked waiting permits bounded regular admission while an
+   irreconcilable opaque-work epoch fails availability rather than guessing.
+9. Reservation overlay transitions full -> future only after first byte plus a
+   covering sample; terminal never applies a negative observation credit.
+10. Streaming, non-streaming, cancel, disconnect, timeout, upstream error,
+   duplicate event, epoch drift, and shutdown release exactly once.
+11. Stale metrics close availability and the first coherent sample reopens it
+    without a timer.
+12. Fresh preemption selects only its fresh contended state and creates no
+    cooldown.
+13. Request/load/availability outcomes are identical across HTTP, logs,
+    metrics, status, and Router projection.
+14. A last large reject cannot hold Router capacity after a Manager sequence
+    change; no 1,500-ms hold remains.
+15. Repeated simulation and alternate event-order replay are byte-identical.
+16. Streaming and non-streaming workloads both drain exactly; non-streaming
+    conservatism is reported rather than bypassed with inferred phase changes.
+17. Estimator fixtures report point/safety error for natural text, code,
+    multilingual, schema, escape-heavy, high-entropy, and maximum-body inputs.
 
-## 13. Source and evidence workflow
+Synthetic Prefill speed and Decode TPS can test mechanics but cannot prove GPU
+QoS, model portability, or throughput.
 
-All executable tests run in `pig-v0124-workbench` on c21 with:
+## 12. SOLID and efficiency constraints
 
-```text
-/usr/local/go/bin/go
-/usr/local/go/bin/gofmt
-```
+- **Single responsibility:** the Controller owns state and atomicity; pure
+  projectors/Gates decide; Adapter maps; Reporting reports.
+- **Open/closed:** adding a future Gate consumes immutable derived input and
+  does not change lifecycle ownership.
+- **Liskov:** shadow and enforce evaluate the same policy snapshot; only enforce
+  reserves.
+- **Interface segregation:** Gate inputs contain only fields they consume.
+- **Dependency inversion:** HTTP and simulation depend on the same RequestCost,
+  Controller, Policy, and record interfaces.
 
-For each coherent source update:
+Do not add cached aggregate counters before measurement. Benchmark decisions at
+1, 48, 256, and 4,096 live reservations. Keep the O(n) scan if p99 remains
+below 100 microseconds over the supported production range. If it fails, add a
+measured incremental aggregate behind a slow recomputation oracle and prove
+equality across every lifecycle/observation transition.
 
-1. add focused red evidence against the exact old source or current failing
-   commit;
-2. implement the smallest architecture-consistent vertical slice;
-3. run focused green and affected race tests;
-4. inspect the diff and staged paths;
-5. commit and push the coherent development update without assigning a release
-   version; and
-6. record source commit, commands, exit status, and material artifact hashes.
+Maximum-body classification plus estimation p99 must remain below 100 ms on
+c21. Pure Gate evaluation should allocate zero; admitted reservation allocation
+must be measured and bounded. Maps, labels, logs, and metrics must have bounded
+cardinality.
 
-Do not leave a growing unpushed implementation merely to avoid a version bump.
-A development commit is not a release identity. No image is built from a
-focused-only or partially accepted commit.
+## 13. Implementation and release gates
 
-## 14. Pre-version and release gates
+### 13.1 Architecture reset
 
-### 14.1 Before assigning a version
+1. Commit and push this plan alone.
+2. Save and hash the current remote dirty patch as rejected evidence.
+3. Restore only the known experimental paths to pushed `6d2c0e1`.
+4. Confirm clean status before executable work.
 
-Run on the exact pushed development commit:
+### 13.2 Vertical slices
 
-- formatting and `git diff --check`;
-- focused and affected tests;
-- `go test ./...` and `go vet ./...`;
-- targeted and full race tests;
-- `go build ./...` and production binary build;
-- canonical RequestCost parity tests;
-- deterministic simulation twice plus byte comparison;
-- policy-order replay;
-- lifecycle/property/overflow/epoch tests;
-- classification and hot-path benchmarks; and
-- three recorded reviews:
-  1. model, causality, and objective;
-  2. safety, atomicity, lifecycle, and failure paths;
-  3. SOLID, efficiency, evidence, and scope.
+1. Observation/Controller contract: write red tests for atomic publication and
+   prohibit Adapter-supplied observation input.
+2. Reservation overlay: replace assimilation/retired subtraction with the
+   positive overlay and sample barrier; pass lifecycle and race tests.
+3. Capability profile: remove `/8` and `/2`; add maximum admissible input and
+   reachable fixed bands.
+4. Pure policy: implement ResourceSafetyGate, PrefillQoSGate, contention/open
+   budgets, and atomic canonical-probe scope.
+5. Adapter/reporting: consume decision/capacity records, expose every enforced
+   protection, and remove reason-based scope plus recent-reject hold.
+6. Simulator: exercise production contracts and all section 11 scenarios.
+7. Benchmarks and full pre-version matrix.
 
-Any unresolved ownership overlap, RequestCost drift, lifecycle ambiguity,
-unbounded state, low-flow lock, or required-scenario loss keeps versioning
-blocked.
+Each slice starts with a focused red for the intended behavior, reaches the real
+pre-forward path, passes focused and affected race gates on c21, receives a diff
+review, and is committed/pushed without assigning a release version. Do not
+accumulate a large unpushed implementation.
 
-### 14.2 Versioned source
+### 13.3 Before assigning a version
 
-After pre-version acceptance, assign one next `0.12.x` identity across binary,
-metrics, logs, simulator schema, tests, and evidence names. Commit and push.
-Freeze an exact source archive and rerun the complete matrix plus independent
-verification. Pre-version green is not inherited across executable identity
-changes.
+On one exact pushed development commit run:
 
-### 14.3 Image and c21 runtime
+- `gofmt`, `git diff --check`, focused tests, and affected race tests;
+- `go test ./...`, `go vet ./...`, `go build ./...`, production binary build,
+  and full race matrix;
+- canonical RequestCost parity and estimator edge cases;
+- deterministic simulator twice, byte comparison, and alternate order replay;
+- lifecycle, property, overflow, epoch, scope, reporting, low/no-flow, and
+  concurrency tests;
+- maximum-body and 1/48/256/4096-reservation benchmarks; and
+- three recorded reviews: causality/objective, safety/lifecycle, and
+  SOLID/efficiency/evidence.
 
-Only after versioned source acceptance:
+Any sequence drift, undercount, leak, scope mismatch, hidden protection,
+low-flow lock, required-scenario failure, or unexplained benchmark regression
+blocks versioning.
 
-1. build one local-only immutable image on c21;
-2. verify image architecture, entrypoint, user, labels, binary identity,
-   production contract, and zero-startup-inference behavior;
-3. keep the image unpublished;
-4. replace only PIG on c21 with `--no-deps`; and
-5. prove vLLM container/image/start time, CVM, and GPU process are unchanged.
+### 13.4 Version, image, and runtime boundaries
 
-The first GPU workload is the unchanged sustained gate. Require:
+Only after pre-version acceptance:
 
-```text
-24/24 successful completions
-0 request-scoped 429
-0 other failures
-0 preemptions
-0 final reservations
-0 final waiting
-0 final Router backpressure
-0 fatal signals
-Decode TPS and goodput within the frozen acceptance contract
-```
+1. assign one next `0.12.x` identity and push versioned source;
+2. rerun the complete matrix on that exact identity;
+3. build one local-only image on c21 and validate provenance/entrypoint/user;
+4. replace only PIG with `--no-deps`, proving vLLM/CVM/GPU identity unchanged;
+5. run the unchanged 24/24 sustained gate, then targeted accumulation, size,
+   class, recovery, lifecycle, and near-KV GPU workloads;
+6. run the ordered QoS/goodput Pareto matrix and independent audit;
+7. upload only the exact image ID that passes every gate.
 
-Failure stops all further GPU work and returns to architecture review.
+Production Router enable and 30-minute real-traffic observation remain a later,
+separately authorized boundary.
 
-A sustained green unlocks, in order:
+## 14. Active checklist
 
-- Decode-active many-small-Prefill accumulation;
-- 49K with four Decode users;
-- weighted, exclusive, and quiescent cases;
-- low/no-flow and rejection recovery;
-- cancellation, disconnect, timeout, stale, and epoch recovery;
-- near-KV concurrency; and
-- a completely new ordered Pareto matrix with independent audit.
-
-Upload is allowed only for the exact image ID that passes every source, image,
-GPU, Pareto, provenance, and independent-audit gate. Production Router enable,
-canary, and 30-minute real-traffic observation remain a later, separately
-authorized boundary.
-
-## 15. Active checklist
-
-- [x] v0.12.9 sustained red retained and classified as policy overprotection.
-- [x] frozen `cc41264` focused cascade red retained and hashed.
-- [x] whole-path source audit completed from classifier through reporting.
-- [x] TPS confirmed as telemetry only, not current admission input.
-- [x] HTTP/simulator RequestCost drift identified.
-- [x] per-decision reservation scan identified as an unmeasured efficiency risk.
-- [x] old state-total and candidate-only multiplier risks documented.
-- [x] initial architecture plan passed three review passes, was committed alone,
-  and was pushed while the three executable experiments remained unstaged.
-- [x] canonical RequestCost builder red/green and production/simulation parity.
-- [x] corrective raw-phase, canonical-probe scope, and current-capacity
-  architecture review is committed and pushed before executable work resumes.
-- [x] worker-driven replacement-wave simulator reproduces old red.
-- [ ] unified PrefillQoSGate, phase upper bound, and candidate/probe scope proof
-  pass focused green; Manager scan benchmarks decide whether any aggregate
-  optimization is justified.
-- [ ] all mandatory production-shaped scenarios pass without low-flow lock.
-- [ ] coherent development source is committed and pushed without version bump.
+- [x] v0.12.9 sustained 14/24 overprotection retained as rejected evidence.
+- [x] canonical RequestCost builder shared by HTTP and simulator.
+- [x] shared-worker old-policy red reproduced and hashed.
+- [x] architecture re-reviewed after repeated patch failures.
+- [x] sustained-window QoS replaces instantaneous low-value rejection.
+- [x] waiting is defined as contention evidence, not unconditional full lock.
+- [x] atomic Controller ownership and positive-only reservation overlay defined.
+- [x] fixed portable size bands replace context `/8` and `/2` scaling.
+- [ ] architecture-reset plan committed and pushed alone.
+- [ ] dirty Gate/Manager experiment saved, hashed, and removed from worktree.
+- [ ] Observation/Controller slice passes focused/race gates and is pushed.
+- [ ] positive reservation overlay slice passes lifecycle/race gates and is
+  pushed.
+- [ ] capability/profile and pure policy slices pass and are pushed.
+- [ ] decision/capacity reporting is coherent and recent-reject hold is removed.
+- [ ] all deterministic scenarios pass without low-flow or request-scope lock.
 - [ ] complete pre-version matrix and three code reviews pass.
-- [ ] one next 0.12.x identity is assigned and versioned source is accepted.
-- [ ] one local image passes contract and c21 PIG-only runtime gates.
-- [ ] sustained and targeted GPU gates pass.
+- [ ] one next 0.12.x identity is assigned and accepted.
+- [ ] one local image passes source/image/c21 PIG-only runtime gates.
+- [ ] sustained and targeted GPU tests satisfy safety, long-window QoS, and
+  goodput acceptance.
 - [ ] ordered Pareto matrix and independent audit pass.
 - [ ] exact accepted image is uploaded.
 
+## 15. Three-pass review record
+
+### Pass 1: model, causality, and objective
+
+- replaced instantaneous/p10 failure semantics with sustained-window QoS;
+- retained pre-forward prediction while limiting feedback to current facts;
+- removed the arbitrary context `/8` and `/2` Prefill scaling;
+- changed 49K-under-Decode from forced reject to a fitting regular example;
+- kept TPS out of the runtime Gate and in controlled acceptance measurement.
+
+### Pass 2: safety, state, and lifecycle
+
+- moved observation publication into the Controller transaction;
+- removed inferred metric ownership and retired negative credits from the
+  target state model;
+- defined a positive-only overlay and first-byte plus sample barrier;
+- kept stale/identity/KV safety hard while allowing fitting regular work under
+  waiting or ambiguous running;
+- required exact-once release for every terminal path.
+
+### Pass 3: SOLID, throughput, and evidence
+
+- reduced policy to two resource owners and one atomic scope proof;
+- separated per-request decisions from current-capacity reporting;
+- removed delayed reject projection and low-flow unlock timers;
+- retained O(n) recomputation until benchmarks justify complexity;
+- separated plan, source, version, image, runtime, registry, and production
+  evidence; and
+- froze the current dirty experiment instead of bending the architecture to
+  finish it.
+
 ## 16. Stop rules
 
+- Do not complete the current dirty Gate experiment incrementally.
 - Do not version, build, deploy, or upload while an earlier checklist gate is
   open.
-- Do not turn a request-size failure into a global node lock.
-- Do not increase queue wait, add retry, add cooldown, or weaken thresholds to
-  hide a failing scenario.
-- Do not treat synthetic TPS as GPU evidence.
-- Do not inherit source, image, or GPU evidence across executable changes.
+- Do not make a request-size rejection globally close a node that can fit the
+  canonical probe.
+- Do not turn waiting, one preemption sample, or one low TPS point into a sticky
+  full-intake lock.
+- Do not add retry, cooldown, learning, cache inspection, or a local long queue
+  to hide a failing scenario.
+- Do not treat simulation TPS as GPU evidence.
+- Do not inherit executable evidence across source changes.
 - Do not modify Router, production Compose, vLLM, or another CVM in this goal.
-- If the unified Prefill budget fails either work conservation or Decode QoS,
-  stop and revise the architecture before writing another patch.
-
-## 17. Plan review record
-
-Pass 1, architecture and causality:
-
-- traced the real path from bounded JSON classification through estimator,
-  capability initialization, observer, Manager, Policy, HTTP, lifecycle, and
-  reporting;
-- confirmed TPS fields are telemetry only;
-- rejected both the old state-total multiplier and the unbounded candidate-only
-  multiplier;
-- corrected the PIG container/image identity label and the c21 262K versus
-  portable 512K/650K evidence boundary; and
-- replaced a speculative O(1) Manager rewrite with a benchmark-first decision.
-
-Pass 2, safety and lifecycle:
-
-- fixed ownership of unknown Prefill state, rolling Decode horizon, observation
-  assimilation, and exact-once terminal behavior;
-- separated streaming first-byte phase evidence from conservative non-streaming
-  behavior;
-- clarified that shadow shares a pure policy but not enforce-mode reservation
-  evolution; and
-- removed the fixed 1,500-ms Router projection hold from the target design so a
-  fresh current state, not historical rejection time, controls recovery.
-
-Pass 3, SOLID, efficiency, evidence, and overdesign:
-
-- reduced the active plan from a multi-version audit log to the current
-  architecture, evidence, gates, and stop rules while preserving history in Git;
-- separated plan, executable source, versioned source, image, c21 runtime, GPU,
-  registry, and production evidence layers;
-- required a shared RequestCost builder instead of duplicate formulas;
-- required measured latency/allocation scaling before state-cache complexity;
-  and
-- corrected `cc41264` from a soon-stale branch HEAD claim to the last executable
-  baseline, so the plan-only commit cannot inherit or invalidate code evidence.
-
-Corrective source-contract review after the initial architecture commit:
-
-Pass 1, model and causality:
-
-- corrected the invalid assumption that vLLM `running` is an exact Decode count;
-- separated raw running, queued unknown work, lifecycle-proven Prefill, and the
-  conservative Decode-active upper bound; and
-- kept TPS proxies diagnostic-only rather than hiding a new feedback controller
-  inside phase inference.
-
-Pass 2, safety and scope:
-
-- replaced reason-based request/load mapping with an atomic
-  candidate-versus-minimum-production-probe proof;
-- required that the probe use the canonical RequestCost builder, rolling Decode
-  horizon, and KV block rounding; and
-- kept ambiguous running conservative while permitting only proven
-  backend-absorbed Prefill to reduce the Decode upper bound.
-
-Pass 3, SOLID, reporting, and recovery:
-
-- made AdmissionPolicy own scope and prohibited the Adapter from inferring it;
-- split immutable per-request decisions from current-capacity records so
-  lifecycle/observation changes cannot leave Router or the frontend on a stale
-  last reject; and
-- retained the simple Manager scan until benchmark evidence, avoiding a second
-  mutable ledger while adding no cache, learning, cooldown, retry, or queue.
+- If the static 64K/256K policy cannot satisfy both sustained QoS and goodput,
+  stop at architecture review instead of releasing another narrow patch.
