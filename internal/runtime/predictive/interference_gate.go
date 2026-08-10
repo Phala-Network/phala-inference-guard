@@ -51,8 +51,7 @@ func validateInterferenceGateConfig(config InterferenceGateConfig) error {
 	if config.PrefillRegularTokens <= 0 ||
 		config.PrefillExclusiveTokens <= config.PrefillRegularTokens ||
 		config.PrefillQuiescentTokens <= config.PrefillExclusiveTokens ||
-		config.PrefillAggregateBudgetTokens < config.PrefillExclusiveTokens ||
-		config.PrefillAggregateBudgetTokens > config.PrefillQuiescentTokens {
+		config.PrefillAggregateBudgetTokens <= 0 {
 		return fmt.Errorf("interference gate configuration is invalid")
 	}
 	return nil

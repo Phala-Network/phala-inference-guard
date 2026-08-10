@@ -42,9 +42,10 @@ func TestSustainedReplacementWaveUsesC21CapabilityGeometry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if profile.PrefillRegularTokens != 32*1024 || profile.PrefillExclusiveTokens != 128*1024 ||
-		profile.PrefillQuiescentTokens != 256*1024 {
-		t.Fatalf("sustained replacement profile=%+v, want c21 32K/128K/256K geometry", profile)
+	if profile.PrefillRegularTokens != 64*1024 || profile.PrefillExclusiveTokens != 256*1024 ||
+		profile.PrefillQuiescentTokens != 512*1024 ||
+		profile.MaximumAdmissibleInputTokens != 256*1024-256 {
+		t.Fatalf("sustained replacement profile=%+v, want fixed bands with c21 reachability", profile)
 	}
 }
 

@@ -13,15 +13,13 @@ import (
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-const (
-	predictiveMetadataMaximumModelBody    = 64 * 1024
-	predictiveMetadataFallbackMaxModelLen = int64(512 * 1024)
-)
+const predictiveMetadataMaximumModelBody = 64 * 1024
 
 type predictiveCapabilityInitializationConfig struct {
 	UpstreamURL    string
 	RequestTimeout time.Duration
 	KVHardRatio    float64
+	MaxModelLen    int64
 	Prefill        runtimepredictive.PrefillTokenBounds
 }
 
@@ -48,27 +46,32 @@ func initializePredictiveCapability(
 		return predictiveCapabilityInitialization{}, err
 	}
 	if !automatic {
+		if config.MaxModelLen <= 0 {
+			return predictiveCapabilityInitialization{}, fmt.Errorf("predictive explicit capability override must include max model length")
+		}
 		base.Source = runtimepredictive.CapabilityProfileExplicit
+		base.MaxModelLen = config.MaxModelLen
 		base.Prefill = explicit
 		return newPredictiveCapabilityInitialization(base, "explicit_override")
+	}
+	if config.MaxModelLen != 0 {
+		return predictiveCapabilityInitialization{}, fmt.Errorf("predictive capability override must include all Prefill bounds")
 	}
 	if config.RequestTimeout <= 0 {
 		return predictiveCapabilityInitialization{}, fmt.Errorf("predictive capability metadata timeout is invalid")
 	}
 
 	base.Source = runtimepredictive.CapabilityProfileAutomatic
-	base.MaxModelLen = predictiveMetadataFallbackMaxModelLen
-	reason := "metadata_fallback"
 	ctx, cancel := context.WithTimeout(context.Background(), config.RequestTimeout)
 	defer cancel()
 	client := newPredictiveMetadataHTTPClient()
 	defer client.CloseIdleConnections()
 	metadata, metadataErr := fetchPredictiveModelMetadata(ctx, client, config.UpstreamURL, startup.modelName)
-	if metadataErr == nil {
-		base.MaxModelLen = metadata.MaxModelLen
-		reason = "metadata"
+	if metadataErr != nil {
+		return predictiveCapabilityInitialization{}, fmt.Errorf("predictive model metadata is unavailable: %w", metadataErr)
 	}
-	return newPredictiveCapabilityInitialization(base, reason)
+	base.MaxModelLen = metadata.MaxModelLen
+	return newPredictiveCapabilityInitialization(base, "metadata")
 }
 
 func newPredictiveMetadataHTTPClient() *http.Client {

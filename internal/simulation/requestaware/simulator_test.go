@@ -146,7 +146,7 @@ func TestDeterministicRequestAwareGoodputSuiteRejectsInvalidPolicyOrder(t *testi
 	}
 }
 
-func TestCapabilityProfilesChangePreForwardPrefillDecisionUnderSameLiveState(t *testing.T) {
+func TestCapabilityProfilesKeepFixedPrefillBandsAcrossContextLengths(t *testing.T) {
 	scenario := scenarioSpec{capacityTokens: 4 * 1024 * 1024}
 	shortProfile, shortPolicy, err := simulationCapabilityPolicy(scenario, 256*1024)
 	if err != nil {
@@ -172,14 +172,14 @@ func TestCapabilityProfilesChangePreForwardPrefillDecisionUnderSameLiveState(t *
 	}
 	short := shortPolicy.Evaluate(input)
 	long := longPolicy.Evaluate(input)
-	if shortProfile.PrefillExclusiveTokens >= input.EstimatedPrefillTokens ||
-		short.Action != runtimepredictive.RequestAwareSizeProtect ||
-		short.Reason != runtimepredictive.RequestAwareReasonPrefillConcurrency {
-		t.Fatalf("short-context profile/decision = %+v/%+v, want exclusive-concurrency protection", shortProfile, short)
+	if shortProfile.PrefillRegularTokens != longProfile.PrefillRegularTokens ||
+		shortProfile.PrefillExclusiveTokens != longProfile.PrefillExclusiveTokens ||
+		shortProfile.PrefillQuiescentTokens != longProfile.PrefillQuiescentTokens ||
+		shortProfile.MaximumAdmissibleInputTokens >= longProfile.MaximumAdmissibleInputTokens {
+		t.Fatalf("short/long capability profiles changed band semantics: short=%+v long=%+v", shortProfile, longProfile)
 	}
-	if longProfile.PrefillExclusiveTokens <= input.EstimatedPrefillTokens ||
-		long.Action != runtimepredictive.RequestAwareAdmit {
-		t.Fatalf("long-context profile/decision = %+v/%+v, want work-conserving admit", longProfile, long)
+	if short.Action != runtimepredictive.RequestAwareAdmit || long.Action != runtimepredictive.RequestAwareAdmit {
+		t.Fatalf("same fitting request received context-scaled decisions: short=%+v long=%+v", short, long)
 	}
 }
 
@@ -260,7 +260,7 @@ func TestSimulationCandidateSizeAwareAdmissionContracts(t *testing.T) {
 		t.Fatalf("RunSuite: %v", err)
 	}
 	want := map[string][2]int{
-		"low-flow-first-large":                   {1, 1},
+		"low-flow-first-large":                   {2, 0},
 		"prefill-weighted-budget":                {1, 1},
 		"prefill-weighted-regular-gate-recovery": {2, 1},
 		"prefill-long-singleton":                 {1, 2},

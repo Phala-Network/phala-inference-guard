@@ -22,15 +22,18 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 	WritePredictiveAdmission(&out, PredictiveAdmissionInput{
 		Mode:                                            "enforce",
 		CapabilityProfileSource:                         "automatic",
-		CapabilityProfileSchema:                         "request-aware-capability-v2",
+		CapabilityProfileSchema:                         "request-aware-capability-v3",
 		CapabilityInitializationReason:                  "metadata",
 		CapabilityKVCapacityTokens:                      1_000_000,
 		CapabilityKVBlockSize:                           64,
 		CapabilityKVHardLimitTokens:                     880_000,
-		CapabilityPrefillRegularTokens:                  32_768,
-		CapabilityPrefillExclusiveTokens:                131_072,
-		CapabilityPrefillQuiescentTokens:                262_144,
-		CapabilityPrefillAggregateBudgetTokens:          131_072,
+		CapabilityMaxModelLenTokens:                     650 * 1024,
+		CapabilityMaximumAdmissibleInputTokens:          650*1024 - 256,
+		CapabilityPrefillRegularTokens:                  64 * 1024,
+		CapabilityPrefillExclusiveTokens:                256 * 1024,
+		CapabilityPrefillQuiescentTokens:                512 * 1024,
+		CapabilityPrefillContendedBudgetTokens:          64 * 1024,
+		CapabilityPrefillAggregateBudgetTokens:          256 * 1024,
 		Attempts:                                        9,
 		Fits:                                            5,
 		Risks:                                           3,
@@ -95,14 +98,17 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 	got := out.String()
 	for _, want := range []string{
 		`pig_predictive_admission_mode_info{mode="enforce"} 1`,
-		`pig_predictive_capability_profile_info{schema="request-aware-capability-v2",source="automatic",reason="metadata"} 1`,
+		`pig_predictive_capability_profile_info{schema="request-aware-capability-v3",source="automatic",reason="metadata"} 1`,
 		"pig_predictive_capability_kv_capacity_tokens 1000000",
 		"pig_predictive_capability_kv_block_size 64",
 		"pig_predictive_capability_kv_hard_limit_tokens 880000",
-		"pig_predictive_capability_prefill_regular_tokens 32768",
-		"pig_predictive_capability_prefill_exclusive_tokens 131072",
-		"pig_predictive_capability_prefill_quiescent_tokens 262144",
-		"pig_predictive_capability_prefill_aggregate_budget_tokens 131072",
+		"pig_predictive_capability_max_model_len_tokens 665600",
+		"pig_predictive_capability_maximum_admissible_input_tokens 665344",
+		"pig_predictive_capability_prefill_regular_tokens 65536",
+		"pig_predictive_capability_prefill_exclusive_tokens 262144",
+		"pig_predictive_capability_prefill_quiescent_tokens 524288",
+		"pig_predictive_capability_prefill_contended_budget_tokens 65536",
+		"pig_predictive_capability_prefill_aggregate_budget_tokens 262144",
 		"pig_predictive_admission_enforce 1",
 		"pig_predictive_admission_attempts_total 9",
 		`pig_predictive_admission_decisions_total{decision="fit"} 5`,
@@ -240,5 +246,11 @@ func TestWritePredictiveAdmissionOmitsRetiredMetrics(t *testing.T) {
 		if strings.Contains(got, retired) {
 			t.Fatalf("retired metric %q remains in production output", retired)
 		}
+	}
+}
+
+func TestCapabilityInitializationReasonRejectsRetiredFallback(t *testing.T) {
+	if got := normalizeCapabilityInitializationReason("metadata_fallback"); got != "unknown" {
+		t.Fatalf("retired metadata fallback normalized to %q, want unknown", got)
 	}
 }

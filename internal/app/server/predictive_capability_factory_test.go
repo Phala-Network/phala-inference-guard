@@ -36,7 +36,11 @@ func TestV0125AutomaticCapabilityUsesMetadataWithoutCompletion(t *testing.T) {
 		t.Fatal("automatic metadata request forwarded an Authorization header")
 	}
 	telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
-	assertV0125CapabilityProfile(t, telemetry.CapabilityProfile, "automatic", 880_000, 32_768, 131_072, 262_144, 131_072)
+	assertV0125CapabilityProfile(
+		t, telemetry.CapabilityProfile, "automatic",
+		880_000, 256*1024, 256*1024-256,
+		64*1024, 256*1024, 512*1024, 64*1024, 256*1024-256,
+	)
 	if telemetry.CapabilityReason != "metadata" {
 		t.Fatalf("automatic initialization reason = %q, want metadata", telemetry.CapabilityReason)
 	}
@@ -75,22 +79,22 @@ func TestV0125AutomaticCapabilityIsBusyInvariant(t *testing.T) {
 
 func TestV0125AutomaticCapabilityGeometry(t *testing.T) {
 	tests := []struct {
-		name           string
-		maxModelLen    int64
-		metadataStatus int
-		capacity       int64
-		wantHard       int64
-		wantRegular    int64
-		wantExclusive  int64
-		wantQuiescent  int64
-		wantAggregate  int64
-		wantReason     string
+		name          string
+		maxModelLen   int64
+		capacity      int64
+		wantHard      int64
+		wantMaxInput  int64
+		wantRegular   int64
+		wantExclusive int64
+		wantQuiescent int64
+		wantContended int64
+		wantAggregate int64
+		wantReason    string
 	}{
-		{name: "32K context", maxModelLen: 32 * 1024, metadataStatus: http.StatusOK, capacity: 1_000_000, wantHard: 880_000, wantRegular: 4 * 1024, wantExclusive: 16 * 1024, wantQuiescent: 32 * 1024, wantAggregate: 16 * 1024, wantReason: "metadata"},
-		{name: "256K context", maxModelLen: 256 * 1024, metadataStatus: http.StatusOK, capacity: 1_000_000, wantHard: 880_000, wantRegular: 32 * 1024, wantExclusive: 128 * 1024, wantQuiescent: 256 * 1024, wantAggregate: 128 * 1024, wantReason: "metadata"},
-		{name: "650K context", maxModelLen: 650 * 1024, metadataStatus: http.StatusOK, capacity: 1_000_000, wantHard: 880_000, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantAggregate: 256 * 1024, wantReason: "metadata"},
-		{name: "KV limited", maxModelLen: 650 * 1024, metadataStatus: http.StatusOK, capacity: 300_000, wantHard: 264_000, wantRegular: 32_960, wantExclusive: 131_968, wantQuiescent: 264_000, wantAggregate: 131_968, wantReason: "metadata"},
-		{name: "metadata fallback", metadataStatus: http.StatusServiceUnavailable, capacity: 1_000_000, wantHard: 880_000, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantAggregate: 256 * 1024, wantReason: "metadata_fallback"},
+		{name: "32K context", maxModelLen: 32 * 1024, capacity: 1_000_000, wantHard: 880_000, wantMaxInput: 32*1024 - 256, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantContended: 32*1024 - 256, wantAggregate: 32*1024 - 256, wantReason: "metadata"},
+		{name: "256K context", maxModelLen: 256 * 1024, capacity: 1_000_000, wantHard: 880_000, wantMaxInput: 256*1024 - 256, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantContended: 64 * 1024, wantAggregate: 256*1024 - 256, wantReason: "metadata"},
+		{name: "650K context", maxModelLen: 650 * 1024, capacity: 1_000_000, wantHard: 880_000, wantMaxInput: 650*1024 - 256, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantContended: 64 * 1024, wantAggregate: 256 * 1024, wantReason: "metadata"},
+		{name: "KV limited", maxModelLen: 650 * 1024, capacity: 300_000, wantHard: 264_000, wantMaxInput: 264_000 - 256, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantContended: 64 * 1024, wantAggregate: 256 * 1024, wantReason: "metadata"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -100,10 +104,6 @@ func TestV0125AutomaticCapabilityGeometry(t *testing.T) {
 				switch r.URL.Path {
 				case "/v1/models":
 					models.Add(1)
-					if test.metadataStatus != http.StatusOK {
-						w.WriteHeader(test.metadataStatus)
-						return
-					}
 					_, _ = fmt.Fprintf(w, `{"object":"list","data":[{"id":"vendor/capability-model","max_model_len":%d}]}`, test.maxModelLen)
 				case "/v1/completions":
 					completions.Add(1)
@@ -124,7 +124,12 @@ func TestV0125AutomaticCapabilityGeometry(t *testing.T) {
 			if gotModels, gotCompletions := models.Load(), completions.Load(); gotModels != 1 || gotCompletions != 0 {
 				t.Fatalf("initialization calls models/completions = %d/%d, want 1/0", gotModels, gotCompletions)
 			}
-			assertV0125CapabilityProfile(t, initialization.Profile, "automatic", test.wantHard, test.wantRegular, test.wantExclusive, test.wantQuiescent, test.wantAggregate)
+			assertV0125CapabilityProfile(
+				t, initialization.Profile, "automatic",
+				test.wantHard, test.maxModelLen, test.wantMaxInput,
+				test.wantRegular, test.wantExclusive, test.wantQuiescent,
+				test.wantContended, test.wantAggregate,
+			)
 			if initialization.Reason != test.wantReason {
 				t.Fatalf("initialization reason = %q, want %q", initialization.Reason, test.wantReason)
 			}
@@ -136,6 +141,7 @@ func TestV0125CompleteExplicitPrefillProfileSkipsMetadata(t *testing.T) {
 	fixture := newV0125CapabilityFixture(t, 0, 256*1024)
 	defer fixture.Close()
 	cfg := v0125CapabilityFactoryConfig(fixture.URL())
+	cfg.PredictiveMaxModelLenTokens = 650 * 1024
 	cfg.PredictivePrefillRegularTokens = 32_768
 	cfg.PredictivePrefillExclusiveTokens = 131_072
 	cfg.PredictivePrefillQuiescentTokens = 262_144
@@ -154,7 +160,11 @@ func TestV0125CompleteExplicitPrefillProfileSkipsMetadata(t *testing.T) {
 		t.Fatalf("explicit profile calls models/completions = %d/%d, want 0/0", models, completions)
 	}
 	telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
-	assertV0125CapabilityProfile(t, telemetry.CapabilityProfile, "explicit", 880_000, 32_768, 131_072, 262_144, 196_608)
+	assertV0125CapabilityProfile(
+		t, telemetry.CapabilityProfile, "explicit",
+		880_000, 650*1024, 650*1024-256,
+		32_768, 131_072, 262_144, 32_768, 196_608,
+	)
 	if telemetry.CapabilityReason != "explicit_override" {
 		t.Fatalf("explicit capability reason = %q", telemetry.CapabilityReason)
 	}
@@ -166,7 +176,9 @@ func TestV0125InvalidExplicitCapabilityFailsBeforeMetadata(t *testing.T) {
 		mutate func(*config)
 	}{
 		{name: "partial", mutate: func(cfg *config) { cfg.PredictivePrefillRegularTokens = 4 * 1024 }},
+		{name: "max model length only", mutate: func(cfg *config) { cfg.PredictiveMaxModelLenTokens = 256 * 1024 }},
 		{name: "ordering", mutate: func(cfg *config) {
+			cfg.PredictiveMaxModelLenTokens = 256 * 1024
 			cfg.PredictivePrefillRegularTokens = 32 * 1024
 			cfg.PredictivePrefillExclusiveTokens = 16 * 1024
 			cfg.PredictivePrefillQuiescentTokens = 64 * 1024
@@ -204,17 +216,14 @@ func TestV0125CapabilityMetadataRedirectIsNotFollowed(t *testing.T) {
 	}))
 	defer origin.Close()
 
-	initialization, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
+	_, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
 		UpstreamURL: origin.URL, RequestTimeout: 50 * time.Millisecond, KVHardRatio: 0.88,
 	}, v0125CapabilityStartup(1_000_000))
-	if err != nil {
-		t.Fatalf("redirect fallback initialization: %v", err)
+	if err == nil {
+		t.Fatal("metadata redirect unexpectedly produced an automatic capability profile")
 	}
 	if redirectCalls.Load() != 0 {
 		t.Fatalf("capability client followed metadata redirect %d times", redirectCalls.Load())
-	}
-	if string(initialization.Profile.Source) != "automatic" || initialization.Reason != "metadata_fallback" {
-		t.Fatalf("redirect initialization = %+v/%q, want automatic/metadata_fallback", initialization.Profile, initialization.Reason)
 	}
 }
 
@@ -227,14 +236,47 @@ func TestV0125CapabilityMetadataResponseIsBounded(t *testing.T) {
 		_, _ = io.WriteString(w, strings.Repeat("x", predictiveMetadataMaximumModelBody+1))
 	}))
 	defer server.Close()
-	initialization, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
+	_, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
 		UpstreamURL: server.URL, RequestTimeout: 50 * time.Millisecond, KVHardRatio: 0.88,
 	}, v0125CapabilityStartup(1_000_000))
-	if err != nil {
-		t.Fatalf("bounded metadata fallback initialization: %v", err)
+	if err == nil {
+		t.Fatal("oversized metadata unexpectedly produced an automatic capability profile")
 	}
-	if initialization.Reason != "metadata_fallback" {
-		t.Fatalf("oversized metadata reason = %q, want metadata_fallback", initialization.Reason)
+}
+
+func TestV0125CapabilityMetadataFailuresDoNotGuessContext(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+	}{
+		{name: "non-success", statusCode: http.StatusServiceUnavailable, body: `{}`},
+		{name: "malformed JSON", statusCode: http.StatusOK, body: `{`},
+		{name: "missing model", statusCode: http.StatusOK, body: `{"object":"list","data":[]}`},
+		{name: "ambiguous models", statusCode: http.StatusOK, body: `{"object":"list","data":[{"id":"vendor/capability-model","max_model_len":262144},{"id":"other","max_model_len":262144}]}`},
+		{name: "identity mismatch", statusCode: http.StatusOK, body: `{"object":"list","data":[{"id":"other","max_model_len":262144}]}`},
+		{name: "missing max model length", statusCode: http.StatusOK, body: `{"object":"list","data":[{"id":"vendor/capability-model"}]}`},
+		{name: "negative max model length", statusCode: http.StatusOK, body: `{"object":"list","data":[{"id":"vendor/capability-model","max_model_len":-1}]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1/models" {
+					http.NotFound(w, r)
+					return
+				}
+				w.WriteHeader(test.statusCode)
+				_, _ = io.WriteString(w, test.body)
+			}))
+			defer server.Close()
+
+			_, err := initializePredictiveCapability(predictiveCapabilityInitializationConfig{
+				UpstreamURL: server.URL, RequestTimeout: 50 * time.Millisecond, KVHardRatio: 0.88,
+			}, v0125CapabilityStartup(1_000_000))
+			if err == nil {
+				t.Fatal("invalid metadata unexpectedly produced an automatic capability profile")
+			}
+		})
 	}
 }
 
@@ -278,16 +320,20 @@ func assertV0125CapabilityProfile(
 	t *testing.T,
 	profile runtimepredictive.BackendCapabilityProfile,
 	wantSource string,
-	wantHard, wantRegular, wantExclusive, wantQuiescent, wantAggregate int64,
+	wantHard, wantMaxModelLen, wantMaxInput int64,
+	wantRegular, wantExclusive, wantQuiescent, wantContended, wantAggregate int64,
 ) {
 	t.Helper()
-	if profile.SchemaVersion != "request-aware-capability-v2" || string(profile.Source) != wantSource ||
-		profile.KVHardLimitTokens != wantHard || profile.PrefillRegularTokens != wantRegular ||
+	if profile.SchemaVersion != "request-aware-capability-v3" || string(profile.Source) != wantSource ||
+		profile.KVHardLimitTokens != wantHard || profile.MaxModelLenTokens != wantMaxModelLen ||
+		profile.MaximumAdmissibleInputTokens != wantMaxInput || profile.PrefillRegularTokens != wantRegular ||
 		profile.PrefillExclusiveTokens != wantExclusive || profile.PrefillQuiescentTokens != wantQuiescent ||
+		profile.PrefillContendedBudgetTokens != wantContended ||
 		profile.PrefillAggregateBudgetTokens != wantAggregate {
 		t.Fatalf(
-			"capability profile = %+v, want source=%s hard=%d prefill=%d/%d/%d/%d",
-			profile, wantSource, wantHard, wantRegular, wantExclusive, wantQuiescent, wantAggregate,
+			"capability profile = %+v, want source=%s hard/model/input=%d/%d/%d prefill=%d/%d/%d budgets=%d/%d",
+			profile, wantSource, wantHard, wantMaxModelLen, wantMaxInput,
+			wantRegular, wantExclusive, wantQuiescent, wantContended, wantAggregate,
 		)
 	}
 }

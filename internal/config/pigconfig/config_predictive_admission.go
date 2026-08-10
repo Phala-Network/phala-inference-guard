@@ -38,6 +38,10 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	maxModelLen, err := env.Int("PREDICTIVE_MAX_MODEL_LEN_TOKENS", 0)
+	if err != nil {
+		return err
+	}
 	prefillRegular, err := env.Int("PREDICTIVE_PREFILL_REGULAR_TOKENS", 0)
 	if err != nil {
 		return err
@@ -74,18 +78,18 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if requestTimeoutMS > startupTimeoutMS {
 		return fmt.Errorf("PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS must not exceed PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS")
 	}
-	prefillValues := []int{prefillRegular, prefillExclusive, prefillQuiescent, prefillAggregate}
+	capabilityOverrides := []int{maxModelLen, prefillRegular, prefillExclusive, prefillQuiescent, prefillAggregate}
 	configured := 0
-	for _, value := range prefillValues {
+	for _, value := range capabilityOverrides {
 		if value < 0 {
-			return fmt.Errorf("predictive Prefill overrides must be non-negative")
+			return fmt.Errorf("predictive capability overrides must be non-negative")
 		}
 		if value > 0 {
 			configured++
 		}
 	}
-	if configured != 0 && configured != len(prefillValues) {
-		return fmt.Errorf("predictive Prefill overrides must all be set or all be omitted")
+	if configured != 0 && configured != len(capabilityOverrides) {
+		return fmt.Errorf("predictive capability overrides must all be set or all be omitted")
 	}
 
 	cfg.PredictiveMetricsURL = metricsURL
@@ -96,6 +100,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveObservationPollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 	cfg.PredictiveMaximumMetricsAge = time.Duration(maximumAgeMS) * time.Millisecond
 	cfg.PredictiveKVHardRatio = kvHardRatio
+	cfg.PredictiveMaxModelLenTokens = int64(maxModelLen)
 	cfg.PredictivePrefillRegularTokens = int64(prefillRegular)
 	cfg.PredictivePrefillExclusiveTokens = int64(prefillExclusive)
 	cfg.PredictivePrefillQuiescentTokens = int64(prefillQuiescent)

@@ -287,14 +287,18 @@ func TestV0125RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *tes
 	}
 }
 
-func TestRequestAwarePolicyRejectsInvalidPrefillThresholdOrdering(t *testing.T) {
-	_, err := NewRequestAwarePolicy(RequestAwareConfig{
+func TestRequestAwarePolicyKeepsAggregateBudgetIndependentFromSizeBands(t *testing.T) {
+	config := RequestAwareConfig{
 		HardKVLimitTokens: 9_008, BlockSize: 16,
 		PrefillRegularTokens: 64 * 1024, PrefillExclusiveTokens: 256 * 1024,
 		PrefillQuiescentTokens: 512 * 1024, PrefillAggregateBudgetTokens: 128 * 1024,
-	})
-	if err == nil {
-		t.Fatal("NewRequestAwarePolicy accepted aggregate prefill budget below exclusive threshold")
+	}
+	if _, err := NewRequestAwarePolicy(config); err != nil {
+		t.Fatalf("independent aggregate Prefill budget was rejected: %v", err)
+	}
+	config.PrefillAggregateBudgetTokens = 0
+	if _, err := NewRequestAwarePolicy(config); err == nil {
+		t.Fatal("empty aggregate Prefill budget was accepted")
 	}
 }
 

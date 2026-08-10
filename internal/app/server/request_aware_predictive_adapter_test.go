@@ -1073,15 +1073,24 @@ func requestAwareTestObservation(input runtimepredictive.RequestAwareInput, now 
 }
 
 func requestAwareTestCapabilityProfile(capacity, blockSize, hard int64) runtimepredictive.BackendCapabilityProfile {
+	maximumInput := hard - hard%blockSize - runtimepredictive.DefaultCapabilityDecodeHorizonTokens
+	contendedBudget := maximumInput
+	if contendedBudget > runtimepredictive.DefaultRequestAwarePrefillRegularTokens {
+		contendedBudget = runtimepredictive.DefaultRequestAwarePrefillRegularTokens
+	}
+	contendedBudget -= contendedBudget % blockSize
 	return runtimepredictive.BackendCapabilityProfile{
 		SchemaVersion:                runtimepredictive.CapabilityProfileSchema,
 		ModelIdentitySHA256:          "request-aware-test-model",
 		KVCapacityTokens:             capacity,
 		KVBlockSize:                  blockSize,
 		KVHardLimitTokens:            hard,
+		MaxModelLenTokens:            hard,
+		MaximumAdmissibleInputTokens: maximumInput,
 		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: contendedBudget,
 		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 		Source:                       runtimepredictive.CapabilityProfileExplicit,
 	}

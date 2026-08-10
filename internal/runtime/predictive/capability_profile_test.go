@@ -26,15 +26,17 @@ func TestCapabilityProfileDerivesDeterministicAutomaticBounds(t *testing.T) {
 		maxModelLen   int64
 		capacity      int64
 		wantHard      int64
+		wantMaxInput  int64
 		wantRegular   int64
 		wantExclusive int64
 		wantQuiescent int64
+		wantContended int64
 		wantAggregate int64
 	}{
-		{name: "32K context", maxModelLen: 32 * 1024, capacity: 1_000_000, wantHard: 880_000, wantRegular: 4 * 1024, wantExclusive: 16 * 1024, wantQuiescent: 32 * 1024, wantAggregate: 16 * 1024},
-		{name: "256K context", maxModelLen: 256 * 1024, capacity: 1_000_000, wantHard: 880_000, wantRegular: 32 * 1024, wantExclusive: 128 * 1024, wantQuiescent: 256 * 1024, wantAggregate: 128 * 1024},
-		{name: "650K context", maxModelLen: 650 * 1024, capacity: 1_000_000, wantHard: 880_000, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantAggregate: 256 * 1024},
-		{name: "KV limited", maxModelLen: 650 * 1024, capacity: 300_000, wantHard: 264_000, wantRegular: 32_960, wantExclusive: 131_968, wantQuiescent: 264_000, wantAggregate: 131_968},
+		{name: "32K context", maxModelLen: 32 * 1024, capacity: 1_000_000, wantHard: 880_000, wantMaxInput: 32*1024 - 256, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantContended: 32*1024 - 256, wantAggregate: 32*1024 - 256},
+		{name: "256K context", maxModelLen: 256 * 1024, capacity: 1_000_000, wantHard: 880_000, wantMaxInput: 256*1024 - 256, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantContended: 64 * 1024, wantAggregate: 256*1024 - 256},
+		{name: "650K context", maxModelLen: 650 * 1024, capacity: 1_000_000, wantHard: 880_000, wantMaxInput: 650*1024 - 256, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantContended: 64 * 1024, wantAggregate: 256 * 1024},
+		{name: "KV limited", maxModelLen: 650 * 1024, capacity: 300_000, wantHard: 264_000, wantMaxInput: 264_000 - 256, wantRegular: 64 * 1024, wantExclusive: 256 * 1024, wantQuiescent: 512 * 1024, wantContended: 64 * 1024, wantAggregate: 256 * 1024},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -49,11 +51,14 @@ func TestCapabilityProfileDerivesDeterministicAutomaticBounds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("derive automatic profile: %v", err)
 			}
-			if profile.SchemaVersion != "request-aware-capability-v2" ||
+			if profile.SchemaVersion != "request-aware-capability-v3" ||
 				profile.KVHardLimitTokens != test.wantHard ||
+				profile.MaxModelLenTokens != test.maxModelLen ||
+				profile.MaximumAdmissibleInputTokens != test.wantMaxInput ||
 				profile.PrefillRegularTokens != test.wantRegular ||
 				profile.PrefillExclusiveTokens != test.wantExclusive ||
 				profile.PrefillQuiescentTokens != test.wantQuiescent ||
+				profile.PrefillContendedBudgetTokens != test.wantContended ||
 				profile.PrefillAggregateBudgetTokens != test.wantAggregate {
 				t.Fatalf("automatic capability profile = %+v", profile)
 			}
@@ -67,6 +72,7 @@ func TestCapabilityProfileAlignsCompleteExplicitBounds(t *testing.T) {
 		KVCapacityTokens:    1_003_000,
 		KVBlockSize:         64,
 		KVHardRatio:         0.88,
+		MaxModelLen:         650 * 1024,
 		Prefill: PrefillTokenBounds{
 			Regular: 32*1024 + 1, Exclusive: 128*1024 + 1,
 			Quiescent: 256*1024 + 1, Aggregate: 192*1024 + 1,
@@ -77,7 +83,8 @@ func TestCapabilityProfileAlignsCompleteExplicitBounds(t *testing.T) {
 		t.Fatalf("derive explicit profile: %v", err)
 	}
 	if profile.PrefillRegularTokens != 32*1024 || profile.PrefillExclusiveTokens != 128*1024 ||
-		profile.PrefillQuiescentTokens != 256*1024 || profile.PrefillAggregateBudgetTokens != 192*1024 {
+		profile.PrefillQuiescentTokens != 256*1024 || profile.PrefillContendedBudgetTokens != 32*1024 ||
+		profile.PrefillAggregateBudgetTokens != 192*1024 {
 		t.Fatalf("explicit capability profile = %+v", profile)
 	}
 }
@@ -136,9 +143,12 @@ func TestCapabilityProfileValidationRejectsForgedRuntimeProfile(t *testing.T) {
 	}{
 		{name: "schema", mutate: func(value *BackendCapabilityProfile) { value.SchemaVersion = "other" }},
 		{name: "hard limit", mutate: func(value *BackendCapabilityProfile) { value.KVHardLimitTokens = value.KVCapacityTokens }},
+		{name: "model length", mutate: func(value *BackendCapabilityProfile) { value.MaxModelLenTokens = 0 }},
+		{name: "maximum input", mutate: func(value *BackendCapabilityProfile) { value.MaximumAdmissibleInputTokens++ }},
 		{name: "prefill", mutate: func(value *BackendCapabilityProfile) { value.PrefillExclusiveTokens = value.PrefillRegularTokens }},
-		{name: "prefill exceeds hard", mutate: func(value *BackendCapabilityProfile) {
-			value.PrefillQuiescentTokens = value.KVHardLimitTokens + value.KVBlockSize
+		{name: "contended budget", mutate: func(value *BackendCapabilityProfile) { value.PrefillContendedBudgetTokens = 0 }},
+		{name: "aggregate budget", mutate: func(value *BackendCapabilityProfile) {
+			value.PrefillAggregateBudgetTokens = value.PrefillExclusiveTokens + value.KVBlockSize
 		}},
 		{name: "source", mutate: func(value *BackendCapabilityProfile) { value.Source = "unknown" }},
 	} {

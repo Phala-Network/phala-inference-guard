@@ -81,9 +81,12 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() (metrics.PredictiveAdmis
 	input.CapabilityKVCapacityTokens = snapshot.CapabilityProfile.KVCapacityTokens
 	input.CapabilityKVBlockSize = snapshot.CapabilityProfile.KVBlockSize
 	input.CapabilityKVHardLimitTokens = snapshot.CapabilityProfile.KVHardLimitTokens
+	input.CapabilityMaxModelLenTokens = snapshot.CapabilityProfile.MaxModelLenTokens
+	input.CapabilityMaximumAdmissibleInputTokens = snapshot.CapabilityProfile.MaximumAdmissibleInputTokens
 	input.CapabilityPrefillRegularTokens = snapshot.CapabilityProfile.PrefillRegularTokens
 	input.CapabilityPrefillExclusiveTokens = snapshot.CapabilityProfile.PrefillExclusiveTokens
 	input.CapabilityPrefillQuiescentTokens = snapshot.CapabilityProfile.PrefillQuiescentTokens
+	input.CapabilityPrefillContendedBudgetTokens = snapshot.CapabilityProfile.PrefillContendedBudgetTokens
 	input.CapabilityPrefillAggregateBudgetTokens = snapshot.CapabilityProfile.PrefillAggregateBudgetTokens
 	input.Attempts = snapshot.Attempts.Attempts
 	input.Fits = snapshot.Attempts.Fits

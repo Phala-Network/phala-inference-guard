@@ -81,9 +81,10 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 		return fmt.Errorf("PREDICTIVE_KV_HARD_RATIO must be between 0 and 1")
 	}
 	regular, exclusive, quiescent, aggregate := predictivePrefillBounds(cfg)
-	automatic := regular == 0 && exclusive == 0 && quiescent == 0 && aggregate == 0
-	if !automatic && (regular <= 0 || exclusive <= regular || quiescent <= exclusive || aggregate < exclusive || aggregate > quiescent) {
-		return fmt.Errorf("predictive Prefill overrides must all be omitted or satisfy 0 < regular < exclusive < quiescent and exclusive <= aggregate <= quiescent")
+	automatic := cfg.PredictiveMaxModelLenTokens == 0 && regular == 0 && exclusive == 0 && quiescent == 0 && aggregate == 0
+	if !automatic && (cfg.PredictiveMaxModelLenTokens <= 0 || regular <= 0 || exclusive <= regular ||
+		quiescent <= exclusive || aggregate < regular || aggregate > quiescent) {
+		return fmt.Errorf("predictive capability overrides must all be omitted or include max model length and ordered Prefill bounds/budget")
 	}
 	return nil
 }

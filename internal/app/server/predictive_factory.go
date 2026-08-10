@@ -32,6 +32,7 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		UpstreamURL:    cfg.Upstream,
 		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 		KVHardRatio:    cfg.PredictiveKVHardRatio,
+		MaxModelLen:    cfg.PredictiveMaxModelLenTokens,
 		Prefill: runtimepredictive.PrefillTokenBounds{
 			Regular:   cfg.PredictivePrefillRegularTokens,
 			Exclusive: cfg.PredictivePrefillExclusiveTokens,
@@ -44,16 +45,19 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	}
 	profile := initialization.Profile
 	log.Printf(
-		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_aggregate_budget_tokens=%d",
+		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d",
 		profile.SchemaVersion,
 		profile.Source,
 		initialization.Reason,
 		profile.KVCapacityTokens,
 		profile.KVBlockSize,
 		profile.KVHardLimitTokens,
+		profile.MaxModelLenTokens,
+		profile.MaximumAdmissibleInputTokens,
 		profile.PrefillRegularTokens,
 		profile.PrefillExclusiveTokens,
 		profile.PrefillQuiescentTokens,
+		profile.PrefillContendedBudgetTokens,
 		profile.PrefillAggregateBudgetTokens,
 	)
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{

@@ -17,9 +17,12 @@ type PredictiveAdmissionInput struct {
 	CapabilityKVCapacityTokens             int64
 	CapabilityKVBlockSize                  int64
 	CapabilityKVHardLimitTokens            int64
+	CapabilityMaxModelLenTokens            int64
+	CapabilityMaximumAdmissibleInputTokens int64
 	CapabilityPrefillRegularTokens         int64
 	CapabilityPrefillExclusiveTokens       int64
 	CapabilityPrefillQuiescentTokens       int64
+	CapabilityPrefillContendedBudgetTokens int64
 	CapabilityPrefillAggregateBudgetTokens int64
 	Attempts                               uint64
 	Fits                                   uint64
@@ -144,9 +147,12 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_capability_kv_capacity_tokens %d\n", input.CapabilityKVCapacityTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_kv_block_size %d\n", input.CapabilityKVBlockSize)
 	fmt.Fprintf(w, "pig_predictive_capability_kv_hard_limit_tokens %d\n", input.CapabilityKVHardLimitTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_max_model_len_tokens %d\n", input.CapabilityMaxModelLenTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_maximum_admissible_input_tokens %d\n", input.CapabilityMaximumAdmissibleInputTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_regular_tokens %d\n", input.CapabilityPrefillRegularTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_exclusive_tokens %d\n", input.CapabilityPrefillExclusiveTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_quiescent_tokens %d\n", input.CapabilityPrefillQuiescentTokens)
+	fmt.Fprintf(w, "pig_predictive_capability_prefill_contended_budget_tokens %d\n", input.CapabilityPrefillContendedBudgetTokens)
 	fmt.Fprintf(w, "pig_predictive_capability_prefill_aggregate_budget_tokens %d\n", input.CapabilityPrefillAggregateBudgetTokens)
 	fmt.Fprintf(w, "pig_predictive_admission_enabled %d\n", num.BoolAsInt(mode == "shadow" || mode == "enforce"))
 	fmt.Fprintf(w, "pig_predictive_admission_enforce %d\n", num.BoolAsInt(mode == "enforce"))
@@ -224,7 +230,7 @@ func normalizeCapabilityProfileSource(value string) string {
 
 func normalizeCapabilityInitializationReason(value string) string {
 	switch value {
-	case "explicit_override", "metadata", "metadata_fallback":
+	case "explicit_override", "metadata":
 		return value
 	default:
 		return "unknown"
