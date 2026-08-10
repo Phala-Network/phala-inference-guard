@@ -1,9 +1,9 @@
 # PIG v0.12.8 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: v0.12.7 failed the ordered Pareto gate and remains unpublished; the
-v0.12.8 terminal-reconciliation red is valid and focused implementation is in
-progress; complete source, image, dedicated-CVM, ordered Pareto, upload, and
-production gates remain open
+Status: v0.12.7 failed the ordered Pareto gate and remains unpublished;
+v0.12.8 source and its exact local-only image are accepted; dedicated-CVM
+runtime, targeted GPU, ordered Pareto, independent audit, upload, and production
+gates remain open
 
 This is the only execution plan for the active PIG v0.12.8 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -3791,3 +3791,55 @@ uploaded, no PIG runtime has been replaced, and vLLM, the CVM, Router, and
 must be committed separately; the next local image must still be built from
 the exact executable commit `a464671db1c381e9cb457ad36897f69ae259a308`, not
 from an unverified working tree or a later documentation commit.
+
+### 48.3 v0.12.8 exact local-image acceptance
+
+The image was built locally on the dedicated c21 CVM from the exact accepted
+162-file source archive for executable commit
+`a464671db1c381e9cb457ad36897f69ae259a308`. The later documentation commit
+`12c5c943b3d5600974daaa714537f30de45d2b1c` was not used as executable input.
+The accepted local-only artifact is:
+
+```text
+image: ghcr.io/phala-network/phala-inference-guard:0.12.8-a464671-local
+image ID: sha256:da2f55a6d1d3ca6fb8f96334e5455b53ae32635e508c69a170e969e530e28cf5
+platform: linux/amd64
+binary SHA-256: 787dc555307c928d17751431f5d1a9fb21246f178b750eb0f6f7dc3b8d51d153
+runtime version: PIG-v0.12.8
+runtime revision: a464671db1c381e9cb457ad36897f69ae259a308
+```
+
+The production-image contract passed for the root distroless entrypoint and
+the expected version and revision. `RepoDigests` remained empty, isolated
+registry authentication was absent, and no upload was attempted. The immutable
+evidence is under:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0128-image-r1-a464671
+evidence-sha256 SHA-256
+  92ce53c15cb7eb6b684ba708779e4c7ebfb76d4990553dc86bd7040ff2a2225a
+independent-verification/sha256sums SHA-256
+  f250906784cb4e15e56eef21fda70b3214094012f8640e8de78f1976bd2529d1
+evidence/runner.sh SHA-256
+  18e2125dd32bd009fd4742561054d865691e57878ed65c96dde4e0a4c33d57e4
+```
+
+Fresh independent `sha256sum -c` verification passed every entry in both
+manifests. The isolated GPU smoke used all visible GPUs and proved default
+`enforce`, the 500-ms observer, automatic metadata-derived capability, zero
+startup inference calls, health 200, metrics 401 without authentication and
+200 with authentication, and a transparent chat response at HTTP 200. The
+smoke profile deterministically exposed `65536/262144/524288/262144` for its
+one-million-token synthetic capability fixture; these are derived test values,
+not production overrides or a calibrated performance rate.
+
+The request-aware protection contract also passed. Decode-interference
+protection rejected pre-forward in 1.391 ms with request-scoped Router
+projection, did not call the upstream, and admitted a fitting request after
+recovery. The hard-KV crossing rejected pre-forward in 20.507 ms, did not call
+the upstream, projected Router pressure, and recovered within 15 observer
+polls, bounded by 1.5 seconds. The already-running PIG and vLLM identities were
+unchanged, the workbench remained bridge-only, and the runtime network retained
+exactly its original PIG and vLLM members.
+
+The v0.12.8 exact local-image layer is accepted. It remains unpublished and has
