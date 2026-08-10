@@ -1,11 +1,11 @@
-# PIG v0.12.8 Evidence-First QoS-Constrained Goodput Remediation Plan
+# PIG v0.12.9 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: v0.12.7 failed the ordered Pareto gate and remains unpublished;
-v0.12.8 source, exact local-only image, and dedicated-CVM runtime are accepted;
-targeted GPU, ordered Pareto, independent audit, upload, and production gates
-remain open
+Status: v0.12.8 reproduced the sustained-wave throughput defect in its first
+targeted GPU gate and remains unpublished; the v0.12.9 response-EOF lifecycle
+correction is planned, and focused red, source, image, dedicated-CVM, targeted
+GPU, ordered Pareto, independent audit, upload, and production gates remain open
 
-This is the only execution plan for the active PIG v0.12.8 remediation. Sections
+This is the only execution plan for the active PIG v0.12.9 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
 history; section 25 and later supersede that candidate. Section 29 supersedes
 every earlier instruction to use the shared builder or the old `use1-cb` CVM as
@@ -25,7 +25,7 @@ feedback may update the next observation used by a decision, but it must not be
 the only protection and must not create learned parameters, reject cooldowns,
 or sticky state.
 
-The candidate stays in the v0.12 release line and is version `0.12.8`.
+The candidate stays in the v0.12 release line and is version `0.12.9`.
 
 ## 2. Current conclusion
 
@@ -3913,3 +3913,171 @@ The v0.12.8 dedicated runtime is accepted and remains active only on c21. The
 image remains unpublished. New targeted GPU lifecycle, low/no-flow, stale,
 near-KV, Decode-QoS, and completion-before-next-poll gates must pass before the
 new ordered Pareto matrix; no v0.12.7 result is inherited as v0.12.8 evidence.
+
+## 49. v0.12.8 live targeted rejection and v0.12.9 response-EOF correction
+
+The first v0.12.8 targeted workload gate ran only on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4` against the accepted runtime and failed
+the new sustained-wave acceptance assertion. The unchanged v0.12.7 workload
+shape issued 24 short streaming requests through twelve workers: the first
+twelve occupied the workers and each replacement began as soon as its preceding
+client had consumed the complete response. The raw result was exactly the
+rejected v0.12.7 outcome:
+
+```text
+requests                  24
+successful                 14
+request-scoped 429          10
+reject reason               decode_interference
+raw running at reject       12
+effective sequences         12
+preemptions                  0
+final reservations           0
+final Router status          0
+```
+
+All pre-existing harness safety checks remained true. Short-only completed
+`8/8`; mixed completed all eight short requests and rejected its one long
+request; PIG internal failures and vLLM errors remained zero. PIG, vLLM, GPU,
+workbench-network, and runtime-network identities were unchanged, and the log
+window contained no panic, fatal, OOM, EngineCore failure, or traceback. This is
+therefore a valid throughput red rather than a harness, backend, or safety
+failure. The immutable evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/
+  pig-v0128-targeted-workloads-r1-a464671
+runner SHA-256
+  88deae683eb4d3996e8769cbcd31b654ff0c8ecb2e81243ce5d9f025ca2f261f
+harness SHA-256
+  b262a8b7e2298eadebfb15456f0dec2d59b1cc7b3adc1e49d9ff2db4879b5b59
+finalizer SHA-256
+  2ae56001f6ac1ab9151a49681b18574c54722e74420a474c2e3c00b00260e9d5
+SHA256SUMS SHA-256
+  74d735a97cbad957dae86d83d80d6a02036de840c11afe2c980f27a7b2f4442c
+```
+
+Fresh independent `sha256sum -c SHA256SUMS` passed every retained input, raw
+JSON, log, metric, identity, finalizer, and summary artifact. No image upload or
+additional runtime mutation occurred.
+
+### 49.1 Causal boundary
+
+The v0.12.8 Manager correction is real but begins too late for the observed HTTP
+sequence. It creates completed-Decode credit only when the proxy handler calls
+`reservation.Terminate(TerminalCompleted)`. That call currently lives in a
+defer after `proxyRequest` returns. A streaming client can consume the last body
+bytes and immediately reuse its worker for another request before that defer
+has updated Manager state.
+
+The live timing is consistent with that missing boundary. Two replacements
+started at offsets `8.2986` and `8.3252` seconds and fit under the existing
+envelope. The other ten began between `8.4182` and `8.4250` seconds as their
+first-wave responses completed, and were rejected within `4.45--9.87 ms`.
+At `8.3281` seconds the twelve reservations represented ten old Decode requests
+plus two admitted replacements. By `8.5801` only the two replacements remained,
+while the still-published backend observation remained `running=12`; the ten
+old terminal events had therefore arrived after their replacements were already
+decided. The rejection log independently recorded `running=12` and
+`effective_sequences=12`.
+
+This timing is strong live evidence, but implementation still begins with a
+focused deterministic red. The test must make a clean successful response-body
+EOF observable, evaluate a replacement before the handler's deferred fallback,
+and prove the current source retains the old reservation or rejects the fitting
+replacement. It must fail for response-terminal ordering, not for a fabricated
+Manager sample or missing dependency.
+
+### 49.2 Correction contract
+
+For a successful 2xx upstream response, a clean response-body EOF is the first
+authoritative point at which the proxy knows that upstream generation is
+complete. v0.12.9 moves the successful terminal notification to that lifecycle
+boundary:
+
+```text
+first response body bytes
+  -> MarkPrefillComplete exactly once
+clean EOF on a 2xx upstream body
+  -> Terminate(TerminalCompleted) exactly once
+outer proxy-handler defer
+  -> idempotent fallback for every path not already terminated
+```
+
+The response-body observer owns only body lifecycle signals. Manager remains
+the sole reservation and credit owner, the adapter remains a transport layer,
+and policy remains a pure evaluator. The existing deferred terminal call is not
+removed: it continues to classify timeout, client disconnect, upstream failure,
+non-2xx response, local rejection, and other incomplete paths conservatively.
+
+The following boundaries are mandatory:
+
+- Only a clean `io.EOF` from a 2xx upstream body may terminate successfully
+  before handler return. `Close`, a non-EOF read error, timeout, cancellation,
+  disconnect, non-2xx status, or proxy failure must not create early completed
+  credit.
+- If one read returns both body bytes and `io.EOF`, Prefill completion occurs
+  before terminal completion. A zero-byte successful EOF may remove the
+  reservation but cannot create Decode credit because Prefill never completed.
+- EOF notification is exactly once under repeated reads or close calls. The
+  later deferred call is harmless because Manager terminal release is already
+  idempotent.
+- The change does not alter raw observations, KV accounting, Prefill classes,
+  Decode thresholds, Router projection, request/response bodies, queueing, or
+  any policy decision before the prior request has authoritatively completed.
+- No timer, grace delay, optimistic client signal, calibration, learner,
+  performance rate, cache lookup, routing, TTFT gate, request mutation, tier,
+  priority, cooldown, public option, or new production tuning parameter is
+  permitted.
+
+### 49.3 Test and execution order
+
+1. Add focused response-lifecycle reds for successful EOF-before-defer ordering,
+   bytes-plus-EOF ordering, exactly-once behavior, zero-byte EOF, early close,
+   read error, non-2xx response, client disconnect, timeout, and upstream
+   failure. At least one test must use a real request-aware reservation and the
+   still-published observation to prove the next pre-forward decision changes.
+2. Implement the smallest coherent EOF observer and wire it through the real
+   `modifyBackendResponse` path. Bump executable, metric/log, simulation,
+   workload, and evidence identities coherently to v0.12.9; do not modify the
+   Manager credit model or policy thresholds unless the focused red disproves
+   the ordering diagnosis.
+3. Run formatting, affected/full tests, vet, targeted/full race, all builds,
+   production-binary identity, simulation determinism and acceptance, lexical
+   audits, ordered benchmarks, benchmark contracts, and three review passes in
+   `pig-v0124-workbench`. Commit and push every coherent source or plan update.
+4. Build one exact local-only v0.12.9 image only after source acceptance. Repeat
+   image contract, zero-startup-inference, default-enforce, 500-ms observer,
+   authentication, transparent API, request-scoped protection, and identity
+   gates without restarting vLLM or the CVM.
+5. Replace only PIG with trap-protected rollback. Rerun the sustained workload
+   first and require `24/24`, zero 429, zero preemption, no hidden QoS violation,
+   and unchanged PIG/vLLM/GPU/network identities. Then repeat lifecycle,
+   low-flow/no-demand, same-snapshot burst, weighted/exclusive/quiescent,
+   cancellation, stale/recovery, near-KV, and repeated Decode-QoS gates.
+6. Only after all targeted gates pass, run a completely new
+   `N1,N2,N3,B1,A1,A2,B2,B3,A3` matrix with N/B using the exact v0.12.9 image
+   and A using v0.12.2. Independently recalculate every section 4 condition.
+7. Upload only if source, exact image, runtime, targeted GPU, ordered Pareto,
+   independent audit, identity, and registry-isolation gates all pass. Otherwise
+   retain the red evidence, keep the image local, and leave production untouched.
+
+Plan review pass 1, model and causality: the correction is attached to an
+authoritative upstream completion event, not elapsed time or client optimism.
+It directly precedes the replacement decision that failed live, while leaving
+the v0.12.8 observation-sequence and external-Decode safeguards intact. The
+focused real-reservation red is mandatory so timing evidence alone cannot be
+mistaken for proof.
+
+Plan review pass 2, safety and lifecycle: only clean 2xx EOF can complete early;
+all ambiguous and failure paths retain the existing deferred conservative
+classification. First-byte Prefill ordering, bytes-plus-EOF, empty body,
+duplicate reads, close, error, cancel, timeout, non-2xx, shutdown, and Manager
+idempotence are explicit. No resource or Router state is rewritten.
+
+Plan review pass 3, SOLID, efficiency, and evidence: the body wrapper detects
+body events, Manager owns state, proxy classifies fallback causes, and policy
+remains pure. The hot response path adds at most one EOF branch and two bounded
+`sync.Once` operations without scanning or allocating per chunk. v0.12.8 is
+rejected before the remaining targeted and Pareto gates; no prior green is
+inherited, and production remains unchanged.
