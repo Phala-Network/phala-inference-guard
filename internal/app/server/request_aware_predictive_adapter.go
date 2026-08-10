@@ -61,6 +61,7 @@ func newRequestAwarePredictiveAdapter(config requestAwarePredictiveAdapterConfig
 	if config.Manager == nil || config.Policy == nil || config.Snapshot == nil ||
 		strings.TrimSpace(config.ManifestID) == "" || config.BlockSize <= 0 ||
 		(mode != "shadow" && mode != "enforce") ||
+		!config.Manager.HasRequestAwareObservation() ||
 		!config.Policy.MatchesCapability(config.CapabilityProfile) ||
 		config.BlockSize != config.CapabilityProfile.KVBlockSize {
 		return nil, fmt.Errorf("request-aware predictive adapter configuration is invalid")
@@ -148,26 +149,11 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 		}, 0, 0, runtimepredictive.RequestAwareInput{}, decision)
 		return decision
 	}
-	snapshot, valid := requestAwareAdapterSnapshot(a.snapshot, now)
-	if !valid {
-		decision := requestAwareAdapterFailure(
-			predictiveAdmissionOutcomeAvailabilityProtection,
-			domainpredictive.ReasonMetricsStale,
-			runtimepredictive.PredictionSourceUnavailable,
-		)
-		a.recordDecision(now, runtimepredictive.RequestAwareManagerResult{
-			Decision: runtimepredictive.RequestAwareDecision{
-				Action: runtimepredictive.RequestAwareHardProtect,
-				Reason: runtimepredictive.RequestAwareReasonStale,
-			},
-		}, selectionInputTokens, requestAwareReservedTokens(cost), runtimepredictive.RequestAwareInput{}, decision)
-		return decision
-	}
 	var result runtimepredictive.RequestAwareManagerResult
 	if a.mode == "shadow" {
-		result = a.manager.DecideRequestAware(now, requestID, cost, selectionInputTokens, a.policy, snapshot)
+		result = a.manager.DecideCurrentRequestAware(now, requestID, cost, selectionInputTokens, a.policy)
 	} else {
-		result = a.manager.DecideRequestAwareAndReserve(now, requestID, cost, selectionInputTokens, a.policy, snapshot)
+		result = a.manager.DecideCurrentRequestAwareAndReserve(now, requestID, cost, selectionInputTokens, a.policy)
 	}
 	a.mu.Lock()
 	closed = a.closed
@@ -184,7 +170,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 				Action: runtimepredictive.RequestAwareHardProtect,
 				Reason: runtimepredictive.RequestAwareReasonUnavailable,
 			},
-		}, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+		}, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 		return decision
 	}
 	var decision predictiveAdmissionDecision
@@ -195,7 +181,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 				Reason:  domainpredictive.ReasonFit,
 				Source:  runtimepredictive.PredictionSourceDeterministic,
 			}
-			a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+			a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 			return decision
 		}
 		if !result.Reserved {
@@ -209,7 +195,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 					Action: runtimepredictive.RequestAwareHardProtect,
 					Reason: runtimepredictive.RequestAwareReasonUnavailable,
 				},
-			}, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+			}, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 			return decision
 		}
 		decision = predictiveAdmissionDecision{
@@ -221,11 +207,11 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 			Reason: domainpredictive.ReasonFit,
 			Source: runtimepredictive.PredictionSourceDeterministic,
 		}
-		a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+		a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 		return decision
 	}
 	decision = requestAwareAdapterProtectedDecision(result.Decision)
-	a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), snapshot, decision)
+	a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 	return decision
 }
 
@@ -253,8 +239,8 @@ func (a *requestAwarePredictiveAdapter) PredictiveAdmissionTelemetry() predictiv
 		return predictiveAdmissionTelemetrySnapshot{}
 	}
 	now := a.now()
-	input, observer, inputValid := requestAwareTelemetryObservation(a.snapshot, now)
-	router := a.inspectRouterBackpressure(now, input, inputValid)
+	_, observer, _ := requestAwareTelemetryObservation(a.snapshot, now)
+	router := a.inspectRouterBackpressure(now)
 	a.mu.Lock()
 	attempts := a.attempts
 	profile := a.capabilityProfile
@@ -379,8 +365,6 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 
 func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(
 	now time.Time,
-	input runtimepredictive.RequestAwareInput,
-	inputValid bool,
 ) predictiveRouterBackpressureSnapshot {
 	a.mu.Lock()
 	mode := a.mode
@@ -396,21 +380,13 @@ func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(
 			predictiveProtectionScopeAvailability,
 		)
 	}
-	if !inputValid {
-		return requestAwareHardRouterBackpressure(
-			domainpredictive.ReasonMetricsStale,
-			runtimepredictive.PredictionSourceUnavailable,
-			predictiveProtectionScopeAvailability,
-		)
-	}
 	cost := requestAwareInspectCost(a.manifestID, a.blockSize)
-	result := a.manager.DecideRequestAware(
+	result := a.manager.DecideCurrentRequestAware(
 		now,
 		"\x00pig-request-aware-inspect",
 		cost,
 		a.blockSize,
 		a.policy,
-		input,
 	)
 	if result.Decision.Action == runtimepredictive.RequestAwareAdmit {
 		if result.Decision.Pressure <= 0 {

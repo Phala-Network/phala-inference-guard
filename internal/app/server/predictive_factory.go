@@ -77,6 +77,18 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 			ActiveContextTokens:     startup.UsedTokens,
 		},
 	)
+	if err := manager.InitializeRequestAwareObservation(runtimepredictive.RequestAwareObservation{
+		ObservedAt:          startup.ObservedAt,
+		MaximumAge:          cfg.PredictiveMaximumMetricsAge,
+		IdentityValid:       true,
+		ObservationSequence: 0,
+		CapacityTokens:      startup.CapacityTokens,
+		UsedTokens:          startup.UsedTokens,
+		Running:             startup.Running,
+		Waiting:             startup.Waiting,
+	}); err != nil {
+		return nil, fmt.Errorf("initialize deterministic request-aware observation: %w", err)
+	}
 	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
 		MetricsURL:          metricsURL,
 		ModelIdentitySHA256: startup.ModelIdentitySHA256,

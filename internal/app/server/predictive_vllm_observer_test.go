@@ -99,6 +99,9 @@ func TestPredictiveVLLMObserverPublishesOnlyReconciledObservationSequence(t *tes
 	firstObserver := observer.Snapshot(clock.Now())
 	firstSample, ok := coordinator.lastSample()
 	if !ok || first.ObservationSequence != 1 || firstSample.ObservationSequence != first.ObservationSequence ||
+		firstSample.RequestAwareObservation == nil ||
+		firstSample.RequestAwareObservation.ObservationSequence != first.ObservationSequence ||
+		firstSample.RequestAwareObservation.UsedTokens != first.UsedTokens ||
 		firstObserver.ObservationSequence != first.ObservationSequence {
 		t.Fatalf("first observation input/snapshot/sample=%+v/%+v/%+v, want paired sequence 1",
 			first, firstObserver, firstSample)
@@ -111,6 +114,9 @@ func TestPredictiveVLLMObserverPublishesOnlyReconciledObservationSequence(t *tes
 	secondObserver := observer.Snapshot(clock.Now())
 	secondSample, _ := coordinator.lastSample()
 	if second.ObservationSequence != 2 || secondSample.ObservationSequence != second.ObservationSequence ||
+		secondSample.RequestAwareObservation == nil ||
+		secondSample.RequestAwareObservation.ObservationSequence != second.ObservationSequence ||
+		secondSample.RequestAwareObservation.UsedTokens != second.UsedTokens ||
 		secondObserver.ObservationSequence != second.ObservationSequence || second.UsedTokens != 200 {
 		t.Fatalf("second observation input/snapshot/sample=%+v/%+v/%+v, want paired sequence 2",
 			second, secondObserver, secondSample)

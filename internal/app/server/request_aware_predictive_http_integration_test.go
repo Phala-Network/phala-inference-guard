@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -531,16 +531,8 @@ func TestRequestAwareHTTPSeparatesPrefillInterferenceEstimateFromKVUpper(t *test
 	lowLexicalBody, highLexicalBody := equalSafetyEnvelopeRequestAwareBodies(t)
 
 	t.Run("same safety envelope changes pre-forward decision by lexical work", func(t *testing.T) {
-		adapter, _ := newRequestAwareHTTPAdapter(t, "enforce")
-		manager := runtimepredictive.NewManager("request-aware-http-test", domainpredictive.VirtualState{})
-		adapter.manager = manager
-		input := adapter.snapshot.(staticRequestAwareSnapshot).input
-		input.CapacityTokens = 4 * 1024 * 1024
-		input.Running = 1
-		input.EffectiveSequences = 1
-		input.TPSValid = false
-		adapter.snapshot = staticRequestAwareSnapshot{input: input}
-		adapter.policy = newLargeRequestAwareServerTestPolicy(t)
+		adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
+		setRequestAwareAdapterObservation(t, adapter, manager, 0, 1, 0)
 
 		backendCalls := 0
 		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -580,15 +572,7 @@ func TestRequestAwareHTTPSeparatesPrefillInterferenceEstimateFromKVUpper(t *test
 	})
 
 	t.Run("hard KV still rejects the same safety envelope", func(t *testing.T) {
-		adapter, _ := newRequestAwareHTTPAdapter(t, "enforce")
-		manager := runtimepredictive.NewManager("request-aware-http-test", domainpredictive.VirtualState{})
-		adapter.manager = manager
-		input := adapter.snapshot.(staticRequestAwareSnapshot).input
-		input.CapacityTokens = 512 * 1024
-		input.Running = 0
-		input.EffectiveSequences = 0
-		input.TPSValid = false
-		adapter.snapshot = staticRequestAwareSnapshot{input: input}
+		adapter, _ := newRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 
 		backendCalls := 0
 		backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
@@ -640,18 +624,17 @@ func TestRequestAwareHTTPHardGuardsRejectBeforeUpstreamWithZeroInspectCapacity(t
 		{
 			name: "stale",
 			prepare: func(adapter *requestAwarePredictiveAdapter, _ *runtimepredictive.Manager) {
-				input := adapter.snapshot.(staticRequestAwareSnapshot).input
-				input.MetricsFresh = false
-				adapter.snapshot = staticRequestAwareSnapshot{input: input}
+				adapter.now = func() time.Time { return time.Unix(1, 0).Add(2 * time.Hour) }
 			},
 			wantReason: runtimepredictive.RequestAwareReasonStale,
 		},
 		{
 			name: "preemption_observed",
-			prepare: func(adapter *requestAwarePredictiveAdapter, _ *runtimepredictive.Manager) {
+			prepare: func(adapter *requestAwarePredictiveAdapter, manager *runtimepredictive.Manager) {
 				input := adapter.snapshot.(staticRequestAwareSnapshot).input
 				input.PreemptionObserved = true
 				adapter.snapshot = staticRequestAwareSnapshot{input: input}
+				setRequestAwareAdapterObservation(t, adapter, manager, 128*1024, 4, 0)
 			},
 			content:      strings.Repeat("\u4e2d", 100_000),
 			wantReason:   runtimepredictive.RequestAwareReasonPreemption,
@@ -715,6 +698,7 @@ func newRequestAwareHTTPAdapter(t testing.TB, mode string) (*requestAwarePredict
 		MetricsFresh:       true,
 		IdentityValid:      true,
 		CapacityTokens:     10_000,
+		UsedTokens:         7_000,
 		Running:            4,
 		AggregateTPSProxy:  79.2,
 		MeanActiveTPSProxy: 19.8,

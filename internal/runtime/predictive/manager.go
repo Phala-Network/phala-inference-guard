@@ -114,25 +114,28 @@ func (q *retiredReservationQueue) CompletedDecodeSequences() int {
 }
 
 type SampleWindow struct {
-	Observed            domain.VirtualState
-	StartedSequence     uint64
-	FinishedSequence    uint64
-	ObservationSequence uint64
+	Observed                domain.VirtualState
+	StartedSequence         uint64
+	FinishedSequence        uint64
+	ObservationSequence     uint64
+	RequestAwareObservation *RequestAwareObservation
 }
 
 type Manager struct {
-	mu                     sync.Mutex
-	manifestID             string
-	intakeOpen             bool
-	base                   domain.VirtualStateInterval
-	reservations           map[string]reservation
-	retired                retiredReservationQueue
-	retiredEvictions       uint64
-	eventSequence          uint64
-	pendingPrefillSequence uint64
-	lastSampleFinished     uint64
-	observationSequence    uint64
-	hasSample              bool
+	mu                         sync.Mutex
+	manifestID                 string
+	intakeOpen                 bool
+	base                       domain.VirtualStateInterval
+	reservations               map[string]reservation
+	retired                    retiredReservationQueue
+	retiredEvictions           uint64
+	eventSequence              uint64
+	pendingPrefillSequence     uint64
+	lastSampleFinished         uint64
+	observationSequence        uint64
+	hasSample                  bool
+	requestAwareObservation    RequestAwareObservation
+	hasRequestAwareObservation bool
 }
 
 type Snapshot struct {
@@ -275,6 +278,8 @@ func (m *Manager) RebaseEpoch(observed domain.VirtualState) error {
 	m.lastSampleFinished = m.eventSequence
 	m.observationSequence = 0
 	m.hasSample = true
+	m.requestAwareObservation = RequestAwareObservation{}
+	m.hasRequestAwareObservation = false
 	m.intakeOpen = true
 	return nil
 }
@@ -310,6 +315,10 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 	}
 	if !validVirtualState(sample.Observed) {
 		return fmt.Errorf("predictive sample state must be non-negative")
+	}
+	if sample.RequestAwareObservation != nil &&
+		!validRequestAwareObservationForSample(*sample.RequestAwareObservation, sample) {
+		return fmt.Errorf("predictive request-aware observation is inconsistent with sample")
 	}
 	previousBase := m.base.Upper
 	m.base = domain.VirtualStateInterval{Lower: sample.Observed, Upper: sample.Observed}
@@ -390,6 +399,10 @@ func (m *Manager) ReconcileSample(sample SampleWindow) error {
 	m.lastSampleFinished = sample.FinishedSequence
 	m.observationSequence = sample.ObservationSequence
 	m.hasSample = true
+	if sample.RequestAwareObservation != nil {
+		m.requestAwareObservation = *sample.RequestAwareObservation
+		m.hasRequestAwareObservation = true
+	}
 	return nil
 }
 

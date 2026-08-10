@@ -1,6 +1,7 @@
 package predictive
 
 import (
+	"fmt"
 	"time"
 
 	domain "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
@@ -11,6 +12,23 @@ type RequestAwareManagerResult struct {
 	Reserved                     bool
 	DecisionManagerSequence      uint64
 	DecisionManagerSequenceValid bool
+	Observation                  RequestAwareInput
+}
+
+type RequestAwareObservation struct {
+	ObservedAt          time.Time
+	MaximumAge          time.Duration
+	IdentityValid       bool
+	ObservationSequence uint64
+	CapacityTokens      int64
+	UsedTokens          int64
+	Running             int
+	Waiting             int
+	AggregateTPSProxy   float64
+	MeanActiveTPSProxy  float64
+	TPSValid            bool
+	GenerationObserved  bool
+	PreemptionObserved  bool
 }
 
 type requestAwareStateSnapshot struct {
@@ -33,6 +51,26 @@ func (m *Manager) DecideRequestAwareAndReserve(
 	input RequestAwareInput,
 ) RequestAwareManagerResult {
 	return m.decideRequestAware(now, requestID, cost, selectionInputTokens, policy, input, true)
+}
+
+func (m *Manager) DecideCurrentRequestAwareAndReserve(
+	now time.Time,
+	requestID string,
+	cost domain.RequestCost,
+	selectionInputTokens int64,
+	policy *RequestAwarePolicy,
+) RequestAwareManagerResult {
+	return m.decideCurrentRequestAware(now, requestID, cost, selectionInputTokens, policy, true)
+}
+
+func (m *Manager) DecideCurrentRequestAware(
+	now time.Time,
+	requestID string,
+	cost domain.RequestCost,
+	selectionInputTokens int64,
+	policy *RequestAwarePolicy,
+) RequestAwareManagerResult {
+	return m.decideCurrentRequestAware(now, requestID, cost, selectionInputTokens, policy, false)
 }
 
 func (m *Manager) DecideRequestAware(
@@ -60,16 +98,45 @@ func (m *Manager) decideRequestAware(
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.decideRequestAwareLocked(now, requestID, cost, selectionInputTokens, policy, input, reserve)
+}
+
+func (m *Manager) decideCurrentRequestAware(
+	now time.Time,
+	requestID string,
+	cost domain.RequestCost,
+	selectionInputTokens int64,
+	policy *RequestAwarePolicy,
+	reserve bool,
+) RequestAwareManagerResult {
+	if m == nil {
+		return requestAwareManagerFailure(RequestAwareReasonUnavailable, 0, false)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	input := m.requestAwareInputLocked(now)
+	return m.decideRequestAwareLocked(now, requestID, cost, selectionInputTokens, policy, input, reserve)
+}
+
+func (m *Manager) decideRequestAwareLocked(
+	now time.Time,
+	requestID string,
+	cost domain.RequestCost,
+	selectionInputTokens int64,
+	policy *RequestAwarePolicy,
+	input RequestAwareInput,
+	reserve bool,
+) RequestAwareManagerResult {
 
 	if !m.intakeOpen || policy == nil {
-		return requestAwareManagerFailure(RequestAwareReasonUnavailable, m.eventSequence, true)
+		return requestAwareManagerFailureWithObservation(RequestAwareReasonUnavailable, m.eventSequence, true, input)
 	}
 	if m.manifestID == "" || cost.ManifestID == "" || cost.ManifestID != m.manifestID ||
 		requestID == "" || selectionInputTokens <= 0 || !validRequestCost(cost) {
-		return requestAwareManagerFailure(RequestAwareReasonInvalid, m.eventSequence, true)
+		return requestAwareManagerFailureWithObservation(RequestAwareReasonInvalid, m.eventSequence, true, input)
 	}
 	if _, exists := m.reservations[requestID]; exists {
-		return requestAwareManagerFailure(RequestAwareReasonDuplicate, m.eventSequence, true)
+		return requestAwareManagerFailureWithObservation(RequestAwareReasonDuplicate, m.eventSequence, true, input)
 	}
 
 	state := m.requestAwareStateLocked(policy)
@@ -102,6 +169,7 @@ func (m *Manager) decideRequestAware(
 			Decision:                     decision,
 			DecisionManagerSequence:      m.eventSequence,
 			DecisionManagerSequenceValid: true,
+			Observation:                  input,
 		}
 	}
 
@@ -119,7 +187,87 @@ func (m *Manager) decideRequestAware(
 		Reserved:                     true,
 		DecisionManagerSequence:      m.eventSequence,
 		DecisionManagerSequenceValid: true,
+		Observation:                  input,
 	}
+}
+
+func (m *Manager) InitializeRequestAwareObservation(observation RequestAwareObservation) error {
+	if m == nil {
+		return fmt.Errorf("predictive Manager is nil")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.hasRequestAwareObservation {
+		return fmt.Errorf("predictive request-aware observation is already initialized")
+	}
+	if !validRequestAwareObservation(observation) || observation.ObservationSequence != 0 ||
+		observation.UsedTokens != m.base.Upper.PhysicalKVUpper ||
+		m.base.Upper.PhysicalKVUpper != m.base.Upper.ActiveKVUpper ||
+		observation.Running+observation.Waiting != m.base.Upper.DecodeSequences ||
+		observation.Waiting != m.base.Upper.PendingPrefillSequences {
+		return fmt.Errorf("predictive initial request-aware observation is inconsistent with Manager state")
+	}
+	m.requestAwareObservation = observation
+	m.hasRequestAwareObservation = true
+	return nil
+}
+
+func (m *Manager) HasRequestAwareObservation() bool {
+	if m == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.hasRequestAwareObservation
+}
+
+func (m *Manager) requestAwareInputLocked(now time.Time) RequestAwareInput {
+	if !m.hasRequestAwareObservation {
+		return RequestAwareInput{}
+	}
+	observation := m.requestAwareObservation
+	fresh := m.intakeOpen && observation.IdentityValid && !now.IsZero() &&
+		!now.Before(observation.ObservedAt) && now.Sub(observation.ObservedAt) <= observation.MaximumAge
+	input := RequestAwareInput{
+		MetricsFresh:        fresh,
+		IdentityValid:       m.intakeOpen && observation.IdentityValid,
+		ObservationSequence: observation.ObservationSequence,
+		CapacityTokens:      observation.CapacityTokens,
+		UsedTokens:          observation.UsedTokens,
+		Running:             observation.Running,
+		Waiting:             observation.Waiting,
+		AggregateTPSProxy:   observation.AggregateTPSProxy,
+		MeanActiveTPSProxy:  observation.MeanActiveTPSProxy,
+		TPSValid:            observation.TPSValid,
+		PreemptionObserved:  observation.PreemptionObserved,
+	}
+	if !fresh {
+		input.AggregateTPSProxy = 0
+		input.MeanActiveTPSProxy = 0
+		input.TPSValid = false
+		input.PreemptionObserved = false
+	}
+	return input
+}
+
+func validRequestAwareObservation(observation RequestAwareObservation) bool {
+	return !observation.ObservedAt.IsZero() && observation.MaximumAge > 0 &&
+		observation.IdentityValid && observation.CapacityTokens > 0 &&
+		observation.UsedTokens >= 0 && observation.UsedTokens <= observation.CapacityTokens &&
+		observation.Running >= 0 && observation.Waiting >= 0 &&
+		observation.Running <= int(^uint(0)>>1)-observation.Waiting &&
+		requestAwareFinite(observation.AggregateTPSProxy) && observation.AggregateTPSProxy >= 0 &&
+		requestAwareFinite(observation.MeanActiveTPSProxy) && observation.MeanActiveTPSProxy >= 0 &&
+		(!observation.TPSValid || observation.AggregateTPSProxy > 0 && observation.MeanActiveTPSProxy > 0)
+}
+
+func validRequestAwareObservationForSample(observation RequestAwareObservation, sample SampleWindow) bool {
+	return validRequestAwareObservation(observation) &&
+		observation.ObservationSequence == sample.ObservationSequence &&
+		observation.UsedTokens == sample.Observed.PhysicalKVUpper &&
+		sample.Observed.PhysicalKVUpper == sample.Observed.ActiveKVUpper &&
+		observation.Running+observation.Waiting == sample.Observed.DecodeSequences &&
+		observation.Waiting == sample.Observed.PendingPrefillSequences
 }
 
 func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) requestAwareStateSnapshot {
@@ -187,4 +335,15 @@ func requestAwareManagerFailure(reason RequestAwareReason, sequence uint64, sequ
 		DecisionManagerSequence:      sequence,
 		DecisionManagerSequenceValid: sequenceValid,
 	}
+}
+
+func requestAwareManagerFailureWithObservation(
+	reason RequestAwareReason,
+	sequence uint64,
+	sequenceValid bool,
+	observation RequestAwareInput,
+) RequestAwareManagerResult {
+	result := requestAwareManagerFailure(reason, sequence, sequenceValid)
+	result.Observation = observation
+	return result
 }

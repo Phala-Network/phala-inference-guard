@@ -21,6 +21,12 @@ func (s staticRequestAwareSnapshot) RequestAwareInput(time.Time) runtimepredicti
 	return s.input
 }
 
+type panicRequestAwareSnapshot struct{}
+
+func (panicRequestAwareSnapshot) RequestAwareInput(time.Time) runtimepredictive.RequestAwareInput {
+	panic("request decision must not read an Observer snapshot")
+}
+
 type splitRequestAwareTelemetrySnapshot struct {
 	requestInput  runtimepredictive.RequestAwareInput
 	observer      predictiveObserverSnapshot
@@ -52,6 +58,22 @@ func TestV0128RequestAwareTelemetryObservationPreservesSequence(t *testing.T) {
 		provider.requestReads != 0 || provider.observerReads != 1 {
 		t.Fatalf("telemetry observation input/snapshot/reads=%+v/%+v/%d/%d, want paired sequence 17 from one snapshot",
 			input, observer, provider.requestReads, provider.observerReads)
+	}
+}
+
+func TestRequestAwareAdapterDecisionDoesNotReadObserverSnapshot(t *testing.T) {
+	adapter, manager := newRequestAwareAdapterTestFixture(t, 0, 0)
+	adapter.snapshot = panicRequestAwareSnapshot{}
+
+	decision := adapter.Decide(context.Background(), "manager-owned-observation", requestAwareAdapterInput(16, 0))
+	if decision.Outcome != predictiveAdmissionOutcomeForward || decision.Reservation == nil {
+		t.Fatalf("decision=%+v, want Manager-owned observation to admit without reading Observer", decision)
+	}
+	if manager.Snapshot().Reservations != 1 {
+		t.Fatalf("reservations=%d, want one atomic reservation", manager.Snapshot().Reservations)
+	}
+	if !decision.Reservation.Terminate(runtimepredictive.TerminalExpired) {
+		t.Fatal("Manager-owned observation reservation did not release")
 	}
 }
 
@@ -237,7 +259,13 @@ func TestV0125RequestAwareAdapterTerminalAndRebaseSupersedeRecentRejectProjectio
 		{
 			name: "epoch rebase",
 			release: func(manager *runtimepredictive.Manager, _ predictiveShadowReservation) bool {
-				return manager.RebaseEpoch(domainpredictive.VirtualState{}) == nil
+				if manager.RebaseEpoch(domainpredictive.VirtualState{}) != nil {
+					return false
+				}
+				return manager.InitializeRequestAwareObservation(runtimepredictive.RequestAwareObservation{
+					ObservedAt: time.Unix(100, 0), MaximumAge: time.Hour, IdentityValid: true,
+					CapacityTokens: 4 * 1024 * 1024,
+				}) == nil
 			},
 		},
 	} {
@@ -292,25 +320,21 @@ func TestRequestAwareAdapterFreshCompletionSnapshotDoesNotMislockIdleBackend(t *
 	if err != nil {
 		t.Fatalf("NewRequestAwarePolicy: %v", err)
 	}
+	observerInput := runtimepredictive.RequestAwareInput{
+		MetricsFresh: true, IdentityValid: true, CapacityTokens: 10_000, UsedTokens: 2_000,
+		AggregateTPSProxy: 40, MeanActiveTPSProxy: 20, TPSValid: true,
+	}
+	initializeRequestAwareManagerObservation(t, manager, observerInput, time.Unix(1, 0))
 	adapter, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
 		Manager:           manager,
 		Policy:            policy,
 		CapabilityProfile: requestAwareTestCapabilityProfile(10_000, 16, 8_992),
 		CapabilityReason:  "test",
-		Snapshot: staticRequestAwareSnapshot{input: runtimepredictive.RequestAwareInput{
-			MetricsFresh:       true,
-			IdentityValid:      true,
-			CapacityTokens:     10_000,
-			Running:            0,
-			EffectiveSequences: 0,
-			AggregateTPSProxy:  40,
-			MeanActiveTPSProxy: 20,
-			TPSValid:           true,
-		}},
-		ManifestID: "request-aware-http-test",
-		BlockSize:  16,
-		Mode:       "enforce",
-		Now:        func() time.Time { return time.Unix(1, 0) },
+		Snapshot:          staticRequestAwareSnapshot{input: observerInput},
+		ManifestID:        "request-aware-http-test",
+		BlockSize:         16,
+		Mode:              "enforce",
+		Now:               func() time.Time { return time.Unix(1, 0) },
 	})
 	if err != nil {
 		t.Fatalf("newRequestAwarePredictiveAdapter: %v", err)
@@ -381,12 +405,7 @@ func TestRequestAwareAdapterCloseBeforeForwardCommitRejectsAndReleasesReservatio
 }
 
 func TestRequestAwareAdapterUnknownLexicalHintFallsBackToSafetyUpper(t *testing.T) {
-	adapter, manager := newRequestAwareAdapterTestFixture(t, 0, 0)
-	snapshot := adapter.snapshot.(staticRequestAwareSnapshot).input
-	snapshot.CapacityTokens = 4 * 1024 * 1024
-	snapshot.TPSValid = false
-	adapter.snapshot = staticRequestAwareSnapshot{input: snapshot}
-	adapter.policy = newLargeRequestAwareServerTestPolicy(t)
+	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	input := requestAwareAdapterInput(650*1024, 0)
 	input.Cost.ApproximateInputTokens = 0
 	input.Cost.ApproximateInputTokensKnown = false
@@ -444,16 +463,11 @@ func TestRequestAwareAdapterCostPromotesLargerLexicalHintIntoKVUpper(t *testing.
 }
 
 func TestRequestAwareAdapterPendingTelemetryReportsCurrentStateAfterLastDecisionDrains(t *testing.T) {
-	adapter, manager := newRequestAwareAdapterTestFixture(t, 0, 0)
-	snapshot := adapter.snapshot.(staticRequestAwareSnapshot).input
-	snapshot.CapacityTokens = 4 * 1024 * 1024
-	snapshot.TPSValid = false
-	adapter.snapshot = staticRequestAwareSnapshot{input: snapshot}
-	adapter.policy = newLargeRequestAwareServerTestPolicy(t)
+	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	input := requestAwareAdapterInput(4*1024, 0)
 
 	first := adapter.Decide(context.Background(), "telemetry-current-first", input)
-	reconcileRequestAwareAdapterManager(t, manager, 0, 4, 0)
+	setRequestAwareAdapterObservation(t, adapter, manager, 0, 4, 0)
 	second := adapter.Decide(context.Background(), "telemetry-current-second", input)
 	if first.Reservation == nil || second.Reservation == nil || manager.Snapshot().Reservations != 2 {
 		t.Fatalf("setup decisions/manager=%+v/%+v/%+v, want two live reservations", first, second, manager.Snapshot())
@@ -695,6 +709,10 @@ func TestV0121RequestAwareTelemetryUsesOneObserverGenerationForRouterProjection(
 			AggregateTPS: 80, MeanActiveTPS: 20, TPSValid: true,
 		},
 	}
+	initializeRequestAwareManagerObservation(t, manager, runtimepredictive.RequestAwareInput{
+		MetricsFresh: true, IdentityValid: true, CapacityTokens: 10_000, UsedTokens: 5_000,
+		Running: 4, AggregateTPSProxy: 80, MeanActiveTPSProxy: 20, TPSValid: true,
+	}, now)
 	adapter, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
 		Manager: manager, Policy: policy,
 		CapabilityProfile: requestAwareTestCapabilityProfile(10_000, 16, 8_992),
@@ -732,18 +750,7 @@ func TestRequestAwareAdapterTelemetryProbeRecoversWithoutNewBusinessRequest(t *t
 		t.Fatalf("telemetry probe changed business state: before=%+v after=%+v attempts=%+v", beforeProbe, afterProbe, protected.Attempts)
 	}
 
-	if err := manager.ReconcileSample(runtimepredictive.SampleWindow{
-		Observed: domainpredictive.VirtualState{
-			PhysicalKVUpper:     5_000,
-			ActiveKVUpper:       5_000,
-			DecodeSequences:     4,
-			ActiveContextTokens: 5_000,
-		},
-		StartedSequence:  beforeProbe.EventSequence,
-		FinishedSequence: beforeProbe.EventSequence,
-	}); err != nil {
-		t.Fatalf("reconcile recovered state: %v", err)
-	}
+	setRequestAwareAdapterObservation(t, adapter, manager, 5_000, 4, 0)
 	held := adapter.PredictiveAdmissionTelemetry()
 	if !held.RouterBackpressure.Active || held.RouterBackpressure.InspectCapacity != 1 {
 		t.Fatalf("recovered current state lost bounded reject projection: %+v", held.RouterBackpressure)
@@ -926,25 +933,28 @@ func newRequestAwareAdapterTestFixtureWithMode(t testing.TB, usedTokens int64, w
 	if err != nil {
 		t.Fatalf("NewRequestAwarePolicy: %v", err)
 	}
+	observerInput := runtimepredictive.RequestAwareInput{
+		MetricsFresh:       true,
+		IdentityValid:      true,
+		CapacityTokens:     10_000,
+		UsedTokens:         usedTokens,
+		Running:            4,
+		Waiting:            waiting,
+		AggregateTPSProxy:  80,
+		MeanActiveTPSProxy: 20,
+		TPSValid:           true,
+	}
+	initializeRequestAwareManagerObservation(t, manager, observerInput, time.Unix(1, 0))
 	adapter, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
 		Manager:           manager,
 		Policy:            policy,
 		CapabilityProfile: requestAwareTestCapabilityProfile(10_000, 16, 8_992),
 		CapabilityReason:  "test",
-		Snapshot: staticRequestAwareSnapshot{input: runtimepredictive.RequestAwareInput{
-			MetricsFresh:       true,
-			IdentityValid:      true,
-			CapacityTokens:     10_000,
-			Running:            4,
-			Waiting:            waiting,
-			AggregateTPSProxy:  80,
-			MeanActiveTPSProxy: 20,
-			TPSValid:           true,
-		}},
-		ManifestID: "request-aware-http-test",
-		BlockSize:  16,
-		Mode:       mode,
-		Now:        func() time.Time { return time.Unix(1, 0) },
+		Snapshot:          staticRequestAwareSnapshot{input: observerInput},
+		ManifestID:        "request-aware-http-test",
+		BlockSize:         16,
+		Mode:              mode,
+		Now:               func() time.Time { return time.Unix(1, 0) },
 	})
 	if err != nil {
 		t.Fatalf("newRequestAwarePredictiveAdapter: %v", err)
@@ -961,15 +971,17 @@ func newLargeRequestAwareAdapterTestFixtureWithMode(t testing.TB, usedTokens int
 		DecodeSequences: 4 + waiting, PendingPrefillSequences: waiting, ActiveContextTokens: usedTokens,
 	})
 	policy := newLargeRequestAwareServerTestPolicy(t)
+	observerInput := runtimepredictive.RequestAwareInput{
+		MetricsFresh: true, IdentityValid: true, CapacityTokens: capacity, UsedTokens: usedTokens,
+		Running: 4, Waiting: waiting, AggregateTPSProxy: 80, MeanActiveTPSProxy: 20, TPSValid: true,
+	}
+	initializeRequestAwareManagerObservation(t, manager, observerInput, time.Unix(1, 0))
 	adapter, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
 		Manager: manager, Policy: policy,
 		CapabilityProfile: requestAwareTestCapabilityProfile(capacity, 16, hard),
 		CapabilityReason:  "test",
-		Snapshot: staticRequestAwareSnapshot{input: runtimepredictive.RequestAwareInput{
-			MetricsFresh: true, IdentityValid: true, CapacityTokens: capacity,
-			Running: 4, Waiting: waiting, AggregateTPSProxy: 80, MeanActiveTPSProxy: 20, TPSValid: true,
-		}},
-		ManifestID: "request-aware-http-test", BlockSize: 16, Mode: mode,
+		Snapshot:          staticRequestAwareSnapshot{input: observerInput},
+		ManifestID:        "request-aware-http-test", BlockSize: 16, Mode: mode,
 		Now: func() time.Time { return time.Unix(1, 0) },
 	})
 	if err != nil {
@@ -994,14 +1006,22 @@ func newLargeRequestAwareServerTestPolicy(t testing.TB) *runtimepredictive.Reque
 	return policy
 }
 
-func reconcileRequestAwareAdapterManager(
+func setRequestAwareAdapterObservation(
 	t testing.TB,
+	adapter *requestAwarePredictiveAdapter,
 	manager *runtimepredictive.Manager,
 	usedTokens int64,
 	running int,
 	waiting int,
 ) {
 	t.Helper()
+	input := adapter.snapshot.(staticRequestAwareSnapshot).input
+	input.UsedTokens = usedTokens
+	input.Running = running
+	input.Waiting = waiting
+	input.EffectiveSequences = running
+	input.ObservationSequence++
+	observation := requestAwareTestObservation(input, adapter.now())
 	started := manager.StartSampleWindow()
 	finished := manager.EventSequence()
 	if err := manager.ReconcileSample(runtimepredictive.SampleWindow{
@@ -1012,29 +1032,44 @@ func reconcileRequestAwareAdapterManager(
 			PendingPrefillSequences: waiting,
 			ActiveContextTokens:     usedTokens,
 		},
-		StartedSequence:  started,
-		FinishedSequence: finished,
+		StartedSequence:         started,
+		FinishedSequence:        finished,
+		ObservationSequence:     input.ObservationSequence,
+		RequestAwareObservation: &observation,
 	}); err != nil {
 		t.Fatalf("reconcile adapter Manager: %v", err)
 	}
+	adapter.snapshot = staticRequestAwareSnapshot{input: input}
 }
 
-func setRequestAwareAdapterObservation(
+func initializeRequestAwareManagerObservation(
 	t testing.TB,
-	adapter *requestAwarePredictiveAdapter,
 	manager *runtimepredictive.Manager,
-	usedTokens int64,
-	running int,
-	waiting int,
+	input runtimepredictive.RequestAwareInput,
+	now time.Time,
 ) {
 	t.Helper()
-	reconcileRequestAwareAdapterManager(t, manager, usedTokens, running, waiting)
-	input := adapter.snapshot.(staticRequestAwareSnapshot).input
-	input.UsedTokens = usedTokens
-	input.Running = running
-	input.Waiting = waiting
-	input.EffectiveSequences = running
-	adapter.snapshot = staticRequestAwareSnapshot{input: input}
+	observation := requestAwareTestObservation(input, now)
+	if err := manager.InitializeRequestAwareObservation(observation); err != nil {
+		t.Fatalf("initialize request-aware Manager observation: %v", err)
+	}
+}
+
+func requestAwareTestObservation(input runtimepredictive.RequestAwareInput, now time.Time) runtimepredictive.RequestAwareObservation {
+	return runtimepredictive.RequestAwareObservation{
+		ObservedAt:          now,
+		MaximumAge:          time.Hour,
+		IdentityValid:       input.IdentityValid,
+		ObservationSequence: input.ObservationSequence,
+		CapacityTokens:      input.CapacityTokens,
+		UsedTokens:          input.UsedTokens,
+		Running:             input.Running,
+		Waiting:             input.Waiting,
+		AggregateTPSProxy:   input.AggregateTPSProxy,
+		MeanActiveTPSProxy:  input.MeanActiveTPSProxy,
+		TPSValid:            input.TPSValid,
+		PreemptionObserved:  input.PreemptionObserved,
+	}
 }
 
 func requestAwareTestCapabilityProfile(capacity, blockSize, hard int64) runtimepredictive.BackendCapabilityProfile {
