@@ -4325,3 +4325,113 @@ has not replaced the dedicated runtime. The next gate is a trap-protected
 PIG-only replacement on c21, followed by runtime identity/readiness checks and
 the sustained `24/24`, zero-429, zero-preemption workload before any other GPU
 gate.
+
+## 53. v0.12.9 dedicated-CVM runtime acceptance
+
+The exact accepted local image was deployed only to the isolated runtime on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`. Before mutation, an independent
+preflight required backend `running=0`, `waiting=0`, local reservations `0`,
+and Router projection `0`; it also matched the accepted image, PIG, vLLM, and
+network identities. The preflight passed all four zero-state conditions. Its
+SHA-256 was
+`26639439c3c226165f1d5f6b3aed04bc798213fac3e72535f765af9ef145483c`.
+
+The trap-protected runner changed exactly one normalized Compose line, from
+the local v0.12.8 image to
+`ghcr.io/phala-network/phala-inference-guard:0.12.9-28f7328-local`, and ran:
+
+```text
+docker compose ... up -d --no-deps --force-recreate --pull never pig
+```
+
+It did not include vLLM in the operation and did not restart the CVM. The
+runner SHA-256 was
+`981dc84aa5279b20676f7859641e421b6e1faf33faab0079ed2a951ab5c36559`.
+The runner exited `0` without invoking its v0.12.8 rollback. The accepted
+runtime identity is:
+
+```text
+PIG container
+  503dccc4241350de304f687fd28cdb878499412b3720b1b3f8bbf8b37c554ee7
+PIG image
+  sha256:4df379aaeab8747d13171899ac412101e69214e7f14948bc410c8af7e9eb6a73
+PIG StartedAt
+  2026-08-10T02:25:21.072141065Z
+PIG restart/OOM
+  0/false
+vLLM container
+  d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552
+vLLM image
+  sha256:f90fe278def6819e682889f6b7dd41a4ba9a1faa0e65c1bddf602fea9754a5c2
+vLLM StartedAt
+  2026-08-09T10:03:59.648050825Z
+vLLM restart/OOM
+  0/false
+```
+
+The vLLM container, image, `StartedAt`, restart count, OOM state, and GPU
+process identity were byte-identical before and after. Workbench remained
+bridge-only, and the runtime network contained exactly PIG and vLLM. The local
+candidate image still had empty `RepoDigests`; registry upload was not
+attempted.
+
+The startup and API contract passed. Readiness completed on the second poll;
+health returned 200, PIG metrics returned 401/200 without/with authentication,
+combined metrics returned 401/200, `/v1/models` returned 200 for
+`google/gemma-4-31B-it`, the one post-startup readiness chat returned 200, and
+Router projection remained `0`. Exact vLLM inference counters before and after
+PIG startup were byte-identical, proving that initialization sent no synthetic
+inference request. Runtime logs and metrics reported:
+
+```text
+version                                      PIG-v0.12.9
+mode                                         enforce
+observer                                     500ms
+profile source/reason                        automatic/metadata
+KV capacity/block/hard                       862437/64/758912
+Prefill regular/exclusive/quiescent/aggregate 32768/131072/262144/131072
+running/waiting/reservations/preemptions      0/0/0/0
+active calibration                           absent
+production algorithm overrides               absent
+fatal scan                                   0
+```
+
+The retained deployment evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/
+  pig-v0129-runtime-r1-28f7328
+runtime SHA256SUMS SHA-256
+  3f3b55781f2d0caa2975012ed080f31a7191b0c8d699a5d9b6f061257642c3c4
+independent verifier SHA-256
+  08a595b7fc3939b34cea14a9b90317a83d8e79645ca3bb0c268f90f5048705ff
+independent-verification/SHA256SUMS SHA-256
+  0d19bed8182604b59c6de9a1d7762fda68cb374e7341c72335a72bc5fba191d6
+```
+
+Fresh independent `sha256sum -c` verification passed the complete runtime
+manifest. A separately authored verifier then re-read current container,
+image, GPU, network, API, metric, and log state; it sent no inference request
+and independently returned `overall=0`. Both scans found no retired safe-rate
+or active-calibration vocabulary and no panic, fatal, OOM, EngineCore failure,
+or traceback.
+
+Runtime review pass 1, model and causality: this gate proves that the exact
+v0.12.9 executable reaches the real request-aware path with deterministic
+metadata geometry and without startup performance work. It does not yet prove
+that clean response EOF releases completed Decode state before a replacement
+decision under the sustained workload; that is the next mandatory gate.
+
+Runtime review pass 2, safety and lifecycle: zero-flow preflight preceded the
+single-service replacement, rollback remained armed until every startup gate
+passed, vLLM and GPU identities did not change, and final running, waiting,
+reservation, preemption, and Router projection values were zero. No production
+Router, CVM, vLLM, registry, or published image was modified.
+
+Runtime review pass 3, evidence and release: exact image provenance, one-line
+Compose scope, zero startup inference, authentication, transparent API,
+configuration minimality, network isolation, no-calibration, and fatal checks
+are independently reproducible from hashed evidence. This accepts only the
+dedicated runtime layer. Sustained `24/24`, the remaining targeted GPU gates,
+the new ordered Pareto matrix, its independent audit, registry publication,
+and production observation remain unverified and cannot inherit this green.
