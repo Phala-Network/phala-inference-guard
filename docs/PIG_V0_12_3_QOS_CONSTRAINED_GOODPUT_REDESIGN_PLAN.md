@@ -2,9 +2,9 @@
 
 Status: v0.12.8 reproduced the sustained-wave throughput defect in its first
 targeted GPU gate and remains unpublished; the v0.12.9 response-EOF lifecycle
-focused red, minimal implementation, and affected source gates are green, while
-complete source, image, dedicated-CVM, targeted GPU, ordered Pareto, independent
-audit, upload, and production gates remain open
+source and independent source audit are accepted, while image, dedicated-CVM,
+targeted GPU, ordered Pareto, image/runtime independent audit, upload, and
+production gates remain open
 
 This is the only execution plan for the active PIG v0.12.9 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -504,7 +504,7 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
 - [x] v0.12.9 response-EOF lifecycle focused red is valid.
 - [x] v0.12.9 minimal implementation, affected tests, race, build, simulation,
   and three review passes are green on the dedicated CVM.
-- [ ] v0.12.9 clean pushed source and complete source matrix pass.
+- [x] v0.12.9 clean pushed source and complete source matrix pass.
 - [ ] one exact v0.12.9 local image passes image contract, dedicated-CVM
   runtime, and every targeted GPU gate.
 - [ ] the completely new v0.12.9 ordered Pareto matrix passes every section 4
@@ -4163,5 +4163,100 @@ body-read path retains its previous first-byte `sync.Once` check and adds no
 scan, per-chunk allocation, timer, goroutine, option, learner, calibration, or
 policy branch; only clean EOF performs the second once. These are affected
 source results only. A clean pushed executable commit, exact archive, complete
-28-row source matrix, immutable evidence, local image, GPU workload, Pareto,
+29-row source matrix, immutable evidence, local image, GPU workload, Pareto,
 audit, and upload gates remain mandatory and unproven.
+
+## 51. v0.12.9 complete source acceptance
+
+The executable correction and focused review record were committed and pushed
+as `28f73288d5ef593b0df1ceba061ffd938426f188` on
+`codex/pig-v0.11.0-request-aware`. Before and after the complete matrix, the
+authoritative c21 repository was clean and both `HEAD` and its upstream resolved
+to that commit.
+
+The exact 162-file candidate archive and complete-matrix runner were:
+
+```text
+/workspace/incoming/pig-v0129-28f7328-source.tar.gz
+SHA-256
+  b18ba6fcbfe9350fca3fdf8044243956ed4bdfae3b0289b94b10428435823b55
+
+/workspace/incoming/run-pig-v0129-complete-matrix-r1.sh
+SHA-256
+  5307edac6fc971d20258e3972aa40c4fafcd07268a59c7c85a9bb9faab26e8b6
+```
+
+The matrix ran only inside `pig-v0124-workbench` on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`, using Go `1.24.13`, Linux
+`6.9.0-dstack`, and container `2c14ed1bca84`. It retained every v0.12.8 row and
+added a response-EOF wiring contract, for 29 total rows. All 29 exited zero:
+environment/version identity, formatting, retired-mode and no-active-
+calibration audits, Decode-envelope/observation-pairing/response-EOF contracts,
+lexical corpus, affected and full tests, vet, targeted and full race, all
+builds, production binary identity, policy-order tests, two simulations plus
+byte comparison and acceptance, B/C/C/B ordered benchmarks, both benchmark
+contracts, reservation-aware HTTP benchmarks, and estimator benchmarks.
+
+The immutable primary evidence is:
+
+```text
+/workspace/evidence/pig-v0129-dedicated-phase-c-r1-28f7328
+evidence-sha256 SHA-256
+  c9372ad4a6afc8b2ba1a74cf1ec02b57e193d76363d736a7ab647df3b4c17ed2
+statuses.tsv SHA-256
+  b40f903537a2054a5a146976f8ae71f0b1301deb25db89c1cb2c66ce5b5cf06a
+production binary SHA-256
+  0f90091036ba7c809ca6b91498850e48713a57267cf5a648bc794dce6b11518d
+```
+
+A fresh `sha256sum -c evidence-sha256` returned `OK` for every recorded input,
+environment, status, test, race, build, simulation, benchmark, contract,
+inventory, and binary artifact. The two simulation reports were byte-identical
+at SHA-256
+`a693f38eba59ab57a5e406e4db6e911d3a345becfcb5c968b39e6bbc44c68979`,
+contained `v0_12_9_aggregate`, excluded `v0_12_8_aggregate`, and reported
+`acceptance=passed`.
+
+An independent verifier then rechecked the manifest, all 29 zero statuses,
+archive and runner hashes, simulation bytes and fields, production binary,
+clean source commit/upstream identity, and the focused EOF tests against the
+extracted frozen candidate. Its own identity and retained manifest are:
+
+```text
+/workspace/incoming/verify-pig-v0129-matrix-r1.sh
+SHA-256
+  93b5168f3b25d330de7c38ca45386768c24df8a9b66addea16c01f09ce863a75
+/workspace/evidence/pig-v0129-dedicated-phase-c-r1-28f7328/
+  independent-verification/SHA256SUMS
+SHA-256
+  12efbc1607ab0a69269d3395f1a4a36b20f782392ce105ec52cd8beb8e1b0ce5
+```
+
+The deterministic simulator retains the accepted v0.12.8 policy numbers under
+the corrected v0.12.9 identity: `102.6482` SLO-compliant output tokens/s,
+`103.6082` raw completed output tokens/s, `4.8` TPS-floor violation seconds,
+one preemption, `0.4` maximum idle-with-demand seconds, one hard-fit idle
+reject, and `166/280` admissions. This is expected because the simulator does
+not model HTTP response-body return ordering; it is deterministic policy and
+Manager regression evidence, not proof of the live EOF correction.
+
+The ordered benchmark contracts passed. Median pre-forward HTTP cost was
+`13,409.5 ns` versus the v0.12.2 baseline's `12,923.5 ns` (`1.0376x`) with 33
+allocations unchanged. Manager decision cost was `212.2 ns` at zero live
+reservations, `3,432 ns` at 48, and `17,489.5 ns` at 256, all allocation-free.
+Telemetry at 256 reservations was `61.525 us` (`1.0639x` baseline) with zero
+allocations. Estimation medians remained `0.291 us` for 1 KiB, `2.007 us` for
+64 KiB, `27.772 us` for 1 MiB, `156.556 us` for 4 MiB, and `21.823 ms` for the
+adversarial 4-MiB many-string shape, all allocation-free and below the accepted
+100-ms extreme-input ceiling. The pre-forward benchmark does not measure the
+response-body EOF branch; that branch is structurally constant-time, performs
+no scan or per-chunk allocation, and is separately covered by focused and race
+tests. GPU validation remains necessary for its intended throughput effect.
+
+The v0.12.9 source layer is accepted. No v0.12.9 image has been built or
+uploaded, no running PIG has been replaced, and vLLM, the CVM, Router,
+`use1-cb`, and production remain unchanged. This documentation append is
+non-executable and must be committed separately. The next local image must be
+built from exact executable commit
+`28f73288d5ef593b0df1ceba061ffd938426f188`, not from the later documentation
+commit or an unverified working tree.
