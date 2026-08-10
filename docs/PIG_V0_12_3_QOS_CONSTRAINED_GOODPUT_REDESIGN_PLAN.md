@@ -4,7 +4,7 @@ Status: active architecture reset. This document is the only execution plan for
 the current goal. Historical v0.12 plans, images, runtime results, and rejected
 source experiments remain evidence only; they are not implementation authority.
 
-The current executable development HEAD is `07666ef`; the architecture-reset
+The current executable development HEAD is `9c2cbc3`; the architecture-reset
 plan is commit `021f146`. Later status-only or executable commits do not inherit
 old evidence automatically. No next `0.12.x` version is assigned. No image may
 be built, uploaded, or deployed until every pre-version gate in section 13
@@ -64,7 +64,7 @@ CVM             c21b7281-2c25-4453-8a68-f39ec42d03b4
 workbench       pig-v0124-workbench
 repository      /workspace/src/phala-inference-guard-r3
 branch                  codex/pig-v0.11.0-request-aware
-executable HEAD         07666ef
+executable HEAD         9c2cbc3
 architecture plan       021f146
 ```
 
@@ -72,7 +72,7 @@ Do not run Go, race, simulation, benchmark, binary, or image gates on Windows.
 Do not use the old builder. Do not restart the CVM or vLLM. A later accepted
 runtime gate may replace only PIG on c21 with `--no-deps`.
 
-### 3.2 Accepted evidence through `07666ef`
+### 3.2 Accepted evidence through `9c2cbc3`
 
 - `7115dbe`: HTTP and simulator share the canonical `RequestCost` builder.
 - `378584d`: raw vLLM phase facts, canonical probe scope, and current-capacity
@@ -84,6 +84,9 @@ runtime gate may replace only PIG on c21 with `--no-deps`.
 - `07666ef`: reservation state is the last coherent observation plus a
   positive-only live-request overlay; terminal events never subtract from the
   observed base or create completion credits.
+- `9c2cbc3`: immutable capability schema v3 removes context `/8` and `/2`
+  scaling, derives maximum admissible input and startup budgets, and fails
+  closed when coherent vLLM model metadata is unavailable.
 - Frozen old-policy simulator result: 24 arrivals, 14 admits, 10 size protects,
   14 completions, zero preemptions, and exact final drain.
 
@@ -188,6 +191,53 @@ were about 0.23 us at 0 reservations, 0.33 us at 1, 3.57--3.63 us at 48,
 `eaebfba` baseline was about 0.23 us, 3.46--3.55 us, and 17.7--18.1 us at
 0/48/256. The small difference does not justify reintroducing cached aggregate
 state.
+
+### 3.6 Immutable capability profile source gate
+
+At `9c2cbc3`, capability initialization is startup-only and model-neutral:
+
+- vLLM metrics still provide model identity, exact KV capacity, and block size;
+- `/v1/models` must provide the same unique model identity and a positive
+  `max_model_len`; no 512K guess or metadata fallback remains;
+- the maximum admissible input is the block-aligned minimum of model context
+  and hard KV capacity, less the 256-token rolling Decode horizon;
+- request-size semantics remain fixed at 64K/256K/512K while the upstream
+  ceiling only controls reachability;
+- contended and open aggregate budgets are respectively
+  `min(64K, maximum_input)` and `min(256K, maximum_input)`; and
+- the max-model-length plus four Prefill test overrides are all-or-none, while
+  production defaults leave all five unset.
+
+The c21 vLLM endpoint was read without changing runtime state and returned one
+model, `google/gemma-4-31B-it`, with `max_model_len=262144`. Redirects,
+non-success responses, oversized or malformed bodies, missing/negative model
+length, identity mismatch, and ambiguous model lists all fail initialization in
+tests rather than authorizing a guessed context.
+
+Validation on c21 at `9c2cbc3`:
+
+```text
+go test ./internal/runtime/predictive ./internal/config/pigconfig \
+  ./internal/observability/metrics ./internal/app/server \
+  ./internal/simulation/requestaware -count=1
+
+go test -race ./internal/runtime/predictive ./internal/config/pigconfig \
+  ./internal/observability/metrics ./internal/app/server \
+  ./internal/simulation/requestaware -count=1
+
+go test ./... -count=1
+go vet ./...
+go build ./...
+
+result: all green
+```
+
+The metadata request is bounded to 64 KiB and occurs only at initialization; it
+adds no per-request hot-path work. Fixed size bands are classification semantics,
+not instantaneous TPS gates. This slice does not accept the existing Prefill or
+Decode policy: the long-window, work-conserving QoS behavior remains the next
+pure-policy slice. No image was built, uploaded, or deployed, and the running
+c21 PIG remains the rejected local v0.12.9 image.
 
 ## 4. Reflection: why repeated patch versions failed
 
@@ -760,7 +810,10 @@ separately authorized boundary.
 - [x] positive reservation overlay slice passes lifecycle/race/full/vet/build
   gates and is pushed as `07666ef`; 1/48/256/4096 decision benchmarks allocate
   zero and remain inside the revised measured limits.
-- [ ] capability/profile and pure policy slices pass and are pushed.
+- [x] immutable capability/profile slice passes focused/full/race/vet/build
+  gates and is pushed as `9c2cbc3`.
+- [ ] pure policy implements resource safety, work-conserving Prefill QoS, and
+  canonical-probe scope without instantaneous TPS rejection.
 - [ ] decision/capacity reporting is coherent and recent-reject hold is removed.
 - [ ] all deterministic scenarios pass without low-flow or request-scope lock.
 - [ ] complete pre-version matrix and three code reviews pass.
