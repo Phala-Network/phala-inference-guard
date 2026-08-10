@@ -166,6 +166,22 @@ SHA256SUMS SHA-256
   e29428f1773ee27fb1989f1e03514e68949cdd03f0c32d3462ea183bd58c2c8a
 ```
 
+The production-shaped shared-worker simulator independently reproduces the
+same 14/24 outcome on the unchanged state-total policy at `378584d`:
+
+```text
+/workspace/evidence/pig-v012-worker-oldred-r1-378584d
+report.json SHA-256
+  a461a8923ae7d0f5f2954d41b9636725854ee72236bc8df52d1a73ce72e59b22
+
+arrivals/admitted/rejected/size-protect/completed
+  24/14/10/10/14
+```
+
+The isolated old-policy worktree passed the full Go test, vet, build, and
+affected simulator race matrix. This validates the simulator red baseline, not
+the rejected policy.
+
 ## 4. Reflection: why the prior loop failed
 
 The v0.12.3 through v0.12.9 sequence repeatedly followed the wrong order:
@@ -801,7 +817,7 @@ authorized boundary.
 - [x] canonical RequestCost builder red/green and production/simulation parity.
 - [x] corrective raw-phase, canonical-probe scope, and current-capacity
   architecture review is committed and pushed before executable work resumes.
-- [ ] worker-driven replacement-wave simulator reproduces old red.
+- [x] worker-driven replacement-wave simulator reproduces old red.
 - [ ] unified PrefillQoSGate, phase upper bound, and candidate/probe scope proof
   pass focused green; Manager scan benchmarks decide whether any aggregate
   optimization is justified.

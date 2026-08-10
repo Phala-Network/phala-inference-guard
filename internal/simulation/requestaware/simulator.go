@@ -60,7 +60,7 @@ func runSuite(policyOrder []PolicyName) (Suite, error) {
 	}
 	suite := Suite{Seed: SimulationSeed}
 	for _, scenario := range simulationScenarios(SimulationSeed) {
-		profile, policy, err := simulationCapabilityPolicy(scenario, 650*1024)
+		profile, policy, err := simulationCapabilityPolicy(scenario, scenarioMaxModelLen(scenario))
 		if err != nil {
 			return Suite{}, fmt.Errorf("construct scenario %s capability policy: %w", scenario.name, err)
 		}
@@ -82,6 +82,13 @@ func runSuite(policyOrder []PolicyName) (Suite, error) {
 		suite.Scenarios = append(suite.Scenarios, result)
 	}
 	return suite, nil
+}
+
+func scenarioMaxModelLen(scenario scenarioSpec) int64 {
+	if scenario.maxModelLen > 0 {
+		return scenario.maxModelLen
+	}
+	return 650 * 1024
 }
 
 func validatePolicyOrder(policyOrder []PolicyName) error {

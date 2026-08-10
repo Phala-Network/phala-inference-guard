@@ -37,6 +37,12 @@ type requestSpec struct {
 	cancelAfter      time.Duration
 }
 
+type workerPoolSpec struct {
+	at          time.Duration
+	concurrency int
+	requests    []requestSpec
+}
+
 type scenarioSpec struct {
 	name               string
 	category           string
@@ -44,12 +50,14 @@ type scenarioSpec struct {
 	initialKVTokens    int64
 	backgroundRunning  int
 	requests           []requestSpec
+	workerPools        []workerPoolSpec
 	forcedWaiting      []timeWindow
 	staleMetrics       []timeWindow
 	preemptionCooldown []timeWindow
 	preemptionAt       time.Duration
 	aggregateTPSCap    float64
 	capacityTokens     int64
+	maxModelLen        int64
 	maximumNoWait      int
 }
 
@@ -93,6 +101,7 @@ func simulationScenarios(seed int64) []scenarioSpec {
 		newUniformScenario("cancel", "terminal", 20_000, 1, shapeCancel, 6, 500*time.Millisecond, time.Second),
 		newUniformScenario("short-completion", "terminal", 20_000, 1, shapeShortCompletion, 10, 500*time.Millisecond, 700*time.Millisecond),
 		newCompletionBeforeNextPollScenario(),
+		newSustainedReplacementWaveScenario(),
 		newUniformScenario("long-streaming", "terminal", 20_000, 1, shapeLongStreaming, 4, 500*time.Millisecond, 2*time.Second),
 		newLongPrefillScenario("prefill-weighted-budget", 0, 22*time.Second,
 			longPrefillRequest("weighted-200k", 100*time.Millisecond, 200*1024, 64, 0),
@@ -128,6 +137,27 @@ func simulationScenarios(seed int64) []scenarioSpec {
 			longPrefillRequest("blocked-short", 200*time.Millisecond, 32*1024, 64, 0),
 			longPrefillRequest("blocked-second-650k", 33400*time.Millisecond, 650*1024, 64, 0),
 			longPrefillRequest("post-prefill-short", 33400*time.Millisecond, 32*1024, 64, 0)),
+	}
+}
+
+func newSustainedReplacementWaveScenario() scenarioSpec {
+	requests := make([]requestSpec, 0, 24)
+	for index := 0; index < 24; index++ {
+		requests = append(requests, requestSpec{
+			id:               fmt.Sprintf("sustained-replacement-%02d", index),
+			selectionInput:   1_298,
+			estimatedPrefill: 1_298,
+			safetyInput:      1_298,
+			decodeHorizon:    256,
+			actualInput:      1_298,
+			actualOutput:     1_024,
+		})
+	}
+	return scenarioSpec{
+		name: "sustained-worker-replacement-wave", category: "worker-replacement", duration: 80 * time.Second,
+		initialKVTokens: 100_000, capacityTokens: 4 * 1024 * 1024, maxModelLen: 256 * 1024,
+		maximumNoWait: 32, aggregateTPSCap: 12 * simulationUncontendedTPS,
+		workerPools: []workerPoolSpec{{at: 100 * time.Millisecond, concurrency: 12, requests: requests}},
 	}
 }
 

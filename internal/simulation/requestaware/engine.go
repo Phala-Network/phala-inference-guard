@@ -36,6 +36,11 @@ type scheduledRequest struct {
 	active *activeRequest
 }
 
+type workerPoolState struct {
+	spec workerPoolSpec
+	next int
+}
+
 type observedState struct {
 	usedTokens          int64
 	running             int
@@ -59,6 +64,10 @@ type scenarioRunner struct {
 	observed               observedState
 	lastObservedGeneration float64
 	metrics                Metrics
+	arrivals               map[time.Duration][]requestSpec
+	workerPools            []workerPoolState
+	requestWorkerPool      map[string]int
+	ending                 bool
 	idleDemandStarted      time.Duration
 	idleDemandActive       bool
 	externalPreemptionSeen bool
@@ -78,11 +87,13 @@ func runScenario(
 		return Metrics{}, 0, fmt.Errorf("invalid scenario")
 	}
 	runner := &scenarioRunner{
-		spec:       spec,
-		policyName: policyName,
-		profile:    profile,
-		policy:     policy,
-		active:     make(map[string]*activeRequest),
+		spec:              spec,
+		policyName:        policyName,
+		profile:           profile,
+		policy:            policy,
+		active:            make(map[string]*activeRequest),
+		arrivals:          make(map[time.Duration][]requestSpec),
+		requestWorkerPool: make(map[string]int),
 		observed: observedState{
 			usedTokens: spec.initialKVTokens,
 			running:    spec.backgroundRunning,
@@ -97,20 +108,20 @@ func runScenario(
 		})
 	}
 	runner.metrics.PeakKVTokens = spec.initialKVTokens
-	arrivals := make(map[time.Duration][]requestSpec)
-	for _, request := range spec.requests {
-		arrivals[request.at] = append(arrivals[request.at], request)
+	if err := runner.initializeArrivals(); err != nil {
+		return Metrics{}, 0, err
 	}
 	for at := time.Duration(0); at <= spec.duration; at += simulationTick {
+		if at >= spec.duration {
+			runner.ending = true
+		}
 		if at > 0 {
 			runner.advance(at, simulationTick)
 		}
 		if at%simulationPollInterval == 0 {
 			runner.poll(at)
 		}
-		for _, request := range arrivals[at] {
-			runner.arrive(at, request)
-		}
+		runner.processArrivals(at)
 		if !runner.externalPreemptionSeen && spec.preemptionAt > 0 && at >= spec.preemptionAt {
 			runner.metrics.Preemptions++
 			runner.externalPreemptionSeen = true
@@ -124,11 +135,89 @@ func runScenario(
 		runner.metrics.CompletionTokensPerSecond = runner.metrics.CompletionTokens / durationSeconds
 		runner.metrics.SLOCompletionTokensPerSecond = runner.metrics.SLOCompletionTokens / durationSeconds
 	}
-	runner.terminateAll(runtimepredictive.TerminalExpired)
+	runner.terminateAll(spec.duration, runtimepredictive.TerminalExpired)
 	if runner.manager != nil && runner.manager.Snapshot().Reservations != 0 {
 		return Metrics{}, runner.productionPolicyCalls, fmt.Errorf("candidate manager leaked reservations")
 	}
 	return runner.metrics, runner.productionPolicyCalls, nil
+}
+
+func (r *scenarioRunner) initializeArrivals() error {
+	seen := make(map[string]struct{}, len(r.spec.requests))
+	add := func(request requestSpec) error {
+		if request.id == "" {
+			return fmt.Errorf("scenario request ID is empty")
+		}
+		if _, duplicate := seen[request.id]; duplicate {
+			return fmt.Errorf("scenario request ID %q is duplicated", request.id)
+		}
+		seen[request.id] = struct{}{}
+		return nil
+	}
+	for _, request := range r.spec.requests {
+		if request.at < 0 || request.at >= r.spec.duration {
+			return fmt.Errorf("scenario request %q arrival is outside the active window", request.id)
+		}
+		if err := add(request); err != nil {
+			return err
+		}
+		r.arrivals[request.at] = append(r.arrivals[request.at], request)
+	}
+	for poolIndex, spec := range r.spec.workerPools {
+		if spec.at < 0 || spec.at >= r.spec.duration || spec.concurrency <= 0 || len(spec.requests) == 0 {
+			return fmt.Errorf("scenario worker pool %d is invalid", poolIndex)
+		}
+		state := workerPoolState{spec: spec}
+		for _, request := range spec.requests {
+			if request.at != 0 {
+				return fmt.Errorf("scenario worker pool %d request %q has an independent arrival", poolIndex, request.id)
+			}
+			if err := add(request); err != nil {
+				return err
+			}
+		}
+		r.workerPools = append(r.workerPools, state)
+		for range spec.concurrency {
+			r.releaseWorkerPoolRequest(spec.at, poolIndex)
+		}
+	}
+	return nil
+}
+
+func (r *scenarioRunner) releaseWorkerPoolRequest(at time.Duration, poolIndex int) {
+	if r.ending || poolIndex < 0 || poolIndex >= len(r.workerPools) {
+		return
+	}
+	pool := &r.workerPools[poolIndex]
+	if pool.next >= len(pool.spec.requests) {
+		return
+	}
+	request := pool.spec.requests[pool.next]
+	pool.next++
+	r.requestWorkerPool[request.id] = poolIndex
+	r.arrivals[at] = append(r.arrivals[at], request)
+}
+
+func (r *scenarioRunner) releaseWorkerPoolSlot(at time.Duration, requestID string) {
+	poolIndex, ok := r.requestWorkerPool[requestID]
+	if !ok {
+		return
+	}
+	delete(r.requestWorkerPool, requestID)
+	r.releaseWorkerPoolRequest(at, poolIndex)
+}
+
+func (r *scenarioRunner) processArrivals(at time.Duration) {
+	for {
+		queue := r.arrivals[at]
+		if len(queue) == 0 {
+			delete(r.arrivals, at)
+			return
+		}
+		request := queue[0]
+		r.arrivals[at] = queue[1:]
+		r.arrive(at, request)
+	}
 }
 
 func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
@@ -152,6 +241,7 @@ func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
 				r.idleDemandActive = true
 			}
 		}
+		r.releaseWorkerPoolSlot(at, request.id)
 		return
 	}
 	r.metrics.Admitted++
@@ -229,7 +319,8 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	for _, id := range r.order {
 		active := r.active[id]
 		if active != nil && active.cancelAt > 0 && at >= active.cancelAt {
-			r.removeActive(id, runtimepredictive.TerminalClientCancelled)
+			r.removeActive(at, id, runtimepredictive.TerminalClientCancelled)
+			r.processArrivals(at)
 		}
 	}
 	scheduled := r.scheduledRequests()
@@ -306,14 +397,15 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		active := r.active[id]
 		if active != nil && active.outputRemaining <= simulationFloatTolerance {
 			r.metrics.Completed++
-			r.removeActive(id, runtimepredictive.TerminalCompleted)
+			r.removeActive(at, id, runtimepredictive.TerminalCompleted)
+			r.processArrivals(at)
 		}
 	}
 	if waitingAtStart > 0 {
 		r.metrics.WaitingSeconds += seconds
 	}
 	r.updatePeaks(at)
-	r.enforceHardKV()
+	r.enforceHardKV(at)
 }
 
 func (r *scenarioRunner) poll(at time.Duration) {
@@ -500,7 +592,7 @@ func (r *scenarioRunner) updatePeaks(at time.Duration) {
 	}
 }
 
-func (r *scenarioRunner) enforceHardKV() {
+func (r *scenarioRunner) enforceHardKV(at time.Duration) {
 	hardLimit := r.profile.KVHardLimitTokens
 	for r.trueKVTokens() > hardLimit && len(r.active) > 0 {
 		ids := make([]string, 0, len(r.active))
@@ -508,12 +600,13 @@ func (r *scenarioRunner) enforceHardKV() {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
-		r.removeActive(ids[len(ids)-1], runtimepredictive.TerminalUpstreamFailure)
+		r.removeActive(at, ids[len(ids)-1], runtimepredictive.TerminalUpstreamFailure)
+		r.processArrivals(at)
 		r.metrics.Preemptions++
 	}
 }
 
-func (r *scenarioRunner) removeActive(id string, cause runtimepredictive.TerminalCause) {
+func (r *scenarioRunner) removeActive(at time.Duration, id string, cause runtimepredictive.TerminalCause) {
 	if _, exists := r.active[id]; !exists {
 		return
 	}
@@ -521,11 +614,13 @@ func (r *scenarioRunner) removeActive(id string, cause runtimepredictive.Termina
 		panic("simulation manager rejected terminal event")
 	}
 	delete(r.active, id)
+	r.releaseWorkerPoolSlot(at, id)
 }
 
-func (r *scenarioRunner) terminateAll(cause runtimepredictive.TerminalCause) {
+func (r *scenarioRunner) terminateAll(at time.Duration, cause runtimepredictive.TerminalCause) {
+	r.ending = true
 	for _, id := range r.order {
-		r.removeActive(id, cause)
+		r.removeActive(at, id, cause)
 	}
 }
 
