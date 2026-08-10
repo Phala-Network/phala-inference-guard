@@ -4435,3 +4435,169 @@ are independently reproducible from hashed evidence. This accepts only the
 dedicated runtime layer. Sustained `24/24`, the remaining targeted GPU gates,
 the new ordered Pareto matrix, its independent audit, registry publication,
 and production observation remain unverified and cannot inherit this green.
+
+## 54. v0.12.9 sustained rejection and marginal-cost correction
+
+The first mandatory live gate after runtime acceptance rejected v0.12.9. It
+ran only on `c21b7281-2c25-4453-8a68-f39ec42d03b4` and reused the exact
+v0.12.8 sustained request shape: 24 streaming regular-Decode requests through
+twelve workers. The harness delta was limited to allowing policy identity
+`v0.12.9` and changing the output schema from v0.12.8 to v0.12.9. Request
+content, token horizons, concurrency, warmup, monitoring, drain, safety, and
+accounting logic were byte-identical.
+
+```text
+requests                         24
+successes                        14
+request-scoped 429               10
+other failures                    0
+Decode p10/p50          183.669/187.798
+completed-token goodput    1303.997 token/s
+peak running/waiting             12/0
+peak reservations/KV       12/13.495%
+preemptions                       0
+final running/waiting             0/0
+final reservations                0
+final Router status               0
+fatal scan                         0
+```
+
+PIG, vLLM, GPU-process, workbench-network, and runtime-network identities were
+unchanged. No calibration, registry upload, production Router mutation, vLLM
+restart, or CVM restart occurred. The retained evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/
+  pig-v0129-sustained-r1-28f7328
+runner SHA-256
+  2f2ef5322a9f7efc9316bcd20a9a0f1c1486f3f778211ff3b8718aed1883aee2
+harness SHA-256
+  2214d1c04e2f8f49f8d395c14852617d5616bcb0b3bf90fabd76e972f5aff5c5
+original v0.12.8 harness SHA-256
+  b262a8b7e2298eadebfb15456f0dec2d59b1cc7b3adc1e49d9ff2db4879b5b59
+SHA256SUMS SHA-256
+  0e081da60d12d13668344eaf4de74ac29d308adfa94cb4447619295b01e9bf09
+```
+
+Fresh `sha256sum -c SHA256SUMS` passed every retained artifact. This is a
+valid candidate red rather than an infrastructure, harness, QoS-safety, or
+lifecycle-leak failure. The remaining targeted gates and Pareto matrix are
+cancelled until the policy defect is corrected.
+
+### 54.1 Actual causal boundary
+
+The v0.12.9 EOF correction is real but insufficient. At `8.33s`, local
+reservations had already fallen from twelve to six, while the published vLLM
+sample still reported `running=12`. The ten rejected requests were decided
+earlier, between `8.292s` and `8.301s`; only two replacements had been
+admitted. A first rejection immediately freed a client worker, which submitted
+the next queued request before another upstream Decode completed. Fail-fast
+protection therefore created a rejection cascade rather than preserving a
+one-for-one replacement wave.
+
+The decisive defect is the Decode-envelope charge, not tokenizer accuracy. The
+current request estimate was `1298` tokens and the immutable Decode budget was
+`32768` tokens. The policy charges every candidate for all already accepted
+pending Prefill work:
+
+```text
+current interference charge
+  = post-admit total pending Prefill tokens * effective Decode sequences
+
+two pending requests
+  = 2596 * 12 = 31152, admitted
+third pending request
+  = 3894 * 12 = 46728, rejected
+```
+
+This repeatedly charges earlier reservations during every later decision even
+though `InterferenceGate` already owns the aggregate pending-Prefill budget.
+The result is a hidden request-count cap derived from a global sampled Decode
+count. Earlier completion notification can shorten the stale interval but
+cannot prevent the fail-fast cascade once one request is rejected.
+
+The prior same-CVM ordered matrix supplies design evidence, not a new v0.12.9
+A/B result. Its v0.12.2 A2 and A3 repetitions completed `24/24` with zero
+preemption, Decode p10 `180.999/177.160`, and completed-token goodput
+`1889.274/1844.107 token/s`. The v0.12.9 candidate preserved a slightly higher
+p10 while discarding ten requests and about 29--31% of that completed-token
+goodput. That is the TPS-first overprotection explicitly excluded by the user
+objective.
+
+### 54.2 Corrected ownership contract
+
+The next source correction must not add a queue, retry loop, timer, cooldown,
+learner, calibration, cache check, Router behavior, or production option. It
+must separate the three existing policy responsibilities:
+
+```text
+ResourceGate
+  -> post-admit hard KV safety including atomic reservations
+
+InterferenceGate
+  -> total pending-Prefill budget, request-size class, and long-request
+     concurrency/exclusivity
+
+DecodeEnvelope
+  -> marginal interference of only the current candidate request
+     candidate estimated Prefill tokens * effective active Decode sequences
+```
+
+`DecodeEnvelope` must no longer receive or multiply
+`PostAdmitPendingPrefillTokens`. The aggregate remains visible in decision
+telemetry and remains bounded by `InterferenceGate`; it is not discarded. This
+change makes a 1298-token candidate with twelve active Decode sequences cost
+`15576`, independently of earlier accepted small requests, while a 49K
+candidate with four active Decode sequences remains protected. Hard KV and
+weighted/exclusive/quiescent ownership remain unchanged.
+
+The existing terminal reconciliation may still improve the effective Decode
+count, but regular-request throughput must no longer depend on every
+completion credit arriving before the next millisecond-scale decision. This is
+the architectural exit from the completion-credit patch loop.
+
+### 54.3 Test and release order
+
+1. Add a focused red reproducing the live `1298`, twelve-Decode, two-pending
+   boundary and requiring the third and subsequent fitting candidates to remain
+   work-conserving until the independent aggregate-Prefill or hard-KV gate owns
+   the decision.
+2. Prove a 49K candidate under four active Decode sequences remains protected;
+   weighted, exclusive, quiescent, pending-long, waiting, preemption, invalid,
+   overflow, and hard-KV precedence must retain their current safe owner.
+3. Add a deterministic twelve-worker/two-wave scenario whose rejected request
+   immediately exposes the next queued arrival, so the live rejection cascade
+   cannot again be absent from simulation.
+4. Change only the Decode-envelope input and ownership wiring. Rename the input
+   to marginal candidate cost so SOLID ownership is explicit; remove tests that
+   enshrine aggregate double charging rather than weakening their assertions.
+5. Run focused red/green, formatting, full tests, vet, race, all builds,
+   deterministic simulation, lexical audits, and hot-path benchmarks only in
+   `pig-v0124-workbench`. Assign the next executable patch identity once, only
+   after the coherent source is green; do not create a version merely for the
+   plan or failing test.
+6. Build one new local-only image only after complete source acceptance. Replace
+   only PIG on c21 and run sustained `24/24` first. A repeated `14/24` or any
+   new QoS, waiting, preemption, leak, identity, or fatal failure rejects the
+   architecture before other GPU work.
+7. Only a sustained green may unlock the remaining targeted and ordered Pareto
+   gates. Registry upload and production remain forbidden until every gate and
+   independent audit passes.
+
+Review pass 1, model and causality: the request-size estimate is already on the
+real pre-forward path and is sufficiently discriminative in this failure. The
+wrong variable enters the Decode product: aggregate pending work is charged
+again instead of the new request's marginal work. The corrected product changes
+the exact failed decision while retaining independent aggregate and KV bounds.
+
+Review pass 2, safety and lifecycle: long-request concurrency, aggregate
+Prefill, hard KV, stale identity, and failure-path lifecycle remain owned by
+their existing gates. No optimistic terminal assumption is added. Cancellation
+and ambiguous external work remain conservative; the change only prevents
+prior admitted Prefill from being re-billed to every later candidate.
+
+Review pass 3, SOLID, efficiency, and evidence: each gate receives only the
+quantity it owns, the hot path remains constant-time with no allocation, and no
+new configuration surface or state machine is introduced. The exact live red,
+historical matched baseline, new deterministic cascade, full source matrix, and
+fresh GPU/Pareto evidence are all mandatory; no v0.12.9 green is inherited.
