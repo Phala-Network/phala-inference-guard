@@ -4,7 +4,7 @@ Status: active architecture reset. This document is the only execution plan for
 the current goal. Historical v0.12 plans, images, runtime results, and rejected
 source experiments remain evidence only; they are not implementation authority.
 
-The current executable development HEAD is `d93ea02`; the architecture-reset
+The current executable development HEAD is `07666ef`; the architecture-reset
 plan is commit `021f146`. Later status-only or executable commits do not inherit
 old evidence automatically. No next `0.12.x` version is assigned. No image may
 be built, uploaded, or deployed until every pre-version gate in section 13
@@ -64,7 +64,7 @@ CVM             c21b7281-2c25-4453-8a68-f39ec42d03b4
 workbench       pig-v0124-workbench
 repository      /workspace/src/phala-inference-guard-r3
 branch                  codex/pig-v0.11.0-request-aware
-executable HEAD         d93ea02
+executable HEAD         07666ef
 architecture plan       021f146
 ```
 
@@ -72,7 +72,7 @@ Do not run Go, race, simulation, benchmark, binary, or image gates on Windows.
 Do not use the old builder. Do not restart the CVM or vLLM. A later accepted
 runtime gate may replace only PIG on c21 with `--no-deps`.
 
-### 3.2 Accepted evidence at `6d2c0e1`
+### 3.2 Accepted evidence through `07666ef`
 
 - `7115dbe`: HTTP and simulator share the canonical `RequestCost` builder.
 - `378584d`: raw vLLM phase facts, canonical probe scope, and current-capacity
@@ -81,6 +81,9 @@ runtime gate may replace only PIG on c21 with `--no-deps`.
 - `d93ea02`: Observer samples and reservation state are atomically owned by the
   Manager; Adapter decisions and Router inspection no longer read a separate
   Observer snapshot.
+- `07666ef`: reservation state is the last coherent observation plus a
+  positive-only live-request overlay; terminal events never subtract from the
+  observed base or create completion credits.
 - Frozen old-policy simulator result: 24 arrivals, 14 admits, 10 size protects,
   14 completions, zero preemptions, and exact final drain.
 
@@ -139,6 +142,52 @@ result: all green
 
 This proves the observation ownership slice only. It does not accept the old
 reservation assimilation model or the old admission policy.
+
+### 3.5 Positive reservation overlay source gate
+
+Before `07666ef`, the focused red test terminated an observed request and
+incorrectly produced one retired reservation, one completion credit, and
+virtual KV zero. At `07666ef`, terminal release deletes only the live
+reservation: the stale observation remains 96 KV until the next coherent
+sample, with no retired or negative-credit state.
+
+Coverage is sequence-based rather than inferred from aggregate metric deltas:
+
+- before a sample whose start follows Prefill completion, a live request adds
+  its full conservative cost;
+- after such a sample, it adds only future Decode KV/context;
+- a sample overlapping Prefill completion remains conservative until the next
+  500-ms sample; and
+- EOF, cancellation, error, timeout, and duplicate terminal paths never
+  rewrite the observed base.
+
+Validation on c21 at `07666ef`:
+
+```text
+go test ./internal/runtime/predictive -count=1
+go test ./internal/runtime/predictive ./internal/app/server \
+  ./internal/simulation/requestaware -count=1
+go test -race ./internal/runtime/predictive ./internal/app/server \
+  ./internal/simulation/requestaware -count=1
+go test ./... -count=1
+go vet ./...
+go build ./...
+
+result: all green
+```
+
+The response lifecycle gate permits conservative rejection against the one
+stale observation but requires immediate admission after the next coherent
+idle observation. This is a maximum staleness boundary, not final policy
+acceptance; later probe/policy and long-window goodput gates must recover useful
+work without restoring negative credits.
+
+Five-run decision benchmarks on c21 remained at zero allocations. New results
+were about 0.23 us at 0 reservations, 0.33 us at 1, 3.57--3.63 us at 48,
+18.3--18.7 us at 256, and 0.29--0.30 ms at the 4,096 stress bound. The common
+`eaebfba` baseline was about 0.23 us, 3.46--3.55 us, and 17.7--18.1 us at
+0/48/256. The small difference does not justify reintroducing cached aggregate
+state.
 
 ## 4. Reflection: why repeated patch versions failed
 
@@ -617,10 +666,13 @@ QoS, model portability, or throughput.
   Controller, Policy, and record interfaces.
 
 Do not add cached aggregate counters before measurement. Benchmark decisions at
-1, 48, 256, and 4,096 live reservations. Keep the O(n) scan if p99 remains
-below 100 microseconds over the supported production range. If it fails, add a
-measured incremental aggregate behind a slow recomputation oracle and prove
-equality across every lifecycle/observation transition.
+1, 48, 256, and 4,096 live reservations. Keep the O(n) scan while repeated
+256-reservation operations remain below 100 microseconds, the 4,096 stress
+bound remains below 1 millisecond, and both allocate zero. These limits keep
+the normal production path strict while remaining far inside the accepted
+100-ms extreme-request budget. If either limit fails or scaling becomes
+nonlinear, add a measured incremental aggregate behind a slow recomputation
+oracle and prove equality across every lifecycle/observation transition.
 
 Maximum-body classification plus estimation p99 must remain below 100 ms on
 c21. Pure Gate evaluation should allocate zero; admitted reservation allocation
@@ -705,8 +757,9 @@ separately authorized boundary.
 - [x] dirty Gate/Manager experiment saved, hashed, and removed from worktree.
 - [x] Observation/Controller slice passes focused/full/race/vet/build gates and
   is pushed as `d93ea02`.
-- [ ] positive reservation overlay slice passes lifecycle/race gates and is
-  pushed.
+- [x] positive reservation overlay slice passes lifecycle/race/full/vet/build
+  gates and is pushed as `07666ef`; 1/48/256/4096 decision benchmarks allocate
+  zero and remain inside the revised measured limits.
 - [ ] capability/profile and pure policy slices pass and are pushed.
 - [ ] decision/capacity reporting is coherent and recent-reject hold is removed.
 - [ ] all deterministic scenarios pass without low-flow or request-scope lock.
