@@ -213,7 +213,8 @@ HTTP path/auth/body bound
   -> first upstream response bytes mark Prefill complete
   -> clean 2xx EOF or fallback terminal releases exactly once
   -> observer reconciliation updates the next counterfactual
-  -> the same decision record feeds logs, metrics, status, and Router projection
+  -> the request decision feeds logs/metrics; current Manager inspection feeds
+     status and Router projection
 ```
 
 ### 5.1 Ownership
@@ -224,12 +225,13 @@ HTTP path/auth/body bound
 | Work estimator | model-neutral Prefill selection estimate and conservative input safety upper | exact token IDs, cache state, admission |
 | RequestCost builder | one canonical rolling KV/Decode-horizon cost contract | HTTP, scheduler simulation, policy thresholds |
 | Capability initializer | immutable model identity, KV capacity/block size/hard limit, size geometry | active probing, learned speed, runtime threshold mutation |
-| vLLM observer | fresh KV/running/waiting/generation/preemption facts and identity epoch | request classification, reservations, admission |
-| Manager | atomic observed-plus-reserved state, lifecycle, reconciliation, bounded aggregates | HTTP mapping, policy threshold choice |
+| vLLM observer | fresh raw KV/running/waiting/generation/preemption facts and identity epoch | naming running as Decode, phase inference, reservations, admission |
+| Manager | atomic observed-plus-reserved state, phase upper bounds, lifecycle, reconciliation, bounded aggregates, current-capacity inspection | HTTP mapping, policy threshold choice |
 | ResourceSafetyGate | post-admit hard KV fit | Prefill classes, TPS, Router status |
 | PrefillQoSGate | request class, pending Prefill work, Decode-active Prefill budget, long-request exclusivity | KV safety, lifecycle, HTTP mapping |
-| Adapter | translate the policy outcome to HTTP and expose one coherent decision record | hidden policy or delayed unlock state |
-| Reporting | logs, metrics, status, Router-compatible projection | changing a decision |
+| AdmissionPolicy | ordered Gate evaluation and candidate-versus-minimum-probe scope proof on one snapshot | lifecycle, HTTP, telemetry state |
+| Adapter | translate the semantic policy outcome to HTTP and expose its immutable request decision | reason-to-scope guessing, hidden policy, delayed unlock state |
+| Reporting | request-decision logs/metrics plus current-capacity status and Router projection | rerunning Gates from partial fields, changing a decision |
 | Simulator | deterministic arrival, scheduler, lifecycle, and objective replay using production contracts | claiming GPU capacity from synthetic constants |
 
 One mutable quantity has one owner. A value may be copied into telemetry, but
@@ -287,6 +289,13 @@ declared output maximum. After each fresh observation, materialized KV moves to
 the observed base while the live request retains the future horizon. Tests must
 prove that this horizon is neither dropped nor double-counted.
 
+The same builder also creates one immutable minimum-production probe for
+current-capacity inspection. It uses a one-token selection/safety input and the
+production default rolling Decode horizon, then applies the same KV block
+rounding as a real request. A hand-written one-block probe with a zero Decode
+horizon is invalid because it can advertise capacity that normal traffic cannot
+actually reserve.
+
 The simulator's current behavior of using `reservedTokens` as `InputTokens`
 while setting future KV, future context, and Decode horizon to zero is invalid
 and must be removed.
@@ -339,6 +348,33 @@ block size, counters, and freshness remain coherent. Identity/capacity drift or
 counter reset closes intake for that epoch; transient fetch failure becomes
 stale only after the maximum age.
 
+vLLM `num_requests_running` is a raw scheduler fact, not a Decode-phase metric:
+it can contain both Prefill and Decode work. Likewise, `num_requests_waiting`
+means queued work that is receiving no scheduler service; it is future unknown
+Prefill demand, not an executing Prefill. The observer must preserve those raw
+names and must not manufacture phase certainty.
+
+The Manager derives a conservative Decode upper bound from raw observation and
+its own lifecycle evidence:
+
+```text
+observed Decode upper
+  = max(0,
+      observed running
+      - same-observation completed Decode credits
+      - backend-absorbed local requests still known to be in Prefill)
+
+effective Decode upper
+  = observed Decode upper
+    + local Prefill-complete requests not yet absorbed by that observation
+```
+
+Only a reservation whose backend presence is proven by reconciliation may be
+subtracted as known Prefill. Ambiguous or unattributed running remains in the
+Decode upper bound. The policy consumes only `decode_active_upper =
+(effective Decode upper > 0)`; it must not attach false precision to an exact
+Decode user count. Queued unknown work remains a separate load condition.
+
 `AggregateTPSProxy`, `MeanActiveTPSProxy`, and `TPSValid` are diagnostics only.
 No current Gate consumes them. This release must not be described as a runtime
 TPS predictor. Decode TPS is a controlled acceptance metric; runtime protection
@@ -350,10 +386,18 @@ The Manager is the single synchronization boundary. Under one lock it must:
 
 1. validate manifest, epoch, request ID, and canonical RequestCost;
 2. combine the last coherent observation with all not-yet-absorbed reservations;
-3. construct the post-admit counterfactual;
-4. run the pure policy;
+3. derive phase-safe current state and construct the post-admit
+   counterfactual;
+4. run the pure policy for the actual candidate and, only when needed, the
+   canonical minimum-production probe on that exact same pre-admit snapshot;
 5. create a reservation only for an enforce-mode admit; and
-6. return the decision and monotonic manager sequence.
+6. return the immutable admission decision, protection scope, counterfactual,
+   and monotonic manager sequence.
+
+The Manager also exposes a read-only current-capacity inspection. It evaluates
+only the canonical minimum-production probe under the same lock and returns a
+`CurrentCapacityRecord`; it never creates a reservation. Reporting may consume
+that record but may not reconstruct policy state independently.
 
 The request lifecycle is:
 
@@ -413,15 +457,23 @@ Decode-active Prefill budget.
 candidate selection Prefill tokens
 post-admit pending Prefill tokens and class counts
 post-admit hard KV
-effective active Decode sequences
-observed waiting
+Decode-active upper-bound boolean
+queued unknown sequences
 fresh preemption delta
 immutable capability geometry
 ```
 
-`effective active Decode` is observed running corrected by same-observation
-completed credits, plus Prefill-complete local reservations not yet absorbed by
-the observation. Waiting is separate and is never counted as active Decode.
+The counterfactual is split before Gate evaluation so each Gate receives only
+what it owns:
+
+```text
+ResourceSafetyInput = current effective KV + candidate reserved KV + hard limit
+PrefillQoSInput      = candidate class + post-admit pending work
+                       + Decode-active upper + queued unknown + preemption delta
+```
+
+Raw running, raw waiting, TPS proxies, HTTP fields, and Router fields do not
+enter either Gate. They remain observation or reporting data.
 
 ### 9.2 Ordered decisions
 
@@ -433,39 +485,55 @@ the observation. Waiting is separate and is never counted as active Decode.
 
 2. **Hard resource safety**
 
-   Reject with load scope when conservative post-admit KV exceeds the immutable
-   hard KV limit. This Gate uses safety input and rolling Decode horizon, never
-   the smaller lexical estimate.
+   Protect when conservative post-admit KV exceeds the immutable hard KV limit.
+   This Gate uses safety input and rolling Decode horizon, never the smaller
+   lexical estimate. It does not choose request versus load scope; scope is
+   proven by the canonical minimum-production probe in step 5.
 
 3. **Prefill class and long-request ownership**
 
-   - regular: may coexist only while the applicable aggregate budget fits;
+   - regular: may coexist only while the applicable aggregate budget fits and
+     no exclusive/quiescent owner is pending;
    - weighted: uses the aggregate budget and is blocked by pending exclusive or
      quiescent work;
    - exclusive: at most one long Prefill and no active Decode;
    - quiescent: requires no active Decode, waiting, or pending Prefill.
 
-   Unknown pending Prefill work from startup or an unattributed backend request
-   cannot be assigned a token budget. It therefore load-protects new admission
-   until a fresh observation clears it; this state has no timer or sticky latch.
+   Queued or otherwise unknown pending work cannot be assigned a token budget.
+   It therefore load-protects every new admission until a fresh observation
+   clears it; this state has no timer or sticky latch. Unknown running is not
+   silently converted to a token budget and remains in the Decode upper bound.
 
    A fresh preemption delta may only tighten non-regular admission until the
    next coherent sample. It does not create a cooldown or learned parameter.
 
 4. **Decode-active Prefill budget**
 
-   When `effective active Decode > 0`:
+   When `decode_active_upper` is true:
 
    ```text
    candidate selection Prefill <= regular
    post-admit total pending Prefill <= regular
    ```
 
-   A candidate larger than `regular` is request-scoped because a smaller request
-   can fit. Exhaustion of the post-admit total is load-scoped because current
-   pending work blocks even a fitting class until it progresses.
-
    When no Decode is active, the normal aggregate and long-request rules apply.
+
+5. **Protection scope proof**
+
+   Availability and malformed/unsupported request failures have direct
+   availability or request scope. Every otherwise valid resource or QoS
+   protection is classified on the same atomic snapshot:
+
+   ```text
+   minimum-production probe admits -> request_protect
+   minimum-production probe rejects -> load_protect
+   ```
+
+   This rule applies uniformly to hard KV, aggregate budget, long-request
+   ownership, and fresh-preemption protection. It avoids both failure modes:
+   closing the node because one large request does not fit, and leaving the node
+   open when even normal minimum traffic cannot fit. Scope is part of the
+   policy result; the Adapter must not infer it later from a reason string.
 
 This design deliberately does not multiply pending Prefill by Decode count. The
 linear multiplier has no established vLLM scheduler or GPU-capacity meaning.
@@ -485,7 +553,9 @@ Prefill owner bounds accumulation.
 
 many small Prefills with active Decode
   cumulative pending cannot exceed 32768
-  expected: no candidate-only accumulation bypass
+  expected: no candidate-only accumulation bypass; a rejected candidate is
+  request-scoped while the canonical minimum-production probe still fits and
+  load-scoped only after that probe also fails
 
 650K request on an upstream whose model context and hard KV both fit
   quiescent class
@@ -499,7 +569,7 @@ safe. Do not weaken the threshold merely to make a required scenario green.
 
 ## 10. Decision, HTTP, and reporting contract
 
-Policy returns one semantic result:
+The Manager returns one immutable `AdmissionDecisionRecord` for each request:
 
 ```text
 admit
@@ -508,26 +578,32 @@ load_protect
 availability_protect
 ```
 
-with one reason, manager sequence, and counterfactual snapshot. The adapter maps
-all protect outcomes to immediate OpenAI-compatible 429 responses in enforce
-mode. Shadow mode records the decision but creates no reservation and forwards.
+with one reason, manager sequence, and counterfactual snapshot. Scope has already
+been proven by the Policy against the canonical probe; the Adapter maps all
+protect outcomes to immediate OpenAI-compatible 429 responses in enforce mode.
+Shadow mode records the decision but creates no reservation and forwards.
 
-The same immutable decision record must update:
+That request record must update:
 
 - decision log and suppression counters;
 - attempt, fit, risk, reject, reason, and scope metrics;
 - last decision and last enforced reject state;
-- current reservation and pending-work metrics;
-- `/v1/upstream-status`; and
-- Router-compatible running/waiting/global-limit projection.
+
+Current reservation/pending metrics, `/v1/upstream-status`, and
+Router-compatible running/waiting/global-limit projection instead consume one
+immutable `CurrentCapacityRecord` from Manager inspection. This distinction is
+required because completion, cancellation, reconciliation, or a new observation
+can change current capacity without creating another request decision.
 
 Request-scoped protection must not close the node, because a smaller request may
 fit. Load protection projects constrained capacity. Availability protection
-projects unavailable. No reporting component may recompute policy from partial
-fields or keep protection active after the owning manager sequence changes.
-Remove the fixed 1,500-ms recent-reject projection hold: current inspection of
-the latest observation and Manager state owns Router compatibility. Historical
-reject time remains telemetry only and cannot delay recovery beyond fresh state.
+projects unavailable. The current-capacity record carries its owning manager and
+observation sequences so reporting cannot combine fields from different states.
+No reporting component may recompute policy from partial fields or keep
+protection active after the owning manager sequence changes. Remove the fixed
+1,500-ms recent-reject projection hold: current Manager inspection, not the last
+request decision, owns Router compatibility. Historical reject time remains
+telemetry only and cannot delay recovery beyond fresh state.
 
 ## 11. Production-shaped deterministic simulator
 
@@ -561,9 +637,20 @@ The simulator is a contract and causality test, not a GPU oracle.
    disconnect, timeout, duplicate terminal, observation overlap, and epoch drift;
 7. near-KV concurrent arrivals never exceed the hard limit;
 8. no running/waiting double count and no service for waiting requests;
-9. Manager state remains exact across all lifecycle transitions; if benchmark
+9. a backend-absorbed local Prefill is removed from the raw-running Decode
+   upper, while ambiguous or unattributed running remains conservatively
+   Decode-active;
+10. hard-KV, aggregate, long-owner, and preemption protection are request-scoped
+    whenever the canonical minimum-production probe fits the same snapshot, and
+    load-scoped only when that probe also fails;
+11. the minimum-production probe includes the production rolling Decode horizon
+    and block rounding; a one-block zero-horizon probe is rejected by parity
+    tests;
+12. current Router/status capacity recovers on the owning Manager sequence with
+    no fixed recent-reject hold and no stale last-decision projection;
+13. Manager state remains exact across all lifecycle transitions; if benchmark
    evidence requires cached aggregates, they equal the slow oracle;
-10. decision outcome, HTTP scope, logs, metrics, status, and Router projection
+14. decision outcome, HTTP scope, logs, metrics, status, and Router projection
     remain coherent for request, load, and availability protection.
 
 Synthetic Prefill speed and Decode TPS constants may test deterministic
@@ -709,12 +796,15 @@ authorized boundary.
 - [x] HTTP/simulator RequestCost drift identified.
 - [x] per-decision reservation scan identified as an unmeasured efficiency risk.
 - [x] old state-total and candidate-only multiplier risks documented.
-- [ ] this architecture plan passes three review passes, is committed alone,
-  and is pushed while the three executable experiments remain unstaged.
-- [ ] canonical RequestCost builder red/green and production/simulation parity.
+- [x] initial architecture plan passed three review passes, was committed alone,
+  and was pushed while the three executable experiments remained unstaged.
+- [x] canonical RequestCost builder red/green and production/simulation parity.
+- [x] corrective raw-phase, canonical-probe scope, and current-capacity
+  architecture review is committed and pushed before executable work resumes.
 - [ ] worker-driven replacement-wave simulator reproduces old red.
-- [ ] unified PrefillQoSGate passes focused green; Manager scan benchmarks decide
-  whether any aggregate optimization is justified.
+- [ ] unified PrefillQoSGate, phase upper bound, and candidate/probe scope proof
+  pass focused green; Manager scan benchmarks decide whether any aggregate
+  optimization is justified.
 - [ ] all mandatory production-shaped scenarios pass without low-flow lock.
 - [ ] coherent development source is committed and pushed without version bump.
 - [ ] complete pre-version matrix and three code reviews pass.
@@ -773,3 +863,31 @@ Pass 3, SOLID, efficiency, evidence, and overdesign:
   and
 - corrected `cc41264` from a soon-stale branch HEAD claim to the last executable
   baseline, so the plan-only commit cannot inherit or invalidate code evidence.
+
+Corrective source-contract review after the initial architecture commit:
+
+Pass 1, model and causality:
+
+- corrected the invalid assumption that vLLM `running` is an exact Decode count;
+- separated raw running, queued unknown work, lifecycle-proven Prefill, and the
+  conservative Decode-active upper bound; and
+- kept TPS proxies diagnostic-only rather than hiding a new feedback controller
+  inside phase inference.
+
+Pass 2, safety and scope:
+
+- replaced reason-based request/load mapping with an atomic
+  candidate-versus-minimum-production-probe proof;
+- required that the probe use the canonical RequestCost builder, rolling Decode
+  horizon, and KV block rounding; and
+- kept ambiguous running conservative while permitting only proven
+  backend-absorbed Prefill to reduce the Decode upper bound.
+
+Pass 3, SOLID, reporting, and recovery:
+
+- made AdmissionPolicy own scope and prohibited the Adapter from inferring it;
+- split immutable per-request decisions from current-capacity records so
+  lifecycle/observation changes cannot leave Router or the frontend on a stale
+  last reject; and
+- retained the simple Manager scan until benchmark evidence, avoiding a second
+  mutable ledger while adding no cache, learning, cooldown, retry, or queue.
