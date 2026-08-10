@@ -3706,3 +3706,88 @@ vet, full race, all builds, production-binary identity, lexical gates,
 simulation byte determinism and acceptance, ordered benchmarks, benchmark
 contracts, a clean pushed commit, local image, GPU gates, and the new nine-run
 Pareto matrix remain mandatory and incomplete.
+
+### 48.2 v0.12.8 complete source acceptance
+
+The executable correction and the preceding review record were committed and
+pushed as `a464671db1c381e9cb457ad36897f69ae259a308` on
+`codex/pig-v0.11.0-request-aware`. Before the complete matrix, the authoritative
+c21 repository was clean and both `HEAD` and its upstream resolved to that
+commit.
+
+The exact 162-file candidate archive and complete-matrix runner were:
+
+```text
+/workspace/incoming/pig-v0128-a464671-source.tar.gz
+SHA-256 5bfbabf7a5ed46fea49be9be340477599ecfce9e056994edccf42ad068985cbd
+
+/workspace/incoming/run-pig-v0128-complete-matrix-r1.sh
+SHA-256 75f3043c9bfd46b4f3bea70ae99b34bd5de168792a53a94c230bbd7c7a64c900
+```
+
+The complete matrix ran only inside `pig-v0124-workbench` on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`, using Go `1.24.13`, Linux
+`6.9.0-dstack`, and container `2c14ed1bca84`. All 28 rows exited zero:
+environment and version identity, formatting, retired-mode and no-active-
+calibration audits, Decode-envelope and observation-pairing contracts, lexical
+shape corpus, affected and full tests, vet, targeted and full race, all builds,
+production binary identity, policy-order tests, two simulations plus byte
+comparison and acceptance, B/C/C/B ordered benchmarks, both benchmark
+contracts, reservation-aware HTTP benchmarks, and estimator benchmarks.
+
+The immutable evidence is:
+
+```text
+/workspace/evidence/pig-v0128-dedicated-phase-c-r1-a464671
+evidence-sha256 SHA-256
+  7546add202302b060b88502d85a24477e079dc18d03a04703e0ce3602c07e533
+statuses.tsv SHA-256
+  150e846c24e227a9a02f8aa5b2b04fa2a35cbbca6b32d562569eb9e6eaa4287f
+production binary SHA-256
+  7313655b1ef4a2aed6ec7952fca3f8639cdc9a6afd6e8ea76ba83ff68de41005
+```
+
+An independent `sha256sum -c evidence-sha256` returned `OK` for every recorded
+environment, input, status, test, race, build, simulation, benchmark, contract,
+inventory, and binary artifact. The two simulation reports were byte-identical
+at SHA-256
+`1a8a4fcb0dd09d1eff8ca2d4b53475949faa81a793a642080a468d1ab29e6dd1`,
+contained `v0_12_8_aggregate`, excluded the retired candidate keys, and reported
+`acceptance=passed`.
+
+The deterministic aggregate was:
+
+```text
+metric                              v0.12.2       v0.12.8
+SLO-compliant output tokens/s         82.6044       102.6482
+raw completed output tokens/s         91.5250       103.6082
+TPS-floor violation seconds           20.7            4.8
+preemptions                            1              1
+maximum idle with demand seconds      15.3            0.4
+hard-fit idle rejects                  7              1
+admitted / arrivals                 146/280        166/280
+```
+
+This suite now contains the new terminal reconciliation scenario, so its
+aggregate must not be numerically compared with the older v0.12.7 suite as if
+the scenario set were unchanged. It remains deterministic model evidence, not
+a substitute for the controlled GPU Pareto gate.
+
+The ordered benchmark contracts passed. Median pre-forward HTTP cost was
+`13,407 ns` versus the v0.12.2 baseline's `12,673 ns` (`1.0579x`) with 33
+allocations unchanged. Manager decision cost was `212.1 ns` at zero live
+reservations, `3,407 ns` at 48, and `17,480 ns` at 256, all allocation-free;
+the 48- and 256-reservation ratios were `1.0181x` and `1.0087x`. Pure policy
+evaluation remained allocation-free and reached at most `106.75 ns`.
+Telemetry at 256 reservations was `61.481 us` (`1.0658x` baseline) with zero
+allocations. Estimation medians were `0.285 us` for 1 KiB, `1.974 us` for 64
+KiB, `27.743 us` for 1 MiB, `154.905 us` for 4 MiB, and `21.720 ms` for the
+adversarial 4 MiB many-string shape, all allocation-free and below the accepted
+100-ms extreme-input ceiling.
+
+The v0.12.8 source layer is accepted. No v0.12.8 image has been built or
+uploaded, no PIG runtime has been replaced, and vLLM, the CVM, Router, and
+`use1-cb` remain unchanged. This documentation append is non-executable and
+must be committed separately; the next local image must still be built from
+the exact executable commit `a464671db1c381e9cb457ad36897f69ae259a308`, not
+from an unverified working tree or a later documentation commit.
