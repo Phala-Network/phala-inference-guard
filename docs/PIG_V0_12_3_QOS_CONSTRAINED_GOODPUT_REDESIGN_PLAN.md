@@ -1,9 +1,9 @@
 # PIG v0.12.8 Evidence-First QoS-Constrained Goodput Remediation Plan
 
 Status: v0.12.7 failed the ordered Pareto gate and remains unpublished;
-v0.12.8 source and its exact local-only image are accepted; dedicated-CVM
-runtime, targeted GPU, ordered Pareto, independent audit, upload, and production
-gates remain open
+v0.12.8 source, exact local-only image, and dedicated-CVM runtime are accepted;
+targeted GPU, ordered Pareto, independent audit, upload, and production gates
+remain open
 
 This is the only execution plan for the active PIG v0.12.8 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
@@ -3843,3 +3843,73 @@ unchanged, the workbench remained bridge-only, and the runtime network retained
 exactly its original PIG and vLLM members.
 
 The v0.12.8 exact local-image layer is accepted. It remains unpublished and has
+not replaced the dedicated runtime. The next gate is a trap-protected PIG-only
+replacement on c21, followed by runtime identity/readiness checks, new targeted
+GPU lifecycle and QoS tests, and a completely new ordered Pareto matrix. vLLM,
+the CVM, production Router, and `use1-cb` must remain untouched.
+
+### 48.4 v0.12.8 dedicated-CVM runtime acceptance
+
+The local image replaced only PIG on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`. The CVM and vLLM were not restarted,
+rebuilt, or included in the Compose operation; Router and `use1-cb` were not
+queried or changed. The exact operation was limited to:
+
+```text
+docker compose ... up -d --no-deps --force-recreate --pull never pig
+```
+
+The trap-protected runner first locked the live v0.12.7 PIG container and image
+identities, the accepted v0.12.8 image ID, the previous runtime candidate
+Compose SHA-256, and the retained Pareto B rendered-config SHA-256. The original
+Pareto operational directory had been correctly removed by its cleanup trap,
+but the current container ID remained byte-identical to its recorded final
+restore identity. After removing only the secret value from comparison, the
+previous runtime candidate and retained B rendered configuration were
+byte-identical at SHA-256
+`9269d3b695eb9b45dcadeec11da5be14d31b266804faf24d239f145defb610f3`.
+The live container and rollback Compose secret fingerprints also matched
+without recording the secret. The generated candidate diff changed only:
+
+```text
+0.12.7-92e20b2-local -> 0.12.8-a464671-local
+```
+
+The runner completed with exit zero and did not execute its rollback branch.
+The accepted runtime evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/runs/pig-v0128-runtime-r1-a464671
+runner.sh SHA-256
+  e0ad304ab8b577c386a90d9229b12d749d19b5d7f2ee79e402ddb6746065f617
+SHA256SUMS SHA-256
+  4b1a000e2297a7264ef992eeed0b1c9fdaca7e7c74a35989caf98bf5069f0657
+PIG container
+  17534bef1a1d1626dae8919445b2f4e964a69e1fdff5411074a84715aa668bbb
+PIG image ID
+  sha256:da2f55a6d1d3ca6fb8f96334e5455b53ae32635e508c69a170e969e530e28cf5
+```
+
+Fresh independent `sha256sum -c SHA256SUMS` passed every evidence entry. PIG
+reported `PIG-v0.12.8`, revision `a464671db1c381e9cb457ad36897f69ae259a308`,
+default `enforce`, the 500-ms observer, and no production algorithm overrides.
+Initialization was passive and deterministic: source `automatic`, reason
+`metadata`, KV capacity/block/hard limit `862437/64/758912`, and Prefill profile
+`32768/131072/262144/131072`. No startup calibration or learned Prefill/KV rate
+was present, and the vLLM inference counters were byte-identical before and
+after PIG startup.
+
+Health returned 200; PIG and combined metrics returned 401 without
+authentication and 200 with authentication; `/v1/models` returned the expected
+Gemma model; the representative chat returned 200; and upstream status returned
+zero. The vLLM container ID
+`d45de8d3e572acb66e72469906f4a495238758cea4204d0a873b3ab51744c552`,
+image ID, `2026-08-09T10:03:59.648050825Z` StartedAt, restart count zero,
+OOM-false state, and GPU process identity were unchanged. Workbench remained
+bridge-only and the runtime network retained exactly PIG and vLLM. The complete
+PIG/vLLM log window had no panic, fatal, OOM, EngineCore failure, or traceback.
+
+The v0.12.8 dedicated runtime is accepted and remains active only on c21. The
+image remains unpublished. New targeted GPU lifecycle, low/no-flow, stale,
+near-KV, Decode-QoS, and completion-before-next-poll gates must pass before the
+new ordered Pareto matrix; no v0.12.7 result is inherited as v0.12.8 evidence.
