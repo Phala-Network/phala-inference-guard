@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 	"time"
@@ -556,54 +555,21 @@ func requestAwareAdapterCost(manifestID string, blockSize int64, input predictiv
 	if !known {
 		selectionInputTokens = cost.EstimatedInputHigh
 	}
-	if selectionInputTokens <= 0 || cost.EstimatedInputHigh > math.MaxInt64-cost.BoundedDecodeTokens {
+	if selectionInputTokens <= 0 {
 		return 0, domainpredictive.RequestCost{}, false
 	}
-	safetyInputTokens := cost.EstimatedInputHigh
-	if selectionInputTokens > safetyInputTokens {
-		safetyInputTokens = selectionInputTokens
-	}
-	if safetyInputTokens > math.MaxInt64-cost.BoundedDecodeTokens {
+	requestCost, err := domainpredictive.BuildRequestCost(domainpredictive.RequestCostInput{
+		ManifestID:             manifestID,
+		BlockSize:              blockSize,
+		SelectionPrefillTokens: selectionInputTokens,
+		SafetyInputTokens:      cost.EstimatedInputHigh,
+		DecodeHorizonTokens:    cost.BoundedDecodeTokens,
+		Confidence:             1,
+	})
+	if err != nil {
 		return 0, domainpredictive.RequestCost{}, false
 	}
-	activeContext := safetyInputTokens + cost.BoundedDecodeTokens
-	inputKV, valid := requestAwareRoundUp(safetyInputTokens, blockSize)
-	if !valid {
-		return 0, domainpredictive.RequestCost{}, false
-	}
-	totalKV, valid := requestAwareRoundUp(activeContext, blockSize)
-	if !valid || totalKV < inputKV {
-		return 0, domainpredictive.RequestCost{}, false
-	}
-	futureKV := totalKV - inputKV
-	return selectionInputTokens, domainpredictive.RequestCost{
-		ManifestID:  manifestID,
-		InputTokens: safetyInputTokens,
-		KV: domainpredictive.KVIncrement{
-			PhysicalKVUpper: totalKV,
-			ActiveKVUpper:   totalKV,
-		},
-		FutureKV: domainpredictive.KVIncrement{
-			PhysicalKVUpper: futureKV,
-			ActiveKVUpper:   futureKV,
-		},
-		UncachedPrefillUpper:     safetyInputTokens,
-		DecodeHorizonUpper:       cost.BoundedDecodeTokens,
-		DecodeSequencesUpper:     1,
-		ActiveContextTokensUpper: activeContext,
-		FutureContextTokensUpper: cost.BoundedDecodeTokens,
-		Confidence:               1,
-	}, true
-}
-
-func requestAwareRoundUp(value, blockSize int64) (int64, bool) {
-	if value <= 0 {
-		return 0, value == 0
-	}
-	if blockSize <= 0 || value > math.MaxInt64-(blockSize-1) {
-		return 0, false
-	}
-	return ((value + blockSize - 1) / blockSize) * blockSize, true
+	return selectionInputTokens, requestCost, true
 }
 
 func requestAwareAdapterSnapshot(provider requestAwareSnapshotProvider, now time.Time) (input runtimepredictive.RequestAwareInput, valid bool) {

@@ -143,7 +143,8 @@ func newSchedulerInvariantRunner(maximumNoWait int) *scenarioRunner {
 func schedulerInvariantRequest(id string, output float64) requestSpec {
 	return requestSpec{
 		id:             id,
-		reservedTokens: 64,
+		selectionInput: 64,
+		safetyInput:    64,
 		actualOutput:   output,
 	}
 }

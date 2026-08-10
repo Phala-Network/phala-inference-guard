@@ -135,7 +135,8 @@ func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
 	r.metrics.Arrivals++
 	effectiveKV := r.observed.usedTokens + r.unabsorbedReservations()
 	hardLimit := r.profile.KVHardLimitTokens
-	hardFit := effectiveKV >= 0 && request.reservedTokens > 0 && request.reservedTokens <= hardLimit-effectiveKV
+	reservedTokens := simulationReservedTokens(request)
+	hardFit := effectiveKV >= 0 && reservedTokens > 0 && reservedTokens <= hardLimit-effectiveKV
 	admit, hardProtect := r.decide(at, request, effectiveKV, hardFit)
 	if !admit {
 		r.metrics.Rejected++
@@ -440,7 +441,7 @@ func (r *scenarioRunner) unabsorbedReservations() int64 {
 	var tokens int64
 	for _, active := range r.active {
 		if active.unabsorbed {
-			tokens += active.spec.reservedTokens
+			tokens += simulationReservedTokens(active.spec)
 		}
 	}
 	return tokens
@@ -529,18 +530,26 @@ func (r *scenarioRunner) terminateAll(cause runtimepredictive.TerminalCause) {
 }
 
 func simulationRequestCost(request requestSpec) domainpredictive.RequestCost {
-	return domainpredictive.RequestCost{
-		ManifestID:  simulationManifestID,
-		InputTokens: request.reservedTokens,
-		KV: domainpredictive.KVIncrement{
-			PhysicalKVUpper: request.reservedTokens,
-			ActiveKVUpper:   request.reservedTokens,
-		},
-		UncachedPrefillUpper:     request.reservedTokens,
-		DecodeSequencesUpper:     1,
-		ActiveContextTokensUpper: request.reservedTokens,
-		Confidence:               1,
+	cost, err := domainpredictive.BuildRequestCost(domainpredictive.RequestCostInput{
+		ManifestID:             simulationManifestID,
+		BlockSize:              simulationBlockSize,
+		SelectionPrefillTokens: request.selectionInput,
+		SafetyInputTokens:      request.safetyInput,
+		DecodeHorizonTokens:    request.decodeHorizon,
+		Confidence:             1,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("simulation request cost for %q: %v", request.id, err))
 	}
+	return cost
+}
+
+func simulationReservedTokens(request requestSpec) int64 {
+	cost := simulationRequestCost(request)
+	if cost.KV.PhysicalKVUpper > cost.KV.ActiveKVUpper {
+		return cost.KV.PhysicalKVUpper
+	}
+	return cost.KV.ActiveKVUpper
 }
 
 func (r *scenarioRunner) recordIdleDuration(at time.Duration) {

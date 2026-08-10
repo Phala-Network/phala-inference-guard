@@ -30,7 +30,8 @@ type requestSpec struct {
 	at               time.Duration
 	selectionInput   int64
 	estimatedPrefill int64
-	reservedTokens   int64
+	safetyInput      int64
+	decodeHorizon    int64
 	actualInput      int64
 	actualOutput     float64
 	cancelAfter      time.Duration
@@ -138,13 +139,13 @@ func newCompletionBeforeNextPollScenario() scenarioSpec {
 	requests := []requestSpec{{
 		id: "completion-before-poll-first", at: 100 * time.Millisecond,
 		selectionInput: inputTokens, estimatedPrefill: inputTokens,
-		reservedTokens: inputTokens, actualInput: inputTokens, actualOutput: 15,
+		safetyInput: inputTokens, decodeHorizon: 15, actualInput: inputTokens, actualOutput: 15,
 	}}
 	for index := 0; index < secondWave; index++ {
 		requests = append(requests, requestSpec{
 			id: fmt.Sprintf("completion-before-poll-second-%02d", index), at: 2700 * time.Millisecond,
 			selectionInput: inputTokens, estimatedPrefill: inputTokens,
-			reservedTokens: inputTokens, actualInput: inputTokens, actualOutput: 15,
+			safetyInput: inputTokens, decodeHorizon: 15, actualInput: inputTokens, actualOutput: 15,
 		})
 	}
 	return scenarioSpec{
@@ -185,7 +186,7 @@ func newLongPrefillScenario(name string, background int, duration time.Duration,
 func longPrefillRequest(id string, at time.Duration, input int64, output float64, cancelAfter time.Duration) requestSpec {
 	return requestSpec{
 		id: id, at: at, selectionInput: input, estimatedPrefill: input,
-		reservedTokens: blockRoundUp(input + 1024), actualInput: input,
+		safetyInput: input, decodeHorizon: 256, actualInput: input,
 		actualOutput: output, cancelAfter: cancelAfter,
 	}
 }
@@ -198,7 +199,7 @@ func liveShapedPrefillRequest(
 ) requestSpec {
 	return requestSpec{
 		id: id, at: at, selectionInput: interferenceEstimate, estimatedPrefill: interferenceEstimate,
-		reservedTokens: blockRoundUp(safetyUpper + 1024), actualInput: actualInput, actualOutput: output,
+		safetyInput: safetyUpper, decodeHorizon: 256, actualInput: actualInput, actualOutput: output,
 	}
 }
 
@@ -276,56 +277,53 @@ func shapedRequest(prefix string, index int, at time.Duration, shape requestShap
 	switch shape {
 	case shapeTiny:
 		request.selectionInput = 64
+		request.safetyInput = 128
+		request.decodeHorizon = 64
 		request.actualInput = 96
 		request.actualOutput = 64
-		request.reservedTokens = blockRoundUp(128 + 256)
 	case shapeLarge:
 		request.selectionInput = 16_000
+		request.safetyInput = 20_000
+		request.decodeHorizon = 256
 		request.actualInput = 18_000
 		request.actualOutput = 256
-		request.reservedTokens = blockRoundUp(20_000 + 1024)
 	case shapeSmallLargeOutput:
 		request.selectionInput = 256
+		request.safetyInput = 512
+		request.decodeHorizon = 256
 		request.actualInput = 384
 		request.actualOutput = 5_000
-		request.reservedTokens = blockRoundUp(512 + 16_000)
 	case shapeLargeSmallOutput:
 		request.selectionInput = 16_000
+		request.safetyInput = 20_000
+		request.decodeHorizon = 96
 		request.actualInput = 18_000
 		request.actualOutput = 96
-		request.reservedTokens = blockRoundUp(20_000 + 256)
 	case shapeCancel:
 		request.selectionInput = 256
+		request.safetyInput = 512
+		request.decodeHorizon = 256
 		request.actualInput = 384
 		request.actualOutput = 8_000
-		request.reservedTokens = blockRoundUp(512 + 8_192)
 		request.cancelAfter = 800 * time.Millisecond
 	case shapeShortCompletion:
 		request.selectionInput = 128
+		request.safetyInput = 256
+		request.decodeHorizon = 32
 		request.actualInput = 192
 		request.actualOutput = 32
-		request.reservedTokens = blockRoundUp(256 + 128)
 	case shapeLongStreaming:
 		request.selectionInput = 256
+		request.safetyInput = 512
+		request.decodeHorizon = 256
 		request.actualInput = 384
 		request.actualOutput = 8_000
-		request.reservedTokens = blockRoundUp(512 + 8_192)
 	default:
 		request.selectionInput = 256
+		request.safetyInput = 512
+		request.decodeHorizon = 128
 		request.actualInput = 384
 		request.actualOutput = 128
-		request.reservedTokens = blockRoundUp(512 + 512)
 	}
 	return request
-}
-
-func blockRoundUp(tokens int64) int64 {
-	if tokens <= 0 {
-		return 0
-	}
-	remainder := tokens % simulationBlockSize
-	if remainder == 0 {
-		return tokens
-	}
-	return tokens + simulationBlockSize - remainder
 }
