@@ -4,9 +4,11 @@ Status: active architecture reset. This document is the only execution plan for
 the current goal. Historical v0.12 plans, images, runtime results, and rejected
 source experiments remain evidence only; they are not implementation authority.
 
-Current pushed development HEAD is `6d2c0e1`. No next `0.12.x` version is
-assigned. No image may be built, uploaded, or deployed until every pre-version
-gate in section 13 passes on one exact pushed commit.
+The last executable development HEAD is `6d2c0e1`; the architecture-reset plan
+is commit `021f146`. Later status-only or executable commits do not inherit old
+evidence automatically. No next `0.12.x` version is assigned. No image may be
+built, uploaded, or deployed until every pre-version gate in section 13 passes
+on one exact pushed commit.
 
 After context compression, resume from sections 3, 8, 11, and 14. Re-read the
 current Git status before inheriting any checklist item.
@@ -61,8 +63,9 @@ all-or-none test override is deliberately selected.
 CVM             c21b7281-2c25-4453-8a68-f39ec42d03b4
 workbench       pig-v0124-workbench
 repository      /workspace/src/phala-inference-guard-r3
-branch          codex/pig-v0.11.0-request-aware
-pushed HEAD     6d2c0e1
+branch                  codex/pig-v0.11.0-request-aware
+last executable HEAD    6d2c0e1
+architecture plan       021f146
 ```
 
 Do not run Go, race, simulation, benchmark, binary, or image gates on Windows.
@@ -85,31 +88,26 @@ The old-policy red report is:
 SHA-256 a461a8923ae7d0f5f2954d41b9636725854ee72236bc8df52d1a73ce72e59b22
 ```
 
-### 3.3 Unaccepted source state
+### 3.3 Rejected experiment archive
 
-The remote worktree currently contains an uncommitted Gate/Manager experiment:
+The uncommitted Gate/Manager experiment was archived and removed from the
+worktree after `021f146`. The repository was then verified clean.
 
 ```text
-modified
-  internal/runtime/predictive/admission_gates_test.go
-  internal/runtime/predictive/request_aware_manager.go
-  internal/runtime/predictive/request_aware_manager_test.go
-  internal/runtime/predictive/request_aware_policy.go
+/workspace/evidence/pig-v012-rejected-prearchitecture-gate-r1-021f146
 
-deleted
-  internal/runtime/predictive/decode_envelope.go
-  internal/runtime/predictive/decode_envelope_test.go
-  internal/runtime/predictive/interference_gate.go
+tracked.patch SHA-256
+  74138a2ecdf26637efcf716c0ebfbf551b3d99a506f4f5ce5b6d3126663f2134
 
-untracked
-  internal/runtime/predictive/prefill_qos_gate.go
-  internal/runtime/predictive/prefill_qos_gate_test.go
+prefill_qos_gate.go SHA-256
+  29c2d5a0820185b77e4444f2b0d32551a8d1ce4df47034cb7f2700c37b08b301
+
+prefill_qos_gate_test.go SHA-256
+  271764b597e35caf80d972c01a78c0e3461a73bc9d8b346f4589fae182017e65
 ```
 
-It is not accepted architecture and must not be completed incrementally. First
-save its exact patch and hash under `/workspace/evidence`; then restore the
-worktree to `6d2c0e1`. The Windows `tmp/pig-arch-source-r1` copy is scratch
-evidence only and must not be uploaded as source.
+The Windows `tmp/pig-arch-source-r1` copy remains scratch evidence only and
+must not be uploaded as source.
 
 The running c21 PIG remains the rejected, unpublished local v0.12.9 image. No
 source in this plan has been built or deployed.
@@ -675,8 +673,8 @@ separately authorized boundary.
 - [x] waiting is defined as contention evidence, not unconditional full lock.
 - [x] atomic Controller ownership and positive-only reservation overlay defined.
 - [x] fixed portable size bands replace context `/8` and `/2` scaling.
-- [ ] architecture-reset plan committed and pushed alone.
-- [ ] dirty Gate/Manager experiment saved, hashed, and removed from worktree.
+- [x] architecture-reset plan committed and pushed alone as `021f146`.
+- [x] dirty Gate/Manager experiment saved, hashed, and removed from worktree.
 - [ ] Observation/Controller slice passes focused/race gates and is pushed.
 - [ ] positive reservation overlay slice passes lifecycle/race gates and is
   pushed.
