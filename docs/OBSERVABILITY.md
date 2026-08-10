@@ -1,4 +1,4 @@
-# PIG v0.12.7 Observability
+# PIG v0.12.8 Observability
 
 PIG exports one predictive state. The request decision, status line, backend
 projection, and Router compatibility values must come from one captured
@@ -84,10 +84,12 @@ pressure is the rejected post-admit Prefill-times-Decode charge divided by the
 immutable regular-Prefill budget. It is an enforced, client-visible request
 rejection but not node-wide Router pressure.
 
-The effective sequence gauge is backend `running` plus Prefill-complete local
-Decode reservations not definitely absorbed by the current observation. It
-does not count a Prefill-incomplete reservation as both pending Prefill and
-active Decode.
+The effective sequence gauge starts from backend `running`, subtracts bounded
+`TerminalCompleted` credits that are attributable to that still-published
+observation, and adds Prefill-complete local Decode reservations not definitely
+absorbed by it. A post-terminal or overlapping replacement observation clears
+the corresponding credit before publication. It does not count a
+Prefill-incomplete reservation as both pending Prefill and active Decode.
 
 ## Router projection
 
@@ -137,7 +139,7 @@ retired architecture is exported.
 
 ## Status log
 
-The bounded periodic line starts with `PIG-v0.12.7` and includes mode, attempts,
+The bounded periodic line starts with `PIG-v0.12.8` and includes mode, attempts,
 fit/risk/unknown counts, enforced rejects, reservations, last action/reason,
 Prefill estimate, KV post-admit values, TPS proxy, Router scope and
 inspect capacity, observer freshness/identity/running/waiting, and compatibility

@@ -638,16 +638,17 @@ func requestAwareTelemetryObservation(
 		}()
 		observer = source.Snapshot(now)
 		return runtimepredictive.RequestAwareInput{
-			MetricsFresh:       observer.MetricsFresh,
-			IdentityValid:      observer.IdentityValid,
-			CapacityTokens:     observer.CapacityTokens,
-			UsedTokens:         observer.UsedTokens,
-			Running:            observer.Running,
-			Waiting:            observer.Waiting,
-			AggregateTPSProxy:  observer.AggregateTPS,
-			MeanActiveTPSProxy: observer.MeanActiveTPS,
-			TPSValid:           observer.TPSValid,
-			PreemptionObserved: observer.PreemptionObserved,
+			MetricsFresh:        observer.MetricsFresh,
+			IdentityValid:       observer.IdentityValid,
+			ObservationSequence: observer.ObservationSequence,
+			CapacityTokens:      observer.CapacityTokens,
+			UsedTokens:          observer.UsedTokens,
+			Running:             observer.Running,
+			Waiting:             observer.Waiting,
+			AggregateTPSProxy:   observer.AggregateTPS,
+			MeanActiveTPSProxy:  observer.MeanActiveTPS,
+			TPSValid:            observer.TPSValid,
+			PreemptionObserved:  observer.PreemptionObserved,
 		}, observer, true
 	}
 	input, valid = requestAwareAdapterSnapshot(provider, now)

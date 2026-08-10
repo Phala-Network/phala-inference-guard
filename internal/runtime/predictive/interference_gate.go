@@ -74,7 +74,7 @@ func (g *InterferenceGate) Evaluate(input InterferenceGateInput) InterferenceGat
 	}
 	result.PrefillClass = g.Classify(input.EstimatedPrefillTokens)
 	if input.EstimatedPrefillTokens <= 0 || input.Running < 0 || input.Waiting < 0 ||
-		input.EffectiveSequences < input.Running || input.PendingPrefillSequences < 0 ||
+		input.EffectiveSequences < 0 || input.PendingPrefillSequences < 0 ||
 		input.PendingPrefillTokens < 0 || input.PendingLongPrefillSequences < 0 ||
 		input.PendingLongPrefillSequences > input.PendingPrefillSequences ||
 		input.PendingQuiescentPrefillSequences < 0 ||

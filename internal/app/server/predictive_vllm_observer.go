@@ -41,6 +41,7 @@ type predictiveEpochInvalidator interface {
 
 type predictiveVLLMObserver struct {
 	mu                      sync.Mutex
+	pollMu                  sync.Mutex
 	metricsURL              string
 	modelIdentitySHA256     string
 	maximumKVTokens         int64
@@ -59,23 +60,25 @@ type predictiveVLLMObserver struct {
 	requestAwareInput       runtimepredictive.RequestAwareInput
 	requestAwareObservedAt  time.Time
 	requestAwareGeneration  uint64
+	observationSequence     uint64
 	requestAwareRunning     int
 	requestAwarePreemptions uint64
 	requestAwareHasBaseline bool
 }
 
 type predictiveObserverSnapshot struct {
-	ObservedAt         time.Time
-	MetricsFresh       bool
-	IdentityValid      bool
-	CapacityTokens     int64
-	UsedTokens         int64
-	Running            int
-	Waiting            int
-	AggregateTPS       float64
-	MeanActiveTPS      float64
-	TPSValid           bool
-	PreemptionObserved bool
+	ObservedAt          time.Time
+	MetricsFresh        bool
+	IdentityValid       bool
+	ObservationSequence uint64
+	CapacityTokens      int64
+	UsedTokens          int64
+	Running             int
+	Waiting             int
+	AggregateTPS        float64
+	MeanActiveTPS       float64
+	TPSValid            bool
+	PreemptionObserved  bool
 }
 
 type predictiveSampleDisposition uint8
@@ -162,6 +165,8 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	if o == nil {
 		return
 	}
+	o.pollMu.Lock()
+	defer o.pollMu.Unlock()
 	o.mu.Lock()
 	invalidated := o.epochInvalidated
 	o.mu.Unlock()
@@ -197,12 +202,21 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 		PendingPrefillSequences: sample.Waiting,
 		ActiveContextTokens:     sample.KVUsedTokens,
 	}
+	o.mu.Lock()
+	if o.observationSequence == ^uint64(0) {
+		o.mu.Unlock()
+		o.invalidateEpoch()
+		return
+	}
+	observationSequence := o.observationSequence + 1
+	o.mu.Unlock()
 	if err := o.coordinator.ReconcileSample(runtimepredictive.SampleWindow{
 		Observed: observed, StartedSequence: started, FinishedSequence: finished,
+		ObservationSequence: observationSequence,
 	}); err != nil {
 		return
 	}
-	o.publish(sample, observedAt)
+	o.publish(sample, observedAt, observationSequence)
 }
 
 func (o *predictiveVLLMObserver) sampleDisposition(sample telemetry.Sample, observedAt time.Time) predictiveSampleDisposition {
@@ -232,17 +246,18 @@ func (o *predictiveVLLMObserver) sampleDisposition(sample telemetry.Sample, obse
 	return predictiveSampleUsable
 }
 
-func (o *predictiveVLLMObserver) publish(sample telemetry.Sample, observedAt time.Time) {
+func (o *predictiveVLLMObserver) publish(sample telemetry.Sample, observedAt time.Time, observationSequence uint64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	input := runtimepredictive.RequestAwareInput{
-		MetricsFresh:       true,
-		IdentityValid:      !o.epochInvalidated,
-		CapacityTokens:     o.maximumKVTokens,
-		UsedTokens:         sample.KVUsedTokens,
-		Running:            sample.Running,
-		Waiting:            sample.Waiting,
-		PreemptionObserved: o.requestAwareHasBaseline && sample.Preemptions > o.requestAwarePreemptions,
+		MetricsFresh:        true,
+		IdentityValid:       !o.epochInvalidated,
+		ObservationSequence: observationSequence,
+		CapacityTokens:      o.maximumKVTokens,
+		UsedTokens:          sample.KVUsedTokens,
+		Running:             sample.Running,
+		Waiting:             sample.Waiting,
+		PreemptionObserved:  o.requestAwareHasBaseline && sample.Preemptions > o.requestAwarePreemptions,
 	}
 	if o.requestAwareHasBaseline && sample.Preemptions == o.requestAwarePreemptions && sample.Generation > o.requestAwareGeneration {
 		elapsed := observedAt.Sub(o.requestAwareObservedAt)
@@ -268,6 +283,7 @@ func (o *predictiveVLLMObserver) publish(sample telemetry.Sample, observedAt tim
 	o.requestAwareInput = input
 	o.requestAwareObservedAt = observedAt
 	o.requestAwareGeneration = sample.Generation
+	o.observationSequence = observationSequence
 	o.requestAwareRunning = sample.Running
 	o.requestAwarePreemptions = sample.Preemptions
 	o.requestAwareHasBaseline = true
@@ -319,7 +335,8 @@ func (o *predictiveVLLMObserver) Snapshot(now time.Time) predictiveObserverSnaps
 	observedAt := o.requestAwareObservedAt
 	return predictiveObserverSnapshot{
 		ObservedAt: observedAt, MetricsFresh: input.MetricsFresh, IdentityValid: input.IdentityValid,
-		CapacityTokens: input.CapacityTokens, UsedTokens: input.UsedTokens, Running: input.Running,
+		ObservationSequence: input.ObservationSequence,
+		CapacityTokens:      input.CapacityTokens, UsedTokens: input.UsedTokens, Running: input.Running,
 		Waiting: input.Waiting, AggregateTPS: input.AggregateTPSProxy, MeanActiveTPS: input.MeanActiveTPSProxy,
 		TPSValid: input.TPSValid, PreemptionObserved: input.PreemptionObserved,
 	}

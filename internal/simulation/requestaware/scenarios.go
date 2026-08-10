@@ -91,6 +91,7 @@ func simulationScenarios(seed int64) []scenarioSpec {
 		newUniformScenario("large-small-output", "output-horizon", 65_000, 2, shapeLargeSmallOutput, 4, 500*time.Millisecond, 2*time.Second),
 		newUniformScenario("cancel", "terminal", 20_000, 1, shapeCancel, 6, 500*time.Millisecond, time.Second),
 		newUniformScenario("short-completion", "terminal", 20_000, 1, shapeShortCompletion, 10, 500*time.Millisecond, 700*time.Millisecond),
+		newCompletionBeforeNextPollScenario(),
 		newUniformScenario("long-streaming", "terminal", 20_000, 1, shapeLongStreaming, 4, 500*time.Millisecond, 2*time.Second),
 		newLongPrefillScenario("prefill-weighted-budget", 0, 22*time.Second,
 			longPrefillRequest("weighted-200k", 100*time.Millisecond, 200*1024, 64, 0),
@@ -126,6 +127,31 @@ func simulationScenarios(seed int64) []scenarioSpec {
 			longPrefillRequest("blocked-short", 200*time.Millisecond, 32*1024, 64, 0),
 			longPrefillRequest("blocked-second-650k", 33400*time.Millisecond, 650*1024, 64, 0),
 			longPrefillRequest("post-prefill-short", 33400*time.Millisecond, 32*1024, 64, 0)),
+	}
+}
+
+func newCompletionBeforeNextPollScenario() scenarioSpec {
+	const (
+		inputTokens = int64(40 * 1024)
+		secondWave  = 6
+	)
+	requests := []requestSpec{{
+		id: "completion-before-poll-first", at: 100 * time.Millisecond,
+		selectionInput: inputTokens, estimatedPrefill: inputTokens,
+		reservedTokens: inputTokens, actualInput: inputTokens, actualOutput: 15,
+	}}
+	for index := 0; index < secondWave; index++ {
+		requests = append(requests, requestSpec{
+			id: fmt.Sprintf("completion-before-poll-second-%02d", index), at: 2700 * time.Millisecond,
+			selectionInput: inputTokens, estimatedPrefill: inputTokens,
+			reservedTokens: inputTokens, actualInput: inputTokens, actualOutput: 15,
+		})
+	}
+	return scenarioSpec{
+		name: "completion-before-next-poll", category: "terminal", duration: 18 * time.Second,
+		initialKVTokens: 100_000, capacityTokens: 4 * 1024 * 1024,
+		maximumNoWait: 16, aggregateTPSCap: 16 * simulationUncontendedTPS,
+		requests: requests,
 	}
 }
 

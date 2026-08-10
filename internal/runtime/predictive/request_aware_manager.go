@@ -20,6 +20,8 @@ type requestAwareStateSnapshot struct {
 	PendingQuiescentPrefillSequences int
 	PendingUnknownPrefillSequences   int
 	UnobservedActiveDecodeSequences  int
+	CompletedDecodeCredits           int
+	ObservationSequence              uint64
 }
 
 func (m *Manager) DecideRequestAwareAndReserve(
@@ -81,7 +83,11 @@ func (m *Manager) decideRequestAware(
 	}
 	input.UsedTokens = effectiveKV
 	input.ReservedTokens = 0
-	input.EffectiveSequences = addIntSaturating(input.Running, state.UnobservedActiveDecodeSequences)
+	observedActiveDecodeSequences := input.Running
+	if input.ObservationSequence == state.ObservationSequence {
+		observedActiveDecodeSequences = subtractIntFloorZero(input.Running, state.CompletedDecodeCredits)
+	}
+	input.EffectiveSequences = addIntSaturating(observedActiveDecodeSequences, state.UnobservedActiveDecodeSequences)
 	input.RequestReservedTokens = requestReservedTokens
 	input.SelectionInputTokens = selectionInputTokens
 	input.EstimatedPrefillTokens = selectionInputTokens
@@ -121,6 +127,8 @@ func (m *Manager) requestAwareStateLocked(policy *RequestAwarePolicy) requestAwa
 	snapshot := requestAwareStateSnapshot{
 		PendingPrefillTokens:           state.Upper.UncachedPrefillTokens,
 		PendingUnknownPrefillSequences: state.Upper.PendingPrefillSequences,
+		CompletedDecodeCredits:         m.retired.CompletedDecodeSequences(),
+		ObservationSequence:            m.observationSequence,
 	}
 	// Existing backend work has no attributable lexical estimate, so preserve
 	// its observed safety upper. Local reservations replace only their own

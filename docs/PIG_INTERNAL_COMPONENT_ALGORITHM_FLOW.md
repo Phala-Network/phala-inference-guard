@@ -1,6 +1,6 @@
-# PIG v0.12.7 Internal Algorithm Flow
+# PIG v0.12.8 Internal Algorithm Flow
 
-PIG v0.12.7 has one admission architecture and one upstream. Components are
+PIG v0.12.8 has one admission architecture and one upstream. Components are
 separated by ownership so request parsing, backend observation, policy,
 reservation lifecycle, proxying, and telemetry do not mutate each other's
 state.
@@ -58,12 +58,13 @@ pressure:
   Decode sequences must not exceed the immutable regular-Prefill budget;
 - any request exceeding hard post-admit KV is protected.
 
-Effective Decode sequences start with fresh backend `running`. Manager adds only
-a Prefill-complete local reservation not definitely absorbed by that
-observation. A Prefill-incomplete reservation charges pending Prefill and KV but
-does not also become an active Decode user.
+Effective Decode sequences start with fresh backend `running`. Manager subtracts
+only bounded completed-Decode credits attributable to that exact published
+observation, then adds a Prefill-complete local reservation not definitely
+absorbed by it. A Prefill-incomplete reservation charges pending Prefill and KV
+but does not also become an active Decode user.
 
-Generation TPS remains observation-only diagnostic data in v0.12.7. It is used
+Generation TPS remains observation-only diagnostic data in v0.12.8. It is used
 to evaluate QoS in controlled GPU experiments, but it does not authorize or
 reject a request. The Decode envelope uses only deterministic request work,
 immutable capability, coherent sequence state, and live reservations. Its
@@ -87,9 +88,13 @@ or disconnect, local protection, expiration, and shutdown. The Manager retains
 bounded tombstones so duplicate late events cannot release new capacity.
 
 Observer reconciliation uses a sample window sequence. Reservations created
-after a metrics scrape begins are not accidentally absorbed by that scrape.
-Explicit backend epoch drift invalidates intake while preserving ownership of
-old reservations until their terminal event.
+after a metrics scrape begins are not accidentally absorbed by that scrape. A
+`TerminalCompleted` credit is created only when the completed observation's
+running and resource lower bounds cover all absorbed local Decode reservations.
+An observation that overlaps or follows the terminal clears the credit before
+publishing its replacement running count. Explicit backend epoch drift
+invalidates intake while preserving ownership of old reservations until their
+terminal event.
 
 ## Observation failure
 

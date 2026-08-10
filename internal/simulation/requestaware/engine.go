@@ -37,13 +37,14 @@ type scheduledRequest struct {
 }
 
 type observedState struct {
-	usedTokens   int64
-	running      int
-	waiting      int
-	aggregateTPS float64
-	tps          float64
-	tpsValid     bool
-	at           time.Duration
+	usedTokens          int64
+	running             int
+	waiting             int
+	aggregateTPS        float64
+	tps                 float64
+	tpsValid            bool
+	observationSequence uint64
+	at                  time.Duration
 }
 
 type scenarioRunner struct {
@@ -87,7 +88,7 @@ func runScenario(
 			running:    spec.backgroundRunning,
 		},
 	}
-	if policyName == PolicyV0127 {
+	if policyName == PolicyV0128 {
 		runner.manager = runtimepredictive.NewManager(simulationManifestID, domainpredictive.VirtualState{
 			PhysicalKVUpper:     spec.initialKVTokens,
 			ActiveKVUpper:       spec.initialKVTokens,
@@ -180,7 +181,7 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 	case PolicyV0122:
 		return r.decideV0122(request, effectiveKV, hardFit, metricsFresh, preemptionCooldown)
 	}
-	if r.policyName != PolicyV0127 || r.policy == nil || r.manager == nil {
+	if r.policyName != PolicyV0128 || r.policy == nil || r.manager == nil {
 		return false, true
 	}
 	r.productionPolicyCalls++
@@ -191,15 +192,16 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 		request.selectionInput,
 		r.policy,
 		runtimepredictive.RequestAwareInput{
-			MetricsFresh:       metricsFresh,
-			IdentityValid:      true,
-			CapacityTokens:     r.capacityTokens(),
-			Running:            r.observed.running,
-			Waiting:            r.observed.waiting,
-			AggregateTPSProxy:  r.observed.aggregateTPS,
-			MeanActiveTPSProxy: r.observed.tps,
-			TPSValid:           r.observed.tpsValid,
-			PreemptionObserved: preemptionCooldown,
+			MetricsFresh:        metricsFresh,
+			IdentityValid:       true,
+			ObservationSequence: r.observed.observationSequence,
+			CapacityTokens:      r.capacityTokens(),
+			Running:             r.observed.running,
+			Waiting:             r.observed.waiting,
+			AggregateTPSProxy:   r.observed.aggregateTPS,
+			MeanActiveTPSProxy:  r.observed.tps,
+			TPSValid:            r.observed.tpsValid,
+			PreemptionObserved:  preemptionCooldown,
 		},
 	)
 	switch result.Decision.Action {
@@ -331,16 +333,23 @@ func (r *scenarioRunner) poll(at time.Duration) {
 			tpsValid = tps > 0
 		}
 	}
-	r.observed = observedState{
-		usedTokens:   used,
-		running:      running,
-		waiting:      waiting,
-		aggregateTPS: aggregateTPS,
-		tps:          tps,
-		tpsValid:     tpsValid,
-		at:           at,
+	observationSequence := r.observed.observationSequence
+	if r.manager != nil {
+		if observationSequence == ^uint64(0) {
+			panic("simulation observation sequence overflow")
+		}
+		observationSequence++
 	}
-	r.lastObservedGeneration = r.metrics.CompletionTokens
+	nextObserved := observedState{
+		usedTokens:          used,
+		running:             running,
+		waiting:             waiting,
+		aggregateTPS:        aggregateTPS,
+		tps:                 tps,
+		tpsValid:            tpsValid,
+		observationSequence: observationSequence,
+		at:                  at,
+	}
 	if r.manager != nil {
 		started := r.manager.StartSampleWindow()
 		finished := r.manager.EventSequence()
@@ -353,12 +362,15 @@ func (r *scenarioRunner) poll(at time.Duration) {
 				PendingPrefillSequences: waiting,
 				ActiveContextTokens:     used,
 			},
-			StartedSequence:  started,
-			FinishedSequence: finished,
+			StartedSequence:     started,
+			FinishedSequence:    finished,
+			ObservationSequence: observationSequence,
 		}); err != nil {
 			panic(fmt.Sprintf("simulation reconcile: %v", err))
 		}
 	}
+	r.observed = nextObserved
+	r.lastObservedGeneration = r.metrics.CompletionTokens
 	for _, active := range r.active {
 		active.unabsorbed = false
 	}

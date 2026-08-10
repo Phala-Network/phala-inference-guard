@@ -1,11 +1,11 @@
-# PIG v0.12.7 Evidence-First QoS-Constrained Goodput Remediation Plan
+# PIG v0.12.8 Evidence-First QoS-Constrained Goodput Remediation Plan
 
-Status: v0.12.6 failed the ordered Pareto gate and remains unpublished; the
-exact v0.12.7 source correction, immutable local image, dedicated-CVM runtime,
-and targeted GPU gates passed; ordered Pareto, upload, and production gates
-remain open
+Status: v0.12.7 failed the ordered Pareto gate and remains unpublished; the
+v0.12.8 terminal-reconciliation red is valid and focused implementation is in
+progress; complete source, image, dedicated-CVM, ordered Pareto, upload, and
+production gates remain open
 
-This is the only execution plan for the active PIG v0.12.7 remediation. Sections
+This is the only execution plan for the active PIG v0.12.8 remediation. Sections
 8 through 24 retain the v0.12.3 design, publication, and failed controlled-live
 history; section 25 and later supersede that candidate. Section 29 supersedes
 every earlier instruction to use the shared builder or the old `use1-cb` CVM as
@@ -491,7 +491,14 @@ next v0.12 patch. A 30-minute canary is provisional evidence, not general proof.
   completed on the dedicated CVM.
 - [x] one exact v0.12.7 local image passed image contract, dedicated-CVM
   runtime, and targeted GPU gates.
-- [ ] the completely new v0.12.7 ordered Pareto matrix passes every section 4
+- [x] the completely new v0.12.7 ordered Pareto matrix and independent audit
+  rejected the candidate for required-scenario loss and no material gain.
+- [x] v0.12.8 completed-Decode terminal reconciliation focused red is valid.
+- [ ] v0.12.8 focused implementation, complete source matrix, three reviews,
+  and push pass on the dedicated CVM.
+- [ ] one exact v0.12.8 local image passes image contract, dedicated-CVM
+  runtime, and targeted GPU gates.
+- [ ] the completely new v0.12.8 ordered Pareto matrix passes every section 4
   condition before upload.
 - [ ] 30-minute `use1-cb` canary completed without a stop rule.
 - [ ] final Router/CVM state and release conclusion recorded.
@@ -3593,3 +3600,109 @@ state machine and public configuration. The red must demonstrate the exact
 causal false rejection before implementation, and complete new source plus GPU
 Pareto evidence is required before publication. v0.12.7 remains rejected and
 unpublished; production Router and `use1-cb` remain unchanged.
+
+### 48.1 v0.12.8 source correction and review status
+
+The authoritative working repository remains
+`/workspace/src/phala-inference-guard-r3` inside `pig-v0124-workbench` on
+`c21b7281-2c25-4453-8a68-f39ec42d03b4`. Its base commit is
+`04651765341b8d2cbe7b70725ebd2298e8358f72`; the v0.12.8 changes described
+below are still uncommitted. No image, PIG runtime, vLLM, Router, or production
+node was changed.
+
+The original completion-before-next-poll red reproduced `2 admitted / 5
+rejected` from seven arrivals without completion credit. Its evidence is under
+`v0128-simulation-completion-before-poll-red-r1-0465176`; the `SHA256SUMS`
+SHA-256 is `05513a42cb27ecfec6e5b47d3958deb9ca362c3622fc816f27cff4f65a5b6826`.
+The first v0.12.8 simulation and CLI correction reached `7/7/0`, zero
+preemptions, and `acceptance=passed`; the CLI evidence `SHA256SUMS` SHA-256 is
+`f72bd0186e5999c1c9b1c777f85bd77da8ce3d759173b4b4a4359a9aff0eb150`.
+
+Review then found that the first completion-credit implementation could use a
+pre-existing unowned backend Decode as evidence that a local Decode had been
+absorbed. The focused red preserved `running=1` but calculated
+`effective_sequences=0`; its `SHA256SUMS` SHA-256 is
+`eb5ca5a166df6c61f3fb246e2e668eba38ed93d9d9613f9a9059e65d7b907764`.
+The first correction required the observation to cover the previous unowned
+resource floor plus the local reservation; its focused green `SHA256SUMS`
+SHA-256 is `25b034b015400264f02ddc50878d7fb8237ffcd451ee5887c3bb96b886fada3c`.
+
+A second review found a publish-pairing race: the observer reconciled Manager
+state before publishing the corresponding `RequestAwareInput`. During that
+gap, a request could combine completion credit from the new observation with
+raw `running` from the old observation. The focused red at
+`v0128-observation-sequence-red-r1-0465176` proved the mismatch and has
+`SHA256SUMS` SHA-256
+`ca91facea591608e69991211544454d6f71a5cddaa4eeb65e3bde9d7f21ad8bc`.
+
+The correction introduces one internal, monotonic observation sequence. The
+observer serializes polls, sends the next sequence to `ReconcileSample`, and
+publishes that same sequence only after reconciliation succeeds. Manager stores
+the reconciled sequence; completion credit is subtracted only when the HTTP
+input carries the same sequence. Initial state uses sequence zero, production
+polls begin at one, failed scrape or reconciliation does not advance the
+published sequence, overflow invalidates the epoch, and rebase resets Manager
+sequence state. The sequence is transported through the observer telemetry
+snapshot used by the real adapter; it is not a public option, metric, log
+dimension, or policy input. The first focused green has `SHA256SUMS` SHA-256
+`df483b46353ef65a30fd87c0d5e898bbb5460e85b4721c5d70b9d076a461ee7e`.
+
+The first affected run after the external-Decode correction exposed a separate
+conservative double count: a local request already visible during Prefill was
+treated as unowned in the next sample and added again after Prefill completion.
+The simulation correctly failed back to `2/7/5`; the retained failed evidence
+is `v0128-affected-green-r2-0465176`, whose `SHA256SUMS` SHA-256 is
+`995bbf60a3eb06d216420e4b77b4a3dcd330d35449f8dd4e1f14b2eed647dc12`.
+
+Manager now tracks whether a forwarded reservation's materialized floor was
+covered by a complete backend observation. Previously covered local presence
+is removed from the previous unowned floor before evaluating the next sample;
+new local presence is accepted only when running, physical KV, active KV, and
+active context cover the preserved unowned floor plus the candidate. This
+keeps an unchanged external Decode unowned while avoiding double counting a
+local Prefill already seen by the backend. Presence affects only eligibility
+for completed Decode credit; it does not release Prefill or KV accounting.
+Focused Manager and simulation evidence is under
+`v0128-backend-presence-green-r1-0465176`, with `SHA256SUMS` SHA-256
+`abe782b269b17ca75c3a7dc146d994378cb6219d18596fdad36f83ca755ffdc2`.
+The deterministic simulator now advances and passes the same observation
+sequence as production instead of relying on the zero-value compatibility
+path.
+
+The final affected r4 run covered the predictive and server packages, both
+package race tests, simulation, simulation CLI, metrics, formatting, and
+`git diff --check`. Every row exited zero. Its evidence is under
+`v0128-affected-green-r4-0465176`; the `SHA256SUMS` SHA-256 is
+`84575d8bc8f0ed0552760caf05d411aca832d17e4ca790fd9f12de17f536def7`.
+
+Review pass 1, model and causality: holding raw `running` constant while changing
+only the observation identity now changes whether credit can be used. A
+separate test proves unchanged external work cannot establish local presence,
+while an observed local Prefill remains attributable after Prefill completion.
+The real adapter snapshot path and deterministic simulator both preserve the
+same identity; a unit-only side channel is not being mistaken for production
+wiring.
+
+Review pass 2, lifecycle and safety: failed and transient observations retain
+the old published pair until freshness expiry; failed reconciliation does not
+publish or advance; post-terminal and overlapping samples retain the existing
+retired-queue rules; only `TerminalCompleted` on a Prefill-complete, absorbed
+local reservation creates credit. Duplicate terminal, bounded eviction,
+external work, epoch invalidation, rebase, overflow, and concurrent Manager and
+observer paths remain conservative. Raw observer metrics and Router projection
+are not rewritten by either presence or credit.
+
+Review pass 3, SOLID and efficiency: Manager remains the sole owner of
+reservation presence, reconciliation, credit, and atomic admission; observer
+owns sequence publication; adapter only transports the paired snapshot; policy
+remains pure. The request hot path adds one integer equality check and no new
+scan or allocation. Presence reconciliation reuses the existing
+O(live-reservations) observation pass, and poll serialization occurs only on
+the 500-ms observer path. No learner, calibration, timer, public tuning
+parameter, or additional lifecycle container was added.
+
+This is affected-package evidence, not complete source acceptance. Full tests,
+vet, full race, all builds, production-binary identity, lexical gates,
+simulation byte determinism and acceptance, ordered benchmarks, benchmark
+contracts, a clean pushed commit, local image, GPU gates, and the new nine-run
+Pareto matrix remain mandatory and incomplete.

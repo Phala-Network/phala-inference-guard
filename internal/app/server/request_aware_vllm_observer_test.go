@@ -50,11 +50,13 @@ func TestRequestAwareObserverStartupProbeIsTheFirstTPSBaseline(t *testing.T) {
 	hasBaseline := observer.requestAwareHasBaseline
 	baselineObservedAt := observer.requestAwareObservedAt
 	baselineGeneration := observer.requestAwareGeneration
+	initialObservationSequence := observer.requestAwareInput.ObservationSequence
 	observer.mu.Unlock()
 	close(releaseRequest)
 	defer observer.Close()
-	if !hasBaseline || baselineObservedAt != observedAt || baselineGeneration != 100 {
-		t.Fatalf("startup request-aware baseline=%t/%s/%d, want true/%s/100", hasBaseline, baselineObservedAt, baselineGeneration, observedAt)
+	if !hasBaseline || baselineObservedAt != observedAt || baselineGeneration != 100 || initialObservationSequence != 0 {
+		t.Fatalf("startup request-aware baseline=%t/%s/%d sequence=%d, want true/%s/100/0",
+			hasBaseline, baselineObservedAt, baselineGeneration, initialObservationSequence, observedAt)
 	}
 }
 

@@ -36,6 +36,8 @@ type stablePrefillTestCoordinator struct {
 	sequence        uint64
 	reconciliations int
 	invalidations   int
+	reconcileErr    error
+	samples         []runtimepredictive.SampleWindow
 }
 
 func (c *stablePrefillTestCoordinator) StartSampleWindow() uint64 {
@@ -48,11 +50,12 @@ func (c *stablePrefillTestCoordinator) EventSequence() uint64 {
 	return c.StartSampleWindow()
 }
 
-func (c *stablePrefillTestCoordinator) ReconcileSample(runtimepredictive.SampleWindow) error {
+func (c *stablePrefillTestCoordinator) ReconcileSample(sample runtimepredictive.SampleWindow) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.reconciliations++
-	c.mu.Unlock()
-	return nil
+	c.samples = append(c.samples, sample)
+	return c.reconcileErr
 }
 
 func (c *stablePrefillTestCoordinator) InvalidateEpoch() bool {
@@ -66,6 +69,70 @@ func (c *stablePrefillTestCoordinator) counts() (int, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.reconciliations, c.invalidations
+}
+
+func (c *stablePrefillTestCoordinator) setReconcileError(err error) {
+	c.mu.Lock()
+	c.reconcileErr = err
+	c.mu.Unlock()
+}
+
+func (c *stablePrefillTestCoordinator) lastSample() (runtimepredictive.SampleWindow, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.samples) == 0 {
+		return runtimepredictive.SampleWindow{}, false
+	}
+	return c.samples[len(c.samples)-1], true
+}
+
+func TestPredictiveVLLMObserverPublishesOnlyReconciledObservationSequence(t *testing.T) {
+	clock := &adapterTestClock{now: time.Unix(3_500, 0)}
+	coordinator := &stablePrefillTestCoordinator{}
+	fixture := &observerMetricsFixture{body: observerMetricsWithGeneration(1_000, 0.10, 1, 0, 0, 100, true)}
+	server := httptest.NewServer(fixture)
+	defer server.Close()
+	observer := newManualPredictiveVLLMObserver(server.URL, 1_000, coordinator, clock.Now)
+
+	observer.poll(context.Background())
+	first := observer.RequestAwareInput(clock.Now())
+	firstObserver := observer.Snapshot(clock.Now())
+	firstSample, ok := coordinator.lastSample()
+	if !ok || first.ObservationSequence != 1 || firstSample.ObservationSequence != first.ObservationSequence ||
+		firstObserver.ObservationSequence != first.ObservationSequence {
+		t.Fatalf("first observation input/snapshot/sample=%+v/%+v/%+v, want paired sequence 1",
+			first, firstObserver, firstSample)
+	}
+
+	clock.Advance(500 * time.Millisecond)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.20, 1, 0, 0, 110, true))
+	observer.poll(context.Background())
+	second := observer.RequestAwareInput(clock.Now())
+	secondObserver := observer.Snapshot(clock.Now())
+	secondSample, _ := coordinator.lastSample()
+	if second.ObservationSequence != 2 || secondSample.ObservationSequence != second.ObservationSequence ||
+		secondObserver.ObservationSequence != second.ObservationSequence || second.UsedTokens != 200 {
+		t.Fatalf("second observation input/snapshot/sample=%+v/%+v/%+v, want paired sequence 2",
+			second, secondObserver, secondSample)
+	}
+
+	coordinator.setReconcileError(fmt.Errorf("fixture reconcile failure"))
+	clock.Advance(500 * time.Millisecond)
+	fixture.Set(observerMetricsWithGeneration(1_000, 0.30, 1, 0, 0, 120, true))
+	observer.poll(context.Background())
+	failed := observer.RequestAwareInput(clock.Now())
+	failedSample, _ := coordinator.lastSample()
+	if failedSample.ObservationSequence != 3 || failed.ObservationSequence != 2 || failed.UsedTokens != 200 {
+		t.Fatalf("failed reconciliation advanced publication: input/sample=%+v/%+v", failed, failedSample)
+	}
+
+	coordinator.setReconcileError(nil)
+	observer.poll(context.Background())
+	recovered := observer.RequestAwareInput(clock.Now())
+	recoveredSample, _ := coordinator.lastSample()
+	if recovered.ObservationSequence != 3 || recoveredSample.ObservationSequence != recovered.ObservationSequence || recovered.UsedTokens != 300 {
+		t.Fatalf("recovered observation input/sample=%+v/%+v, want paired sequence 3", recovered, recoveredSample)
+	}
 }
 
 func TestPredictiveVLLMObserverTransientScrapeExpiresButDoesNotInvalidateEpoch(t *testing.T) {

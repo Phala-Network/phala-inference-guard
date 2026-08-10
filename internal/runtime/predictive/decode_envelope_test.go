@@ -156,6 +156,26 @@ func TestV0127InterferenceGateDoesNotOwnDecodeActivity(t *testing.T) {
 	}
 }
 
+func TestV0128InterferenceGateAcceptsReconciledDecodeBelowRawRunning(t *testing.T) {
+	gate, err := NewInterferenceGate(InterferenceGateConfig{
+		PrefillRegularTokens:         64 * 1024,
+		PrefillExclusiveTokens:       256 * 1024,
+		PrefillQuiescentTokens:       512 * 1024,
+		PrefillAggregateBudgetTokens: 256 * 1024,
+	})
+	if err != nil {
+		t.Fatalf("NewInterferenceGate: %v", err)
+	}
+	result := gate.Evaluate(InterferenceGateInput{
+		EstimatedPrefillTokens: 4 * 1024,
+		Running:                12,
+		EffectiveSequences:     0,
+	})
+	if !result.Admit || result.HardProtection || result.Reason != RequestAwareReasonOpen {
+		t.Fatalf("reconciled InterferenceGate result=%+v, want raw running independent of active Decode", result)
+	}
+}
+
 func TestV0127ManagerSumsPendingPrefillWithoutInventingDecodeUsers(t *testing.T) {
 	const kib = int64(1024)
 	policy := newPrefillRequestAwareTestPolicy(t)

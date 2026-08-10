@@ -99,6 +99,7 @@ func (c RequestAwareConfig) decodeEnvelopeConfig() DecodeEnvelopeConfig {
 type RequestAwareInput struct {
 	MetricsFresh                     bool
 	IdentityValid                    bool
+	ObservationSequence              uint64
 	CapacityTokens                   int64
 	UsedTokens                       int64
 	ReservedTokens                   int64

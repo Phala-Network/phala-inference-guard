@@ -196,6 +196,436 @@ func TestV0127RequestAwareManagerCountsCompletedDecodeAcrossAssimilation(t *test
 	})
 }
 
+func TestV0128RequestAwareManagerRetiresCompletedDecodeFromPublishedRunning(t *testing.T) {
+	const (
+		kib      = int64(1024)
+		waveSize = 12
+	)
+	policy := newPrefillRequestAwareTestPolicy(t)
+	manager := NewManager("request-aware-test", domain.VirtualState{})
+	idle := RequestAwareInput{
+		MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * kib,
+	}
+	cost := requestAwareManagerCost(4*kib, 512)
+
+	firstWave := make([]string, 0, waveSize)
+	for index := range waveSize {
+		requestID := fmt.Sprintf("absorbed-first-wave-%d", index)
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(1, int64(index)), requestID, cost, 4*kib, policy, idle,
+		)
+		if !result.Reserved || !manager.MarkForwarded(requestID) || !manager.MarkPrefillComplete(requestID) {
+			t.Fatalf("first wave %d lifecycle=%+v", index, result)
+		}
+		firstWave = append(firstWave, requestID)
+	}
+	observedKV := int64(waveSize) * (4*kib + 512)
+	reconcileRequestAwareManagerState(t, manager, domain.VirtualState{
+		PhysicalKVUpper: observedKV, ActiveKVUpper: observedKV,
+		DecodeSequences: waveSize, ActiveContextTokens: observedKV,
+	})
+	for _, requestID := range firstWave {
+		if !manager.Terminate(requestID, TerminalCompleted) {
+			t.Fatalf("completed first wave terminal failed for %s", requestID)
+		}
+	}
+
+	stale := idle
+	stale.Running = waveSize
+	secondWave := make([]string, 0, waveSize)
+	protected := 0
+	for index := range waveSize {
+		requestID := fmt.Sprintf("stale-second-wave-%d", index)
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(2, int64(index)), requestID, cost, 4*kib, policy, stale,
+		)
+		if result.Reserved {
+			secondWave = append(secondWave, requestID)
+			continue
+		}
+		if result.Decision.Reason == RequestAwareReasonDecodeInterference {
+			protected++
+		}
+	}
+	for _, requestID := range secondWave {
+		if !manager.Terminate(requestID, TerminalExpired) {
+			t.Fatalf("second-wave cleanup failed for %s", requestID)
+		}
+	}
+	if len(secondWave) != waveSize || protected != 0 {
+		t.Fatalf("stale completed Decode blocked second wave: admitted=%d protected=%d, want %d/0",
+			len(secondWave), protected, waveSize)
+	}
+}
+
+func TestV0128RequestAwareManagerCompletedDecodeCreditReconciliation(t *testing.T) {
+	const kib = int64(1024)
+	policy := newPrefillRequestAwareTestPolicy(t)
+	input := RequestAwareInput{
+		MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * kib, Running: 1,
+	}
+	probeEffective := func(t *testing.T, manager *Manager, requestID string) int {
+		t.Helper()
+		result := manager.DecideRequestAware(
+			time.Unix(10, 0), requestID, requestAwareManagerCost(1, 0), 1, policy, input,
+		)
+		if result.Decision.Action != RequestAwareAdmit {
+			t.Fatalf("probe %s decision=%+v", requestID, result)
+		}
+		return result.Decision.EffectiveSequences
+	}
+
+	t.Run("completed terminal retires from the still-published sample", func(t *testing.T) {
+		manager := setupV0128AbsorbedDecode(t, policy)
+		if !manager.Terminate("absorbed-decode", TerminalCompleted) {
+			t.Fatal("completed terminal failed")
+		}
+		if got := probeEffective(t, manager, "completed-terminal-probe"); got != 0 {
+			t.Fatalf("effective Decode sequences=%d, want 0 after attributable completion", got)
+		}
+	})
+
+	t.Run("completion credit belongs only to its published observation", func(t *testing.T) {
+		manager := setupV0128UnabsorbedDecode(t, policy, "sequence-scoped-decode")
+		started := manager.StartSampleWindow()
+		if err := manager.ReconcileSample(SampleWindow{
+			Observed: domain.VirtualState{
+				PhysicalKVUpper: 4*kib + 512, ActiveKVUpper: 4*kib + 512,
+				DecodeSequences: 1, ActiveContextTokens: 4*kib + 512,
+			},
+			StartedSequence: started, FinishedSequence: manager.EventSequence(), ObservationSequence: 2,
+		}); err != nil {
+			t.Fatalf("sequence-scoped reconciliation: %v", err)
+		}
+		if !manager.Terminate("sequence-scoped-decode", TerminalCompleted) {
+			t.Fatal("sequence-scoped terminal failed")
+		}
+
+		decisionFor := func(sequence uint64, requestID string) RequestAwareManagerResult {
+			t.Helper()
+			observation := input
+			observation.ObservationSequence = sequence
+			return manager.DecideRequestAware(
+				time.Unix(10, 0), requestID, requestAwareManagerCost(1, 0), 1, policy, observation,
+			)
+		}
+		mismatched := decisionFor(1, "mismatched-observation-probe")
+		if mismatched.Decision.Action != RequestAwareAdmit || mismatched.Decision.EffectiveSequences != 1 {
+			t.Fatalf("mismatched observation decision=%+v, want raw running preserved", mismatched)
+		}
+		matched := decisionFor(2, "matched-observation-probe")
+		if matched.Decision.Action != RequestAwareAdmit || matched.Decision.EffectiveSequences != 0 {
+			t.Fatalf("matched observation decision=%+v, want attributable completion credit", matched)
+		}
+	})
+
+	t.Run("sample before terminal retains credit", func(t *testing.T) {
+		manager := setupV0128AbsorbedDecode(t, policy)
+		reconcileRequestAwareManagerState(t, manager, domain.VirtualState{
+			PhysicalKVUpper: 4*kib + 512, ActiveKVUpper: 4*kib + 512,
+			DecodeSequences: 1, ActiveContextTokens: 4*kib + 512,
+		})
+		if !manager.Terminate("absorbed-decode", TerminalCompleted) {
+			t.Fatal("completed terminal after sample failed")
+		}
+		if got := probeEffective(t, manager, "before-terminal-probe"); got != 0 {
+			t.Fatalf("effective Decode sequences=%d, want 0 for sample before terminal", got)
+		}
+	})
+
+	t.Run("absorbed lifecycle without observed active resources creates no credit", func(t *testing.T) {
+		manager := setupV0128UnabsorbedDecode(t, policy, "buffered-complete-decode")
+		reconcileRequestAwareManagerState(t, manager, domain.VirtualState{})
+		if !manager.Terminate("buffered-complete-decode", TerminalCompleted) {
+			t.Fatal("buffered completed terminal failed")
+		}
+		if got := probeEffective(t, manager, "buffered-complete-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want unrelated published running preserved", got)
+		}
+	})
+
+	t.Run("preexisting backend Decode cannot be attributed to a local completion", func(t *testing.T) {
+		const externalTokens = 4*kib + 512
+		external := domain.VirtualState{
+			PhysicalKVUpper: externalTokens, ActiveKVUpper: externalTokens,
+			DecodeSequences: 1, ActiveContextTokens: externalTokens,
+		}
+		manager := NewManager("request-aware-test", external)
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(1, 0), "local-behind-external", requestAwareManagerCost(4*kib, 512), 4*kib, policy,
+			RequestAwareInput{
+				MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * kib, Running: 1,
+			},
+		)
+		if !result.Reserved || !manager.MarkForwarded("local-behind-external") ||
+			!manager.MarkPrefillComplete("local-behind-external") {
+			t.Fatalf("preexisting Decode setup=%+v", result)
+		}
+		reconcileRequestAwareManagerState(t, manager, external)
+		if !manager.Terminate("local-behind-external", TerminalCompleted) {
+			t.Fatal("preexisting Decode local terminal failed")
+		}
+		if got := probeEffective(t, manager, "preexisting-decode-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want preexisting backend Decode preserved", got)
+		}
+	})
+
+	t.Run("observed local Prefill is not double-counted after Prefill completion", func(t *testing.T) {
+		manager := NewManager("request-aware-test", domain.VirtualState{})
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(1, 0), "observed-prefill-decode", requestAwareManagerCost(4*kib, 512), 4*kib, policy,
+			RequestAwareInput{MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * kib},
+		)
+		if !result.Reserved || !manager.MarkForwarded("observed-prefill-decode") {
+			t.Fatalf("observed Prefill setup=%+v", result)
+		}
+		observed := domain.VirtualState{
+			PhysicalKVUpper: 4 * kib, ActiveKVUpper: 4 * kib,
+			DecodeSequences: 1, ActiveContextTokens: 4 * kib,
+		}
+		reconcileRequestAwareManagerState(t, manager, observed)
+		if !manager.MarkPrefillComplete("observed-prefill-decode") {
+			t.Fatal("observed Prefill completion failed")
+		}
+		reconcileRequestAwareManagerState(t, manager, observed)
+		if !manager.Terminate("observed-prefill-decode", TerminalCompleted) {
+			t.Fatal("observed Prefill terminal failed")
+		}
+		if got := probeEffective(t, manager, "observed-prefill-probe"); got != 0 {
+			t.Fatalf("effective Decode sequences=%d, want no double-counted local Decode", got)
+		}
+	})
+
+	t.Run("unchanged external Decode cannot absorb a forwarded Prefill", func(t *testing.T) {
+		const externalTokens = 4*kib + 512
+		external := domain.VirtualState{
+			PhysicalKVUpper: externalTokens, ActiveKVUpper: externalTokens,
+			DecodeSequences: 1, ActiveContextTokens: externalTokens,
+		}
+		manager := NewManager("request-aware-test", external)
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(1, 0), "queued-behind-external", requestAwareManagerCost(4*kib, 512), 4*kib, policy,
+			RequestAwareInput{
+				MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * kib, Running: 1,
+			},
+		)
+		if !result.Reserved || !manager.MarkForwarded("queued-behind-external") {
+			t.Fatalf("queued external setup=%+v", result)
+		}
+		reconcileRequestAwareManagerState(t, manager, external)
+		if !manager.MarkPrefillComplete("queued-behind-external") {
+			t.Fatal("queued external Prefill completion failed")
+		}
+		reconcileRequestAwareManagerState(t, manager, external)
+		if !manager.Terminate("queued-behind-external", TerminalCompleted) {
+			t.Fatal("queued external terminal failed")
+		}
+		if got := probeEffective(t, manager, "queued-external-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want external Decode preserved", got)
+		}
+	})
+
+	t.Run("overlapping sample clears credit", func(t *testing.T) {
+		manager := setupV0128AbsorbedDecode(t, policy)
+		started := manager.StartSampleWindow()
+		if !manager.Terminate("absorbed-decode", TerminalCompleted) {
+			t.Fatal("overlapping terminal failed")
+		}
+		if err := manager.ReconcileSample(SampleWindow{
+			Observed: domain.VirtualState{
+				PhysicalKVUpper: 4*kib + 512, ActiveKVUpper: 4*kib + 512,
+				DecodeSequences: 1, ActiveContextTokens: 4*kib + 512,
+			},
+			StartedSequence: started, FinishedSequence: manager.EventSequence(),
+		}); err != nil {
+			t.Fatalf("overlapping reconciliation: %v", err)
+		}
+		if got := probeEffective(t, manager, "overlap-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want conservative 1 for overlap", got)
+		}
+	})
+
+	t.Run("sample after terminal clears credit", func(t *testing.T) {
+		manager := setupV0128AbsorbedDecode(t, policy)
+		if !manager.Terminate("absorbed-decode", TerminalCompleted) {
+			t.Fatal("pre-sample terminal failed")
+		}
+		reconcileRequestAwareManagerObservation(t, manager, 1, 0)
+		if got := probeEffective(t, manager, "after-terminal-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want new observed external Decode", got)
+		}
+	})
+
+	t.Run("unabsorbed and ambiguous reservations create no credit", func(t *testing.T) {
+		t.Run("unabsorbed", func(t *testing.T) {
+			manager := setupV0128UnabsorbedDecode(t, policy, "unabsorbed-decode")
+			if !manager.Terminate("unabsorbed-decode", TerminalCompleted) {
+				t.Fatal("unabsorbed terminal failed")
+			}
+			if got := probeEffective(t, manager, "unabsorbed-probe"); got != 1 {
+				t.Fatalf("effective Decode sequences=%d, want observed 1", got)
+			}
+		})
+		t.Run("ambiguous", func(t *testing.T) {
+			manager := NewManager("request-aware-test", domain.VirtualState{})
+			result := manager.DecideRequestAwareAndReserve(
+				time.Unix(1, 0), "ambiguous-decode", requestAwareManagerCost(4*kib, 512), 4*kib, policy,
+				RequestAwareInput{MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * kib},
+			)
+			if !result.Reserved || !manager.MarkForwarded("ambiguous-decode") {
+				t.Fatalf("ambiguous setup=%+v", result)
+			}
+			started := manager.StartSampleWindow()
+			if !manager.MarkPrefillComplete("ambiguous-decode") {
+				t.Fatal("ambiguous Prefill completion failed")
+			}
+			if err := manager.ReconcileSample(SampleWindow{
+				Observed: domain.VirtualState{
+					PhysicalKVUpper: 4*kib + 512, ActiveKVUpper: 4*kib + 512,
+					DecodeSequences: 1, ActiveContextTokens: 4*kib + 512,
+				},
+				StartedSequence: started, FinishedSequence: manager.EventSequence(),
+			}); err != nil {
+				t.Fatalf("ambiguous reconciliation: %v", err)
+			}
+			if !manager.Terminate("ambiguous-decode", TerminalCompleted) {
+				t.Fatal("ambiguous terminal failed")
+			}
+			if got := probeEffective(t, manager, "ambiguous-probe"); got != 1 {
+				t.Fatalf("effective Decode sequences=%d, want conservative 1", got)
+			}
+		})
+	})
+
+	nonCompleted := []TerminalCause{
+		TerminalLocalQoSReject, TerminalClientCancelled, TerminalClientDisconnected,
+		TerminalUpstreamFailure, TerminalTimeout, TerminalExpired,
+	}
+	for _, cause := range nonCompleted {
+		t.Run("no credit for "+string(cause), func(t *testing.T) {
+			manager := setupV0128AbsorbedDecode(t, policy)
+			if !manager.Terminate("absorbed-decode", cause) {
+				t.Fatalf("terminal %s failed", cause)
+			}
+			if got := probeEffective(t, manager, "non-completed-probe-"+string(cause)); got != 1 {
+				t.Fatalf("terminal %s effective Decode sequences=%d, want observed 1", cause, got)
+			}
+		})
+	}
+
+	t.Run("duplicate terminal cannot duplicate credit", func(t *testing.T) {
+		manager := setupV0128AbsorbedDecode(t, policy)
+		if !manager.Terminate("absorbed-decode", TerminalCompleted) ||
+			manager.Terminate("absorbed-decode", TerminalCompleted) {
+			t.Fatal("duplicate terminal idempotence failed")
+		}
+		if got := probeEffective(t, manager, "duplicate-terminal-probe"); got != 0 {
+			t.Fatalf("effective Decode sequences=%d, want exactly one completion credit", got)
+		}
+	})
+
+	t.Run("epoch rebase clears credit", func(t *testing.T) {
+		manager := setupV0128AbsorbedDecode(t, policy)
+		if !manager.Terminate("absorbed-decode", TerminalCompleted) {
+			t.Fatal("pre-rebase terminal failed")
+		}
+		manager.InvalidateEpoch()
+		if err := manager.RebaseEpoch(domain.VirtualState{DecodeSequences: 1}); err != nil {
+			t.Fatalf("rebase: %v", err)
+		}
+		if got := probeEffective(t, manager, "rebase-probe"); got != 1 {
+			t.Fatalf("effective Decode sequences=%d, want rebased observed 1", got)
+		}
+	})
+}
+
+func TestV0128RequestAwareManagerCompletedDecodeCreditIsBounded(t *testing.T) {
+	const requests = maximumRetiredReservations + 1
+	policy := newPrefillRequestAwareTestPolicy(t)
+	manager := NewManager("request-aware-test", domain.VirtualState{})
+	idle := RequestAwareInput{MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * 1024}
+	requestIDs := make([]string, 0, requests)
+	for index := range requests {
+		requestID := fmt.Sprintf("bounded-credit-%d", index)
+		result := manager.DecideRequestAwareAndReserve(
+			time.Unix(1, int64(index)), requestID, requestAwareManagerCost(1, 0), 1, policy, idle,
+		)
+		if !result.Reserved || !manager.MarkForwarded(requestID) || !manager.MarkPrefillComplete(requestID) {
+			t.Fatalf("bounded setup %d=%+v", index, result)
+		}
+		requestIDs = append(requestIDs, requestID)
+	}
+	reconcileRequestAwareManagerState(t, manager, domain.VirtualState{
+		PhysicalKVUpper: requests, ActiveKVUpper: requests,
+		DecodeSequences: requests, ActiveContextTokens: requests,
+	})
+	for _, requestID := range requestIDs {
+		if !manager.Terminate(requestID, TerminalCompleted) {
+			t.Fatalf("bounded terminal failed for %s", requestID)
+		}
+	}
+	if snapshot := manager.Snapshot(); snapshot.RetiredReservations != maximumRetiredReservations ||
+		snapshot.RetiredEvictions != 1 || snapshot.CompletedDecodeCredits != maximumRetiredReservations {
+		t.Fatalf("bounded retired queue=%+v", snapshot)
+	}
+	input := idle
+	input.Running = requests
+	result := manager.DecideRequestAware(
+		time.Unix(2, 0), "bounded-credit-probe", requestAwareManagerCost(1, 0), 1, policy, input,
+	)
+	if result.Decision.EffectiveSequences != 1 {
+		t.Fatalf("bounded effective Decode sequences=%d, want conservative 1 after oldest eviction",
+			result.Decision.EffectiveSequences)
+	}
+}
+
+func TestV0128ManagerObservationSequenceIsMonotonicAndRebased(t *testing.T) {
+	manager := NewManager("request-aware-test", domain.VirtualState{})
+	first := SampleWindow{ObservationSequence: 2}
+	if err := manager.ReconcileSample(first); err != nil {
+		t.Fatalf("first observation sequence: %v", err)
+	}
+	for _, stale := range []uint64{2, 1, 0} {
+		if err := manager.ReconcileSample(SampleWindow{ObservationSequence: stale}); err == nil {
+			t.Fatalf("stale observation sequence %d was accepted", stale)
+		}
+	}
+
+	manager.InvalidateEpoch()
+	if err := manager.RebaseEpoch(domain.VirtualState{}); err != nil {
+		t.Fatalf("rebase observation sequence: %v", err)
+	}
+	watermark := manager.EventSequence()
+	if err := manager.ReconcileSample(SampleWindow{
+		StartedSequence: watermark, FinishedSequence: watermark, ObservationSequence: 1,
+	}); err != nil {
+		t.Fatalf("first post-rebase observation sequence: %v", err)
+	}
+}
+
+func setupV0128AbsorbedDecode(t *testing.T, policy *RequestAwarePolicy) *Manager {
+	t.Helper()
+	manager := setupV0128UnabsorbedDecode(t, policy, "absorbed-decode")
+	reconcileRequestAwareManagerState(t, manager, domain.VirtualState{
+		PhysicalKVUpper: 4*1024 + 512, ActiveKVUpper: 4*1024 + 512,
+		DecodeSequences: 1, ActiveContextTokens: 4*1024 + 512,
+	})
+	return manager
+}
+
+func setupV0128UnabsorbedDecode(t *testing.T, policy *RequestAwarePolicy, requestID string) *Manager {
+	t.Helper()
+	manager := NewManager("request-aware-test", domain.VirtualState{})
+	result := manager.DecideRequestAwareAndReserve(
+		time.Unix(1, 0), requestID, requestAwareManagerCost(4*1024, 512), 4*1024, policy,
+		RequestAwareInput{MetricsFresh: true, IdentityValid: true, CapacityTokens: 4 * 1024 * 1024},
+	)
+	if !result.Reserved || !manager.MarkForwarded(requestID) || !manager.MarkPrefillComplete(requestID) {
+		t.Fatalf("unabsorbed setup=%+v", result)
+	}
+	return manager
+}
+
 func TestRequestAwareManagerWaitingRemainsRequestSizeAware(t *testing.T) {
 	const kib = int64(1024)
 	policy := newPrefillRequestAwareTestPolicy(t)

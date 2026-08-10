@@ -38,6 +38,23 @@ func (s *splitRequestAwareTelemetrySnapshot) Snapshot(time.Time) predictiveObser
 	return s.observer
 }
 
+func TestV0128RequestAwareTelemetryObservationPreservesSequence(t *testing.T) {
+	now := time.Unix(2_500, 0)
+	provider := &splitRequestAwareTelemetrySnapshot{
+		requestInput: runtimepredictive.RequestAwareInput{ObservationSequence: 99},
+		observer: predictiveObserverSnapshot{
+			ObservedAt: now, MetricsFresh: true, IdentityValid: true,
+			ObservationSequence: 17, CapacityTokens: 10_000, UsedTokens: 5_000, Running: 4,
+		},
+	}
+	input, observer, valid := requestAwareTelemetryObservation(provider, now)
+	if !valid || input.ObservationSequence != 17 || observer.ObservationSequence != 17 ||
+		provider.requestReads != 0 || provider.observerReads != 1 {
+		t.Fatalf("telemetry observation input/snapshot/reads=%+v/%+v/%d/%d, want paired sequence 17 from one snapshot",
+			input, observer, provider.requestReads, provider.observerReads)
+	}
+}
+
 func TestRequestAwareAdapterRequestSizeChangesPreForwardDecision(t *testing.T) {
 	smallAdapter, smallManager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 128*1024, 0, "enforce")
 	largeAdapter, largeManager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 128*1024, 0, "enforce")
