@@ -59,6 +59,12 @@ pushed branch. The exact current baseline passed on c21 with:
 This baseline proves only that the current implementation satisfies its current
 tests. It does not accept its architecture or release behavior.
 
+The 2026-08-11 architecture re-review started from pushed HEAD `5ac250c` plus
+the uncommitted Slice A red/green estimator and request-domain work. That work
+is not accepted merely because its focused tests pass. In particular, this
+re-review changes the slice topology and lifecycle model before any old caller
+is migrated.
+
 All Go, race, simulation, benchmark, build, and image work runs in c21. Windows
 is limited to inspection, editing, Git diff review, and transfer. Do not use the
 old builder. Do not restart the CVM or vLLM for ordinary iteration; replace only
@@ -106,6 +112,20 @@ field-level fixes. The audit found these structural defects:
 10. `ResourceSafetyGate` mixes observation validity, context plausibility, and
     KV fit. The current loose KV estimate is also used as a context ceiling,
     causing a proven false-reject path.
+11. A forwarded reservation is deleted immediately at terminal. If the request
+    was admitted, forwarded, and completed before any later metrics sample
+    covered it, the old observation does not contain its KV and the deletion
+    temporarily undercounts real work.
+12. The old target design permanently closed a Controller after every backend
+    counter reset. That would turn an otherwise recoverable same-capability
+    vLLM restart into a PIG self-lock until PIG was restarted.
+13. The first rebuild slicing still proposed migrating doomed Manager/Policy
+    callers to the new request record and deleting those callers one slice
+    later. That is throw-away compatibility work, not a clean rebuild.
+14. Recomputing the complete reservation-map fold for every admission makes the
+    hot path O(live requests). The map is required for fenced lifecycle state,
+    but admission and reporting need a checked aggregate overlay maintained by
+    the same transaction.
 
 The retained concepts are sound, but the ownership model is not. The rebuild
 therefore keeps only the independently useful kernels and replaces the stateful
@@ -135,10 +155,12 @@ transaction and application boundary.
 HTTP request
   -> RequestClassifier
   -> FastWorkEstimator
-  -> RequestWorkBuilder
-  -> AdmissionController.Admit          one lock / one transaction
+       -> RequestEstimate
+  -> AdmissionController.Admit(now, estimate)
+       -> pure RequestWork construction from immutable capability
+                                            one lock / one transaction
        current coherent Observation
-       + live Reservation overlay
+       + checked aggregate Reservation overlay
        -> StateProjector
        -> AdmissionPolicy
             ContextGate
@@ -146,7 +168,7 @@ HTTP request
             PrefillGate
             canonical minimum-probe scope
        -> immutable DecisionRecord
-       -> reservation with epoch + generation token when admitted
+       -> reservation with epoch + monotonic internal ID when admitted
   -> HTTPAdmissionAdapter
        enforce: reject protected decisions
        shadow: forward protected decisions
@@ -168,18 +190,22 @@ AdmissionController.Snapshot
 body restoration, output-horizon extraction, and timing. It knows no backend
 state or policy.
 
-`FastWorkEstimator` produces a model-neutral point estimate and an explicit KV
-reservation estimate. It knows no capacity, request ID, admission mode, or
-backend metrics.
+`FastWorkEstimator` produces one `RequestEstimate` containing a model-neutral
+selection estimate, an explicit KV-reservation estimate, and a rolling Decode
+horizon. It knows no capacity, request ID, admission mode, or backend metrics.
 
-`RequestWorkBuilder` validates and block-rounds one complete immutable request
-record. Selection input tokens are part of the record and are never passed as a
-parallel integer.
+`AdmissionController.Admit` uses its immutable capability to validate and
+block-round the estimate into one internal `RequestWork` before acquiring the
+transaction lock. Selection input tokens are part of these records and are
+never passed as a parallel integer. No legacy manifest identity is carried by
+the request: one Controller is already scoped to exactly one immutable
+capability fingerprint.
 
 `AdmissionController` is the only mutable owner of the current observation,
-epoch, event sequence, reservation generation, reservation map, and atomic
-check-plus-reserve transaction. It owns no HTTP, logs, Prometheus formatting,
-or Router wire names.
+runtime epoch, event sequence, monotonic reservation ID, reservation map,
+checked aggregate overlay, and atomic check-plus-reserve transaction. It owns
+no HTTP, logs, Prometheus formatting, or Router wire names. The external or
+client request ID is never a reservation-map key.
 
 The Controller derives an absolute live-reservation bound from the immutable
 hard KV limit and block size. This bound is a corruption/resource-exhaustion
@@ -188,17 +214,20 @@ KV and Prefill work. Counter overflow, reaching an impossible bound, or an
 invalid internal transition closes availability instead of wrapping, evicting,
 or guessing.
 
-`StateProjector` is a pure fold of observation plus reservations. It performs
-no policy decision and no mutation.
+`StateProjector` is a pure combination of observation plus the aggregate
+overlay. It performs no policy decision and no mutation. Admit and Snapshot are
+O(1) in the number of live reservations. Observation publication may scan the
+bounded map to apply sample-watermark transitions; tests compare the aggregate
+against a slow reference fold after every transition.
 
 `AdmissionPolicy` is pure. It evaluates the three Gates in order and evaluates
 the canonical minimum request against the same immutable pre-admit state to
 derive request/load scope.
 
-`ReservationHandle` carries controller epoch, request ID, and reservation
-generation. Forwarded, first-byte, and terminal transitions are monotonic and
-idempotent. A stale handle can never mutate a newer reservation with a reused
-request ID.
+`ReservationHandle` carries Controller runtime epoch and a never-reused
+internal reservation ID. Forwarded, first-byte, and terminal transitions are
+monotonic and idempotent. Sequence overflow closes intake rather than reusing an
+ID. A stale handle therefore cannot address any reservation in a later epoch.
 
 `HTTPAdmissionAdapter` maps protocol results and immutable decisions to forward
 or OpenAI-compatible 429 behavior. It does not read observations or infer
@@ -220,7 +249,8 @@ type alias, or compatibility method solely to keep an old test compiling. The
 final production decision surface is intentionally small:
 
 ```text
-Controller: Admit, PublishObservation, StartSampleWindow, Snapshot, Close
+Controller: Admit(now, estimate), PublishObservation, StartSampleWindow,
+            Snapshot(now), Close
 ReservationHandle: MarkForwarded, MarkFirstByte, Terminate
 HTTP/runtime boundary: Decide, Snapshot, Close
 ```
@@ -233,13 +263,21 @@ external-observation decision, or reserve flag is added.
 
 ### 5.1 Request work
 
-The canonical request record contains only:
+The estimator output contains only:
 
 ```text
-manifest identity
 selection input tokens
 KV-reservation input tokens
 rolling Decode horizon tokens
+```
+
+The Controller derives one internal immutable request-work record containing:
+
+```text
+selection input tokens
+KV-reservation input tokens
+rolling Decode horizon tokens
+block-rounded input KV tokens
 block-rounded total KV tokens
 block-rounded future Decode KV tokens
 ```
@@ -325,17 +363,25 @@ raw running and waiting
 generation delta for telemetry and preemption delta for one-sample regime evidence
 ```
 
-The Controller rejects stale, invalid, regressed, or identity-drifted
-observations. A healthy busy backend can initialize; it does not require an idle
-sample. The projected state contains effective KV, known pending Prefill tokens,
-pending size-class ownership, local active Decode count, and raw backend
-running/waiting.
+The Controller rejects stale or internally invalid observations. A healthy busy
+backend can initialize; it does not require an idle sample. The projected state
+contains effective KV, known pending Prefill tokens, pending size-class
+ownership, local active Decode count, and raw backend running/waiting.
 
 A transient fetch or invalid non-drift sample leaves the last coherent
 observation unchanged; normal age calculation then closes availability when it
-becomes stale. Confirmed model identity, KV capacity, block-size, counter-reset,
-or sequence drift invalidates the Controller epoch immediately and permanently
-for that process. It is not silently rebased onto a different backend identity.
+becomes stale. Confirmed model identity, maximum context, KV capacity, or block
+size drift closes capability availability and requires a fresh capability
+initialization; PIG never silently applies the old geometry to a different
+backend.
+
+A confirmed monotonic-counter reset with the same capability fingerprint is a
+backend runtime restart, not capability drift. Publishing the first coherent
+post-reset sample atomically advances the Controller runtime epoch, fences and
+clears all old reservations and residual debts, resets delta telemetry, and
+reopens availability from that sample. Old handles are no-ops. This recovery
+does not learn or mutate Prefill/KV parameters and does not require restarting
+PIG.
 
 No guessed ownership is subtracted from vLLM aggregates. Reservations contribute
 only positive overlay:
@@ -344,11 +390,19 @@ only positive overlay:
 admitted or forwarded Prefill       full request KV + pending selection work
 first byte without covering sample  full request KV, no longer pending Prefill
 first byte plus covering sample     future Decode KV only
-terminal                            reservation removed
+terminal before forward             reservation removed immediately
+terminal after input was covered    reservation removed; observed KV remains
+terminal before input was covered   full KV retained as residual debt until a
+                                    sample started after terminal is published
 ```
 
-A stale observation can temporarily overcount completed work until the next
-500-ms sample. No negative credit, cooldown, or timer is created.
+`StartSampleWindow` captures the Controller epoch and event sequence before
+metrics I/O. A first-byte or terminal transition is covered only when its event
+sequence is no later than that start watermark. Events during the scrape remain
+overlaid. This makes completion-before-poll conservative without a fixed
+cooldown: a residual debt disappears on the first definitely post-terminal
+sample, normally within one 500-ms interval. A stale observation may overcount;
+it never receives negative credit.
 
 ### 5.4 Ordered pure policy
 
@@ -388,6 +442,8 @@ Work-conserving invariants:
   still produces it;
 - capacity reopens immediately after lifecycle or observation state makes the
   minimum request fit; and
+- completion-before-poll debt reopens on the first covering observation rather
+  than a time-based cooldown; and
 - hard KV and reservation lifecycle invariants are never relaxed to improve
   goodput.
 
@@ -415,15 +471,19 @@ Mode is applied only at the HTTP boundary:
   not have admitted it. Later real vLLM observations conservatively absorb its
   actual work.
 
-The lifecycle is:
+The live lifecycle is:
 
 ```text
 Reserved -> ForwardedPrefill -> ActiveDecode -> Terminal
 ```
 
 Duplicate events return false without mutation. Cancel, disconnect, timeout,
-upstream error, success, expiry, epoch invalidation, and shutdown release at
-most once. Streaming and non-streaming bodies preserve current conservative
+upstream error, success, epoch invalidation, and shutdown terminate at most
+once. There is no guessed expiry timer that can delete still-live backend work.
+The HTTP boundary must install rollback and terminal defers so every local path
+is explicit. A terminated reservation may remain internally as non-live
+residual KV debt only until a covering observation; it accepts no later handle
+transition. Streaming and non-streaming bodies preserve current conservative
 first-byte semantics; no request is mutated to improve phase visibility.
 
 Shutdown first stops the Observer, then atomically closes Controller intake and
@@ -456,44 +516,50 @@ infrastructure addresses.
 ## 8. Test-first rebuild slices
 
 Each slice begins with behavior-level red tests on c21, then the smallest
-coherent implementation, deletion of replaced code, complete focused gates,
-commit, and push. No compatibility alias or old implementation remains after
-the slice that replaces it.
+coherent implementation, complete focused gates, commit, and push. Foundation
+slices are explicitly not production behavior until the atomic HTTP cutover.
+No old caller is migrated merely to keep a doomed Manager or Adapter alive, and
+no compatibility alias remains after the cutover that replaces it.
 
 No Controller lock may cover HTTP, logging, metrics formatting, clock lookup,
-or other I/O. Pass `now` into the transaction. One Controller fold produces the
-decision/capacity state; the Adapter and Reporter may not trigger additional
-reservation scans for the same record. The estimator adds no second body copy
-and no additional unbounded full-body pass.
+or other I/O. Pass `now` into Admit and Snapshot. The checked aggregate overlay
+produces the decision/capacity state without a per-request reservation scan;
+the Adapter and Reporter may not trigger a second fold for the same record. The
+estimator adds no second body copy and no additional unbounded full-body pass.
 
-### Slice A: minimal request domain and estimator contract
+### Slice A: minimal estimate/work domain and estimator contract
 
-- introduce the complete canonical `RequestWork` record;
+- introduce `RequestEstimate` plus the internal derived `RequestWork` record;
 - add robust fixed-window estimator fixtures and the offline safety/efficiency
   matrix;
 - separate context selection from KV reservation;
-- delete duplicate interval, active/physical, confidence, and parallel-token
-  fields after all callers migrate; and
+- do not migrate any old Manager, Policy, Adapter, or simulator caller; this
+  slice is a tested foundation and is not yet wired production behavior; and
 - benchmark maximum body p50/p99 and allocation bounds.
 
 ### Slice B: Controller and pure policy
 
 - add one `AdmissionController.Admit` transaction;
-- add fenced reservation tokens and the observation publication transaction;
+- add same-capability epoch recovery, fenced reservation handles, residual
+  completion debt, checked O(1) aggregates, and observation publication;
 - implement pure StateProjector, ContextGate, KVGate, PrefillGate, and canonical
   scope evaluation;
 - migrate deterministic simulation to the Controller;
 - rename the current candidate independently of a release version; and
-- delete both old Manager files and request-aware policy types.
+- do not add adapters to or modify the old Manager/Policy path.
 
-### Slice C: observer and application boundary
+### Slice C: atomic observer/application cutover and old-path deletion
 
 - publish observations only to the Controller;
 - remove the Observer's duplicate decision snapshot;
-- replace the request-aware Adapter and all `predictiveShadow*` production
-  names with the thin runtime/HTTP boundary;
+- switch the real HTTP pre-forward decision path directly from the old
+  request-aware Adapter to the thin new runtime/HTTP boundary in one commit;
 - make shadow track admitted lifecycles;
 - isolate Reporter and pure Router compatibility projection; and
+- delete old `RequestCost`/`VirtualState` duplicates, both Manager files,
+  request-aware Policy/Gates, the request-aware Adapter, and all
+  `predictiveShadow*` production names only after their real callers are on the
+  new path; and
 - delete tests that mutate private implementation fields, replacing them with
   contract tests.
 
@@ -510,7 +576,7 @@ Structural deletion gates for Slice D:
 
 - no production `Manager`, `requestAware*`, or `predictiveShadow*` symbol;
 - no current candidate named for a release version;
-- no parallel selection-token argument outside canonical `RequestWork`;
+- no legacy manifest-bound request cost or parallel selection-token argument;
 - no duplicate lower/upper, physical/active, or constant-confidence domain
   fields; and
 - no test outside its owning package changes a concrete implementation's
@@ -525,36 +591,43 @@ At minimum, tests must cover:
 
 1. concurrent near-KV arrivals never exceed the hard counterfactual;
 2. sample publication and admission never mix observation sequences;
-3. old-epoch or old-generation handles cannot affect a new reservation using
-   the same request ID;
+3. an old-epoch or already-terminal internal handle cannot affect any later
+   reservation;
 4. every terminal path releases once, with no leak or double release;
-5. first-byte plus covering-sample overlay transition is exact;
-6. startup on healthy non-idle state does not self-lock;
-7. stale/invalid state closes availability and the first coherent sample
+5. completion before the first covering poll retains positive KV debt, then the
+   first definitely post-terminal sample removes it without a cooldown;
+6. first-byte plus covering-sample overlay transition is exact;
+7. startup on healthy non-idle state does not self-lock;
+8. a same-capability backend counter reset advances epoch and recovers from its
+   first coherent sample, while capability drift remains closed;
+9. stale/invalid state closes availability and the first coherent sample
    reopens it without a timer;
-8. many small Prefills stop at the bounded budget and recover immediately;
-9. waiting or ambiguous running still permits a fitting minimum request;
-10. a 96K contended request is request-protected while a following 1K request
+10. many small Prefills stop at the bounded budget and recover immediately;
+11. waiting or ambiguous running still permits a fitting minimum request;
+12. a 96K contended request is request-protected while a following 1K request
     admits on the same observation;
-11. regular, weighted, exclusive, quiescent, and over-context requests obey
+13. regular, weighted, exclusive, quiescent, and over-context requests obey
     their independent Gates and scopes;
-12. one large rejection never creates low-flow/no-flow self-lock or Router
+14. one large rejection never creates low-flow/no-flow self-lock or Router
     mislock;
-13. shadow and enforce produce the same decisions and admitted reservation
+15. shadow and enforce produce the same decisions and admitted reservation
     evolution for the same supplied observation/lifecycle stream; only HTTP
     rejection differs. Shadow-only protected work that is actually forwarded
     may later change real observations and is reported separately;
-14. metrics/status reads do not mutate Controller business state;
-15. HTTP, logs, metrics, status, and Router compatibility agree on action,
+16. metrics/status reads do not mutate Controller business state;
+17. HTTP, logs, metrics, status, and Router compatibility agree on action,
     reason, scope, and current capacity;
-16. repeated simulation and alternate scheduling order are deterministic;
-17. maximum-body classification plus estimation p99 is below 100 ms on c21;
-18. Controller decisions allocate zero with existing reservations, remain below
-    100 microseconds at 256 live reservations, and below 1 millisecond at 4,096;
-19. reservation/event/observation sequence overflow, impossible bounds, and
+18. repeated simulation and alternate scheduling order are deterministic;
+19. maximum-body classification plus estimation p99 is below 100 ms on c21;
+20. Controller decisions allocate zero with existing reservations, do not scale
+    linearly with live-reservation count, and remain below 100 microseconds at
+    both 256 and 4,096 live reservations;
+21. the checked aggregate equals a slow reference fold after every lifecycle,
+    sample, terminal-debt, reset, and shutdown transition;
+22. reservation/event/observation sequence overflow, impossible bounds, and
     concurrent shutdown fail closed without wraparound or stale-handle reuse;
     and
-20. estimator under/over error and latency are reported separately, without
+23. estimator under/over error and latency are reported separately, without
     presenting an exact-model oracle as portable proof.
 
 The complete source gate is:
@@ -640,10 +713,11 @@ and goodput is optimized only inside sustained QoS acceptance.
 
 Completed after Pass 1 revisions. The review added an explicit derived
 live-reservation bound, fail-closed sequence/counter overflow, permanent
-identity-epoch invalidation, last-coherent-observation behavior for transient
-fetch failures, shutdown ordering, and old-handle fencing. One Controller owns
-the observation and reservation transaction; the Observer has no decision copy.
-No negative reconciliation credit, silent rebase, ID-only handle, or
+capability-drift invalidation, same-capability runtime-epoch reset recovery,
+last-coherent-observation behavior for transient fetch failures, shutdown
+ordering, and old-handle fencing. One Controller owns the observation and
+reservation transaction; the Observer has no decision copy. No negative
+reconciliation credit, silent capability rebase, ID-only handle, or
 reporting-owned business state remains in the target design.
 
 ### Pass 3: SOLID, efficiency, evidence, and release scope
@@ -656,6 +730,28 @@ The source, version, image, c21 runtime, registry, and production layers remain
 independent evidence gates. The plan contains no permission to restart vLLM or
 the CVM, upload an unaccepted image, modify Router, or enable production traffic.
 
+### 2026-08-11 re-review after Slice A red tests
+
+The plan and live dirty tree were reviewed again instead of treating the first
+three passes as permanent approval.
+
+1. Model and causality: removed legacy manifest identity from request work and
+   made the Controller's immutable capability the only rounding/geometry
+   authority. `RequestEstimate` is the estimator boundary; `RequestWork` is an
+   internal derivation. The fixed estimator matrix and model-neutral claim
+   boundaries remain unchanged.
+2. Safety and lifecycle: found and corrected completion-before-poll
+   undercounting by adding watermark-bounded residual positive debt. Replaced
+   permanent self-lock after same-capability counter reset with an atomic
+   runtime-epoch transition; true capability drift still closes. Removed
+   guessed reservation expiry and simplified fencing to epoch plus a monotonic
+   internal reservation ID.
+3. SOLID and efficiency: rejected the proposed double migration through the
+   old Manager/Policy, changed Slice C to one atomic real-path cutover and
+   deletion, and replaced per-admission map folding with a checked O(1)
+   aggregate plus a slow-fold test oracle. The new core may reuse independent
+   kernels but may not adapt or extend the old stateful path.
+
 ## 12. Active checklist
 
 - [x] freeze v0.12.10 as diagnostic-only evidence and retain rollback assets.
@@ -667,13 +763,16 @@ the CVM, upload an unaccepted image, modify Router, or enable production traffic
   only independently valid kernels.
 - [x] complete and record three design-review passes; revise this plan after
   each pass.
+- [x] re-review the plan against the first Slice A implementation, correct
+  lifecycle/reset/efficiency flaws, and eliminate throw-away old-path migration.
 - [x] commit and push the new authority plan before production-code changes
   (`5bb0ef2`).
 - [ ] Slice A passes and is pushed.
-- [ ] Slice B passes, old Manager/policy code is deleted, and the slice is
-  pushed.
-- [ ] Slice C passes, old Adapter/shadow/duplicate-observation code is deleted,
-  and the slice is pushed.
+- [ ] Slice B new Controller/policy/simulator passes without modifying the old
+  Manager/Policy path and is pushed.
+- [ ] Slice C atomic HTTP/observer cutover passes; old Manager, Policy, Adapter,
+  shadow naming, request cost, and duplicate observation code is deleted and
+  the slice is pushed.
 - [ ] Slice D complete source acceptance and three code reviews pass on one
   exact pushed commit.
 - [ ] assign exactly one next `0.12.x` identity.
@@ -691,7 +790,15 @@ Stop and fix the architecture rather than adding a compatibility patch if:
 - selection tokens travel outside the canonical request record;
 - a new public reserve/no-reserve or external-observation decision variant is
   proposed;
-- a stale handle can address a reservation without epoch and generation;
+- a stale handle can address a reservation without its Controller epoch and
+  monotonic internal ID;
+- a forwarded terminal can erase work that no covering observation has ever
+  absorbed;
+- a recoverable same-capability backend reset requires a PIG process restart;
+- Admit or Snapshot scans every live reservation instead of using the checked
+  aggregate;
+- an old Manager, Policy, or Adapter is modified merely to bridge into the new
+  core before its atomic deletion;
 - HTTP/log/metrics/Router derive different action, reason, or scope;
 - metrics/status influence admission state;
 - a model asset, tokenizer RPC, cache lookup, learning loop, TTFT Gate,
