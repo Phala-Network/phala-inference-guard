@@ -1196,10 +1196,122 @@ Three review passes found no version-identity blocker:
    candidate keys; hot paths remain bounded and allocation-free; source,
    binary, image, GPU runtime, and production evidence remain separate layers.
 
-This accepts the source version identity only. No image has been built or
-uploaded from `5cf48aa`, the running c21 PIG remains the old local v0.12.9
-container, and Router/Compose/vLLM remain unchanged. The next gate is a
-local-only c21 image followed by PIG-only runtime replacement and GPU tests.
+This source-only acceptance was later found incomplete at the pre-image gate:
+the Dockerfile OCI version still said `0.12.9`. No image had been built or
+runtime changed when the mismatch was found. Section 13.9 supersedes the
+identity conclusion while retaining the `5cf48aa` evidence as an audit record.
+
+### 13.9 Release-identity correction and local image gate, 2026-08-11
+
+Pre-image review found that `5cf48aa` changed the runtime and simulator
+identities but missed this image input:
+
+```text
+Dockerfile: LABEL org.opencontainers.image.version="0.12.9"
+runtime:    PIG-v0.12.10
+```
+
+No known-bad image was built and no container was changed. A focused regression
+test was added first. Its red result was the intended mismatch:
+
+```text
+TestReleaseVersionMatchesDockerfileOCIImageVersion
+Dockerfile OCI version does not match runtime "PIG-v0.12.10";
+want org.opencontainers.image.version="0.12.10"
+```
+
+The smallest correction changes the Dockerfile label and adds the permanent
+runtime-to-Dockerfile identity test. It does not change production Go behavior:
+
+```text
+commit     ab91b2c9d0fd233c1f71385aa47e2df69279d0a6
+message    fix: align v0.12.10 image identity
+remote     origin/codex/pig-v0.11.0-request-aware
+worktree   clean; HEAD equals origin
+```
+
+On exact pushed `ab91b2c` the focused test turned green, and the complete source
+matrix passed again:
+
+```text
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go build ./...
+go build -trimpath -o /tmp/phala-inference-guard-v0.12.10-ab91b2c \
+  ./cmd/phala-inference-guard
+gofmt all tracked Go files: no output
+git diff --check
+git status --short --branch
+
+production binary SHA-256
+b4870b5341f6e05ca9781e8b3b7273b7e1745432c13972a12df80a30ce1f99d7
+vcs.revision=ab91b2c9d0fd233c1f71385aa47e2df69279d0a6
+vcs.modified=false; embedded PIG-v0.12.10 present
+```
+
+The simulator ran twice and was byte-identical both to itself and to the
+accepted pre-correction JSON. The unchanged SHA proves the image-identity fix
+did not change admission behavior:
+
+```text
+SHA-256  c203e348588812c0dcd3c5be1a90615a5fc17973d1a57fcb9674f77585ef55d0
+result   acceptance=passed
+
+policy                    arrivals admitted rejected size-protect completed preemptions
+v0.12.2 comparison        24       17       7        7            17        0
+v0.12.10 candidate        24       24       0        0            24        0
+```
+
+Exact-commit c21 benchmarks remained allocation-free and within the accepted
+limits:
+
+```text
+Policy Evaluate          90.37--96.38 ns/op
+Manager active=0         276.4--277.0 ns/op
+Manager active=1         378.4--386.5 ns/op
+Manager active=48        3.801--3.907 us/op
+Manager active=256       18.318--18.562 us/op
+Manager active=4096      0.286846--0.288346 ms/op
+all cases                0 B/op, 0 allocs/op
+
+4 MiB single-string estimator  0.151031--0.158659 ms/op, 0 B/op, 0 allocs/op
+4 MiB many-string estimator    21.777121--21.939105 ms/op, 0 B/op, 0 allocs/op
+4 MiB classifier + estimator   9.041491--9.172059 ms/op,
+                               about 4.21 MiB/op, 19 allocs/op
+
+100 independent benchtime=1x samples
+path                          min       p50       p99       max
+classifier + estimator       7.0437    10.2180   22.2999   22.6155 ms
+single-string estimator      0.3856     0.4134    0.6042    0.6139 ms
+many-string estimator       20.2822    21.8493   25.5301   25.9473 ms
+```
+
+The c21 host then built this local-only image directly from clean `ab91b2c`:
+
+```text
+tag       ghcr.io/phala-network/phala-inference-guard:0.12.10-ab91b2c-local
+image ID  sha256:ddb3d3348c11bfe03819d63254b46743cd04137f1dcd937d6cf50942e1a14741
+size      28,667,279 bytes
+version   0.12.10
+revision  ab91b2c9d0fd233c1f71385aa47e2df69279d0a6
+user      0
+entrypoint /phala-inference-guard
+binary SHA-256 cbcc95ceea20f64537204eae9753fea5a2255d1589af94f2de8e8a55358eb297
+```
+
+`validate-production-image-contract.sh` returned
+`PIG_PRODUCTION_IMAGE_CONTRACT_OK`. This covers pinned distroless runtime,
+CGO/native NVML, NVIDIA visibility, OCI version/revision, and image binary
+presence. Independent inspect confirmed the expected root user, entrypoint,
+amd64/Linux platform, embedded `PIG-v0.12.10`, and absence of
+`PIG-v0.12.9` in the image binary.
+
+The release-source identity and local image source/image gates are now accepted
+at `ab91b2c`. The image has not been uploaded or deployed. The running c21 PIG
+remains the old local v0.12.9 container, and Router/Compose/vLLM remain
+unchanged. The remaining half of the local-image checklist item is the c21
+PIG-only runtime gate.
 
 ## 14. Active checklist
 
@@ -1230,8 +1342,8 @@ local-only c21 image followed by PIG-only runtime replacement and GPU tests.
 - [x] all deterministic scenarios pass without low-flow or request-scope lock;
   mapped and accepted on exact pushed commit `ee77df7`.
 - [x] complete pre-version matrix and three code reviews pass on `ee77df7`.
-- [x] one next 0.12.x identity is assigned and accepted as exact pushed commit
-  `5cf48aa`.
+- [x] one next 0.12.x identity is assigned and accepted after the pre-image
+  correction on exact pushed commit `ab91b2c`.
 - [ ] one local image passes source/image/c21 PIG-only runtime gates.
 - [ ] sustained and targeted GPU tests satisfy safety, long-window QoS, and
   goodput acceptance.
