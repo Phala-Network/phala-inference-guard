@@ -1,9 +1,9 @@
 # PIG v0.12 Architecture-First QoS-Constrained Goodput Plan
 
-Status: pre-version source acceptance complete; version, image, and runtime
-gates remain active. This document is the only execution plan for the current
-goal. Historical v0.12 plans, images, runtime results, and rejected source
-experiments remain evidence only; they are not implementation authority.
+Status: superseded as implementation authority by
+`PIG_V0_12_CLEAN_ADMISSION_REBUILD_PLAN.md` after the `3533e7c` end-to-end
+architecture audit. This file remains the historical design and evidence ledger;
+do not resume its local corrective slices as the current implementation plan.
 
 The last production-code commit is `b924d32`; the exact pushed pre-version
 acceptance commit is `ee77df7`, whose production Go files are unchanged from
@@ -13,8 +13,9 @@ inherit old evidence automatically. No next `0.12.x` version is assigned. No
 image may be uploaded or deployed until the later source, image, and runtime
 gates in section 13 pass on their exact artifacts.
 
-After context compression, resume from sections 3, 8, 11, and 14. Re-read the
-current Git status before inheriting any checklist item.
+After context compression, do not use this file's old resume pointer. Open
+`PIG_V0_12_CLEAN_ADMISSION_REBUILD_PLAN.md` and follow its active checklist
+after re-reading the current Git status.
 
 ## 1. Objective and decision priority
 
