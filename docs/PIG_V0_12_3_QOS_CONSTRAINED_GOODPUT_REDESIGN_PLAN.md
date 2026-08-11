@@ -1,15 +1,17 @@
 # PIG v0.12 Architecture-First QoS-Constrained Goodput Plan
 
-Status: active architecture reset. This document is the only execution plan for
-the current goal. Historical v0.12 plans, images, runtime results, and rejected
-source experiments remain evidence only; they are not implementation authority.
+Status: pre-version source acceptance complete; version, image, and runtime
+gates remain active. This document is the only execution plan for the current
+goal. Historical v0.12 plans, images, runtime results, and rejected source
+experiments remain evidence only; they are not implementation authority.
 
-The current production-executable baseline is `b924d32`; the latest pushed
-documentation alignment is `3da129c`, and the architecture-reset plan is commit
-`021f146`. Later test, documentation, or executable commits do not inherit old
-evidence automatically. No next `0.12.x` version is assigned. No image may be
-built, uploaded, or deployed until every pre-version gate in section 13 passes
-on one exact pushed commit.
+The last production-code commit is `b924d32`; the exact pushed pre-version
+acceptance commit is `ee77df7`, whose production Go files are unchanged from
+`b924d32`. The documentation alignment is `3da129c`, and the architecture-reset
+plan is `021f146`. Later test, documentation, or executable commits do not
+inherit old evidence automatically. No next `0.12.x` version is assigned. No
+image may be uploaded or deployed until the later source, image, and runtime
+gates in section 13 pass on their exact artifacts.
 
 After context compression, resume from sections 3, 8, 11, and 14. Re-read the
 current Git status before inheriting any checklist item.
@@ -66,7 +68,8 @@ CVM             c21b7281-2c25-4453-8a68-f39ec42d03b4
 workbench       pig-v0124-workbench
 repository      /workspace/src/phala-inference-guard-r3
 branch          codex/pig-v0.11.0-request-aware
-executable HEAD b924d32
+accepted source ee77df7c7c82fe2da143e1056a51c0a29bf96e4b
+last production-code commit b924d32
 architecture plan       021f146
 ```
 
@@ -940,6 +943,150 @@ These slices prove current-capacity reporting cleanup and removal of misleading
 retired telemetry. They do not complete every deterministic scenario or the
 full pre-version matrix.
 
+### 13.7 Required-scenario and pre-version acceptance, 2026-08-11
+
+The exact pushed acceptance source is:
+
+```text
+CVM        c21b7281-2c25-4453-8a68-f39ec42d03b4
+container  pig-v0124-workbench
+repository /workspace/src/phala-inference-guard-r3
+branch     codex/pig-v0.11.0-request-aware
+commit     ee77df7c7c82fe2da143e1056a51c0a29bf96e4b
+remote     origin/codex/pig-v0.11.0-request-aware
+worktree   clean
+```
+
+`481deec` first expanded the estimator, 64K contention, lifecycle, and
+simulation provenance tests. `ee77df7` then closed the final two explicit
+coverage gaps without changing production code:
+
+- `TestV0125AutomaticCapabilityBusyStartupAdmitsAndDrainsFittingRegularRequest`
+  proves that one coherent `running=1` startup sample admits a fitting 8K
+  regular request immediately in enforce mode and drains the full reservation
+  lifecycle exactly;
+- `TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable` and
+  `TestRequestAwareHTTPHardGuardsRejectBeforeUpstreamWithZeroInspectCapacity`
+  jointly prove request, load, and availability outcomes across HTTP, decision
+  logs, metrics, upstream status, and Router-visible capacity. Request-scoped
+  protection preserves green capacity for fitting traffic; load and
+  availability protection publish red capacity with the exact scope.
+
+The section 11 scenario-to-test audit is:
+
+| Scenario | Direct production-contract evidence |
+| --- | --- |
+| 1 | `TestSustainedReplacementWaveCompletesAll24Requests` and `TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMatrix` assert the distinct 17/24 v0.12.2 comparison and 24/24 candidate. |
+| 2 | `TestPrefillQoSGateBoundsManySmallRequestsUnderContention` fills 64K with sixteen 4K requests, protects the seventeenth, reuses released Prefill budget immediately, drains exactly, and then admits a 49K low-flow request. |
+| 3 | `TestRequestAwarePolicyWaitingIsSelectiveNotGlobalClose` and `TestRequestAwareAdapterWaitingRemainsRequestSizeAwareBeforeForward` admit fitting regular work with observed running/waiting while protecting a non-regular request. |
+| 4 | `TestPrefillQoSRequestProtectionIsObservableWithoutRouterLock` protects the 96K request, keeps Router capacity open, and admits the following fitting regular request on the same observation. |
+| 5 | `TestRequestAwarePolicyPrefillBoundaries`, `TestRequestAwareManagerAppliesAtomicLongPrefillBudgetsAndLifecycle`, and `TestResourceSafetyGateOwnsFreshnessInputCeilingOverflowAndHardKV` cover weighted, exclusive, quiescent, aggregate, singleton, and upstream-input-ceiling cases. |
+| 6 | `TestRequestAwareManagerConcurrentBurstStopsAtHardKVWithoutPacer` runs 1/16/64/256-way bursts, never exceeds the hard KV counterfactual, and drains every admitted reservation. |
+| 7 | `TestPredictiveVLLMObserverPublishesOnlyReconciledObservationSequence`, `TestCurrentRequestAwareDecisionUsesAtomicallyPublishedObservation`, and `TestV0128RequestAwareTelemetryObservationPreservesSequence` prevent mixed observation/decision sequences. |
+| 8 | `TestV0125AutomaticCapabilityIsBusyInvariant` plus the new busy-startup enforce lifecycle test prove coherent busy startup is not an idle gate; metadata identity and geometry failure tests continue to fail availability instead of guessing. |
+| 9 | `TestTerminalKeepsLastObservedKVWithoutNegativeRetiredCredit`, `TestObservedRunningIsNotReducedByInferredPendingPrefillOwnership`, and `TestV0121PrefillCompletesOnFirstResponseBodyByteNotHeaders` prove full-to-future overlay ordering without negative credit. |
+| 10 | `TestRequestAwareHTTPLifecycleMatrixDrainsReservationExactlyOnce`, `TestV0129SuccessfulResponseEOFIsExactlyOnce`, `TestRequestAwareManagerConcurrentRebaseInvalidatesEveryOldHandle`, and adapter-close tests cover HTTP terminal causes, duplicates, epoch drift, and shutdown. |
+| 11 | `TestPredictiveVLLMObserverTransientScrapeExpiresButDoesNotInvalidateEpoch` closes stale availability and recovers on coherent metrics; `TestRequestAwareAdapterTelemetryProbeRecoversImmediatelyOnNewObservation` reopens Router-visible capacity without a timer or new business request. |
+| 12 | `TestRequestAwareObserverPreemptionProtectionClearsOnNextFreshObservation` and `TestRequestAwareHTTPPreemptionSelectsContentionWithoutGlobalLock` limit preemption to its fresh sample and admit fitting traffic immediately. |
+| 13 | The two `ee77df7` HTTP surface tests, `TestWritePredictiveAdmissionExposesCurrentOperationalState`, and `TestPredictiveEnforceUpstreamStatusUsesRequestAwareProjectionOnly` keep request/load/availability scope consistent across HTTP, logs, metrics, status, and Router projection. |
+| 14 | `TestV0125RequestAwareAdapterPrefillCompletionSupersedesRecentRejectProjection`, `TestV0125RequestAwareAdapterTerminalAndRebaseSupersedeRecentRejectProjection`, and `TestRequestAwareAdapterTransitionUsesCurrentCapacityAndKeepsRejectTimestamp` prove that reject timestamps are telemetry only. |
+| 15 | `TestDeterministicRequestAwareGoodputSuiteIsReplayable` and `TestDeterministicRequestAwareGoodputSuiteIsPolicyOrderIndependent` prove fixed-seed and alternate-policy-order equality. |
+| 16 | The real HTTP lifecycle matrix covers streaming and non-streaming completion and requires exact Manager drain; response lifecycle tests report conservative phase ordering rather than inferring completion from headers. |
+| 17 | `TestApproximateInputTokenHintModelNeutralShapeCorpus`, `TestApproximateInputTokenHintMaximumBodyFixtureIsDeterministic`, and bounded-sampling/body-preservation tests cover every required input shape without model assets; c21 benchmarks enforce the extreme-input latency limit. |
+
+The clean `ee77df7` source passed:
+
+```text
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go build ./...
+go build -trimpath -o /tmp/phala-inference-guard-preversion-ee77df7 \
+  ./cmd/phala-inference-guard
+git diff --check
+git status --short --branch
+
+tracked Go files: 130
+gofmt unformatted: 0
+result: all green; worktree clean and equal to origin
+```
+
+The temporary production binary was:
+
+```text
+/tmp/phala-inference-guard-preversion-ee77df7
+SHA-256 4957b388ec747c095e423590caec3ec6a34238ea36f421a8262864c0e7a2255a
+```
+
+The production simulator ran twice from the same clean commit. Raw JSON was
+byte-identical:
+
+```text
+SHA-256 9d2303c37abd5c9a10cb115e19a2c406384b29d95061020cc60ecb55b6d47df6
+acceptance=passed
+
+policy                    arrivals admitted rejected size-protect completed preemptions
+v0.12.2 comparison        24       17       7        7            17        0
+current candidate         24       24       0        0            24        0
+```
+
+Three-run c21 decision benchmarks remained allocation-free:
+
+```text
+Policy Evaluate          90.16--95.71 ns/op
+Manager active=0         280.3--282.3 ns/op
+Manager active=1         382.1--413.0 ns/op
+Manager active=48        3.777--3.869 us/op
+Manager active=256       18.656--19.084 us/op
+Manager active=4096      0.286773--0.291885 ms/op
+all cases                0 B/op, 0 allocs/op
+```
+
+The 256-reservation path remains below 100 us and the 4,096 stress path below
+1 ms, so the simple O(n) scan remains preferable to cached aggregate state.
+
+Maximum-body CPU evidence, which is not an HTTP/GPU or production latency
+claim, was:
+
+```text
+three-run averages
+4 MiB single-string estimator  0.155119--0.156883 ms/op, 0 B/op, 0 allocs/op
+4 MiB many-string estimator    21.660322--22.211599 ms/op, 0 B/op, 0 allocs/op
+4 MiB classifier + estimator   8.561054--8.857801 ms/op,
+                               about 4.21 MiB/op, 19 allocs/op
+
+100 independent benchtime=1x samples
+path                          min       p50       p99       max
+classifier + estimator       7.0195    10.2760   21.7216   22.4587 ms
+single-string estimator      0.4185     0.4944    0.6835    0.7005 ms
+many-string estimator       20.8191    21.8952   26.1337   26.1771 ms
+```
+
+All maximum-body p99 values remain below the accepted 100-ms extreme-input
+budget. These are CPU microbenchmarks and do not establish production p99.
+
+The three required review passes found no remaining pre-version blocker:
+
+1. **Causality and objective:** request size changes the real pre-forward
+   decision; TPS/generation remain telemetry and offline acceptance inputs;
+   busy startup, waiting, one preemption sample, and a historical reject do not
+   create a global or sticky lock; no cache lookup, tokenizer asset, online
+   learning, or TTFT gate was reintroduced.
+2. **Safety and lifecycle:** hard KV, input ceiling, freshness, identity,
+   observation sequence, and epoch safety remain strict; the real HTTP matrix
+   and concurrent rebase tests drain exactly once without negative credits,
+   double release, or unsafe capacity reuse; request/load/availability scopes
+   are visible before Router projection.
+3. **SOLID, efficiency, and evidence:** Controller/Manager own state and
+   atomicity, pure Gates decide, Adapter maps, and reporting only projects;
+   `ee77df7` changes tests only; O(n) measurement remains far inside limits;
+   simulation, CPU benchmark, binary, image, GPU runtime, and production
+   evidence are kept as separate layers.
+
+This closes the pre-version source gate only. It does not assign a version,
+build an image, replace the running c21 PIG, exercise GPU QoS, upload an image,
+modify Router/Compose, or establish production readiness.
+
 ## 14. Active checklist
 
 - [x] v0.12.9 sustained 14/24 overprotection retained as rejected evidence.
@@ -966,8 +1113,9 @@ full pre-version matrix.
   recent-reject hold is removed; pushed as `62be847`.
 - [x] retired reservation/eviction/completed-credit telemetry is removed;
   pushed as `b924d32`.
-- [ ] all deterministic scenarios pass without low-flow or request-scope lock.
-- [ ] complete pre-version matrix and three code reviews pass.
+- [x] all deterministic scenarios pass without low-flow or request-scope lock;
+  mapped and accepted on exact pushed commit `ee77df7`.
+- [x] complete pre-version matrix and three code reviews pass on `ee77df7`.
 - [ ] one next 0.12.x identity is assigned and accepted.
 - [ ] one local image passes source/image/c21 PIG-only runtime gates.
 - [ ] sustained and targeted GPU tests satisfy safety, long-window QoS, and
