@@ -20,13 +20,12 @@ type RequestAwareReason string
 const (
 	RequestAwareReasonOpen               RequestAwareReason = "open"
 	RequestAwareReasonStale              RequestAwareReason = "stale"
-	RequestAwareReasonPreemption         RequestAwareReason = "preemption"
 	RequestAwareReasonKV                 RequestAwareReason = "kv"
+	RequestAwareReasonInputLimit         RequestAwareReason = "input_limit"
 	RequestAwareReasonPrefillBudget      RequestAwareReason = "prefill_budget"
 	RequestAwareReasonPrefillConcurrency RequestAwareReason = "prefill_concurrency"
 	RequestAwareReasonPrefillExclusive   RequestAwareReason = "prefill_exclusive"
 	RequestAwareReasonPrefillBusy        RequestAwareReason = "prefill_busy"
-	RequestAwareReasonDecodeInterference RequestAwareReason = "decode_interference"
 	RequestAwareReasonDuplicate          RequestAwareReason = "duplicate"
 	RequestAwareReasonUnavailable        RequestAwareReason = "unavailable"
 	RequestAwareReasonInvalid            RequestAwareReason = "invalid"
@@ -37,7 +36,6 @@ type RequestAwarePressureSource string
 const (
 	RequestAwarePressureNone    RequestAwarePressureSource = "none"
 	RequestAwarePressurePrefill RequestAwarePressureSource = "prefill"
-	RequestAwarePressureDecode  RequestAwarePressureSource = "decode"
 )
 
 type RequestAwarePrefillClass string
@@ -48,52 +46,50 @@ const (
 	RequestAwarePrefillExclusive RequestAwarePrefillClass = "exclusive"
 	RequestAwarePrefillQuiescent RequestAwarePrefillClass = "quiescent"
 
-	DefaultRequestAwarePrefillRegularTokens         = domain.DefaultPrefillRegularTokens
-	DefaultRequestAwarePrefillExclusiveTokens       = domain.DefaultPrefillExclusiveTokens
-	DefaultRequestAwarePrefillQuiescentTokens       = domain.DefaultPrefillQuiescentTokens
-	DefaultRequestAwarePrefillAggregateBudgetTokens = domain.DefaultPrefillAggregateBudgetTokens
+	DefaultRequestAwarePrefillRegularTokens               = domain.DefaultPrefillRegularTokens
+	DefaultRequestAwarePrefillExclusiveTokens             = domain.DefaultPrefillExclusiveTokens
+	DefaultRequestAwarePrefillQuiescentTokens             = domain.DefaultPrefillQuiescentTokens
+	DefaultRequestAwarePrefillAggregateBudgetTokens       = domain.DefaultPrefillAggregateBudgetTokens
+	RequestAwareCanonicalDecodeHorizonTokens        int64 = DefaultCapabilityDecodeHorizonTokens
 )
 
 type RequestAwareConfig struct {
 	HardKVLimitTokens            int64
 	BlockSize                    int64
+	MaximumAdmissibleInputTokens int64
 	PrefillRegularTokens         int64
 	PrefillExclusiveTokens       int64
 	PrefillQuiescentTokens       int64
+	PrefillContendedBudgetTokens int64
 	PrefillAggregateBudgetTokens int64
 }
 
 func (c RequestAwareConfig) Validate() error {
-	if err := validateResourceGateConfig(c.resourceGateConfig()); err != nil {
+	if err := validateResourceSafetyGateConfig(c.resourceSafetyGateConfig()); err != nil {
 		return fmt.Errorf("request-aware policy configuration is invalid: %w", err)
 	}
-	if err := validateInterferenceGateConfig(c.interferenceGateConfig()); err != nil {
-		return fmt.Errorf("request-aware policy configuration is invalid: %w", err)
-	}
-	if err := validateDecodeEnvelopeConfig(c.decodeEnvelopeConfig()); err != nil {
+	if err := validatePrefillQoSGateConfig(c.prefillQoSGateConfig()); err != nil {
 		return fmt.Errorf("request-aware policy configuration is invalid: %w", err)
 	}
 	return nil
 }
 
-func (c RequestAwareConfig) resourceGateConfig() ResourceGateConfig {
-	return ResourceGateConfig{
-		HardKVLimitTokens: c.HardKVLimitTokens,
-		BlockSize:         c.BlockSize,
+func (c RequestAwareConfig) resourceSafetyGateConfig() ResourceSafetyGateConfig {
+	return ResourceSafetyGateConfig{
+		HardKVLimitTokens:            c.HardKVLimitTokens,
+		BlockSize:                    c.BlockSize,
+		MaximumAdmissibleInputTokens: c.MaximumAdmissibleInputTokens,
 	}
 }
 
-func (c RequestAwareConfig) interferenceGateConfig() InterferenceGateConfig {
-	return InterferenceGateConfig{
+func (c RequestAwareConfig) prefillQoSGateConfig() PrefillQoSGateConfig {
+	return PrefillQoSGateConfig{
 		PrefillRegularTokens:         c.PrefillRegularTokens,
 		PrefillExclusiveTokens:       c.PrefillExclusiveTokens,
 		PrefillQuiescentTokens:       c.PrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: c.PrefillContendedBudgetTokens,
 		PrefillAggregateBudgetTokens: c.PrefillAggregateBudgetTokens,
 	}
-}
-
-func (c RequestAwareConfig) decodeEnvelopeConfig() DecodeEnvelopeConfig {
-	return DecodeEnvelopeConfig{InterferenceBudgetTokens: c.PrefillRegularTokens}
 }
 
 type RequestAwareInput struct {
@@ -105,9 +101,11 @@ type RequestAwareInput struct {
 	ReservedTokens                   int64
 	RequestReservedTokens            int64
 	SelectionInputTokens             int64
+	SafetyInputTokens                int64
 	Running                          int
 	Waiting                          int
 	EffectiveSequences               int
+	LocalActiveDecodeSequences       int
 	AggregateTPSProxy                float64
 	MeanActiveTPSProxy               float64
 	TPSValid                         bool
@@ -131,6 +129,7 @@ type RequestAwareDecision struct {
 	RemainingKV                      int64
 	HardKVLimit                      int64
 	EffectiveSequences               int
+	Contended                        bool
 	PrefillClass                     RequestAwarePrefillClass
 	EstimatedPrefillTokens           int64
 	PendingPrefillSequences          int
@@ -142,9 +141,9 @@ type RequestAwareDecision struct {
 }
 
 type RequestAwarePolicy struct {
-	resourceGate     ResourceGate
-	interferenceGate InterferenceGate
-	decodeEnvelope   DecodeEnvelope
+	config             RequestAwareConfig
+	resourceSafetyGate ResourceSafetyGate
+	prefillQoSGate     PrefillQoSGate
 }
 
 func NewRequestAwarePolicy(config RequestAwareConfig) (*RequestAwarePolicy, error) {
@@ -152,9 +151,9 @@ func NewRequestAwarePolicy(config RequestAwareConfig) (*RequestAwarePolicy, erro
 		return nil, err
 	}
 	return &RequestAwarePolicy{
-		resourceGate:     ResourceGate{config: config.resourceGateConfig()},
-		interferenceGate: InterferenceGate{config: config.interferenceGateConfig()},
-		decodeEnvelope:   DecodeEnvelope{config: config.decodeEnvelopeConfig()},
+		config:             config,
+		resourceSafetyGate: ResourceSafetyGate{config: config.resourceSafetyGateConfig()},
+		prefillQoSGate:     PrefillQoSGate{config: config.prefillQoSGateConfig()},
 	}, nil
 }
 
@@ -162,9 +161,8 @@ func (p *RequestAwarePolicy) MatchesCapability(profile BackendCapabilityProfile)
 	if p == nil || profile.Validate() != nil {
 		return false
 	}
-	return p.resourceGate.MatchesCapability(profile) &&
-		p.interferenceGate.MatchesCapability(profile) &&
-		p.decodeEnvelope.MatchesCapability(profile)
+	return p.resourceSafetyGate.MatchesCapability(profile) &&
+		p.prefillQoSGate.MatchesCapability(profile)
 }
 
 func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecision {
@@ -175,19 +173,24 @@ func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecis
 	if estimatedPrefillTokens == 0 {
 		estimatedPrefillTokens = input.SelectionInputTokens
 	}
-	resource := p.resourceGate.Evaluate(ResourceGateInput{
+	safetyInputTokens := input.SafetyInputTokens
+	if safetyInputTokens == 0 {
+		safetyInputTokens = input.SelectionInputTokens
+	}
+	resource := p.resourceSafetyGate.Evaluate(ResourceSafetyGateInput{
 		MetricsFresh:          input.MetricsFresh,
 		IdentityValid:         input.IdentityValid,
 		CapacityTokens:        input.CapacityTokens,
 		UsedTokens:            input.UsedTokens,
 		ReservedTokens:        input.ReservedTokens,
 		RequestReservedTokens: input.RequestReservedTokens,
+		SafetyInputTokens:     safetyInputTokens,
 	})
-	interference := p.interferenceGate.Evaluate(InterferenceGateInput{
+	qos := p.prefillQoSGate.Evaluate(PrefillQoSGateInput{
 		EstimatedPrefillTokens:           estimatedPrefillTokens,
-		Running:                          input.Running,
-		Waiting:                          input.Waiting,
-		EffectiveSequences:               input.EffectiveSequences,
+		LocalActiveDecodeSequences:       input.LocalActiveDecodeSequences,
+		RawRunning:                       input.Running,
+		RawWaiting:                       input.Waiting,
 		PreemptionObserved:               input.PreemptionObserved,
 		PendingPrefillSequences:          input.PendingPrefillSequences,
 		PendingPrefillTokens:             input.PendingPrefillTokens,
@@ -204,42 +207,27 @@ func (p *RequestAwarePolicy) Evaluate(input RequestAwareInput) RequestAwareDecis
 		RemainingKV:                      resource.RemainingKV,
 		HardKVLimit:                      resource.HardKVLimit,
 		EffectiveSequences:               input.EffectiveSequences,
-		PrefillClass:                     interference.PrefillClass,
-		EstimatedPrefillTokens:           interference.EstimatedPrefillTokens,
-		PendingPrefillSequences:          interference.PendingPrefillSequences,
-		PendingPrefillTokens:             interference.PendingPrefillTokens,
-		PostAdmitPendingPrefillTokens:    interference.PostAdmitPendingPrefillTokens,
-		PendingLongPrefillSequences:      interference.PendingLongPrefillSequences,
-		PendingQuiescentPrefillSequences: interference.PendingQuiescentPrefillSequences,
-		PendingUnknownPrefillSequences:   interference.PendingUnknownPrefillSequences,
+		Contended:                        qos.Contended,
+		PrefillClass:                     qos.PrefillClass,
+		EstimatedPrefillTokens:           qos.EstimatedPrefillTokens,
+		PendingPrefillSequences:          qos.PendingPrefillSequences,
+		PendingPrefillTokens:             qos.PendingPrefillTokens,
+		PostAdmitPendingPrefillTokens:    qos.PostAdmitPendingPrefillTokens,
+		PendingLongPrefillSequences:      qos.PendingLongPrefillSequences,
+		PendingQuiescentPrefillSequences: qos.PendingQuiescentPrefillSequences,
+		PendingUnknownPrefillSequences:   qos.PendingUnknownPrefillSequences,
 	}
 	if !resource.Fits {
 		return decision
 	}
-	if !interference.Admit {
-		decision.Reason = interference.Reason
-		if interference.HardProtection {
+	if !qos.Admit {
+		decision.Reason = qos.Reason
+		if qos.HardProtection {
 			return decision
 		}
 		decision.Action = RequestAwareSizeProtect
 		decision.PressureSource = RequestAwarePressurePrefill
 		decision.Pressure = 1
-		decision.AllowanceTokens = 0
-		return decision
-	}
-	decode := p.decodeEnvelope.Evaluate(DecodeEnvelopeInput{
-		PostAdmitPrefillTokens: interference.PostAdmitPendingPrefillTokens,
-		ActiveDecodeSequences:  input.EffectiveSequences,
-	})
-	if !decode.Admit {
-		decision.Reason = decode.Reason
-		if decode.HardProtection {
-			return decision
-		}
-		decision.Action = RequestAwareSizeProtect
-		decision.PressureSource = RequestAwarePressureDecode
-		decision.Pressure = decode.RejectedPressure
-		decision.AllowanceTokens = 0
 		return decision
 	}
 	decision.Action = RequestAwareAdmit
@@ -252,7 +240,22 @@ func (p *RequestAwarePolicy) prefillClass(tokens int64) RequestAwarePrefillClass
 	if p == nil {
 		return ""
 	}
-	return p.interferenceGate.Classify(tokens)
+	return p.prefillQoSGate.Classify(tokens)
+}
+
+func (p *RequestAwarePolicy) canonicalProbeCost(manifestID string) (domain.RequestCost, bool) {
+	if p == nil {
+		return domain.RequestCost{}, false
+	}
+	cost, err := domain.BuildRequestCost(domain.RequestCostInput{
+		ManifestID:             manifestID,
+		BlockSize:              p.config.BlockSize,
+		SelectionPrefillTokens: 1,
+		SafetyInputTokens:      1,
+		DecodeHorizonTokens:    RequestAwareCanonicalDecodeHorizonTokens,
+		Confidence:             1,
+	})
+	return cost, err == nil
 }
 
 func requestAwareFinite(value float64) bool {

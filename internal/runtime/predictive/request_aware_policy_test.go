@@ -17,9 +17,11 @@ func TestRequestAwarePolicyRejectsInvalidFrozenKVLimits(t *testing.T) {
 			_, err := NewRequestAwarePolicy(RequestAwareConfig{
 				HardKVLimitTokens:            test.hardKV,
 				BlockSize:                    16,
+				MaximumAdmissibleInputTokens: 640,
 				PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 				PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
 				PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+				PrefillContendedBudgetTokens: 640,
 				PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 			})
 			if err == nil {
@@ -48,10 +50,10 @@ func TestRequestAwarePolicyDifferentiatesByPrefillWorkUnderSameBackendState(t *t
 	if smallDecision.Action != RequestAwareAdmit || largeDecision.Action != RequestAwareSizeProtect {
 		t.Fatalf("same-pressure decisions small=%+v large=%+v, want admit/size_protect", smallDecision, largeDecision)
 	}
-	if largeDecision.Reason != RequestAwareReasonDecodeInterference ||
-		largeDecision.PressureSource != RequestAwarePressureDecode ||
+	if largeDecision.Reason != RequestAwareReasonPrefillBusy ||
+		largeDecision.PressureSource != RequestAwarePressurePrefill ||
 		largeDecision.PrefillClass != RequestAwarePrefillQuiescent {
-		t.Fatalf("large request protection=%+v, want quiescent Decode protection", largeDecision)
+		t.Fatalf("large request protection=%+v, want contended quiescent protection", largeDecision)
 	}
 }
 
@@ -90,11 +92,12 @@ func TestRequestAwarePolicyProtectsQuiescentPrefillBeforeFeedback(t *testing.T) 
 	}
 	localDecode := idle
 	localDecode.EffectiveSequences = 1
+	localDecode.LocalActiveDecodeSequences = 1
 	localDecodeDecision := policy.Evaluate(localDecode)
 	if localDecodeDecision.Action != RequestAwareSizeProtect ||
-		localDecodeDecision.Reason != RequestAwareReasonDecodeInterference ||
-		localDecodeDecision.PressureSource != RequestAwarePressureDecode {
-		t.Fatalf("local decode plus 650K decision=%+v, want pre-forward Decode protection", localDecodeDecision)
+		localDecodeDecision.Reason != RequestAwareReasonPrefillBusy ||
+		localDecodeDecision.PressureSource != RequestAwarePressurePrefill {
+		t.Fatalf("local decode plus 650K decision=%+v, want contended size protection", localDecodeDecision)
 	}
 
 	busy := input
@@ -102,9 +105,9 @@ func TestRequestAwarePolicyProtectsQuiescentPrefillBeforeFeedback(t *testing.T) 
 	busy.EffectiveSequences = 20
 	busyDecision := policy.Evaluate(busy)
 	if busyDecision.Action != RequestAwareSizeProtect ||
-		busyDecision.Reason != RequestAwareReasonDecodeInterference ||
-		busyDecision.PressureSource != RequestAwarePressureDecode {
-		t.Fatalf("busy 650K decision=%+v, want pre-forward Decode protection before TPS feedback", busyDecision)
+		busyDecision.Reason != RequestAwareReasonPrefillBusy ||
+		busyDecision.PressureSource != RequestAwarePressurePrefill {
+		t.Fatalf("busy 650K decision=%+v, want pre-forward contended protection", busyDecision)
 	}
 }
 
@@ -245,11 +248,13 @@ func TestV0125RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *tes
 	for _, test := range []struct {
 		name             string
 		pendingTokens    int64
+		pendingLong      int
 		pendingQuiescent int
+		wantAction       RequestAwareAction
 	}{
-		{name: "weighted", pendingTokens: 195 * 1024},
-		{name: "exclusive", pendingTokens: 300 * 1024},
-		{name: "quiescent", pendingTokens: 650 * 1024, pendingQuiescent: 1},
+		{name: "weighted", pendingTokens: 195 * 1024, wantAction: RequestAwareAdmit},
+		{name: "exclusive", pendingTokens: 300 * 1024, pendingLong: 1, wantAction: RequestAwareSizeProtect},
+		{name: "quiescent", pendingTokens: 650 * 1024, pendingLong: 1, pendingQuiescent: 1, wantAction: RequestAwareSizeProtect},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			input := requestAwareTestInput()
@@ -258,17 +263,19 @@ func TestV0125RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *tes
 			input.EffectiveSequences = 0
 			input.PendingPrefillSequences = 1
 			input.PendingPrefillTokens = test.pendingTokens
-			input.PendingLongPrefillSequences = 1
+			input.PendingLongPrefillSequences = test.pendingLong
 			input.PendingQuiescentPrefillSequences = test.pendingQuiescent
 			input.SelectionInputTokens = 8 * 1024
 			input.EstimatedPrefillTokens = 8 * 1024
 			input.RequestReservedTokens = 16 * 1024
 
 			decision := policy.Evaluate(input)
-			if decision.Action != RequestAwareSizeProtect ||
-				decision.Reason != RequestAwareReasonPrefillBusy ||
-				decision.PressureSource != RequestAwarePressurePrefill {
-				t.Fatalf("regular behind %s Prefill=%+v, want size_protect/prefill_busy", test.name, decision)
+			if decision.Action != test.wantAction {
+				t.Fatalf("regular behind %s Prefill=%+v, want action %s", test.name, decision, test.wantAction)
+			}
+			if test.wantAction != RequestAwareAdmit &&
+				(decision.Reason != RequestAwareReasonPrefillBusy || decision.PressureSource != RequestAwarePressurePrefill) {
+				t.Fatalf("regular behind %s Prefill=%+v, want bounded Prefill protection", test.name, decision)
 			}
 		})
 	}
@@ -290,8 +297,10 @@ func TestV0125RequestAwarePolicyBlocksRegularBehindKnownNonRegularPrefill(t *tes
 func TestRequestAwarePolicyKeepsAggregateBudgetIndependentFromSizeBands(t *testing.T) {
 	config := RequestAwareConfig{
 		HardKVLimitTokens: 9_008, BlockSize: 16,
-		PrefillRegularTokens: 64 * 1024, PrefillExclusiveTokens: 256 * 1024,
-		PrefillQuiescentTokens: 512 * 1024, PrefillAggregateBudgetTokens: 128 * 1024,
+		MaximumAdmissibleInputTokens: 8_752,
+		PrefillRegularTokens:         64 * 1024, PrefillExclusiveTokens: 256 * 1024,
+		PrefillQuiescentTokens: 512 * 1024, PrefillContendedBudgetTokens: 8_752,
+		PrefillAggregateBudgetTokens: 128 * 1024,
 	}
 	if _, err := NewRequestAwarePolicy(config); err != nil {
 		t.Fatalf("independent aggregate Prefill budget was rejected: %v", err)
@@ -358,13 +367,71 @@ func TestRequestAwarePolicyWaitingIsSelectiveNotGlobalClose(t *testing.T) {
 	}
 }
 
+func TestPurePolicyContendedAdmits49KRegularWithActiveDecode(t *testing.T) {
+	policy := newLargeRequestAwareTestPolicy(t)
+	input := requestAwareTestInput()
+	input.CapacityTokens = 4 * 1024 * 1024
+	input.UsedTokens = 128 * 1024
+	input.Running = 4
+	input.EffectiveSequences = 4
+	input.SelectionInputTokens = 49 * 1024
+	input.EstimatedPrefillTokens = 49 * 1024
+	input.RequestReservedTokens = 52 * 1024
+
+	decision := policy.Evaluate(input)
+	if decision.Action != RequestAwareAdmit || decision.Reason != RequestAwareReasonOpen {
+		t.Fatalf("49K contended decision=%+v, want bounded regular admission", decision)
+	}
+}
+
+func TestPurePolicyOpenWeightedPendingDoesNotBlockRegular(t *testing.T) {
+	policy := newLargeRequestAwareTestPolicy(t)
+	input := requestAwareTestInput()
+	input.CapacityTokens = 4 * 1024 * 1024
+	input.Running = 0
+	input.EffectiveSequences = 0
+	input.AggregateTPSProxy = 0
+	input.MeanActiveTPSProxy = 0
+	input.TPSValid = false
+	input.PendingPrefillSequences = 1
+	input.PendingPrefillTokens = 100 * 1024
+	input.PendingLongPrefillSequences = 0
+	input.SelectionInputTokens = 8 * 1024
+	input.EstimatedPrefillTokens = 8 * 1024
+	input.RequestReservedTokens = 16 * 1024
+
+	decision := policy.Evaluate(input)
+	if decision.Action != RequestAwareAdmit || decision.Reason != RequestAwareReasonOpen {
+		t.Fatalf("regular behind open weighted Prefill=%+v, want shared aggregate admission", decision)
+	}
+}
+
+func TestPurePolicyPreemptionSelectsContendedWithoutHardReject(t *testing.T) {
+	policy := newLargeRequestAwareTestPolicy(t)
+	input := requestAwareTestInput()
+	input.CapacityTokens = 4 * 1024 * 1024
+	input.Running = 0
+	input.EffectiveSequences = 0
+	input.PreemptionObserved = true
+	input.SelectionInputTokens = 96 * 1024
+	input.EstimatedPrefillTokens = 96 * 1024
+	input.RequestReservedTokens = 128 * 1024
+
+	decision := policy.Evaluate(input)
+	if decision.Action != RequestAwareSizeProtect || decision.Reason != RequestAwareReasonPrefillBusy {
+		t.Fatalf("preemption-selected contended decision=%+v, want ordinary request-size protection", decision)
+	}
+}
+
 func TestRequestAwarePolicyBlockAlignsOperationalKVLimits(t *testing.T) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
 		HardKVLimitTokens:            896,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 640,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: 640,
 		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
@@ -389,9 +456,11 @@ func TestRequestAwarePolicyUsesFrozenAbsoluteKVLimits(t *testing.T) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
 		HardKVLimitTokens:            800_000,
 		BlockSize:                    64,
+		MaximumAdmissibleInputTokens: 799_744,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: DefaultRequestAwarePrefillRegularTokens,
 		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
@@ -475,8 +544,8 @@ func TestRequestAwarePolicyNewPreemptionGuardIsCandidateClassAware(t *testing.T)
 
 	regularDecision := policy.Evaluate(regular)
 	weightedDecision := policy.Evaluate(weighted)
-	if regularDecision.Action != RequestAwareAdmit || weightedDecision.Action != RequestAwareHardProtect ||
-		weightedDecision.Reason != RequestAwareReasonPreemption {
+	if regularDecision.Action != RequestAwareAdmit || weightedDecision.Action != RequestAwareSizeProtect ||
+		weightedDecision.Reason != RequestAwareReasonPrefillBusy {
 		t.Fatalf("preemption class-aware decisions regular=%+v weighted=%+v", regularDecision, weightedDecision)
 	}
 }
@@ -511,12 +580,19 @@ func newLargeRequestAwareTestPolicy(t *testing.T) *RequestAwarePolicy {
 
 func newRequestAwareTestPolicyWithLimit(t *testing.T, hard int64) *RequestAwarePolicy {
 	t.Helper()
+	maximumInput := hard - RequestAwareCanonicalDecodeHorizonTokens
+	contendedBudget := maximumInput
+	if contendedBudget > DefaultRequestAwarePrefillRegularTokens {
+		contendedBudget = DefaultRequestAwarePrefillRegularTokens
+	}
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
 		HardKVLimitTokens:            hard,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: maximumInput,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: contendedBudget,
 		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {

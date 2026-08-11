@@ -13,9 +13,11 @@ func BenchmarkRequestAwarePolicyEvaluate(b *testing.B) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
 		HardKVLimitTokens:            3_774_864,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 3_774_608,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: DefaultRequestAwarePrefillRegularTokens,
 		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
@@ -98,9 +100,11 @@ func BenchmarkRequestAwareManagerDecide(b *testing.B) {
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
 		HardKVLimitTokens:            15_099_488,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 15_099_232,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: DefaultRequestAwarePrefillRegularTokens,
 		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {

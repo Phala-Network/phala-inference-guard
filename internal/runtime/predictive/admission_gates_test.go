@@ -2,29 +2,36 @@ package predictive
 
 import "testing"
 
-func TestResourceGateOwnsFreshnessOverflowAndHardKVFit(t *testing.T) {
-	gate, err := NewResourceGate(ResourceGateConfig{
-		HardKVLimitTokens: 8_992,
-		BlockSize:         16,
+func TestResourceSafetyGateOwnsFreshnessInputCeilingOverflowAndHardKV(t *testing.T) {
+	gate, err := NewResourceSafetyGate(ResourceSafetyGateConfig{
+		HardKVLimitTokens:            8_992,
+		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 8_736,
 	})
 	if err != nil {
-		t.Fatalf("NewResourceGate: %v", err)
+		t.Fatalf("NewResourceSafetyGate: %v", err)
 	}
-	base := ResourceGateInput{
+	base := ResourceSafetyGateInput{
 		MetricsFresh:          true,
 		IdentityValid:         true,
 		CapacityTokens:        10_000,
 		UsedTokens:            8_000,
 		RequestReservedTokens: 992,
+		SafetyInputTokens:     512,
 	}
 	fit := gate.Evaluate(base)
 	if !fit.Fits || fit.Reason != RequestAwareReasonOpen || fit.PostAdmitKV != 8_992 || fit.RemainingKV != 992 {
 		t.Fatalf("hard-boundary resource result=%+v", fit)
 	}
-	over := base
-	over.RequestReservedTokens++
-	if result := gate.Evaluate(over); result.Fits || result.Reason != RequestAwareReasonKV {
+	overKV := base
+	overKV.RequestReservedTokens++
+	if result := gate.Evaluate(overKV); result.Fits || result.Reason != RequestAwareReasonKV {
 		t.Fatalf("over-hard resource result=%+v, want KV protection", result)
+	}
+	overInput := base
+	overInput.SafetyInputTokens = 8_737
+	if result := gate.Evaluate(overInput); result.Fits || result.Reason != RequestAwareReasonInputLimit {
+		t.Fatalf("over-input resource result=%+v, want input-limit protection", result)
 	}
 	stale := base
 	stale.MetricsFresh = false
@@ -38,57 +45,57 @@ func TestResourceGateOwnsFreshnessOverflowAndHardKVFit(t *testing.T) {
 	}
 }
 
-func TestInterferenceGateIsCandidateClassAware(t *testing.T) {
-	gate, err := NewInterferenceGate(InterferenceGateConfig{
+func TestPrefillQoSGateUsesContentionAsRegimeNotGlobalLock(t *testing.T) {
+	gate, err := NewPrefillQoSGate(PrefillQoSGateConfig{
 		PrefillRegularTokens:         64,
 		PrefillExclusiveTokens:       256,
 		PrefillQuiescentTokens:       512,
+		PrefillContendedBudgetTokens: 64,
 		PrefillAggregateBudgetTokens: 256,
 	})
 	if err != nil {
-		t.Fatalf("NewInterferenceGate: %v", err)
+		t.Fatalf("NewPrefillQoSGate: %v", err)
 	}
-	base := InterferenceGateInput{
-		PendingPrefillSequences:          1,
-		PendingPrefillTokens:             512,
-		PendingLongPrefillSequences:      1,
-		PendingQuiescentPrefillSequences: 1,
+
+	regular := gate.Evaluate(PrefillQoSGateInput{
+		EstimatedPrefillTokens: 49,
+		RawRunning:             4,
+	})
+	if !regular.Admit || !regular.Contended || regular.Reason != RequestAwareReasonOpen {
+		t.Fatalf("contended regular result=%+v, want bounded admission", regular)
 	}
-	regular := base
-	regular.EstimatedPrefillTokens = 63
-	regularResult := gate.Evaluate(regular)
-	if regularResult.Admit || regularResult.HardProtection ||
-		regularResult.Reason != RequestAwareReasonPrefillBusy ||
-		regularResult.PrefillClass != RequestAwarePrefillRegular {
-		t.Fatalf("regular behind quiescent result=%+v, want bounded Prefill protection", regularResult)
+	weighted := gate.Evaluate(PrefillQoSGateInput{
+		EstimatedPrefillTokens: 96,
+		PreemptionObserved:     true,
+	})
+	if weighted.Admit || weighted.HardProtection || !weighted.Contended ||
+		weighted.Reason != RequestAwareReasonPrefillBusy {
+		t.Fatalf("preemption-selected weighted result=%+v, want ordinary size protection", weighted)
 	}
-	exclusive := base
-	exclusive.EstimatedPrefillTokens = 256
-	exclusiveResult := gate.Evaluate(exclusive)
-	if exclusiveResult.Admit || exclusiveResult.HardProtection ||
-		exclusiveResult.Reason != RequestAwareReasonPrefillExclusive ||
-		exclusiveResult.PrefillClass != RequestAwarePrefillExclusive {
-		t.Fatalf("exclusive behind quiescent result=%+v, want size protection", exclusiveResult)
-	}
-	preemption := InterferenceGateInput{EstimatedPrefillTokens: 64, PreemptionObserved: true}
-	preemptionResult := gate.Evaluate(preemption)
-	if preemptionResult.Admit || !preemptionResult.HardProtection || preemptionResult.Reason != RequestAwareReasonPreemption {
-		t.Fatalf("preemption result=%+v, want hard protection", preemptionResult)
+	openRegular := gate.Evaluate(PrefillQoSGateInput{
+		EstimatedPrefillTokens:         8,
+		PendingPrefillSequences:        1,
+		PendingPrefillTokens:           100,
+		PendingUnknownPrefillSequences: 0,
+	})
+	if !openRegular.Admit || openRegular.Contended || openRegular.PostAdmitPendingPrefillTokens != 108 {
+		t.Fatalf("open regular behind weighted result=%+v, want aggregate admission", openRegular)
 	}
 }
 
-func TestRequestAwarePolicyComposesResourceBeforeInterference(t *testing.T) {
+func TestRequestAwarePolicyComposesResourceSafetyBeforePrefillQoS(t *testing.T) {
 	policy := newRequestAwareTestPolicy(t)
 	input := requestAwareTestInput()
 	input.UsedTokens = 8_990
 	input.RequestReservedTokens = 32
-	input.EstimatedPrefillTokens = DefaultRequestAwarePrefillQuiescentTokens
-	input.SelectionInputTokens = input.EstimatedPrefillTokens
+	input.SelectionInputTokens = DefaultRequestAwarePrefillQuiescentTokens
+	input.SafetyInputTokens = input.SelectionInputTokens
+	input.EstimatedPrefillTokens = input.SelectionInputTokens
 	input.Running = 10
 	input.EffectiveSequences = 10
 
 	decision := policy.Evaluate(input)
-	if decision.Action != RequestAwareHardProtect || decision.Reason != RequestAwareReasonKV {
-		t.Fatalf("composed decision=%+v, want resource KV guard before interference", decision)
+	if decision.Action != RequestAwareHardProtect || decision.Reason != RequestAwareReasonInputLimit {
+		t.Fatalf("composed decision=%+v, want resource input ceiling before QoS", decision)
 	}
 }

@@ -2,21 +2,23 @@ package predictive
 
 import "fmt"
 
-type ResourceGateConfig struct {
-	HardKVLimitTokens int64
-	BlockSize         int64
+type ResourceSafetyGateConfig struct {
+	HardKVLimitTokens            int64
+	BlockSize                    int64
+	MaximumAdmissibleInputTokens int64
 }
 
-type ResourceGateInput struct {
+type ResourceSafetyGateInput struct {
 	MetricsFresh          bool
 	IdentityValid         bool
 	CapacityTokens        int64
 	UsedTokens            int64
 	ReservedTokens        int64
 	RequestReservedTokens int64
+	SafetyInputTokens     int64
 }
 
-type ResourceGateResult struct {
+type ResourceSafetyGateResult struct {
 	Fits        bool
 	Reason      RequestAwareReason
 	EffectiveKV int64
@@ -25,34 +27,37 @@ type ResourceGateResult struct {
 	HardKVLimit int64
 }
 
-type ResourceGate struct {
-	config ResourceGateConfig
+type ResourceSafetyGate struct {
+	config ResourceSafetyGateConfig
 }
 
-func NewResourceGate(config ResourceGateConfig) (*ResourceGate, error) {
-	if err := validateResourceGateConfig(config); err != nil {
+func NewResourceSafetyGate(config ResourceSafetyGateConfig) (*ResourceSafetyGate, error) {
+	if err := validateResourceSafetyGateConfig(config); err != nil {
 		return nil, err
 	}
-	return &ResourceGate{config: config}, nil
+	return &ResourceSafetyGate{config: config}, nil
 }
 
-func validateResourceGateConfig(config ResourceGateConfig) error {
+func validateResourceSafetyGateConfig(config ResourceSafetyGateConfig) error {
 	if config.BlockSize <= 0 || config.HardKVLimitTokens <= 0 ||
-		config.HardKVLimitTokens%config.BlockSize != 0 {
-		return fmt.Errorf("resource gate configuration is invalid")
+		config.HardKVLimitTokens%config.BlockSize != 0 ||
+		config.MaximumAdmissibleInputTokens <= 0 ||
+		config.MaximumAdmissibleInputTokens > config.HardKVLimitTokens {
+		return fmt.Errorf("resource safety gate configuration is invalid")
 	}
 	return nil
 }
 
-func (g *ResourceGate) Evaluate(input ResourceGateInput) ResourceGateResult {
-	result := ResourceGateResult{Reason: RequestAwareReasonInvalid}
+func (g *ResourceSafetyGate) Evaluate(input ResourceSafetyGateInput) ResourceSafetyGateResult {
+	result := ResourceSafetyGateResult{Reason: RequestAwareReasonInvalid}
 	if g == nil {
 		return result
 	}
 	result.HardKVLimit = g.config.HardKVLimitTokens
 	if input.CapacityTokens <= 0 || input.CapacityTokens > 1<<53 ||
 		input.UsedTokens < 0 || input.UsedTokens > input.CapacityTokens ||
-		input.ReservedTokens < 0 || input.RequestReservedTokens <= 0 {
+		input.ReservedTokens < 0 || input.RequestReservedTokens <= 0 ||
+		input.SafetyInputTokens <= 0 {
 		return result
 	}
 
@@ -78,6 +83,10 @@ func (g *ResourceGate) Evaluate(input ResourceGateInput) ResourceGateResult {
 	if g.config.HardKVLimitTokens >= input.CapacityTokens {
 		return result
 	}
+	if input.SafetyInputTokens > g.config.MaximumAdmissibleInputTokens {
+		result.Reason = RequestAwareReasonInputLimit
+		return result
+	}
 	if effectiveKV > g.config.HardKVLimitTokens || postAdmitKV > g.config.HardKVLimitTokens {
 		result.Reason = RequestAwareReasonKV
 		return result
@@ -87,8 +96,9 @@ func (g *ResourceGate) Evaluate(input ResourceGateInput) ResourceGateResult {
 	return result
 }
 
-func (g *ResourceGate) MatchesCapability(profile BackendCapabilityProfile) bool {
+func (g *ResourceSafetyGate) MatchesCapability(profile BackendCapabilityProfile) bool {
 	return g != nil &&
 		g.config.HardKVLimitTokens == profile.KVHardLimitTokens &&
-		g.config.BlockSize == profile.KVBlockSize
+		g.config.BlockSize == profile.KVBlockSize &&
+		g.config.MaximumAdmissibleInputTokens == profile.MaximumAdmissibleInputTokens
 }

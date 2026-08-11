@@ -63,9 +63,11 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		HardKVLimitTokens:            profile.KVHardLimitTokens,
 		BlockSize:                    int64(startup.BlockSize),
+		MaximumAdmissibleInputTokens: profile.MaximumAdmissibleInputTokens,
 		PrefillRegularTokens:         profile.PrefillRegularTokens,
 		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
 		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
 		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
 	})
 	if err != nil {

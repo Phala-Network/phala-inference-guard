@@ -114,6 +114,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 				Action: runtimepredictive.RequestAwareHardProtect,
 				Reason: runtimepredictive.RequestAwareReasonInvalid,
 			},
+			ProtectionScope: runtimepredictive.RequestAwareProtectionRequest,
 		}, 0, 0, runtimepredictive.RequestAwareInput{}, decision)
 		return decision
 	}
@@ -131,6 +132,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 				Action: runtimepredictive.RequestAwareHardProtect,
 				Reason: runtimepredictive.RequestAwareReasonUnavailable,
 			},
+			ProtectionScope: runtimepredictive.RequestAwareProtectionAvailability,
 		}, 0, 0, runtimepredictive.RequestAwareInput{}, decision)
 		return decision
 	}
@@ -146,6 +148,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 				Action: runtimepredictive.RequestAwareHardProtect,
 				Reason: runtimepredictive.RequestAwareReasonInvalid,
 			},
+			ProtectionScope: runtimepredictive.RequestAwareProtectionRequest,
 		}, 0, 0, runtimepredictive.RequestAwareInput{}, decision)
 		return decision
 	}
@@ -170,6 +173,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 				Action: runtimepredictive.RequestAwareHardProtect,
 				Reason: runtimepredictive.RequestAwareReasonUnavailable,
 			},
+			ProtectionScope: runtimepredictive.RequestAwareProtectionAvailability,
 		}, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 		return decision
 	}
@@ -195,6 +199,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 					Action: runtimepredictive.RequestAwareHardProtect,
 					Reason: runtimepredictive.RequestAwareReasonUnavailable,
 				},
+				ProtectionScope: runtimepredictive.RequestAwareProtectionAvailability,
 			}, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 			return decision
 		}
@@ -210,7 +215,7 @@ func (a *requestAwarePredictiveAdapter) Decide(ctx context.Context, requestID st
 		a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 		return decision
 	}
-	decision = requestAwareAdapterProtectedDecision(result.Decision)
+	decision = requestAwareAdapterProtectedDecision(result)
 	a.recordDecision(now, result, selectionInputTokens, requestAwareReservedTokens(cost), result.Observation, decision)
 	return decision
 }
@@ -321,7 +326,7 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 	if a.mode == "enforce" && decision.rejectsForward() {
 		a.attempts.LastRejectReason = decision.Reason
 		a.attempts.LastRejectSource = decision.Source
-		a.attempts.LastRejectScope = requestAwareProtectionScope(decision.Outcome)
+		a.attempts.LastRejectScope = requestAwareServerProtectionScope(result.ProtectionScope)
 		a.attempts.LastRejectAt = now
 		a.attempts.LastRejectManagerSequence = result.DecisionManagerSequence
 		a.attempts.LastRejectManagerSequenceValid = result.DecisionManagerSequenceValid
@@ -335,7 +340,7 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 			Action:                           result.Decision.Action,
 			Reason:                           result.Decision.Reason,
 			HTTPReason:                       decision.Reason,
-			Scope:                            requestAwareProtectionScope(decision.Outcome),
+			Scope:                            requestAwareServerProtectionScope(result.ProtectionScope),
 			PressureSource:                   result.Decision.PressureSource,
 			Pressure:                         result.Decision.Pressure,
 			SelectionInputTokens:             selectionInputTokens,
@@ -385,7 +390,7 @@ func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(
 		now,
 		"\x00pig-request-aware-inspect",
 		cost,
-		a.blockSize,
+		1,
 		a.policy,
 	)
 	if result.Decision.Action == runtimepredictive.RequestAwareAdmit {
@@ -401,13 +406,8 @@ func (a *requestAwarePredictiveAdapter) inspectRouterBackpressure(
 			InspectCapacity: 1,
 		}
 	}
-	protected := requestAwareAdapterProtectedDecision(result.Decision)
-	scope := requestAwareProtectionScope(protected.Outcome)
-	if result.Decision.Reason == runtimepredictive.RequestAwareReasonInvalid ||
-		result.Decision.Reason == runtimepredictive.RequestAwareReasonUnavailable ||
-		result.Decision.Reason == runtimepredictive.RequestAwareReasonStale {
-		scope = predictiveProtectionScopeAvailability
-	}
+	protected := requestAwareAdapterProtectedDecision(result)
+	scope := requestAwareServerProtectionScope(result.ProtectionScope)
 	return requestAwareHardRouterBackpressure(protected.Reason, protected.Source, scope)
 }
 
@@ -461,18 +461,15 @@ func requestAwareHardRouterBackpressure(
 }
 
 func requestAwareInspectCost(manifestID string, blockSize int64) domainpredictive.RequestCost {
-	return domainpredictive.RequestCost{
-		ManifestID:  manifestID,
-		InputTokens: blockSize,
-		KV: domainpredictive.KVIncrement{
-			PhysicalKVUpper: blockSize,
-			ActiveKVUpper:   blockSize,
-		},
-		UncachedPrefillUpper:     blockSize,
-		DecodeSequencesUpper:     1,
-		ActiveContextTokensUpper: blockSize,
-		Confidence:               1,
-	}
+	cost, _ := domainpredictive.BuildRequestCost(domainpredictive.RequestCostInput{
+		ManifestID:             manifestID,
+		BlockSize:              blockSize,
+		SelectionPrefillTokens: 1,
+		SafetyInputTokens:      1,
+		DecodeHorizonTokens:    runtimepredictive.RequestAwareCanonicalDecodeHorizonTokens,
+		Confidence:             1,
+	})
+	return cost
 }
 
 func requestAwareReservedTokens(cost domainpredictive.RequestCost) int64 {
@@ -491,17 +488,6 @@ func requestAwareUnknownReason(reason domainpredictive.Reason) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func requestAwareProtectionScope(outcome predictiveAdmissionOutcome) predictiveProtectionScope {
-	switch outcome {
-	case predictiveAdmissionOutcomeLoadProtection:
-		return predictiveProtectionScopeLoad
-	case predictiveAdmissionOutcomeAvailabilityProtection:
-		return predictiveProtectionScopeAvailability
-	default:
-		return predictiveProtectionScopeRequest
 	}
 }
 
@@ -597,26 +583,53 @@ func requestAwareTelemetryObservation(
 	return input, predictiveObserverSnapshot{}, valid
 }
 
-func requestAwareAdapterProtectedDecision(decision runtimepredictive.RequestAwareDecision) predictiveAdmissionDecision {
+func requestAwareAdapterProtectedDecision(result runtimepredictive.RequestAwareManagerResult) predictiveAdmissionDecision {
 	source := runtimepredictive.PredictionSourceDeterministic
-	switch decision.Reason {
-	case runtimepredictive.RequestAwareReasonDecodeInterference:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeRequestReject, domainpredictive.ReasonRequestSizeAtPressure, source)
+	var outcome predictiveAdmissionOutcome
+	switch result.ProtectionScope {
+	case runtimepredictive.RequestAwareProtectionRequest:
+		outcome = predictiveAdmissionOutcomeRequestReject
+	case runtimepredictive.RequestAwareProtectionLoad:
+		outcome = predictiveAdmissionOutcomeLoadProtection
+	case runtimepredictive.RequestAwareProtectionAvailability:
+		outcome = predictiveAdmissionOutcomeAvailabilityProtection
+	default:
+		return requestAwareAdapterFailure(
+			predictiveAdmissionOutcomeAvailabilityProtection,
+			domainpredictive.ReasonPredictorProfileUnknown,
+			runtimepredictive.PredictionSourceUnavailable,
+		)
+	}
+	switch result.Decision.Reason {
 	case runtimepredictive.RequestAwareReasonPrefillBudget,
 		runtimepredictive.RequestAwareReasonPrefillConcurrency,
 		runtimepredictive.RequestAwareReasonPrefillExclusive,
-		runtimepredictive.RequestAwareReasonPrefillBusy:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonRequestSizeAtPressure, source)
+		runtimepredictive.RequestAwareReasonPrefillBusy,
+		runtimepredictive.RequestAwareReasonInputLimit:
+		return requestAwareAdapterFailure(outcome, domainpredictive.ReasonRequestSizeAtPressure, source)
 	case runtimepredictive.RequestAwareReasonKV:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonKVOverBudget, source)
-	case runtimepredictive.RequestAwareReasonPreemption:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeLoadProtection, domainpredictive.ReasonPreemptionObserved, source)
+		return requestAwareAdapterFailure(outcome, domainpredictive.ReasonKVOverBudget, source)
 	case runtimepredictive.RequestAwareReasonStale, runtimepredictive.RequestAwareReasonUnavailable:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeAvailabilityProtection, domainpredictive.ReasonMetricsStale, runtimepredictive.PredictionSourceUnavailable)
+		return requestAwareAdapterFailure(outcome, domainpredictive.ReasonMetricsStale, runtimepredictive.PredictionSourceUnavailable)
 	case runtimepredictive.RequestAwareReasonDuplicate:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeRequestReject, domainpredictive.ReasonDuplicateRequest, source)
+		return requestAwareAdapterFailure(outcome, domainpredictive.ReasonDuplicateRequest, source)
 	default:
-		return requestAwareAdapterFailure(predictiveAdmissionOutcomeRequestReject, domainpredictive.ReasonPredictorProfileUnknown, source)
+		return requestAwareAdapterFailure(outcome, domainpredictive.ReasonPredictorProfileUnknown, source)
+	}
+}
+
+func requestAwareServerProtectionScope(
+	scope runtimepredictive.RequestAwareProtectionScope,
+) predictiveProtectionScope {
+	switch scope {
+	case runtimepredictive.RequestAwareProtectionLoad:
+		return predictiveProtectionScopeLoad
+	case runtimepredictive.RequestAwareProtectionAvailability:
+		return predictiveProtectionScopeAvailability
+	case runtimepredictive.RequestAwareProtectionRequest:
+		return predictiveProtectionScopeRequest
+	default:
+		return predictiveProtectionScopeAvailability
 	}
 }
 

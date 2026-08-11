@@ -2,18 +2,19 @@ package predictive
 
 import "fmt"
 
-type InterferenceGateConfig struct {
+type PrefillQoSGateConfig struct {
 	PrefillRegularTokens         int64
 	PrefillExclusiveTokens       int64
 	PrefillQuiescentTokens       int64
+	PrefillContendedBudgetTokens int64
 	PrefillAggregateBudgetTokens int64
 }
 
-type InterferenceGateInput struct {
+type PrefillQoSGateInput struct {
 	EstimatedPrefillTokens           int64
-	Running                          int
-	Waiting                          int
-	EffectiveSequences               int
+	LocalActiveDecodeSequences       int
+	RawRunning                       int
+	RawWaiting                       int
 	PreemptionObserved               bool
 	PendingPrefillSequences          int
 	PendingPrefillTokens             int64
@@ -22,10 +23,11 @@ type InterferenceGateInput struct {
 	PendingUnknownPrefillSequences   int
 }
 
-type InterferenceGateResult struct {
+type PrefillQoSGateResult struct {
 	Admit                            bool
 	HardProtection                   bool
 	Reason                           RequestAwareReason
+	Contended                        bool
 	PrefillClass                     RequestAwarePrefillClass
 	EstimatedPrefillTokens           int64
 	PendingPrefillSequences          int
@@ -36,29 +38,32 @@ type InterferenceGateResult struct {
 	PendingUnknownPrefillSequences   int
 }
 
-type InterferenceGate struct {
-	config InterferenceGateConfig
+type PrefillQoSGate struct {
+	config PrefillQoSGateConfig
 }
 
-func NewInterferenceGate(config InterferenceGateConfig) (*InterferenceGate, error) {
-	if err := validateInterferenceGateConfig(config); err != nil {
+func NewPrefillQoSGate(config PrefillQoSGateConfig) (*PrefillQoSGate, error) {
+	if err := validatePrefillQoSGateConfig(config); err != nil {
 		return nil, err
 	}
-	return &InterferenceGate{config: config}, nil
+	return &PrefillQoSGate{config: config}, nil
 }
 
-func validateInterferenceGateConfig(config InterferenceGateConfig) error {
+func validatePrefillQoSGateConfig(config PrefillQoSGateConfig) error {
 	if config.PrefillRegularTokens <= 0 ||
 		config.PrefillExclusiveTokens <= config.PrefillRegularTokens ||
 		config.PrefillQuiescentTokens <= config.PrefillExclusiveTokens ||
-		config.PrefillAggregateBudgetTokens <= 0 {
-		return fmt.Errorf("interference gate configuration is invalid")
+		config.PrefillContendedBudgetTokens <= 0 ||
+		config.PrefillContendedBudgetTokens > config.PrefillRegularTokens ||
+		config.PrefillAggregateBudgetTokens < config.PrefillContendedBudgetTokens ||
+		config.PrefillAggregateBudgetTokens > config.PrefillQuiescentTokens {
+		return fmt.Errorf("Prefill QoS gate configuration is invalid")
 	}
 	return nil
 }
 
-func (g *InterferenceGate) Evaluate(input InterferenceGateInput) InterferenceGateResult {
-	result := InterferenceGateResult{
+func (g *PrefillQoSGate) Evaluate(input PrefillQoSGateInput) PrefillQoSGateResult {
+	result := PrefillQoSGateResult{
 		HardProtection:                   true,
 		Reason:                           RequestAwareReasonInvalid,
 		EstimatedPrefillTokens:           input.EstimatedPrefillTokens,
@@ -72,8 +77,15 @@ func (g *InterferenceGate) Evaluate(input InterferenceGateInput) InterferenceGat
 		return result
 	}
 	result.PrefillClass = g.Classify(input.EstimatedPrefillTokens)
-	if input.EstimatedPrefillTokens <= 0 || input.Running < 0 || input.Waiting < 0 ||
-		input.EffectiveSequences < 0 || input.PendingPrefillSequences < 0 ||
+	// Generation progress is interval telemetry, not proof that Decode work is
+	// still active at the end of the observation. In particular, a completion
+	// window can advance generation_tokens_total while reporting running=0.
+	// Current backend state, local lifecycle state, and a fresh preemption are
+	// the only signals allowed to select the contended regime.
+	result.Contended = input.LocalActiveDecodeSequences > 0 || input.RawRunning > 0 ||
+		input.RawWaiting > 0 || input.PreemptionObserved
+	if input.EstimatedPrefillTokens <= 0 || input.LocalActiveDecodeSequences < 0 ||
+		input.RawRunning < 0 || input.RawWaiting < 0 || input.PendingPrefillSequences < 0 ||
 		input.PendingPrefillTokens < 0 || input.PendingLongPrefillSequences < 0 ||
 		input.PendingLongPrefillSequences > input.PendingPrefillSequences ||
 		input.PendingQuiescentPrefillSequences < 0 ||
@@ -90,11 +102,8 @@ func (g *InterferenceGate) Evaluate(input InterferenceGateInput) InterferenceGat
 		return result
 	}
 	result.PostAdmitPendingPrefillTokens = postAdmitTokens
-	if input.PreemptionObserved && result.PrefillClass != RequestAwarePrefillRegular {
-		result.Reason = RequestAwareReasonPreemption
-		return result
-	}
-	if reason, protect := g.protectionReason(input, result.PrefillClass, postAdmitTokens); protect {
+	reason, protect := g.protectionReason(input, result.PrefillClass, result.Contended, postAdmitTokens)
+	if protect {
 		result.HardProtection = false
 		result.Reason = reason
 		return result
@@ -105,7 +114,7 @@ func (g *InterferenceGate) Evaluate(input InterferenceGateInput) InterferenceGat
 	return result
 }
 
-func (g *InterferenceGate) Classify(tokens int64) RequestAwarePrefillClass {
+func (g *PrefillQoSGate) Classify(tokens int64) RequestAwarePrefillClass {
 	switch {
 	case g == nil || tokens <= 0:
 		return ""
@@ -120,41 +129,45 @@ func (g *InterferenceGate) Classify(tokens int64) RequestAwarePrefillClass {
 	}
 }
 
-func (g *InterferenceGate) protectionReason(
-	input InterferenceGateInput,
+func (g *PrefillQoSGate) protectionReason(
+	input PrefillQoSGateInput,
 	class RequestAwarePrefillClass,
+	contended bool,
 	postAdmitTokens int64,
 ) (RequestAwareReason, bool) {
-	if input.Waiting > 0 && class != RequestAwarePrefillRegular {
-		return RequestAwareReasonPrefillBusy, true
+	if input.PendingLongPrefillSequences > 0 {
+		if class == RequestAwarePrefillRegular {
+			return RequestAwareReasonPrefillBusy, true
+		}
+		return RequestAwareReasonPrefillExclusive, true
+	}
+	if contended {
+		if class != RequestAwarePrefillRegular {
+			return RequestAwareReasonPrefillBusy, true
+		}
+		return RequestAwareReasonPrefillBudget, postAdmitTokens > g.config.PrefillContendedBudgetTokens
 	}
 	if input.PendingUnknownPrefillSequences > 0 && class != RequestAwarePrefillRegular {
 		return RequestAwareReasonPrefillExclusive, true
 	}
-	if input.PendingQuiescentPrefillSequences > 0 && class != RequestAwarePrefillRegular {
-		return RequestAwareReasonPrefillExclusive, true
-	}
 	switch class {
-	case RequestAwarePrefillRegular:
-		if input.PendingLongPrefillSequences > 0 {
-			return RequestAwareReasonPrefillBusy, true
-		}
-		return RequestAwareReasonPrefillBudget, postAdmitTokens > g.config.PrefillAggregateBudgetTokens
-	case RequestAwarePrefillWeighted:
+	case RequestAwarePrefillRegular, RequestAwarePrefillWeighted:
 		return RequestAwareReasonPrefillBudget, postAdmitTokens > g.config.PrefillAggregateBudgetTokens
 	case RequestAwarePrefillExclusive:
-		return RequestAwareReasonPrefillConcurrency, input.PendingLongPrefillSequences > 0
+		return RequestAwareReasonPrefillConcurrency, input.PendingPrefillSequences > 0
 	case RequestAwarePrefillQuiescent:
-		return RequestAwareReasonPrefillBusy, input.PendingPrefillSequences > 0
+		return RequestAwareReasonPrefillBusy, input.PendingPrefillSequences > 0 ||
+			input.LocalActiveDecodeSequences > 0 || input.RawRunning > 0 || input.RawWaiting > 0
 	default:
 		return RequestAwareReasonInvalid, true
 	}
 }
 
-func (g *InterferenceGate) MatchesCapability(profile BackendCapabilityProfile) bool {
+func (g *PrefillQoSGate) MatchesCapability(profile BackendCapabilityProfile) bool {
 	return g != nil &&
 		g.config.PrefillRegularTokens == profile.PrefillRegularTokens &&
 		g.config.PrefillExclusiveTokens == profile.PrefillExclusiveTokens &&
 		g.config.PrefillQuiescentTokens == profile.PrefillQuiescentTokens &&
+		g.config.PrefillContendedBudgetTokens == profile.PrefillContendedBudgetTokens &&
 		g.config.PrefillAggregateBudgetTokens == profile.PrefillAggregateBudgetTokens
 }

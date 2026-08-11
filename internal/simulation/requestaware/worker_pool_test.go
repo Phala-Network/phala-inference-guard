@@ -49,6 +49,25 @@ func TestSustainedReplacementWaveUsesC21CapabilityGeometry(t *testing.T) {
 	}
 }
 
+func TestSustainedReplacementWaveCompletesAll24Requests(t *testing.T) {
+	suite, err := RunSuite()
+	if err != nil {
+		t.Fatalf("RunSuite: %v", err)
+	}
+	for _, scenario := range suite.Scenarios {
+		if scenario.Name != "sustained-worker-replacement-wave" {
+			continue
+		}
+		candidate := scenario.Policies[PolicyV0129]
+		if candidate.Arrivals != 24 || candidate.Admitted != 24 || candidate.Rejected != 0 ||
+			candidate.Completed != 24 || candidate.Preemptions != 0 {
+			t.Fatalf("sustained replacement candidate=%+v, want 24/24 completed without protection or preemption", candidate)
+		}
+		return
+	}
+	t.Fatal("sustained-worker-replacement-wave scenario is missing")
+}
+
 func TestSimulationWorkerPoolImmediatelyReleasesAfterCompletion(t *testing.T) {
 	requests := []requestSpec{
 		{id: "first", selectionInput: 64, safetyInput: 64, actualInput: 1, actualOutput: 1},

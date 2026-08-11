@@ -210,7 +210,7 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 	}
 	observationSequence := o.observationSequence + 1
 	o.mu.Unlock()
-	requestAware, generationObserved := o.requestAwareSample(sample, observedAt, observationSequence)
+	requestAware := o.requestAwareSample(sample, observedAt, observationSequence)
 	requestAwareObservation := runtimepredictive.RequestAwareObservation{
 		ObservedAt:          observedAt,
 		MaximumAge:          o.maximumAge,
@@ -223,7 +223,6 @@ func (o *predictiveVLLMObserver) poll(ctx context.Context) {
 		AggregateTPSProxy:   requestAware.AggregateTPSProxy,
 		MeanActiveTPSProxy:  requestAware.MeanActiveTPSProxy,
 		TPSValid:            requestAware.TPSValid,
-		GenerationObserved:  generationObserved,
 		PreemptionObserved:  requestAware.PreemptionObserved,
 	}
 	if err := o.coordinator.ReconcileSample(runtimepredictive.SampleWindow{
@@ -267,7 +266,7 @@ func (o *predictiveVLLMObserver) requestAwareSample(
 	sample telemetry.Sample,
 	observedAt time.Time,
 	observationSequence uint64,
-) (runtimepredictive.RequestAwareInput, bool) {
+) runtimepredictive.RequestAwareInput {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	input := runtimepredictive.RequestAwareInput{
@@ -302,7 +301,7 @@ func (o *predictiveVLLMObserver) requestAwareSample(
 		input.AggregateTPSProxy = 0
 		input.MeanActiveTPSProxy = 0
 	}
-	return input, generationObserved
+	return input
 }
 
 func (o *predictiveVLLMObserver) publish(

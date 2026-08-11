@@ -160,9 +160,11 @@ func TestRequestAwareObserverSameIdentityCounterResetInvalidatesCapabilityEpoch(
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		HardKVLimitTokens:            900,
 		BlockSize:                    4,
+		MaximumAdmissibleInputTokens: 644,
 		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: 644,
 		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {

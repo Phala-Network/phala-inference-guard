@@ -88,7 +88,7 @@ func scenarioMaxModelLen(scenario scenarioSpec) int64 {
 	if scenario.maxModelLen > 0 {
 		return scenario.maxModelLen
 	}
-	return 650 * 1024
+	return 1024 * 1024
 }
 
 func validatePolicyOrder(policyOrder []PolicyName) error {
@@ -132,9 +132,11 @@ func simulationCapabilityPolicy(
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		HardKVLimitTokens:            profile.KVHardLimitTokens,
 		BlockSize:                    profile.KVBlockSize,
+		MaximumAdmissibleInputTokens: profile.MaximumAdmissibleInputTokens,
 		PrefillRegularTokens:         profile.PrefillRegularTokens,
 		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
 		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
 		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
 	})
 	if err != nil {

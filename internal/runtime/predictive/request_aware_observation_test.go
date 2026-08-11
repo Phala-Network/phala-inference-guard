@@ -22,9 +22,11 @@ func TestCurrentRequestAwareDecisionUsesAtomicallyPublishedObservation(t *testin
 	policy, err := NewRequestAwarePolicy(RequestAwareConfig{
 		HardKVLimitTokens:            896,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 640,
 		PrefillRegularTokens:         DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: 640,
 		PrefillAggregateBudgetTokens: DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {

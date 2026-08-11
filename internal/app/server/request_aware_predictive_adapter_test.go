@@ -109,7 +109,7 @@ func TestRequestAwareAdapterWaitingRemainsRequestSizeAwareBeforeForward(t *testi
 	small := smallAdapter.Decide(context.Background(), "waiting-small", requestAwareAdapterInput(8*1024, 100))
 	large := largeAdapter.Decide(context.Background(), "waiting-large", requestAwareAdapterInput(100*1024, 100))
 	if small.Outcome != predictiveAdmissionOutcomeForward || small.Reservation == nil ||
-		large.Outcome != predictiveAdmissionOutcomeLoadProtection || large.Reservation != nil {
+		large.Outcome != predictiveAdmissionOutcomeRequestReject || large.Reservation != nil {
 		t.Fatalf("waiting pre-forward decisions small=%+v large=%+v, want regular forward and weighted protection", small, large)
 	}
 	smallTelemetry := smallAdapter.PredictiveAdmissionTelemetry().RequestAware
@@ -149,9 +149,9 @@ func TestV0125RequestAwareAdapterProjectsWeightedPrefillBeforeNextRequest(t *tes
 		t.Fatalf("weighted setup=%+v, want forwarded reservation", weighted)
 	}
 	protected := adapter.PredictiveAdmissionTelemetry()
-	if !protected.RouterBackpressure.Active || protected.RouterBackpressure.InspectCapacity != 0 ||
-		protected.RequestAware.PendingLongPrefillSequences != 1 {
-		t.Fatalf("weighted Router projection=%+v request=%+v, want active zero-capacity before next request", protected.RouterBackpressure, protected.RequestAware)
+	if protected.RouterBackpressure.Active || protected.RouterBackpressure.InspectCapacity != 0 ||
+		protected.RequestAware.PendingLongPrefillSequences != 0 {
+		t.Fatalf("weighted Router projection=%+v request=%+v, want aggregate capacity to remain open", protected.RouterBackpressure, protected.RequestAware)
 	}
 	if !weighted.Reservation.MarkPrefillComplete() {
 		t.Fatal("weighted Prefill did not complete")
@@ -187,10 +187,9 @@ func TestV0125RequestAwareAdapterRejectsRegularDuringWeightedPrefill(t *testing.
 		context.Background(), "regular-during-weighted", requestAwareAdapterInput(8*1024, 0),
 	)
 	telemetry := adapter.PredictiveAdmissionTelemetry()
-	if regular.Outcome != predictiveAdmissionOutcomeLoadProtection || regular.Reservation != nil ||
-		telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy {
-		t.Fatalf("regular during weighted decision/telemetry=%+v/%+v, want pre-forward Prefill protection", regular, telemetry.RequestAware)
+	if regular.Outcome != predictiveAdmissionOutcomeForward || regular.Reservation == nil ||
+		telemetry.RequestAware.Action != runtimepredictive.RequestAwareAdmit {
+		t.Fatalf("regular during weighted decision/telemetry=%+v/%+v, want shared aggregate admission", regular, telemetry.RequestAware)
 	}
 	if !weighted.Reservation.MarkPrefillComplete() {
 		t.Fatal("weighted Prefill did not complete")
@@ -205,7 +204,8 @@ func TestV0125RequestAwareAdapterRejectsRegularDuringWeightedPrefill(t *testing.
 	if recovery.Outcome != predictiveAdmissionOutcomeForward || recovery.Reservation == nil {
 		t.Fatalf("regular immediate recovery=%+v, want forward", recovery)
 	}
-	if !recovery.Reservation.Terminate(runtimepredictive.TerminalCompleted) ||
+	if !regular.Reservation.Terminate(runtimepredictive.TerminalCompleted) ||
+		!recovery.Reservation.Terminate(runtimepredictive.TerminalCompleted) ||
 		!weighted.Reservation.Terminate(runtimepredictive.TerminalCompleted) ||
 		manager.Snapshot().Reservations != 0 {
 		t.Fatalf("weighted business lifecycle leaked: %+v", manager.Snapshot())
@@ -227,11 +227,11 @@ func TestV0125RequestAwareAdapterPrefillCompletionSupersedesRecentRejectProjecti
 	rejected := adapter.Decide(
 		context.Background(), "oversized-during-weighted", requestAwareAdapterInput(4*1024*1024, 0),
 	)
-	if rejected.Outcome != predictiveAdmissionOutcomeLoadProtection || rejected.Reservation != nil {
-		t.Fatalf("reject-generation decision=%+v, want represented load protection", rejected)
+	if rejected.Outcome != predictiveAdmissionOutcomeRequestReject || rejected.Reservation != nil {
+		t.Fatalf("reject-generation decision=%+v, want request-scoped size protection", rejected)
 	}
-	if protected := adapter.PredictiveAdmissionTelemetry(); !protected.RouterBackpressure.Active {
-		t.Fatalf("recent reject was not projected before lifecycle recovery: %+v", protected.RouterBackpressure)
+	if protected := adapter.PredictiveAdmissionTelemetry(); protected.RouterBackpressure.Active {
+		t.Fatalf("request reject changed Router capacity: %+v", protected.RouterBackpressure)
 	}
 	if !weighted.Reservation.MarkPrefillComplete() {
 		t.Fatal("weighted reject-generation Prefill did not complete")
@@ -281,14 +281,14 @@ func TestV0125RequestAwareAdapterTerminalAndRebaseSupersedeRecentRejectProjectio
 				t.Fatalf("weighted setup=%+v", weighted)
 			}
 			rejected := adapter.Decide(
-				context.Background(), "regular-"+test.name, requestAwareAdapterInput(8*1024, 0),
+				context.Background(), "exclusive-"+test.name, requestAwareAdapterInput(300*1024, 0),
 			)
-			if rejected.Outcome != predictiveAdmissionOutcomeLoadProtection || rejected.Reservation != nil {
-				t.Fatalf("regular during weighted=%+v, want represented load protection", rejected)
+			if rejected.Outcome != predictiveAdmissionOutcomeRequestReject || rejected.Reservation != nil {
+				t.Fatalf("exclusive during weighted=%+v, want request-scoped protection", rejected)
 			}
-			if protected := adapter.PredictiveAdmissionTelemetry(); !protected.RouterBackpressure.Active ||
+			if protected := adapter.PredictiveAdmissionTelemetry(); protected.RouterBackpressure.Active ||
 				protected.RouterBackpressure.InspectCapacity != 0 {
-				t.Fatalf("setup Router projection=%+v, want hard protection", protected.RouterBackpressure)
+				t.Fatalf("setup Router projection=%+v, want canonical capacity open", protected.RouterBackpressure)
 			}
 			if !test.release(manager, weighted.Reservation) {
 				t.Fatalf("%s did not release weighted reservation", test.name)
@@ -312,9 +312,11 @@ func TestRequestAwareAdapterFreshCompletionSnapshotDoesNotMislockIdleBackend(t *
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		HardKVLimitTokens:            8_992,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 8_736,
 		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: 8_736,
 		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
@@ -414,8 +416,8 @@ func TestRequestAwareAdapterUnknownLexicalHintFallsBackToSafetyUpper(t *testing.
 	telemetry := adapter.PredictiveAdmissionTelemetry()
 	if decision.Outcome != predictiveAdmissionOutcomeRequestReject || decision.Reservation != nil ||
 		telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
-		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressureDecode ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
 		telemetry.RequestAware.PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
 		telemetry.RequestAware.SelectionInputTokens != 650*1024 ||
 		telemetry.RequestAware.EstimatedPrefillTokens != 650*1024 ||
@@ -533,8 +535,8 @@ func TestRequestAwareAdapterTelemetryPublishesSelectiveVerdictAndInspectCapacity
 		t.Fatalf("selective attempts telemetry=%+v", snapshot.Attempts)
 	}
 	if snapshot.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-		snapshot.RequestAware.Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
-		snapshot.RequestAware.PressureSource != runtimepredictive.RequestAwarePressureDecode ||
+		snapshot.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		snapshot.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
 		snapshot.RequestAware.SelectionInputTokens != 650*1024 || snapshot.RequestAware.ReservedTokens != 665_712 ||
 		snapshot.RequestAware.EffectiveKV != 128*1024 || snapshot.RequestAware.PostAdmitKV != 796_784 ||
 		snapshot.RequestAware.RemainingKV != 3_643_792 || snapshot.RequestAware.AllowanceTokens != 0 ||
@@ -590,32 +592,28 @@ func TestRequestAwareAdapterTelemetryProjectsRecentRequestSpecificHardProtection
 	adapter.now = func() time.Time { return now }
 
 	decision := adapter.Decide(context.Background(), "telemetry-request-specific-hard", requestAwareAdapterInput(4_000, 0))
-	if decision.Outcome != predictiveAdmissionOutcomeLoadProtection || decision.Reason != domainpredictive.ReasonKVOverBudget {
-		t.Fatalf("request-specific decision=%+v, want hard KV protection", decision)
+	if decision.Outcome != predictiveAdmissionOutcomeRequestReject || decision.Reason != domainpredictive.ReasonKVOverBudget {
+		t.Fatalf("request-specific decision=%+v, want request-scoped KV protection", decision)
 	}
 	beforeScrape := manager.Snapshot()
 	protected := adapter.PredictiveAdmissionTelemetry()
 	afterScrape := manager.Snapshot()
-	if !protected.RouterBackpressure.Active || protected.RouterBackpressure.InspectCapacity != 1 ||
-		protected.RouterBackpressure.Scope != predictiveProtectionScopeLoad ||
-		protected.RouterBackpressure.Reason != domainpredictive.ReasonKVOverBudget ||
-		protected.RouterBackpressure.Source != runtimepredictive.PredictionSourceDeterministic ||
-		!protected.RouterBackpressure.LatestRejectAt.Equal(now) {
-		t.Fatalf("request-specific Router telemetry=%+v, want recent selective KV protection", protected.RouterBackpressure)
+	if protected.RouterBackpressure.Active || protected.RouterBackpressure.InspectCapacity != 0 {
+		t.Fatalf("request-specific Router telemetry=%+v, want fitting canonical intake to remain open", protected.RouterBackpressure)
 	}
 	if beforeScrape != afterScrape || protected.Attempts.Attempts != 1 || protected.Attempts.Risks != 1 {
 		t.Fatalf("telemetry scrape mutated business state: before=%+v after=%+v attempts=%+v", beforeScrape, afterScrape, protected.Attempts)
 	}
 	compatibility := predictiveRouterCompatibility("enforce", protected)
 	if compatibility.ObservedRunningRaw != 0 || compatibility.ObservedWaitingRaw != 0 ||
-		compatibility.ObservedRunning != 1 || compatibility.ObservedWaiting != 0 ||
-		compatibility.GlobalLimitRaw != 0 || compatibility.GlobalLimit != 2 {
-		t.Fatalf("request-specific compatibility projection=%+v, want raw 0/0 and effective 1/0/2", compatibility)
+		compatibility.ObservedRunning != 0 || compatibility.ObservedWaiting != 0 ||
+		compatibility.GlobalLimitRaw != 0 || compatibility.GlobalLimit != 0 {
+		t.Fatalf("request-specific compatibility projection=%+v, want request reject to leave capacity unchanged", compatibility)
 	}
 
 	now = now.Add(requestAwareRouterRejectProjectionHold - time.Nanosecond)
-	if held := adapter.PredictiveAdmissionTelemetry(); !held.RouterBackpressure.Active || held.RouterBackpressure.InspectCapacity != 1 {
-		t.Fatalf("request-specific Router telemetry cleared before bounded hold: %+v", held.RouterBackpressure)
+	if held := adapter.PredictiveAdmissionTelemetry(); held.RouterBackpressure.Active || held.RouterBackpressure.InspectCapacity != 0 {
+		t.Fatalf("request-specific Router telemetry became sticky during hold window: %+v", held.RouterBackpressure)
 	}
 	now = now.Add(time.Nanosecond)
 	recovered := adapter.PredictiveAdmissionTelemetry()
@@ -633,8 +631,8 @@ func TestRequestAwareAdapterShadowDoesNotProjectRequestSpecificHardProtection(t 
 	adapter.now = func() time.Time { return now }
 
 	decision := adapter.Decide(context.Background(), "shadow-request-specific-hard", requestAwareAdapterInput(4_000, 0))
-	if decision.Outcome != predictiveAdmissionOutcomeLoadProtection || decision.Reason != domainpredictive.ReasonKVOverBudget {
-		t.Fatalf("shadow request-specific decision=%+v, want counterfactual hard KV protection", decision)
+	if decision.Outcome != predictiveAdmissionOutcomeRequestReject || decision.Reason != domainpredictive.ReasonKVOverBudget {
+		t.Fatalf("shadow request-specific decision=%+v, want request-scoped counterfactual KV protection", decision)
 	}
 	snapshot := adapter.PredictiveAdmissionTelemetry()
 	if snapshot.RouterBackpressure.Active || snapshot.RouterBackpressure.InspectCapacity != 0 ||
@@ -692,9 +690,11 @@ func TestV0121RequestAwareTelemetryUsesOneObserverGenerationForRouterProjection(
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		HardKVLimitTokens:            8_992,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 8_736,
 		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: 8_736,
 		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
@@ -860,7 +860,7 @@ func TestRequestAwareAdapterProtectionLogUsesExactVerdictAndBoundsDuplicates(t *
 	}
 	for _, requestID := range []string{"log-large-1", "log-large-2"} {
 		decision := adapter.Decide(context.Background(), requestID, requestAwareAdapterInput(100*1024, 100))
-		if decision.Outcome != predictiveAdmissionOutcomeLoadProtection {
+		if decision.Outcome != predictiveAdmissionOutcomeRequestReject {
 			t.Fatalf("%s decision=%+v, want protection", requestID, decision)
 		}
 	}
@@ -880,7 +880,7 @@ func TestRequestAwareAdapterProtectionLogUsesExactVerdictAndBoundsDuplicates(t *
 		"action=size_protect",
 		"reason=prefill_busy",
 		"http_reason=request_size_at_pressure",
-		"scope=load",
+		"scope=request",
 		"pressure_source=prefill",
 		"pressure=1.000000",
 		"selection_input_tokens=102400",
@@ -925,9 +925,11 @@ func newRequestAwareAdapterTestFixtureWithMode(t testing.TB, usedTokens int64, w
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		HardKVLimitTokens:            8_992,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 8_736,
 		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: 8_736,
 		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {
@@ -995,9 +997,11 @@ func newLargeRequestAwareServerTestPolicy(t testing.TB) *runtimepredictive.Reque
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
 		HardKVLimitTokens:            3_774_864,
 		BlockSize:                    16,
+		MaximumAdmissibleInputTokens: 3_774_608,
 		PrefillRegularTokens:         runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
 		PrefillExclusiveTokens:       runtimepredictive.DefaultRequestAwarePrefillExclusiveTokens,
 		PrefillQuiescentTokens:       runtimepredictive.DefaultRequestAwarePrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillRegularTokens,
 		PrefillAggregateBudgetTokens: runtimepredictive.DefaultRequestAwarePrefillAggregateBudgetTokens,
 	})
 	if err != nil {

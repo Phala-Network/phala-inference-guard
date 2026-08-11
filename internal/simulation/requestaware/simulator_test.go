@@ -57,7 +57,7 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 	}
 }
 
-func TestV0128SimulationUsesAtomicResourcePrefillAndDecodeGates(t *testing.T) {
+func TestSimulationUsesAtomicResourceAndPrefillQoSGates(t *testing.T) {
 	suite, err := RunSuite()
 	if err != nil {
 		t.Fatalf("RunSuite: %v", err)
@@ -67,8 +67,8 @@ func TestV0128SimulationUsesAtomicResourcePrefillAndDecodeGates(t *testing.T) {
 		rejected int
 	}{
 		"pre-poll-burst":                         {admitted: 5, rejected: 0},
-		"prefill-regular-multimodal-burst":       {admitted: 0, rejected: 40},
-		"prefill-weighted-regular-gate-recovery": {admitted: 2, rejected: 1},
+		"prefill-regular-multimodal-burst":       {admitted: 8, rejected: 32},
+		"prefill-weighted-regular-gate-recovery": {admitted: 3, rejected: 0},
 	}
 	for _, scenario := range suite.Scenarios {
 		expected, ok := want[scenario.Name]
@@ -168,7 +168,7 @@ func TestCapabilityProfilesKeepFixedPrefillBandsAcrossContextLengths(t *testing.
 		EffectiveSequences:          0,
 		PendingPrefillSequences:     1,
 		PendingPrefillTokens:        32 * 1024,
-		PendingLongPrefillSequences: 1,
+		PendingLongPrefillSequences: 0,
 	}
 	short := shortPolicy.Evaluate(input)
 	long := longPolicy.Evaluate(input)
@@ -262,7 +262,7 @@ func TestSimulationCandidateSizeAwareAdmissionContracts(t *testing.T) {
 	want := map[string][2]int{
 		"low-flow-first-large":                   {2, 0},
 		"prefill-weighted-budget":                {1, 1},
-		"prefill-weighted-regular-gate-recovery": {2, 1},
+		"prefill-weighted-regular-gate-recovery": {3, 0},
 		"prefill-long-singleton":                 {1, 2},
 		"prefill-quiescent-idle-650k":            {1, 0},
 		"prefill-quiescent-busy-650k":            {0, 1},

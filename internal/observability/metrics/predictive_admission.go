@@ -248,7 +248,7 @@ func normalizeRequestAwareAction(value string) string {
 
 func normalizeRequestAwareReason(value string) string {
 	switch value {
-	case "open", "stale", "preemption", "kv", "prefill_budget", "prefill_concurrency", "prefill_exclusive", "prefill_busy", "decode_interference", "duplicate", "unavailable", "invalid":
+	case "open", "stale", "kv", "input_limit", "prefill_budget", "prefill_concurrency", "prefill_exclusive", "prefill_busy", "duplicate", "unavailable", "invalid":
 		return value
 	default:
 		return "unknown"
@@ -257,7 +257,7 @@ func normalizeRequestAwareReason(value string) string {
 
 func normalizeRequestAwarePressureSource(value string) string {
 	switch value {
-	case "none", "prefill", "decode":
+	case "none", "prefill":
 		return value
 	default:
 		return "none"

@@ -206,6 +206,21 @@ func TestWritePredictiveAdmissionBoundsRequestAwareLabels(t *testing.T) {
 	}
 }
 
+func TestWritePredictiveAdmissionKeepsInputLimitAndRetiresDecodePressure(t *testing.T) {
+	var out bytes.Buffer
+	WritePredictiveAdmission(&out, PredictiveAdmissionInput{
+		RequestAwareAction:         "hard_protect",
+		RequestAwareReason:         "input_limit",
+		RequestAwarePressureSource: "decode",
+		RequestAwarePrefillClass:   "quiescent",
+	})
+	got := out.String()
+	want := `pig_predictive_request_aware_last_decision_info{action="hard_protect",reason="input_limit",pressure_source="none",prefill_class="quiescent"} 1`
+	if !strings.Contains(got, want) || strings.Contains(got, `pressure_source="decode"`) {
+		t.Fatalf("input-limit/decode-pressure normalization is wrong:\n%s", got)
+	}
+}
+
 func TestWritePredictiveAdmissionOmitsRetiredMetrics(t *testing.T) {
 	var out bytes.Buffer
 	WritePredictiveAdmission(&out, PredictiveAdmissionInput{Mode: "enforce"})

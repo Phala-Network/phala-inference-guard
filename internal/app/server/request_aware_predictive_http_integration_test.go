@@ -243,8 +243,8 @@ func TestRequestAwareHTTPEnforceDifferentiatesSmallAndLargeBeforeUpstream(t *tes
 	}
 	telemetry := adapter.PredictiveAdmissionTelemetry()
 	if telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
-		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressureDecode ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
 		telemetry.RouterBackpressure.InspectCapacity != 0 || telemetry.RouterBackpressure.Active ||
 		telemetry.Attempts.Attempts != 2 || telemetry.Attempts.Fits != 1 || telemetry.Attempts.Risks != 1 {
 		t.Fatalf("enforce HTTP telemetry=%+v", telemetry)
@@ -255,7 +255,7 @@ func TestRequestAwareHTTPEnforceDifferentiatesSmallAndLargeBeforeUpstream(t *tes
 	var metrics strings.Builder
 	srv.writePredictiveAndDynamicMetrics(&metrics)
 	for _, want := range []string{
-		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="decode_interference",pressure_source="decode",prefill_class="quiescent"} 1`,
+		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="quiescent"} 1`,
 		"pig_predictive_router_backpressure_active 0",
 		"pig_predictive_router_inspect_capacity 0",
 		"pig_predictive_admission_attempts_total 2",
@@ -291,10 +291,11 @@ func TestRequestAwareHTTPHardKVRejectProjectsSelectiveRouterCapacity(t *testing.
 	for _, want := range []string{
 		`pig_predictive_request_aware_last_decision_info{action="hard_protect",reason="kv",pressure_source="none",prefill_class="regular"} 1`,
 		"pig_predictive_admission_enforced_rejects_total 1",
-		"pig_predictive_router_backpressure_active 1",
-		"pig_predictive_router_backpressure_applied 1",
-		`pig_predictive_router_backpressure_state_info{scope="load",reason="kv_over_budget",source="deterministic"} 1`,
-		"pig_predictive_router_inspect_capacity 1",
+		`pig_predictive_admission_last_reject_info{reason="kv_over_budget",source="deterministic",scope="request"} 1`,
+		"pig_predictive_router_backpressure_active 0",
+		"pig_predictive_router_backpressure_applied 0",
+		`pig_predictive_router_backpressure_state_info{scope="none",reason="none",source="unknown"} 1`,
+		"pig_predictive_router_inspect_capacity 0",
 	} {
 		if !strings.Contains(rendered.String(), want) {
 			t.Fatalf("request-specific hard metrics missing %q\n%s", want, rendered.String())
@@ -384,7 +385,7 @@ func TestRequestAwareHTTPRegularBurstForwardsWithoutDecodePacingClamp(t *testing
 	}
 }
 
-func TestV0125RequestAwareHTTPBlocksRegularBehindWeightedPrefillAndRecovers(t *testing.T) {
+func TestRequestAwareHTTPSharesOpenAggregateBudgetAcrossWeightedAndRegular(t *testing.T) {
 	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 	setRequestAwareAdapterObservation(t, adapter, manager, 0, 0, 0)
 	weighted := adapter.Decide(
@@ -408,34 +409,29 @@ func TestV0125RequestAwareHTTPBlocksRegularBehindWeightedPrefillAndRecovers(t *t
 	srv := newRequestAwareHTTPTestServer(t, backend.URL, adapter, "enforce")
 	defer srv.Close()
 
-	blocked := serveRequestAwareHTTP(t, srv, "regular during weighted Prefill")
-	if blocked.Code != http.StatusTooManyRequests || backendCalls != 0 {
-		t.Fatalf("regular during weighted HTTP response/backend=%d/%d body=%q, want pre-forward 429/0",
-			blocked.Code, backendCalls, blocked.Body.String())
+	concurrent := serveRequestAwareHTTP(t, srv, "regular during weighted Prefill")
+	if concurrent.Code != http.StatusOK || backendCalls != 1 {
+		t.Fatalf("regular during weighted HTTP response/backend=%d/%d body=%q, want 200/1",
+			concurrent.Code, backendCalls, concurrent.Body.String())
 	}
 	protected := adapter.PredictiveAdmissionTelemetry()
-	if protected.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-		protected.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
-		protected.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
-		!protected.RouterBackpressure.Active || protected.RouterBackpressure.InspectCapacity != 0 ||
-		protected.RequestAware.PendingLongPrefillSequences != 1 ||
-		srv.predictiveEnforcedRejects.Load() != 1 || srv.total429.Load() != 1 {
+	if protected.RequestAware.Action != runtimepredictive.RequestAwareAdmit ||
+		protected.RouterBackpressure.Active || protected.RouterBackpressure.InspectCapacity != 0 ||
+		protected.RequestAware.PendingLongPrefillSequences != 0 ||
+		srv.predictiveEnforcedRejects.Load() != 0 || srv.total429.Load() != 0 {
 		t.Fatalf("regular during weighted HTTP telemetry=%+v enforced=%d total429=%d",
 			protected, srv.predictiveEnforcedRejects.Load(), srv.total429.Load())
 	}
-	if len(decisionLogs) != 1 || !decisionLogs[0].Enforced ||
-		decisionLogs[0].Action != runtimepredictive.RequestAwareSizeProtect ||
-		decisionLogs[0].Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
-		decisionLogs[0].PressureSource != runtimepredictive.RequestAwarePressurePrefill {
-		t.Fatalf("regular during weighted HTTP decision logs=%+v", decisionLogs)
+	if len(decisionLogs) != 0 {
+		t.Fatalf("admitted regular produced protection logs=%+v", decisionLogs)
 	}
 	var rendered strings.Builder
 	srv.writePredictiveAndDynamicMetrics(&rendered)
 	for _, want := range []string{
-		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="regular"} 1`,
-		"pig_predictive_request_aware_pending_long_prefill_sequences 1",
-		"pig_predictive_admission_enforced_rejects_total 1",
-		"pig_predictive_router_backpressure_active 1",
+		`pig_predictive_request_aware_last_decision_info{action="admit",reason="open",pressure_source="none",prefill_class="regular"} 1`,
+		"pig_predictive_request_aware_pending_long_prefill_sequences 0",
+		"pig_predictive_admission_enforced_rejects_total 0",
+		"pig_predictive_router_backpressure_active 0",
 		"pig_predictive_router_inspect_capacity 0",
 	} {
 		if !strings.Contains(rendered.String(), want) {
@@ -453,8 +449,8 @@ func TestV0125RequestAwareHTTPBlocksRegularBehindWeightedPrefillAndRecovers(t *t
 			postPrefill.RouterBackpressure, postPrefill.RequestAware)
 	}
 	recovered := serveRequestAwareHTTP(t, srv, "regular immediately after weighted Prefill")
-	if recovered.Code != http.StatusOK || backendCalls != 1 {
-		t.Fatalf("regular after weighted HTTP response/backend=%d/%d body=%q, want 200/1",
+	if recovered.Code != http.StatusOK || backendCalls != 2 {
+		t.Fatalf("regular after weighted HTTP response/backend=%d/%d body=%q, want 200/2",
 			recovered.Code, backendCalls, recovered.Body.String())
 	}
 	if !weighted.Reservation.Terminate(runtimepredictive.TerminalCompleted) || manager.Snapshot().Reservations != 0 {
@@ -465,9 +461,9 @@ func TestV0125RequestAwareHTTPBlocksRegularBehindWeightedPrefillAndRecovers(t *t
 func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testing.T) {
 	adapter, _ := newRequestAwareHTTPAdapter(t, "enforce")
 	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		HardKVLimitTokens: 8_992, BlockSize: 16,
+		HardKVLimitTokens: 8_992, BlockSize: 16, MaximumAdmissibleInputTokens: 8_736,
 		PrefillRegularTokens: 4, PrefillExclusiveTokens: 8,
-		PrefillQuiescentTokens: 16, PrefillAggregateBudgetTokens: 8,
+		PrefillQuiescentTokens: 16, PrefillContendedBudgetTokens: 4, PrefillAggregateBudgetTokens: 8,
 	})
 	if err != nil {
 		t.Fatalf("new long-prefill policy: %v", err)
@@ -491,24 +487,24 @@ func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testi
 	}
 	telemetry := adapter.PredictiveAdmissionTelemetry()
 	if telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
-		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressureDecode ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
 		telemetry.RequestAware.PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
 		telemetry.RequestAware.EstimatedPrefillTokens < 16 ||
 		telemetry.RequestAware.PostAdmitPendingPrefillTokens != 0 ||
 		telemetry.RequestAware.LastDecisionPostAdmitPendingPrefillTokens < 16 ||
-		!telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.InspectCapacity != 0 {
+		telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.InspectCapacity != 0 {
 		t.Fatalf("long-prefill telemetry=%+v", telemetry)
 	}
 	if len(decisionLogs) != 1 || !decisionLogs[0].Enforced ||
-		decisionLogs[0].Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
-		decisionLogs[0].PressureSource != runtimepredictive.RequestAwarePressureDecode ||
+		decisionLogs[0].Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		decisionLogs[0].PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
 		decisionLogs[0].PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
 		decisionLogs[0].EstimatedPrefillTokens < 16 {
 		t.Fatalf("long-prefill decision logs=%+v", decisionLogs)
 	}
 	line := requestAwareDecisionLogLine(decisionLogs[0])
-	for _, want := range []string{"reason=decode_interference", "pressure_source=decode", "prefill_class=quiescent", "estimated_prefill_tokens="} {
+	for _, want := range []string{"reason=prefill_busy", "pressure_source=prefill", "scope=request", "prefill_class=quiescent", "estimated_prefill_tokens="} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("long-prefill log missing %q: %s", want, line)
 		}
@@ -516,7 +512,7 @@ func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testi
 	var rendered strings.Builder
 	srv.writePredictiveAndDynamicMetrics(&rendered)
 	for _, want := range []string{
-		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="decode_interference",pressure_source="decode",prefill_class="quiescent"} 1`,
+		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="quiescent"} 1`,
 		"pig_predictive_request_aware_estimated_prefill_tokens ",
 		"pig_predictive_request_aware_post_admit_pending_prefill_tokens ",
 		"pig_predictive_router_inspect_capacity 0",
@@ -560,8 +556,8 @@ func TestRequestAwareHTTPSeparatesPrefillInterferenceEstimateFromKVUpper(t *test
 			lowTelemetry.RequestAware.EstimatedPrefillTokens != lowTelemetry.RequestAware.SelectionInputTokens ||
 			lowTelemetry.RequestAware.ReservedTokens <= lowTelemetry.RequestAware.EstimatedPrefillTokens*10 ||
 			highTelemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
-			highTelemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonDecodeInterference ||
-			highTelemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressureDecode ||
+			highTelemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+			highTelemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
 			highTelemetry.RequestAware.PrefillClass != runtimepredictive.RequestAwarePrefillQuiescent ||
 			highTelemetry.RequestAware.EstimatedPrefillTokens < 512*1024 ||
 			highTelemetry.RequestAware.EstimatedPrefillTokens != highTelemetry.RequestAware.SelectionInputTokens ||
@@ -571,7 +567,7 @@ func TestRequestAwareHTTPSeparatesPrefillInterferenceEstimateFromKVUpper(t *test
 		}
 	})
 
-	t.Run("hard KV still rejects the same safety envelope", func(t *testing.T) {
+	t.Run("upstream input ceiling rejects the same safety envelope", func(t *testing.T) {
 		adapter, _ := newRequestAwareAdapterTestFixtureWithMode(t, 0, 0, "enforce")
 
 		backendCalls := 0
@@ -588,7 +584,7 @@ func TestRequestAwareHTTPSeparatesPrefillInterferenceEstimateFromKVUpper(t *test
 		}
 		telemetry := adapter.PredictiveAdmissionTelemetry()
 		if telemetry.RequestAware.Action != runtimepredictive.RequestAwareHardProtect ||
-			telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonKV ||
+			telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonInputLimit ||
 			telemetry.RequestAware.EstimatedPrefillTokens <= 0 ||
 			telemetry.RequestAware.EstimatedPrefillTokens != telemetry.RequestAware.SelectionInputTokens ||
 			telemetry.RequestAware.ReservedTokens <= telemetry.RequestAware.EstimatedPrefillTokens*10 {
@@ -612,6 +608,41 @@ func equalSafetyEnvelopeRequestAwareBodies(t *testing.T) (string, string) {
 	return build("hello"), build(strings.Repeat("你", 525_000))
 }
 
+func TestRequestAwareHTTPPreemptionSelectsContentionWithoutGlobalLock(t *testing.T) {
+	adapter, manager := newLargeRequestAwareAdapterTestFixtureWithMode(t, 128*1024, 0, "enforce")
+	input := adapter.snapshot.(staticRequestAwareSnapshot).input
+	input.PreemptionObserved = true
+	adapter.snapshot = staticRequestAwareSnapshot{input: input}
+	setRequestAwareAdapterObservation(t, adapter, manager, 128*1024, 4, 0)
+
+	backendCalls := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok"}`))
+	}))
+	defer backend.Close()
+	srv := newRequestAwareHTTPTestServer(t, backend.URL, adapter, "enforce")
+	defer srv.Close()
+
+	weighted := serveRequestAwareHTTP(t, srv, strings.Repeat("你", 100_000))
+	if weighted.Code != http.StatusTooManyRequests || backendCalls != 0 {
+		t.Fatalf("preemption-selected weighted response/backend=%d/%d body=%q", weighted.Code, backendCalls, weighted.Body.String())
+	}
+	telemetry := adapter.PredictiveAdmissionTelemetry()
+	if telemetry.RequestAware.Action != runtimepredictive.RequestAwareSizeProtect ||
+		telemetry.RequestAware.Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
+		telemetry.RequestAware.PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
+		telemetry.Attempts.LastRejectScope != predictiveProtectionScopeRequest ||
+		telemetry.RouterBackpressure.Active {
+		t.Fatalf("preemption-selected telemetry=%+v, want request-scoped protection", telemetry)
+	}
+	regular := serveRequestAwareHTTP(t, srv, "fit")
+	if regular.Code != http.StatusOK || backendCalls != 1 {
+		t.Fatalf("regular after preemption-selected reject=%d/%d body=%q, want immediate 200/1", regular.Code, backendCalls, regular.Body.String())
+	}
+}
+
 func TestRequestAwareHTTPHardGuardsRejectBeforeUpstreamWithZeroInspectCapacity(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -627,19 +658,6 @@ func TestRequestAwareHTTPHardGuardsRejectBeforeUpstreamWithZeroInspectCapacity(t
 				adapter.now = func() time.Time { return time.Unix(1, 0).Add(2 * time.Hour) }
 			},
 			wantReason: runtimepredictive.RequestAwareReasonStale,
-		},
-		{
-			name: "preemption_observed",
-			prepare: func(adapter *requestAwarePredictiveAdapter, manager *runtimepredictive.Manager) {
-				input := adapter.snapshot.(staticRequestAwareSnapshot).input
-				input.PreemptionObserved = true
-				adapter.snapshot = staticRequestAwareSnapshot{input: input}
-				setRequestAwareAdapterObservation(t, adapter, manager, 128*1024, 4, 0)
-			},
-			content:      strings.Repeat("\u4e2d", 100_000),
-			wantReason:   runtimepredictive.RequestAwareReasonPreemption,
-			wantInspect:  1,
-			largeProfile: true,
 		},
 		{
 			name: "epoch_invalid",
