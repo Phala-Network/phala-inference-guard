@@ -1087,6 +1087,120 @@ This closes the pre-version source gate only. It does not assign a version,
 build an image, replace the running c21 PIG, exercise GPU QoS, upload an image,
 modify Router/Compose, or establish production readiness.
 
+### 13.8 Exact v0.12.10 identity acceptance, 2026-08-11
+
+The next sequential `0.12.x` identity was assigned without changing policy,
+reservation, observation, Adapter, HTTP, or reporting behavior:
+
+```text
+CVM        c21b7281-2c25-4453-8a68-f39ec42d03b4
+container  pig-v0124-workbench
+repository /workspace/src/phala-inference-guard-r3
+branch     codex/pig-v0.11.0-request-aware
+commit     5cf48aa51ce741eb46d1f34719eca7ffadf79eea
+remote     origin/codex/pig-v0.11.0-request-aware
+worktree   clean; HEAD equals origin
+identity   PIG-v0.12.10 / v0.12.10 / v0_12_10_aggregate
+```
+
+The identity commit changes eight Go files by 23 insertions and 23 deletions.
+Relative to accepted production behavior on `ee77df7`, the only executable
+production change is the server version constant; the remaining changes rename
+the simulator candidate and update its tests. `PolicyV0129` and the old runtime
+version string are absent. `v0_12_9_aggregate` remains only in a negative test
+assertion, while historical v0.12.9 references continue to identify rejected
+14/24 evidence and are not rewritten as current results.
+
+The exact pushed commit passed:
+
+```text
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go build ./...
+go build -trimpath -o /tmp/phala-inference-guard-v0.12.10 \
+  ./cmd/phala-inference-guard
+gofmt all tracked Go files: no output
+git diff --check
+git status --short --branch
+
+result: all green; 130 tracked Go files; clean worktree equal to origin
+```
+
+The production binary evidence is:
+
+```text
+SHA-256       26332b85542160fd253a734dd63d146bb35b84da57183da1c59e0abd7a24e7a8
+Go            1.24.13, -trimpath, vcs.modified=false
+vcs.revision  5cf48aa51ce741eb46d1f34719eca7ffadf79eea
+embedded      PIG-v0.12.10 present; PIG-v0.12.9 absent
+```
+
+The simulator binary ran twice. Raw JSON was byte-identical and used only the
+new candidate and aggregate identities:
+
+```text
+SHA-256  c203e348588812c0dcd3c5be1a90615a5fc17973d1a57fcb9674f77585ef55d0
+fields   v0_12_2_aggregate, v0_12_10_aggregate
+result   acceptance=passed
+
+policy                    arrivals admitted rejected size-protect completed preemptions
+v0.12.2 comparison        24       17       7        7            17        0
+v0.12.10 candidate        24       24       0        0            24        0
+```
+
+Three-run c21 decision benchmarks remained allocation-free and inside the
+accepted simple O(n) limits:
+
+```text
+Policy Evaluate          90.09--100.0 ns/op
+Manager active=0         280.2--282.8 ns/op
+Manager active=1         378.9--383.1 ns/op
+Manager active=48        3.837--3.849 us/op
+Manager active=256       18.538--19.241 us/op
+Manager active=4096      0.289721--0.296693 ms/op
+all cases                0 B/op, 0 allocs/op
+```
+
+Maximum-body CPU evidence was:
+
+```text
+three-run benchmark
+4 MiB single-string estimator  0.158782--0.162107 ms/op, 0 B/op, 0 allocs/op
+4 MiB many-string estimator    21.395266--22.127192 ms/op, 0 B/op, 0 allocs/op
+4 MiB classifier + estimator   8.970970--9.161176 ms/op,
+                               about 4.21 MiB/op, 19 allocs/op
+
+100 independent benchtime=1x samples
+path                          min       p50       p99       max
+classifier + estimator       6.9039    12.1606   24.0741   28.9344 ms
+single-string estimator      0.3865     0.4154    0.5501    0.5573 ms
+many-string estimator       20.5619    21.8506   31.2844   31.6688 ms
+```
+
+All measured maximum-body p99 and maxima remain below the accepted 100-ms
+extreme-input CPU budget. These remain microbenchmarks, not HTTP, GPU, or
+production latency claims.
+
+Three review passes found no version-identity blocker:
+
+1. **Causality and objective:** no Gate or pre-forward decision input changed;
+   request size still affects the real decision path, while instantaneous TPS,
+   generation, cache lookup, TTFT, and learning remain outside the reject Gate.
+2. **Safety and lifecycle:** no Controller, Manager, reservation, observation,
+   epoch, cancellation, or terminal path changed; the exact full race matrix
+   passed, so the pre-version lifecycle proof remains applicable to this
+   behavior-identical identity commit.
+3. **SOLID, efficiency, and evidence:** the server owns its runtime identity,
+   the simulator owns its policy/report identity, and tests reject stale
+   candidate keys; hot paths remain bounded and allocation-free; source,
+   binary, image, GPU runtime, and production evidence remain separate layers.
+
+This accepts the source version identity only. No image has been built or
+uploaded from `5cf48aa`, the running c21 PIG remains the old local v0.12.9
+container, and Router/Compose/vLLM remain unchanged. The next gate is a
+local-only c21 image followed by PIG-only runtime replacement and GPU tests.
+
 ## 14. Active checklist
 
 - [x] v0.12.9 sustained 14/24 overprotection retained as rejected evidence.
@@ -1116,7 +1230,8 @@ modify Router/Compose, or establish production readiness.
 - [x] all deterministic scenarios pass without low-flow or request-scope lock;
   mapped and accepted on exact pushed commit `ee77df7`.
 - [x] complete pre-version matrix and three code reviews pass on `ee77df7`.
-- [ ] one next 0.12.x identity is assigned and accepted.
+- [x] one next 0.12.x identity is assigned and accepted as exact pushed commit
+  `5cf48aa`.
 - [ ] one local image passes source/image/c21 PIG-only runtime gates.
 - [ ] sustained and targeted GPU tests satisfy safety, long-window QoS, and
   goodput acceptance.
