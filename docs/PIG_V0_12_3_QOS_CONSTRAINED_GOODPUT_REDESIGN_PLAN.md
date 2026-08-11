@@ -4,7 +4,7 @@ Status: active architecture reset. This document is the only execution plan for
 the current goal. Historical v0.12 plans, images, runtime results, and rejected
 source experiments remain evidence only; they are not implementation authority.
 
-The current executable development HEAD is `9c2cbc3`; the architecture-reset
+The current executable development HEAD is `1c5b57f`; the architecture-reset
 plan is commit `021f146`. Later status-only or executable commits do not inherit
 old evidence automatically. No next `0.12.x` version is assigned. No image may
 be built, uploaded, or deployed until every pre-version gate in section 13
@@ -17,7 +17,8 @@ current Git status before inheriting any checklist item.
 
 PIG must maximize SLO-compliant completed-token goodput while:
 
-- preventing admission-caused KV exhaustion and preemption;
+- preventing admission-caused KV exhaustion and minimizing sustained
+  preemption frequency without treating one isolated event as a fatal result;
 - keeping long-window per-user Decode TPS acceptably stable;
 - allowing occasional short TPS dips instead of treating every low sample as a
   failure;
@@ -63,8 +64,8 @@ all-or-none test override is deliberately selected.
 CVM             c21b7281-2c25-4453-8a68-f39ec42d03b4
 workbench       pig-v0124-workbench
 repository      /workspace/src/phala-inference-guard-r3
-branch                  codex/pig-v0.11.0-request-aware
-executable HEAD         9c2cbc3
+branch          codex/pig-v0.11.0-request-aware
+executable HEAD 1c5b57f
 architecture plan       021f146
 ```
 
@@ -72,7 +73,7 @@ Do not run Go, race, simulation, benchmark, binary, or image gates on Windows.
 Do not use the old builder. Do not restart the CVM or vLLM. A later accepted
 runtime gate may replace only PIG on c21 with `--no-deps`.
 
-### 3.2 Accepted evidence through `9c2cbc3`
+### 3.2 Accepted evidence through `1c5b57f`
 
 - `7115dbe`: HTTP and simulator share the canonical `RequestCost` builder.
 - `378584d`: raw vLLM phase facts, canonical probe scope, and current-capacity
@@ -87,6 +88,10 @@ runtime gate may replace only PIG on c21 with `--no-deps`.
 - `9c2cbc3`: immutable capability schema v3 removes context `/8` and `/2`
   scaling, derives maximum admissible input and startup budgets, and fails
   closed when coherent vLLM model metadata is unavailable.
+- `1c5b57f`: `ResourceSafetyGate + PrefillQoSGate` replace the rejected
+  Resource/Interference/DecodeEnvelope stack; policy and canonical-probe scope
+  are atomic, instantaneous TPS and completion-window generation deltas do not
+  reject requests, and fresh preemption is a one-sample regime selector only.
 - Frozen old-policy simulator result: 24 arrivals, 14 admits, 10 size protects,
   14 completions, zero preemptions, and exact final drain.
 
@@ -489,12 +494,14 @@ effective KV
 pending Prefill tokens and class ownership
 local ActiveDecode count
 raw observed running/waiting
-recent-sample generation/preemption evidence
+generation/TPS telemetry and fresh preemption evidence
 capability profile and observation freshness
 ```
 
 `contended` is true when any local Decode is active or the fresh observation
-shows running, waiting, generation progress, or a preemption delta. It is a
+shows running, waiting, or a preemption delta. A generation delta is interval
+telemetry: a just-completed request can advance the counter while the sample
+already reports `running=0`, so it cannot select contention. `contended` is a
 regime selector, not a full-intake lock and not an exact Decode-user count.
 This rule applies after the ownership epoch in section 7.1 is established.
 
@@ -624,11 +631,20 @@ scope from reason strings, or merge fields from different sequences.
 
 ## 10. QoS and goodput acceptance contract
 
-Hard safety remains strict in every repetition:
+Hard resource and lifecycle safety remain strict in every repetition:
 
-- zero admission-caused preemptions, KV-limit violations, restart, or fatal;
+- zero KV-limit violations, restart, or fatal; and
 - zero reservation leak, double release, impossible transition, or final
   running/waiting mismatch caused by PIG.
+
+Preemption is a statistical stability result, not an instantaneous hard-safety
+failure. Report raw counts, counts per 1,000 completions, and counts per active
+Decode hour for every repetition. With matched fixed-order repetitions, one
+extra isolated candidate event across the complete A/B and B/A matrix may pass
+only when the per-repetition median remains no worse than the reference, it is
+not repeated in another repetition or adjacent rolling window, and no KV or
+lifecycle invariant fails. More than one extra event, a burst, or recurrence in
+two repetitions blocks automatic promotion for causal review.
 
 Decode QoS is intentionally statistical. A single low sample, p10 dip, warmup
 transition, or request boundary does not reject a candidate.
@@ -656,10 +672,11 @@ Among safe, QoS-compliant candidates, select the highest median goodput. Raw
 throughput, rejection count, GPU utilization, and p10 remain separate
 diagnostics.
 
-Run A/B and B/A order with at least three repetitions. Any hard-safety incident
-fails the candidate. A noisy single QoS repetition does not automatically fail
-when the median, rolling-window budget, and order check pass; retain and explain
-all repetitions.
+Run A/B and B/A order with at least three repetitions. Any hard resource or
+lifecycle incident fails the candidate. A noisy single QoS repetition or one
+isolated preemption does not automatically fail when the median, rolling-window
+budget, preemption rule, and order check pass; retain and explain all
+repetitions.
 
 ## 11. Deterministic simulation and required scenarios
 
@@ -793,6 +810,62 @@ Only after pre-version acceptance:
 Production Router enable and 30-minute real-traffic observation remain a later,
 separately authorized boundary.
 
+### 13.5 Pure-policy source slice evidence, 2026-08-11
+
+The exact pushed source is:
+
+```text
+CVM        c21b7281-2c25-4453-8a68-f39ec42d03b4
+container  pig-v0124-workbench
+repository /workspace/src/phala-inference-guard-r3
+branch     codex/pig-v0.11.0-request-aware
+base       08b64457273e1c2d063213f8bd62a8d6bd48fdb5
+commit     1c5b57f refactor:make-prefill-admission-work-conserving
+remote     origin/codex/pig-v0.11.0-request-aware
+```
+
+Focused red evidence failed for the intended behaviors before implementation:
+
+```text
+TestPrefillQoSGateDoesNotTreatCompletedGenerationWindowAsContention
+  generation progress with running=0 rejected a weighted request as contended
+
+TestWritePredictiveAdmissionKeepsInputLimitAndRetiresDecodePressure
+  the removed decode pressure source was still accepted as a live label
+
+TestRequestAwareAdapterDoesNotInferMissingManagerProtectionScope
+  missing Manager scope was silently guessed as request protection
+```
+
+After correction and `gofmt`, the following c21-only gates passed:
+
+```text
+go test ./internal/runtime/predictive -count=1
+go test ./internal/app/server -count=1
+go test ./internal/observability/metrics -count=1
+go test ./... -count=1
+go vet ./...
+go build ./...
+go test -race ./internal/runtime/predictive ./internal/app/server \
+  ./internal/observability/metrics ./internal/simulation/requestaware -count=1
+git diff --check HEAD
+```
+
+The three-run benchmark command was:
+
+```text
+go test ./internal/runtime/predictive -run=^$ \
+  -bench=BenchmarkRequestAware -benchmem -count=3
+```
+
+All cases remained `0 B/op, 0 allocs/op`. Policy evaluation was 90.9--95.5 ns;
+Manager decisions were 277--282 ns at zero reservations, 384--395 ns at one,
+3.79--3.93 us at 48, 18.38--18.65 us at 256, and 0.290--0.302 ms at 4,096.
+The sustained replacement scenario remains 24/24 completions with zero
+preemptions. This evidence proves pushed source, focused/full/race/static/build
+gates, deterministic simulation tests, and hot-path bounds only. It does not
+assign a version, build an image, change the running PIG/vLLM, or prove GPU QoS.
+
 ## 14. Active checklist
 
 - [x] v0.12.9 sustained 14/24 overprotection retained as rejected evidence.
@@ -812,8 +885,9 @@ separately authorized boundary.
   zero and remain inside the revised measured limits.
 - [x] immutable capability/profile slice passes focused/full/race/vet/build
   gates and is pushed as `9c2cbc3`.
-- [ ] pure policy implements resource safety, work-conserving Prefill QoS, and
-  canonical-probe scope without instantaneous TPS rejection.
+- [x] pure policy implements resource safety, work-conserving Prefill QoS, and
+  atomic canonical-probe scope without instantaneous TPS or completion-window
+  generation rejection; pushed as `1c5b57f`.
 - [ ] decision/capacity reporting is coherent and recent-reject hold is removed.
 - [ ] all deterministic scenarios pass without low-flow or request-scope lock.
 - [ ] complete pre-version matrix and three code reviews pass.
@@ -830,6 +904,8 @@ separately authorized boundary.
 
 - replaced instantaneous/p10 failure semantics with sustained-window QoS;
 - retained pre-forward prediction while limiting feedback to current facts;
+- removed completion-window generation delta from contention because it can
+  lag a request that is already idle; kept TPS/generation as telemetry only;
 - removed the arbitrary context `/8` and `/2` Prefill scaling;
 - changed 49K-under-Decode from forced reject to a fitting regular example;
 - kept TPS out of the runtime Gate and in controlled acceptance measurement.
@@ -842,11 +918,17 @@ separately authorized boundary.
 - defined a positive-only overlay and first-byte plus sample barrier;
 - kept stale/identity/KV safety hard while allowing fitting regular work under
   waiting or ambiguous running;
+- made every Adapter-owned early failure carry an explicit scope and converted
+  a missing Manager scope to availability instead of inferring a plausible
+  request/load result;
 - required exact-once release for every terminal path.
 
 ### Pass 3: SOLID, throughput, and evidence
 
 - reduced policy to two resource owners and one atomic scope proof;
+- renamed the implementation files to `resource_safety_gate.go` and
+  `prefill_qos_gate.go`, removed the retired Decode pressure label, and kept
+  Gate inputs limited to fields they consume;
 - separated per-request decisions from current-capacity reporting;
 - removed delayed reject projection and low-flow unlock timers;
 - retained O(n) recomputation until benchmarks justify complexity;
