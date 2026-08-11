@@ -40,7 +40,8 @@ Defaults remain:
 
 ## 2. Authoritative state and boundaries
 
-The authoritative source repository is the c21 workbench checkout:
+The authoritative source repository is the c21 workbench checkout. The audit
+baseline was:
 
 ```text
 repo    /workspace/src/phala-inference-guard-r3
@@ -666,7 +667,8 @@ the CVM, upload an unaccepted image, modify Router, or enable production traffic
   only independently valid kernels.
 - [x] complete and record three design-review passes; revise this plan after
   each pass.
-- [ ] commit and push the new authority plan before production-code changes.
+- [x] commit and push the new authority plan before production-code changes
+  (`5bb0ef2`).
 - [ ] Slice A passes and is pushed.
 - [ ] Slice B passes, old Manager/policy code is deleted, and the slice is
   pushed.
