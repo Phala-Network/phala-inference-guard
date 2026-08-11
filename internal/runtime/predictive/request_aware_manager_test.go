@@ -569,8 +569,7 @@ func TestRequestAwareManagerDoesNotRetainCompletedReservationState(t *testing.T)
 			t.Fatalf("bounded terminal failed for %s", requestID)
 		}
 	}
-	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 || snapshot.RetiredReservations != 0 ||
-		snapshot.RetiredEvictions != 0 || snapshot.CompletedDecodeCredits != 0 {
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 {
 		t.Fatalf("completed reservations retained state=%+v", snapshot)
 	}
 	input := idle
@@ -943,7 +942,7 @@ func TestRequestAwareManagerRebaseEpochClearsOldOwnershipAndReopens(t *testing.T
 		t.Fatalf("RebaseEpoch: %v", err)
 	}
 	snapshot := manager.Snapshot()
-	if !snapshot.IntakeOpen || snapshot.Reservations != 0 || snapshot.RetiredReservations != 0 ||
+	if !snapshot.IntakeOpen || snapshot.Reservations != 0 ||
 		snapshot.Virtual.Lower.PhysicalKVUpper != 1_200 || snapshot.Virtual.Upper.PhysicalKVUpper != 1_200 ||
 		snapshot.Virtual.Upper.DecodeSequences != 2 {
 		t.Fatalf("rebased manager=%+v", snapshot)
@@ -1320,7 +1319,7 @@ func TestRequestAwareManagerConcurrentRebaseInvalidatesEveryOldHandle(t *testing
 			}
 
 			snapshot := manager.Snapshot()
-			if !snapshot.IntakeOpen || snapshot.Reservations != 0 || snapshot.RetiredReservations != 0 ||
+			if !snapshot.IntakeOpen || snapshot.Reservations != 0 ||
 				snapshot.Virtual.Lower.PhysicalKVUpper != 123 || snapshot.Virtual.Upper.PhysicalKVUpper != 123 ||
 				snapshot.Virtual.Upper.DecodeSequences != 2 {
 				t.Fatalf("post-rebase manager=%+v", snapshot)

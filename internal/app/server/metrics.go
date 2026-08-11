@@ -103,8 +103,6 @@ func (s *proxyServer) predictiveAdmissionMetricsInput() (metrics.PredictiveAdmis
 	input.VirtualDecodeSequences = snapshot.Manager.Virtual.Upper.DecodeSequences
 	input.ForwardedPendingPrefills = snapshot.Manager.ForwardedPendingPrefills
 	input.ForwardedPendingPrefillTokens = snapshot.Manager.ForwardedPendingPrefillTokens
-	input.RetiredReservations = snapshot.Manager.RetiredReservations
-	input.RetiredEvictions = snapshot.Manager.RetiredEvictions
 	input.RequestAwareAction = string(snapshot.RequestAware.Action)
 	input.RequestAwareReason = string(snapshot.RequestAware.Reason)
 	input.RequestAwarePressureSource = string(snapshot.RequestAware.PressureSource)

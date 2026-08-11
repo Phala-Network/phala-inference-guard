@@ -76,11 +76,7 @@ type Snapshot struct {
 	ForwardedPendingPrefillTokens   int64
 	ForwardedPendingPrefillSequence uint64
 	EventSequence                   uint64
-	// Deprecated compatibility fields; positive-only reservations keep them zero.
-	RetiredReservations    int
-	RetiredEvictions       uint64
-	CompletedDecodeCredits int
-	Virtual                domain.VirtualStateInterval
+	Virtual                         domain.VirtualStateInterval
 }
 
 type RequestAwarePendingSnapshot struct {
