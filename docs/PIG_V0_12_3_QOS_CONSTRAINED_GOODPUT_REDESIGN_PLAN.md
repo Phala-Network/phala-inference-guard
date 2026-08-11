@@ -371,6 +371,16 @@ or base64-like content, and maximum-body inputs. Any tested underestimation that
 can consume the hard headroom blocks release; do not hide it by renaming the
 point estimate an exact token count.
 
+The upstream-context plausibility check uses `selection_prefill_tokens`, not
+`safety_input_tokens`. The safety forecast is intentionally retained only for
+hard KV reservation and the post-admit KV inequality. A model-neutral forecast
+cannot prove the exact tokenizer length, so forwarding a plausible request lets
+the upstream perform its authoritative tokenizer/context validation. An
+upstream context-length error must release the reservation through the ordinary
+terminal lifecycle; it cannot authorize KV allocation, create sticky Router
+backpressure, or be reclassified as a backend failure. This separation avoids
+using a deliberately loose KV hedge as an absolute context ceiling.
+
 The canonical builder receives selection estimate, safety estimate, bounded
 rolling Decode horizon, KV block size, and manifest epoch. It returns:
 
@@ -568,7 +578,10 @@ This rule applies after the ownership epoch in section 7.1 is established.
    - pending exclusive/quiescent work blocks new work until first bytes or
      terminal.
 
-   A request above the upstream maximum admissible input is request protection.
+   A request whose `selection_prefill_tokens` exceeds the upstream maximum
+   admissible input is request protection. `safety_input_tokens` still owns KV
+   reservation and may be larger than the context ceiling when the candidate
+   fits the immutable hard KV limit.
    A preemption delta only selects the contended regime for its owning fresh
    sample; it creates no timer, cooldown, or learned state.
 
@@ -1313,6 +1326,124 @@ remains the old local v0.12.9 container, and Router/Compose/vLLM remain
 unchanged. The remaining half of the local-image checklist item is the c21
 PIG-only runtime gate.
 
+### 13.10 c21 runtime recovery and estimator-oracle release blocker, 2026-08-11
+
+The statements at the end of section 13.9 describe the state at that earlier
+gate. The exact local image was subsequently installed on c21 by replacing only
+the PIG service. vLLM, the CVM, Router, and every other node were left unchanged.
+After the CVM was stopped for customer capacity and later started again, current
+inspection established that the same candidate and backend recovered:
+
+```text
+PIG image     0.12.10-ab91b2c-local / sha256:ddb3d3348c11...
+PIG state     running; RestartCount=0; OOMKilled=false
+vLLM state    same container/image; RestartCount=0; OOMKilled=false
+H200          same device identity
+health/models/authenticated metrics  200/200/200
+upstream status                       0 (open)
+normal/stream/tool/structured         200/200/200/200
+running/waiting/reservations          0/0/0
+Router backpressure active/applied    0/0
+vLLM preemptions                      0
+```
+
+Before the restart, the candidate also completed the initial runtime matrix:
+
+```text
+sustained regular Decode       24/24 success, 0 reject, 0 preemption
+low flow                       20/20 success, no post-error lock
+same-snapshot small burst      16/16 admitted, final drain
+client cancellation            recovery 200, final drain
+12 x about-16K aggregate edge  11 admitted, 1 request-scoped reject,
+                               final drain, Router reopened
+```
+
+Those results prove lifecycle recovery and selective protection, but they do
+not accept the image. The later long-input diagnostic exposed a release-blocking
+overprotection path. An exact source-side estimator oracle built from `ab91b2c`
+compared the production request body with the current vLLM `/tokenize` endpoint,
+which applies the loaded tokenizer and chat template without running a GPU
+Prefill:
+
+```text
+evidence  /var/volatile/dstack/persistent/pig-v0124/runs/
+          pig-v01210-estimator-oracle-r1-ab91b2c/report.json
+SHA-256   a61d22e1659f11dacb875399e83374ba220cb66029bd6e5c34408d06995dab50
+
+case                 actual    selection   safety    selection/actual  safety/actual
+64K plain             65,549      81,422    196,677       1.242             3.000
+82K plain             83,981     104,318    251,973       1.242             3.000
+120K plain           122,893     158,414    368,709       1.289             3.000
+64K prefixed           65,623      99,888    196,743       1.522             2.998
+82K prefixed           84,060     127,968    252,039       1.522             2.998
+120K prefixed         122,968     187,248    368,775       1.523             2.999
+```
+
+The exact `/tokenize` end-to-end measurements were about 178--179 ms at 65K,
+227--230 ms at 84K, and 347--352 ms at 123K. They include HTTP, chat-template
+rendering, exact tokenization, and serialization of the full token-ID array.
+This confirms that a synchronous upstream tokenizer RPC is unsuitable for the
+PIG admission hot path. The existing bounded lexical scan remains the intended
+low-latency mechanism.
+
+The causal defects are narrower than a tokenizer rewrite:
+
+1. `ResourceSafetyGate` uses `safety_input_tokens` for both KV reservation and
+   the upstream context ceiling, despite section 6.1 defining it as a loose KV
+   forecast. A 122,968-token request is therefore rejected as `input_limit` at
+   an idle 262K upstream because the body-based safety value is 368,775.
+2. Four window samples are aggregated as one mean. A small punctuation/nonce
+   prefix can therefore raise the estimate of an otherwise uniform long string
+   from 1.24x to 1.52x actual and can move a roughly 49K regular request into the
+   weighted class.
+
+Required corrective slice, before any new version or image:
+
+- add `SelectionInputTokens` to the single-purpose resource-safety input and
+  use it only for the maximum-admissible-input comparison;
+- keep `SafetyInputTokens`, block rounding, positive reservations, hard KV
+  inequality, and lifecycle ownership unchanged;
+- replace the four-window aggregate density with a fixed-array robust middle
+  density that discards a single high and low outlier when four windows exist;
+- retain bounded work, zero heap allocation in the lexical helper, no model
+  asset, no FFI, no network request, no learning, and no request mutation;
+- keep unsupported or unknown lexical shapes on the existing conservative
+  fallback;
+- add a red/green policy test proving selection-below-context plus
+  safety-above-context can fit only when the safety reservation still fits hard
+  KV, and selection-above-context remains request protection;
+- add a red/green 49K long-text test proving a small high-density prefix cannot
+  alone cross the 64K class boundary;
+- rerun multilingual, code, tool-schema, escape-heavy, high-entropy, CJK,
+  multimodal, maximum-body, overflow, and deterministic cases;
+- send one intentionally over-context request to prove vLLM rejects it before
+  engine scheduling, PIG returns the request error, the reservation drains,
+  running/waiting/KV/preemptions do not rise, and Router intake remains open;
+- rerun focused/full/race/vet/build/simulation and the estimator/policy/Manager
+  benchmarks before assigning the next `0.12.x` identity; and
+- repeat the c21 oracle plus a real idle 120K request and the complete PIG-only
+  runtime matrix before entering the ordered Pareto matrix.
+
+Three-pass design review of this correction:
+
+1. **Model and causality:** exact tokenization remains upstream-owned; the fast
+   estimate selects size/context plausibility, while the independent loose
+   forecast still reserves KV. This removes a proven false reject without
+   claiming tokenizer parity.
+2. **Safety and lifecycle:** no KV number is reduced by the context-check
+   separation. A truly over-context request is rejected by vLLM before GPU KV
+   scheduling and follows the existing terminal release path. Hard KV,
+   freshness, identity, overflow, atomic reservation, and request/load scope
+   remain strict.
+3. **SOLID, latency, and release evidence:** the change stays inside the
+   lexical estimator and resource-safety gate responsibilities. It adds no
+   cache lookup, learner, model asset, RPC, timer, queue, Router mutation, or
+   new production configuration. The old image is diagnostic evidence only.
+
+`PIG-v0.12.10` is therefore not an accepted deployable release. Its local image
+must not be uploaded. The next `0.12.x` identity remains unassigned until the
+corrective source and pre-version evidence pass.
+
 ## 14. Active checklist
 
 - [x] v0.12.9 sustained 14/24 overprotection retained as rejected evidence.
@@ -1344,6 +1475,12 @@ PIG-only runtime gate.
 - [x] complete pre-version matrix and three code reviews pass on `ee77df7`.
 - [x] one next 0.12.x identity is assigned and accepted after the pre-image
   correction on exact pushed commit `ab91b2c`.
+- [x] c21 recovery, compatibility, lifecycle, and initial selective-protection
+  runtime diagnostics complete on the local v0.12.10 image.
+- [x] exact vLLM tokenizer oracle proves the v0.12.10 context ceiling
+  overprotects representative long text by using a roughly 3x KV forecast.
+- [ ] context-plausibility/KV-reservation separation and prefix-robust bounded
+  sampling pass their focused red/green and complete pre-version gates.
 - [ ] one local image passes source/image/c21 PIG-only runtime gates.
 - [ ] sustained and targeted GPU tests satisfy safety, long-window QoS, and
   goodput acceptance.
