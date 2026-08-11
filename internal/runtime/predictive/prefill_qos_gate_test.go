@@ -83,6 +83,44 @@ func TestPrefillQoSGateBoundsManySmallRequestsUnderContention(t *testing.T) {
 		!blocked.CanonicalDecisionValid || blocked.CanonicalDecision.Action == RequestAwareAdmit {
 		t.Fatalf("post-budget decision=%+v, want load-scoped bounded protection", blocked)
 	}
+
+	// First byte moves exactly one request out of pending Prefill. The backend
+	// is still contended by the resulting local Decode, but the released 4K
+	// budget must be reusable immediately without a poll, cooldown, or a new
+	// business-request success signal.
+	if !manager.MarkForwarded("contended-small-0") ||
+		!manager.MarkPrefillComplete("contended-small-0") {
+		t.Fatal("first contended request did not reach first-byte lifecycle")
+	}
+	recovered := manager.DecideRequestAwareAndReserve(
+		time.Unix(2, 1), "contended-small-recovered", requestAwareManagerCost(4*kib, 0), 4*kib, policy, input,
+	)
+	if !recovered.Reserved || recovered.Decision.Action != RequestAwareAdmit ||
+		!recovered.Decision.Contended || recovered.Decision.PostAdmitPendingPrefillTokens != 64*kib {
+		t.Fatalf("first-byte recovery=%+v, want immediate reuse at the 64K boundary", recovered)
+	}
+
+	for index := range 16 {
+		if !manager.Terminate(fmt.Sprintf("contended-small-%d", index), TerminalExpired) {
+			t.Fatalf("terminal cleanup failed for contended request %d", index)
+		}
+	}
+	if !manager.Terminate("contended-small-recovered", TerminalExpired) {
+		t.Fatal("terminal cleanup failed for recovered request")
+	}
+	if snapshot := manager.Snapshot(); snapshot.Reservations != 0 ||
+		snapshot.Virtual.Upper.PendingPrefillSequences != 0 ||
+		snapshot.Virtual.Upper.UncachedPrefillTokens != 0 {
+		t.Fatalf("small-request lifecycle did not drain exactly: %+v", snapshot)
+	}
+
+	lowFlow := manager.DecideRequestAwareAndReserve(
+		time.Unix(3, 0), "contended-low-flow", requestAwareManagerCost(49*kib, 0), 49*kib, policy, input,
+	)
+	if !lowFlow.Reserved || lowFlow.Decision.Action != RequestAwareAdmit ||
+		!manager.Terminate("contended-low-flow", TerminalExpired) {
+		t.Fatalf("post-drain low-flow request=%+v, want immediate admission and exact drain", lowFlow)
+	}
 }
 
 func TestPrefillQoSGateLocalDecodeSelectsContentionAfterObservationCoverage(t *testing.T) {

@@ -149,20 +149,39 @@ func TestApproximateInputTokenHintModelNeutralShapeCorpus(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "ascii", body: `{"prompt":"alpha beta 123"}`},
-		{name: "punctuation", body: `{"prompt":"!@#$%^&*()[]{}"}`},
-		{name: "cjk", body: `{"prompt":"中文输入大小"}`},
-		{name: "escaped-json", body: `{"prompt":"line\\nquote\\\"slash\\\\end"}`},
-		{name: "tool-schema", body: `{"messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}}]}`},
+		{name: "natural-text", body: `{"prompt":"Explain why a quiet lake reflects the evening sky."}`},
+		{name: "code", body: `{"prompt":"func add(a, b int) int { return a + b }"}`},
+		{name: "multilingual", body: `{"prompt":"中文输入 English 日本語 한국어 العربية"}`},
+		{name: "escape-heavy", body: `{"prompt":"line\\nquote\\\"slash\\\\tab\\tunicode\\u4e2d"}`},
+		{name: "schema", body: `{"messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}}]}`},
+		{name: "high-entropy", body: `{"prompt":"A9+/zQ7!f0_kL=2@xV#8mN$4pR%1sT^6wY&3"}`},
 		{name: "multimodal-marker", body: `{"messages":[{"role":"user","content":[{"type":"input_text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,x"}}]}]}`},
 	}
 	for _, fixture := range fixtures {
 		t.Run(fixture.name, func(t *testing.T) {
-			cost := EstimateJSON([]byte(fixture.body), 64, true, DefaultEstimatorConfig())
+			body := []byte(fixture.body)
+			original := bytes.Clone(body)
+			cost := EstimateJSON(body, 64, true, DefaultEstimatorConfig())
+			replayed := EstimateJSON(body, 64, true, DefaultEstimatorConfig())
 			hint, known := cost.ApproximateInputTokenHint()
-			if !cost.Supported || !known || hint <= 0 || cost.EstimatedInputHigh <= 0 {
+			if !bytes.Equal(body, original) {
+				t.Fatal("shape corpus estimator modified the request body")
+			}
+			if cost != replayed {
+				t.Fatalf("shape corpus estimate is not deterministic: first=%+v replay=%+v", cost, replayed)
+			}
+			if !cost.Supported || !known || hint <= 0 || cost.EstimatedInputLow <= 0 ||
+				cost.EstimatedInputHigh < cost.EstimatedInputLow {
 				t.Fatalf("shape corpus cost=%+v hint=%d/%t", cost, hint, known)
 			}
+			safety := cost.EstimatedInputHigh
+			if hint > safety {
+				safety = hint
+			}
+			t.Logf(
+				"fixture=%s body_bytes=%d point_tokens=%d safety_tokens=%d raw_interval=%d..%d",
+				fixture.name, len(body), hint, safety, cost.EstimatedInputLow, cost.EstimatedInputHigh,
+			)
 		})
 	}
 
@@ -171,6 +190,40 @@ func TestApproximateInputTokenHintModelNeutralShapeCorpus(t *testing.T) {
 	if !asciiKnown || !punctuationKnown || punctuation <= ascii {
 		t.Fatalf("equal-byte lexical differentiation ascii=%d/%t punctuation=%d/%t", ascii, asciiKnown, punctuation, punctuationKnown)
 	}
+}
+
+func TestApproximateInputTokenHintMaximumBodyFixtureIsDeterministic(t *testing.T) {
+	const maximumBodyBytes = 4 * 1024 * 1024
+	prefix := `{"messages":[{"role":"user","content":"`
+	suffix := `"}],"max_tokens":256}`
+	payloadBytes := maximumBodyBytes - len(prefix) - len(suffix)
+	if payloadBytes <= 0 {
+		t.Fatal("maximum-body fixture has no payload")
+	}
+	body := []byte(prefix + strings.Repeat("a", payloadBytes) + suffix)
+	if len(body) != maximumBodyBytes {
+		t.Fatalf("maximum-body fixture bytes=%d want=%d", len(body), maximumBodyBytes)
+	}
+	original := bytes.Clone(body)
+
+	first := EstimateJSON(body, 256, true, DefaultEstimatorConfig())
+	second := EstimateJSON(body, 256, true, DefaultEstimatorConfig())
+	hint, known := first.ApproximateInputTokenHint()
+	if !bytes.Equal(body, original) {
+		t.Fatal("maximum-body estimator modified the request body")
+	}
+	if first != second || !first.Supported || !known || hint <= 0 ||
+		first.EstimatedInputLow <= 0 || first.EstimatedInputHigh < first.EstimatedInputLow {
+		t.Fatalf("maximum-body estimate first=%+v second=%+v hint=%d/%t", first, second, hint, known)
+	}
+	safety := first.EstimatedInputHigh
+	if hint > safety {
+		safety = hint
+	}
+	t.Logf(
+		"fixture=maximum-body body_bytes=%d point_tokens=%d safety_tokens=%d raw_interval=%d..%d",
+		len(body), hint, safety, first.EstimatedInputLow, first.EstimatedInputHigh,
+	)
 }
 
 func TestApproximateInputTokenHintUsesBoundedSampling(t *testing.T) {

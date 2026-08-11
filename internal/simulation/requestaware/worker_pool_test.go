@@ -58,6 +58,14 @@ func TestSustainedReplacementWaveCompletesAll24Requests(t *testing.T) {
 		if scenario.Name != "sustained-worker-replacement-wave" {
 			continue
 		}
+		// The archived rejected production v0.12.9 policy completed 14/24 at
+		// 6d2c0e1. PolicyV0122 is a separate frozen comparison and completed
+		// 17/24 in that same report; do not conflate the two baselines.
+		comparison := scenario.Policies[PolicyV0122]
+		if comparison.Arrivals != 24 || comparison.Admitted != 17 || comparison.Rejected != 7 ||
+			comparison.SizeProtects != 7 || comparison.Completed != 17 || comparison.Preemptions != 0 {
+			t.Fatalf("sustained replacement v0.12.2 comparison=%+v, want reproduced 17/24 overprotection", comparison)
+		}
 		candidate := scenario.Policies[PolicyV0129]
 		if candidate.Arrivals != 24 || candidate.Admitted != 24 || candidate.Rejected != 0 ||
 			candidate.Completed != 24 || candidate.Preemptions != 0 {

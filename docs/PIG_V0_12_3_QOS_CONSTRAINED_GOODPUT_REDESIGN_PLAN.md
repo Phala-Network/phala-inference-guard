@@ -4,11 +4,12 @@ Status: active architecture reset. This document is the only execution plan for
 the current goal. Historical v0.12 plans, images, runtime results, and rejected
 source experiments remain evidence only; they are not implementation authority.
 
-The current executable development HEAD is `1c5b57f`; the architecture-reset
-plan is commit `021f146`. Later status-only or executable commits do not inherit
-old evidence automatically. No next `0.12.x` version is assigned. No image may
-be built, uploaded, or deployed until every pre-version gate in section 13
-passes on one exact pushed commit.
+The current production-executable baseline is `b924d32`; the latest pushed
+documentation alignment is `3da129c`, and the architecture-reset plan is commit
+`021f146`. Later test, documentation, or executable commits do not inherit old
+evidence automatically. No next `0.12.x` version is assigned. No image may be
+built, uploaded, or deployed until every pre-version gate in section 13 passes
+on one exact pushed commit.
 
 After context compression, resume from sections 3, 8, 11, and 14. Re-read the
 current Git status before inheriting any checklist item.
@@ -97,8 +98,10 @@ runtime gate may replace only PIG on c21 with `--no-deps`.
   removed, while last-reject time remains telemetry only.
 - `b924d32`: retired reservation/eviction/completed-credit fields and metrics,
   plus the unused preemption reason, are removed from the current contract.
-- Frozen old-policy simulator result: 24 arrivals, 14 admits, 10 size protects,
-  14 completions, zero preemptions, and exact final drain.
+- Archived rejected production-v0.12.9 simulator result: 24 arrivals, 14 admits,
+  10 size protects, 14 completions, zero preemptions, and exact final drain.
+  The same report's distinct frozen-v0.12.2 comparison is 17 admits, 7 size
+  protects, and 17 completions; it is not the rejected v0.12.9 policy.
 
 The old-policy red report is:
 
@@ -106,6 +109,20 @@ The old-policy red report is:
 /workspace/evidence/pig-v012-worker-oldred-r1-378584d/report.json
 SHA-256 a461a8923ae7d0f5f2954d41b9636725854ee72236bc8df52d1a73ce72e59b22
 ```
+
+On 2026-08-11, a detached rerun of exact source `6d2c0e1` on c21 reproduced:
+
+```text
+policy         arrivals/admitted/rejected/size-protect/completed/preemptions
+v0.12.2        24/17/7/7/17/0
+old v0.12.9    24/14/10/10/14/0
+```
+
+The current worktree reproduces the same v0.12.2 comparison at 17/24 and the
+new production-policy candidate at 24/24 with zero rejects and preemptions.
+Current tests therefore assert 17/24 for `PolicyV0122` and 24/24 for the
+candidate; the exact archived report and detached source rerun, not a mislabeled
+current policy, retain the historical 14/24 failure.
 
 ### 3.3 Rejected experiment archive
 
@@ -433,13 +450,14 @@ The Observer calls `AdmissionController.UpdateObservation`. Publication and
 reconciliation happen under the Controller lock as one operation. There is no
 second Observer snapshot read in the request path.
 
-An enforce-mode ownership epoch starts only after one coherent observation with
-`running=0` and `waiting=0`. This proves that no unknown request from before a
-PIG restart remains in vLLM. After ownership is established, every forwarded
-request must have a live PIG reservation. A sample that cannot be reconciled
-with that ingress contract becomes availability protection until a coherent
-idle rebase; PIG must not invent the token cost of opaque upstream work. This is
-a startup/epoch safety condition, not the normal policy for tracked waiting.
+Enforce startup requires one coherent ownership observation but does not require
+an idle backend. Its observed KV, running, and waiting values are the complete
+conservative base, including work that predates this PIG process; every newly
+forwarded request then adds a live PIG reservation. Requiring `running=0` and
+`waiting=0` would make a continuously busy healthy backend self-lock at startup
+without improving hard-KV accounting. Invalid identity or geometry, stale
+metrics, sequence/epoch drift, or an observation that cannot be published
+coherently still closes availability rather than guessing.
 
 ### 7.2 Reservation lifecycle
 
@@ -691,7 +709,10 @@ records, and capacity records.
 
 Required scenarios before versioning:
 
-1. 12 workers x 2 requests reproduce frozen old 14/24 and new 24/24 behavior.
+1. 12 workers x 2 requests reproduce the current frozen-v0.12.2 comparison at
+   17/24 and the production-policy candidate at 24/24. The exact `6d2c0e1`
+   archive separately retains the rejected production-v0.12.9 14/24 result;
+   these two baselines must not be conflated.
 2. Many small Prefills stop at 64K under contention and recover on lifecycle,
    with no no-flow or low-flow self-lock.
 3. Waiting/ambiguous running still permit a fitting regular minimum request.
@@ -701,9 +722,12 @@ Required scenarios before versioning:
    class table and do not globally lock request-scoped failures.
 6. Near-KV concurrent arrivals cannot exceed the hard counterfactual.
 7. Observation publication and decision cannot mix sequences.
-8. Enforce startup waits for one coherent idle ownership sample; after
-   ownership, tracked waiting permits bounded regular admission while an
-   irreconcilable opaque-work epoch fails availability rather than guessing.
+8. Enforce startup requires one coherent ownership sample but does not require
+   an idle backend. Observed busy/idle KV, running, and waiting form the base;
+   tracked waiting permits bounded regular admission, while invalid identity,
+   geometry, or an irreconcilable epoch fails availability rather than
+   guessing. A continuously busy healthy backend must not create startup
+   self-lock.
 9. Reservation overlay transitions full -> future only after first byte plus a
    covering sample; terminal never applies a negative observation credit.
 10. Streaming, non-streaming, cancel, disconnect, timeout, upstream error,
@@ -719,8 +743,13 @@ Required scenarios before versioning:
 15. Repeated simulation and alternate event-order replay are byte-identical.
 16. Streaming and non-streaming workloads both drain exactly; non-streaming
     conservatism is reported rather than bypassed with inferred phase changes.
-17. Estimator fixtures report point/safety error for natural text, code,
-    multilingual, schema, escape-heavy, high-entropy, and maximum-body inputs.
+17. Model-neutral estimator fixtures report deterministic point and safety
+    estimates for natural text, code, multilingual, schema, escape-heavy,
+    high-entropy, and maximum-body inputs. They must prove bounded sampling,
+    body preservation, and the extreme-input latency budget. Token error is
+    reported only in later target-specific GPU evidence against the matching
+    vLLM `usage.prompt_tokens`; it must not introduce hash-pinned model assets
+    or claim one tokenizer's error is portable to every upstream model.
 
 Synthetic Prefill speed and Decode TPS can test mechanics but cannot prove GPU
 QoS, model portability, or throughput.
