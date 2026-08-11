@@ -65,7 +65,7 @@ CVM             c21b7281-2c25-4453-8a68-f39ec42d03b4
 workbench       pig-v0124-workbench
 repository      /workspace/src/phala-inference-guard-r3
 branch          codex/pig-v0.11.0-request-aware
-executable HEAD 1c5b57f
+executable HEAD b924d32
 architecture plan       021f146
 ```
 
@@ -73,7 +73,7 @@ Do not run Go, race, simulation, benchmark, binary, or image gates on Windows.
 Do not use the old builder. Do not restart the CVM or vLLM. A later accepted
 runtime gate may replace only PIG on c21 with `--no-deps`.
 
-### 3.2 Accepted evidence through `1c5b57f`
+### 3.2 Accepted evidence through `b924d32`
 
 - `7115dbe`: HTTP and simulator share the canonical `RequestCost` builder.
 - `378584d`: raw vLLM phase facts, canonical probe scope, and current-capacity
@@ -92,6 +92,11 @@ runtime gate may replace only PIG on c21 with `--no-deps`.
   Resource/Interference/DecodeEnvelope stack; policy and canonical-probe scope
   are atomic, instantaneous TPS and completion-window generation deltas do not
   reject requests, and fresh preemption is a one-sample regime selector only.
+- `62be847`: Router-visible capacity is recomputed from the current canonical
+  probe; the 1,500-ms recent-reject projection and Manager-sequence hold are
+  removed, while last-reject time remains telemetry only.
+- `b924d32`: retired reservation/eviction/completed-credit fields and metrics,
+  plus the unused preemption reason, are removed from the current contract.
 - Frozen old-policy simulator result: 24 arrivals, 14 admits, 10 size protects,
   14 completions, zero preemptions, and exact final drain.
 
@@ -866,6 +871,46 @@ preemptions. This evidence proves pushed source, focused/full/race/static/build
 gates, deterministic simulation tests, and hot-path bounds only. It does not
 assign a version, build an image, change the running PIG/vLLM, or prove GPU QoS.
 
+### 13.6 Current-capacity and telemetry cleanup evidence, 2026-08-11
+
+Two additional executable slices are pushed on the same branch:
+
+```text
+62be847 refactor:remove-recent-reject-capacity-hold
+b924d32 refactor:remove-retired-reservation-telemetry
+```
+
+For `62be847`, focused red tests showed that an already-open observation still
+published availability/load clamps solely because a previous reject was less
+than 1,500 ms old. After removing the hold, Router capacity follows only the
+current non-reserving canonical Manager decision. A test clock that advanced an
+hour correctly produced stale availability; it was corrected to keep the
+observation fresh rather than weakening freshness safety.
+
+For `b924d32`, `TestWritePredictiveAdmissionOmitsRetiredMetrics` first proved
+the old retired metric names were still emitted. The slice then removed the
+always-zero retired reservation, retired eviction, and completed-Decode-credit
+state/metrics and deleted the unused `preemption_observed` reason.
+
+The exact `b924d32` source passed on c21:
+
+```text
+go test ./internal/runtime/predictive -count=1
+go test ./internal/observability/metrics -count=1
+go test ./internal/app/server -count=1
+go test ./internal/domain/predictive -count=1
+go test ./... -count=1
+go test -race ./internal/runtime/predictive ./internal/app/server \
+  ./internal/observability/metrics -count=1
+go vet ./...
+go build ./...
+git diff --check HEAD
+```
+
+These slices prove current-capacity reporting cleanup and removal of misleading
+retired telemetry. They do not complete every deterministic scenario or the
+full pre-version matrix.
+
 ## 14. Active checklist
 
 - [x] v0.12.9 sustained 14/24 overprotection retained as rejected evidence.
@@ -888,7 +933,10 @@ assign a version, build an image, change the running PIG/vLLM, or prove GPU QoS.
 - [x] pure policy implements resource safety, work-conserving Prefill QoS, and
   atomic canonical-probe scope without instantaneous TPS or completion-window
   generation rejection; pushed as `1c5b57f`.
-- [ ] decision/capacity reporting is coherent and recent-reject hold is removed.
+- [x] decision/capacity reporting follows the current canonical probe and the
+  recent-reject hold is removed; pushed as `62be847`.
+- [x] retired reservation/eviction/completed-credit telemetry is removed;
+  pushed as `b924d32`.
 - [ ] all deterministic scenarios pass without low-flow or request-scope lock.
 - [ ] complete pre-version matrix and three code reviews pass.
 - [ ] one next 0.12.x identity is assigned and accepted.

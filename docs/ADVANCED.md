@@ -1,32 +1,35 @@
-# PIG v0.12.9 Advanced Configuration
+# PIG Advanced Configuration
 
-This document separates production configuration from test controls. The
-loader accepts bounded overrides so the policy can be tested, but parser
-capability does not define what belongs in production Compose.
+This document describes the current development source contract. No new
+`0.12.x` release identity or accepted image is implied. The loader exposes
+bounded overrides for controlled tests, but parser capability does not define
+what belongs in production Compose.
 
 ## Production contract
 
 A normal production deployment contains only:
 
 - `UPSTREAM`, exactly one absolute HTTP URL;
-- required authentication and attestation infrastructure;
-- a deployment choice that genuinely differs from the v0.12.9 default.
+- required authentication, TLS, and attestation infrastructure; and
+- a target-specific choice that genuinely differs from the accepted image
+  default.
 
 Do not explicitly configure predictive mode, metrics URL, polling, freshness,
-the KV hard ratio, or Prefill boundaries when the defaults are intended.
-The enforce artifact must prove default behavior with
-`PREDICTIVE_ADMISSION_MODE` absent.
+the KV hard ratio, model length, or Prefill bounds when the accepted defaults
+are intended. Production enforce mode is proved with
+`PREDICTIVE_ADMISSION_MODE` absent. Shadow is a test-only override:
 
-Test and production manifests are separate artifacts. Generate production from
-the fresh live Compose and immutable image digest; do not promote a test
-manifest by only changing its mode. Before deployment, audit the effective PIG
-environment. Every explicit `PREDICTIVE_*` value must differ from the v0.12.9
-default and have a target-specific operational reason. Shadow may additionally
-set `PREDICTIVE_ADMISSION_MODE=shadow`; enforce must omit it.
+```text
+PREDICTIVE_ADMISSION_MODE=shadow
+```
+
+Test and production manifests are separate artifacts. Never promote a test
+manifest by changing only its mode. Before deployment, compare the candidate
+with a fresh live Compose and audit every explicit `PREDICTIVE_*` value.
 
 ## Core infrastructure
 
-| Variable | Default | Meaning |
+| Variable | Source default | Meaning |
 | --- | --- | --- |
 | `LISTEN` | `:8000` | PIG listen address |
 | `UPSTREAM` | `http://backend:8000` | The only upstream base URL |
@@ -43,112 +46,112 @@ Attestation infrastructure remains configurable with `ATTESTATION_ENABLED`,
 NVIDIA evidence command/payload settings, and their timeout. These values do
 not alter admission policy.
 
-## Version defaults
+## Predictive source defaults
 
-These values are part of the v0.12.9 behavior and should normally remain absent
-from production Compose.
-
-| Variable | Default | Constraint |
+| Variable | Source default | Constraint |
 | --- | --- | --- |
-| `PREDICTIVE_ADMISSION_MODE` | `enforce` | Only `shadow` or `enforce`; retired proxy-only values fail startup |
+| `PREDICTIVE_ADMISSION_MODE` | `enforce` | Only `shadow` or `enforce` |
 | `PREDICTIVE_METRICS_URL` | derived `${UPSTREAM_ORIGIN}/metrics` | One absolute HTTP URL |
 | `PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS` | `10000` | `1..300000` |
-| `PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS` | `500` | Not greater than startup timeout |
-| `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS` | `500` | Positive, at most 60000 |
-| `PREDICTIVE_MAX_METRICS_AGE_MS` | `3 x poll`, normally `1500` | At least one poll, at most 60000 |
-| `PREDICTIVE_KV_HARD_RATIO` | `0.88` | Less than 1 |
+| `PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS` | `500` | `1..60000`, not greater than startup timeout |
+| `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS` | `500` | `1..60000` |
+| `PREDICTIVE_MAX_METRICS_AGE_MS` | `3 x poll`, normally `1500` | At least one poll, at most `60000` |
+| `PREDICTIVE_KV_HARD_RATIO` | `0.88` | Strictly between 0 and 1 |
 | `OUTPUT_TOKEN_FIELD_NAMES` | standard OpenAI output-limit fields | Unique supported JSON field names |
 
-The scanner body ceiling (4 MiB) and scanner concurrency are internal bounded
-defaults. The ceiling covers a model-neutral 650K-token text window at the
-estimator's six-byte ratio without making body size another production knob.
-Unit and integration tests may inject typed values directly without turning
-them into production environment variables.
+The 1500-ms value is observation freshness, not a post-rejection hold. A
+current canonical probe recomputes Router-visible capacity on every inspection;
+the last-reject timestamp is telemetry only.
+
+The scanner body ceiling (4 MiB) and scanner concurrency (64) are internal
+bounded defaults. The body ceiling covers a model-neutral 650K-token text
+window at the estimator's six-byte upper ratio without making body size another
+production knob.
 
 ## Startup-derived capability
 
-The startup probe requires coherent vLLM metrics for:
+The startup probe requires one coherent vLLM metric identity and exact values
+for KV capacity, KV block size, used KV, running, waiting, generation tokens,
+and preemptions. PIG then performs at most one bounded read-only `/v1/models`
+request. Automatic initialization succeeds only when the response contains
+exactly one model, its ID matches the metric identity, and `max_model_len` is
+positive. Missing, ambiguous, or inconsistent metadata fails startup; there is
+no geometry fallback.
 
-- one served-model identity;
-- exact KV capacity in tokens;
-- KV block size;
-- used KV, running, waiting, generation, and preemption counters.
-
-PIG then performs at most one bounded read-only `/v1/models` request and freezes
-one immutable capability profile. It never sends a completion, warmup, or active
-performance probe. The automatic profile is derived as:
+The immutable automatic profile is:
 
 ```text
-effective_span = block_align_down(min(max_model_len, kv_hard_limit))
-regular        = block_align_down(min(64 Ki,  effective_span / 8))
-exclusive      = block_align_down(min(256 Ki, effective_span / 2))
-quiescent      = block_align_down(min(512 Ki, effective_span))
-aggregate      = exclusive
+kv_hard_limit = block_align_down(kv_capacity * 0.88)
+aligned_total = block_align_down(min(max_model_len, kv_hard_limit))
+maximum_admissible_input = aligned_total - 256 decode-horizon tokens
+
+regular boundary   = block_align_down(64 Ki tokens)
+exclusive boundary = block_align_down(256 Ki tokens)
+quiescent boundary = block_align_down(512 Ki tokens)
+contended budget   = block_align_down(min(64 Ki, maximum_admissible_input))
+aggregate budget   = block_align_down(min(256 Ki, maximum_admissible_input))
 ```
 
-If `/v1/models` metadata is unavailable or inconsistent, `max_model_len` is
-replaced by a bounded 512 Ki-token fallback and the reason is exposed as
-`metadata_fallback`. Backend running/waiting state does not change this profile.
-KV and Prefill parameters are initialized once and are not learned during
-service.
+The fixed 64K/256K/512K request bands are portable workload classes, not
+learned rates and not fractions of context length. `maximum_admissible_input`
+is the hard per-request input ceiling. A shorter model may therefore never
+reach a larger class even though the class boundary remains fixed.
 
-The regular boundary also supplies the immutable Decode-interference budget:
+PIG sends no completion, warmup, cache query, or performance probe during
+initialization. Backend busy/idle state does not change the profile. KV and
+Prefill parameters are frozen for the backend epoch and are never learned.
 
-```text
-charge = post_admit_pending_prefill_tokens * effective_decode_sequences
-admit when effective_decode_sequences == 0 or charge <= regular
-```
+## Explicit capability override
 
-`effective_decode_sequences` is fresh backend `running` plus only those local
-Prefill-complete Decode sequences not definitely absorbed by that observation.
-Prefill-incomplete reservations contribute to `post_admit_pending_prefill_tokens`
-but not to the Decode sequence multiplier.
-
-This adds no production setting, learned rate, retry credit, or active probe.
-
-Explicit Prefill overrides are available only as a controlled test/deployment
-exception:
+Controlled tests may bypass `/v1/models` only by setting all five values:
 
 ```text
+PREDICTIVE_MAX_MODEL_LEN_TOKENS
 PREDICTIVE_PREFILL_REGULAR_TOKENS
 PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS
 PREDICTIVE_PREFILL_QUIESCENT_TOKENS
 PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS
 ```
 
-All four must be omitted, or all four must be positive and satisfy:
+All five must be omitted or all five must be positive. Before block alignment,
+they must satisfy:
 
 ```text
 regular < exclusive < quiescent
-exclusive <= aggregate <= quiescent
+regular <= aggregate <= quiescent
 ```
+
+The explicit model length is still combined with observed KV geometry and the
+256-token Decode horizon to derive the hard maximum input. Partial overrides
+fail configuration validation. These values are an auditable test/deployment
+exception, not a recommended production manifest.
 
 ## Test matrix rules
 
 Builder tests and Router-disabled experiments may explicitly configure cadence,
-freshness, the KV hard ratio, Prefill bounds, metrics URL, and mode. Each result
-must include the exact override set and archive hash.
+freshness, the KV hard ratio, the complete capability override, metrics URL,
+and mode. Each result must include the exact override set and source commit.
 
 Shadow is observation-only. It cannot:
 
 - reject a request;
 - reserve capacity;
-- publish reduced Router capacity;
+- publish reduced Router capacity; or
 - mutate application bytes or business headers.
 
-Enforce owns atomic check-and-reserve. A request either receives one reservation
+Enforce owns atomic check-and-reserve. A request receives one reservation
 before forwarding or is protected before the upstream call. Forward failure,
 completion, upstream error, timeout, cancellation, disconnect, panic, reset,
-and shutdown all have an exact-once terminal path.
+and shutdown must converge on an exact-once terminal path.
 
 ## Observer failure semantics
 
-An individual failed or incomplete scrape does not invalidate immutable
+An individual failed or incomplete scrape does not invalidate the immutable
 capability. PIG retains the last coherent snapshot until
 `PREDICTIVE_MAX_METRICS_AGE_MS`; after that, enforce closes intake until a
 coherent sample returns.
 
 An explicit served-model, KV-capacity, or block-size change, or a generation or
 preemption counter reset, invalidates the capability epoch. The old adapter
-cannot reopen; reconstruction is required so old reservations cannot be reused
-against a new backend epoch.
+cannot reopen; reconstruction is required so reservations from the old epoch
+cannot authorize work against a different backend.

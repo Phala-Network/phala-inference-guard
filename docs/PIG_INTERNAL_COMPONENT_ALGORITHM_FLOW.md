@@ -1,157 +1,193 @@
-# PIG v0.12.9 Internal Algorithm Flow
+# PIG Internal Algorithm Flow
 
-PIG v0.12.9 has one admission architecture and one upstream. Components are
-separated by ownership so request parsing, backend observation, policy,
-reservation lifecycle, proxying, and telemetry do not mutate each other's
-state.
+This document describes the current unversioned development architecture. PIG
+has one predictive-admission path and exactly one upstream. Ownership boundaries
+keep request inspection, backend observation, policy, lifecycle, proxying, and
+telemetry from becoming competing controllers.
 
 ## Startup
 
 ```text
 configuration loader
   -> validate one upstream and shadow/enforce mode
-  -> derive /metrics from upstream origin
-  -> probe coherent vLLM identity and exact KV capability
-  -> read max model length once from /v1/models, with bounded metadata fallback
-  -> derive block-aligned Prefill thresholds from model length and hard KV
-  -> freeze KV limits and Prefill classes
-  -> construct Manager, request-aware Policy, Observer, Adapter, and Proxy
+  -> derive /metrics from the upstream origin
+  -> probe coherent vLLM model identity and exact KV geometry
+  -> read one matching positive max_model_len from /v1/models
+  -> derive immutable hard KV/input limits and fixed Prefill bands/budgets
+  -> construct Manager, RequestAwarePolicy, Observer, Adapter, and Proxy
 ```
 
-The startup path performs no completion, warmup, cache lookup, or performance
-probe. Backend busy/idle state therefore cannot change the immutable profile.
-The observer polls at 500 ms by default. Capability and Prefill policy are
-initialized once, not learned.
+Automatic metadata is fail-closed: `/v1/models` must contain exactly one model
+whose ID matches the metric identity. There is no geometry fallback. A complete
+explicit capability override is available for controlled tests.
 
-## Pre-forward decision
+Startup performs no completion, warmup, cache lookup, or performance probe.
+The observer polls every 500 ms by default. KV geometry, maximum input, and
+Prefill policy are initialized once for the backend epoch and are not learned.
+
+## Pre-forward transaction
 
 ```text
-HTTP admitted path
+protected HTTP path
   -> bounded classifier acquires a scan token
-  -> read body and restore exact bytes plus Content-Length
-  -> reject malformed JSON as protocol HTTP 400
-  -> estimate lexical input, output horizon, KV upper bound, and Prefill work
-  -> capture fresh observer input
-  -> Manager combines physical observation with every live reservation
-  -> ResourceGate evaluates post-admit hard KV fit
-  -> InterferenceGate evaluates class-aware Prefill interference
-  -> DecodeEnvelope bounds post-admit Prefill work across effective Decode users
-  -> Manager atomically decides and reserves in enforce
-  -> proxy forwards unchanged request, or returns predictive HTTP 429
+  -> read body and preserve exact bytes plus Content-Length
+  -> malformed JSON becomes protocol HTTP 400
+  -> estimate lexical input, safety input, Decode horizon, and block-rounded KV
+  -> Manager captures one coherent observation plus every live reservation
+  -> ResourceSafetyGate evaluates freshness, identity, input ceiling, and KV
+  -> PrefillQoSGate evaluates current request class and pending Prefill work
+  -> if protected, evaluate the canonical minimum request under the same lock
+  -> assign request/load/availability scope atomically
+  -> in enforce, reserve before forwarding or return HTTP 429
+  -> forward the original request bytes unchanged
 ```
 
-Shadow runs classification and policy but does not call the reserving Manager
-path. It records a would-protect decision and forwards the original request.
+The canonical probe uses selection input `1`, safety input `1`, a 256-token
+Decode horizon, and production block rounding. It creates no reservation.
 
-## Request-size differentiation
+Shadow performs the same request inspection and pure evaluation, records the
+counterfactual result, and forwards. It creates no reservation and publishes no
+predictive Router capacity reduction.
 
-The policy uses request cost, not a global request count. Under the same current
-pressure:
+## Resource safety
 
-- a regular request can fit;
-- a regular request is protected while a known local weighted-or-larger
-  Prefill is pending, but not behind another regular Prefill;
-- a weighted request consumes more aggregate Prefill budget;
-- an exclusive request requires no competing long Prefill;
-- a quiescent request requires no active Decode and no competing Prefill;
-- with active Decode, post-admit pending Prefill tokens multiplied by effective
-  Decode sequences must not exceed the immutable regular-Prefill budget;
-- any request exceeding hard post-admit KV is protected.
+`ResourceSafetyGate` owns only strict resource and validity conditions:
 
-Effective Decode sequences start with fresh backend `running`. Manager subtracts
-only bounded completed-Decode credits attributable to that exact published
-observation, then adds a Prefill-complete local reservation not definitely
-absorbed by it. A Prefill-incomplete reservation charges pending Prefill and KV
-but does not also become an active Decode user.
+- a fresh observation and valid backend identity;
+- valid non-negative bounded geometry;
+- request safety input not above `maximum_admissible_input`;
+- effective KV equal to the coherent observed base plus the positive live
+  reservation overlay; and
+- post-admit KV not above the immutable hard limit.
 
-Generation TPS remains observation-only diagnostic data in v0.12.9. It is used
-to evaluate QoS in controlled GPU experiments, but it does not authorize or
-reject a request. The Decode envelope uses only deterministic request work,
-immutable capability, coherent sequence state, and live reservations. Its
-promotion still requires causal Router-disabled A/B evidence.
+An invalid, stale, input-limit, overflow, or KV result takes precedence over
+Prefill QoS. TPS, generation deltas, cache state, TTFT, and customer identity do
+not enter this Gate.
 
-## Lifecycle
+## Prefill QoS and work conservation
+
+`PrefillQoSGate` classifies estimated Prefill work using fixed, block-aligned
+boundaries:
+
+| Input estimate | Class |
+| --- | --- |
+| `<64K` | regular |
+| `64K..<256K` | weighted |
+| `256K..<512K` | exclusive |
+| `>=512K` | quiescent |
+
+The current state is contended only when at least one present-time signal is
+true: local active Decode, raw backend running, raw backend waiting, or a fresh
+preemption delta. Generation progress and instantaneous TPS are telemetry; they
+cannot select the regime.
+
+The work-conserving rules are:
+
+- under contention, only regular requests are eligible and fitting regular
+  pending Prefill work shares the contended budget, normally 64K;
+- when open, regular and weighted requests share the aggregate budget,
+  normally 256K;
+- exclusive requires no pending Prefill sequence;
+- quiescent requires no pending Prefill and no current Decode/running/waiting;
+- a pending exclusive or quiescent local Prefill owns the long-work lane and
+  blocks new Prefill until first byte or terminal; and
+- unknown pending work conservatively prevents non-regular admission.
+
+Consequently, a 49K regular request can fit under Decode contention, while a
+96K weighted request can be rejected as request-specific and a following 1K
+regular request can enter immediately. Sixteen 4K regular requests can fill a
+64K contended budget; the next request becomes load-scoped only when the
+canonical minimum request also cannot fit.
+
+A fresh preemption selects contention for its single coherent observation. It
+does not create cooldown state. One low TPS sample does not reject anything.
+
+## Atomic scope and Router capacity
+
+When a candidate is protected, Manager evaluates the canonical probe using the
+same lock, observation sequence, event sequence, and reservation snapshot:
+
+```text
+canonical admits       -> request scope
+canonical protects     -> load scope
+stale/unavailable/invalid canonical state -> availability scope
+```
+
+The Adapter consumes that scope; it does not infer scope from reason strings.
+Current Router capacity is a separate non-reserving canonical evaluation, not
+the last business-request decision. Reject timestamps are telemetry only. A
+new observation or lifecycle event therefore restores capacity as soon as the
+current canonical probe fits, without a hold timer or another business request.
+
+## Reservation lifecycle and observation overlay
 
 ```text
 reserved
   -> MarkForwarded
-  -> MarkPrefillComplete on the first upstream response body byte
+  -> MarkPrefillComplete on the first positive upstream body read
   -> Terminate exactly once
 ```
 
 Response headers alone do not end Prefill ownership. PIG wraps the response
-body reader and performs the transition exactly once after a positive read;
-it does not parse or rewrite response content.
+body reader and performs the first-byte transition once; it does not parse or
+rewrite response content.
 
-Terminal causes cover completion, upstream failure, timeout, client cancellation
-or disconnect, local protection, expiration, and shutdown. The Manager retains
-bounded tombstones so duplicate late events cannot release new capacity.
+Terminal causes cover completion, upstream failure, timeout, client
+cancellation/disconnect, local protection, expiration, and shutdown. Bounded
+tombstones prevent duplicate late terminal events from releasing newer state.
 
-Observer reconciliation uses a sample window sequence. Reservations created
-after a metrics scrape begins are not accidentally absorbed by that scrape. A
-`TerminalCompleted` credit is created only when the completed observation's
-running and resource lower bounds cover all absorbed local Decode reservations.
-An observation that overlaps or follows the terminal clears the credit before
-publishing its replacement running count. Explicit backend epoch drift
-invalidates intake while preserving ownership of old reservations until their
-terminal event.
+Manager owns one coherent observed base plus a positive-only overlay of live
+reservations. Sample start/finish watermarks decide when a Prefill-complete
+reservation is covered by a later observation. A reservation created after a
+scrape starts cannot be accidentally absorbed by that scrape. Terminal events
+remove only their local reservation; they never subtract from the observed
+base or create completed-Decode credits. A later coherent sample replaces the
+base.
 
-## Observation failure
+## Observation failure and epoch changes
 
-Fetch errors and incomplete metric sets are transient. They do not mutate the
-last coherent state; freshness eventually closes enforce intake, and a coherent
-sample can recover it.
+Fetch errors and incomplete metric sets leave the last coherent state intact.
+Freshness eventually closes enforce intake; the next coherent sample can
+recover it immediately.
 
-Explicit model identity, KV capacity, or block-size drift and monotonic counter
-reset invalidate the immutable epoch. Recovery requires reconstruction rather
-than silently authorizing a new backend with the old profile.
+Model identity, KV capacity, or block-size drift, and monotonic generation or
+preemption counter reset invalidate the immutable epoch. Recovery requires
+adapter reconstruction rather than authorizing a new backend with an old
+profile or old reservations.
 
 ## Telemetry projection
 
-One call captures adapter telemetry for each local metrics response. That same
-snapshot drives:
+One adapter telemetry capture drives:
 
 ```text
 predictive admission metrics
-  + single-backend observation metrics
-  + authoritative Router backpressure
-  + temporary Router compatibility fields
+  + coherent backend observation metrics
+  + current canonical Router projection
+  + six Router compatibility fields
 ```
 
-This prevents a poll or request completion between writers from producing an
-internally contradictory scrape.
-
-Current-state inspection remains the primary Router projection. Load-scoped
-Prefill, KV, stale, preemption, and unavailable protection can retain a bounded
-recent Router verdict when the underlying scope requires it. A
-`decode_interference` rejection is request-scoped and never activates Router
-backpressure: upstream status remains green while the rejected request and its
-reason remain visible in decision logs and metrics. A current verdict wins when
-it is equally restrictive; a recent load-scoped verdict overrides it only when
-the recent verdict is strictly more restrictive.
-The bounded projection changes no admission input, reservation, or observer
-state and clears without another business request. A Manager-mediated reject
-also records its Manager sequence; Prefill completion, terminal release, or
-epoch rebase immediately supersedes that hold. Adapter-local stale or
-unavailable rejects retain the time-bound fallback because they have no
-authoritative Manager sequence.
+Decision telemetry preserves the enforced candidate reason/scope. Router
+telemetry separately describes current canonical capacity. This distinction is
+intentional: a large request may receive a visible request-scoped 429 while the
+node remains open for smaller work. Load or availability protection must
+publish non-open current capacity. There is no recent-verdict overlay.
 
 ## Ownership map
 
 | Owner | Responsibility |
 | --- | --- |
-| `internal/app/request` | Bounded read-only request inspection and exact body restoration |
+| `internal/app/request` | Bounded read-only JSON inspection, estimate inputs, and exact body restoration |
 | `internal/app/server/predictive_capability_initializer.go` | One bounded metadata read and automatic/explicit initialization selection |
-| `internal/runtime/predictive/capability_profile.go` | Pure KV geometry, block alignment, Prefill derivation, and profile validation |
-| `internal/runtime/predictive/resource_gate.go` | Pure post-admit KV fit |
-| `internal/runtime/predictive/interference_gate.go` | Pure class-aware Prefill interference |
-| `internal/runtime/predictive/decode_envelope.go` | Pure deterministic Decode-interference product bound |
-| `internal/runtime/predictive/request_aware_policy.go` | Three-gate decision composition and precedence |
-| `internal/runtime/predictive/manager.go` | Atomic reservation and reconciliation state |
-| `internal/app/server/predictive_vllm_observer.go` | Coherent vLLM observation, freshness, one-sample preemption signal, epoch detection |
-| `internal/app/server/request_aware_predictive_adapter.go` | HTTP-facing decision translation and telemetry |
-| `internal/app/server/proxy.go` | Protocol handling, forward/terminal transaction |
+| `internal/runtime/predictive/capability_profile.go` | Pure KV geometry, maximum input, block alignment, fixed Prefill derivation, and profile validation |
+| `internal/runtime/predictive/resource_safety_gate.go` | Pure observation/identity/input/KV safety |
+| `internal/runtime/predictive/prefill_qos_gate.go` | Pure request classification, contention selection, and Prefill ownership/budgets |
+| `internal/runtime/predictive/request_aware_policy.go` | Two-Gate composition and precedence |
+| `internal/runtime/predictive/request_aware_manager.go` | Atomic candidate/canonical decision and scope |
+| `internal/runtime/predictive/manager.go` | Reservation lifecycle, sample barriers, and positive overlay |
+| `internal/app/server/predictive_vllm_observer.go` | Coherent vLLM observation, freshness, one-sample preemption signal, and epoch detection |
+| `internal/app/server/request_aware_predictive_adapter.go` | HTTP-facing translation, current Router inspection, and telemetry capture |
+| `internal/app/server/proxy.go` | Protocol handling and forward/terminal transaction |
 | `internal/app/server/metrics.go` | Single-snapshot observability projection |
 
-No component owns routing, cache lookup, customer tiers, request rewriting,
-backend priority, TTFT protection, or online policy learning.
+No component owns routing, prefix-cache lookup, customer tiers, request
+rewriting, backend priority, TTFT protection, or online policy learning.
