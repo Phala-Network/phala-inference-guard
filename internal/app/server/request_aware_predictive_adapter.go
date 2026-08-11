@@ -328,8 +328,6 @@ func (a *requestAwarePredictiveAdapter) recordDecision(
 		a.attempts.LastRejectSource = decision.Source
 		a.attempts.LastRejectScope = requestAwareServerProtectionScope(result.ProtectionScope)
 		a.attempts.LastRejectAt = now
-		a.attempts.LastRejectManagerSequence = result.DecisionManagerSequence
-		a.attempts.LastRejectManagerSequenceValid = result.DecisionManagerSequenceValid
 	}
 	a.lastRequestAware = last
 	var logEvent *requestAwareDecisionLogEvent
@@ -416,14 +414,6 @@ func (a *requestAwarePredictiveAdapter) transitionRouterBackpressureLocked(
 	desired predictiveRouterBackpressureSnapshot,
 ) predictiveRouterBackpressureSnapshot {
 	desired.LatestRejectAt = a.attempts.LastRejectAt
-	managerSequenceCurrent := !a.attempts.LastRejectManagerSequenceValid ||
-		a.manager.EventSequence() == a.attempts.LastRejectManagerSequence
-	if managerSequenceCurrent {
-		if recent, ok := recentRequestAwareRejectProjection(now, a.attempts); ok &&
-			(!desired.Active || desired.InspectCapacity > recent.InspectCapacity) {
-			desired = recent
-		}
-	}
 	if !desired.Active {
 		desired.Activations = a.routerActivationCounter
 		return desired

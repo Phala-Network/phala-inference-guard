@@ -64,16 +64,14 @@ const (
 )
 
 type predictiveAttemptSnapshot struct {
-	Attempts                       uint64
-	Fits                           uint64
-	Risks                          uint64
-	Unknown                        uint64
-	LastReason                     domainpredictive.Reason
-	LastSource                     runtimepredictive.PredictionSource
-	LastRejectReason               domainpredictive.Reason
-	LastRejectSource               runtimepredictive.PredictionSource
-	LastRejectScope                predictiveProtectionScope
-	LastRejectAt                   time.Time
-	LastRejectManagerSequence      uint64
-	LastRejectManagerSequenceValid bool
+	Attempts         uint64
+	Fits             uint64
+	Risks            uint64
+	Unknown          uint64
+	LastReason       domainpredictive.Reason
+	LastSource       runtimepredictive.PredictionSource
+	LastRejectReason domainpredictive.Reason
+	LastRejectSource runtimepredictive.PredictionSource
+	LastRejectScope  predictiveProtectionScope
+	LastRejectAt     time.Time
 }

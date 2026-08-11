@@ -586,6 +586,22 @@ func TestRequestAwareAdapterCurrentHardProtectionSupersedesEqualStrengthRecentRe
 	}
 }
 
+func TestRequestAwareAdapterTransitionUsesCurrentCapacityAndKeepsRejectTimestamp(t *testing.T) {
+	now := time.Unix(101, 0)
+	adapter := &requestAwarePredictiveAdapter{
+		attempts: predictiveAttemptSnapshot{
+			LastRejectReason: domainpredictive.ReasonMetricsStale,
+			LastRejectSource: runtimepredictive.PredictionSourceUnavailable,
+			LastRejectScope:  predictiveProtectionScopeAvailability,
+			LastRejectAt:     now,
+		},
+	}
+	got := adapter.transitionRouterBackpressureLocked(now, predictiveRouterBackpressureSnapshot{})
+	if got.Active || got.InspectCapacity != 0 || got.LatestRejectAt != now {
+		t.Fatalf("current open capacity=%+v, want immediate open with reject timestamp retained only as telemetry", got)
+	}
+}
+
 func TestRequestAwareAdapterTelemetryProjectsRecentRequestSpecificHardProtection(t *testing.T) {
 	adapter, manager := newRequestAwareAdapterTestFixture(t, 5_000, 0)
 	now := time.Unix(100, 0)
@@ -611,14 +627,9 @@ func TestRequestAwareAdapterTelemetryProjectsRecentRequestSpecificHardProtection
 		t.Fatalf("request-specific compatibility projection=%+v, want request reject to leave capacity unchanged", compatibility)
 	}
 
-	now = now.Add(requestAwareRouterRejectProjectionHold - time.Nanosecond)
-	if held := adapter.PredictiveAdmissionTelemetry(); held.RouterBackpressure.Active || held.RouterBackpressure.InspectCapacity != 0 {
-		t.Fatalf("request-specific Router telemetry became sticky during hold window: %+v", held.RouterBackpressure)
-	}
-	now = now.Add(time.Nanosecond)
 	recovered := adapter.PredictiveAdmissionTelemetry()
 	if recovered.RouterBackpressure.Active || recovered.RouterBackpressure.InspectCapacity != 0 {
-		t.Fatalf("request-specific Router telemetry=%+v, want fresh open at hold boundary", recovered.RouterBackpressure)
+		t.Fatalf("request-specific Router telemetry=%+v, want current canonical capacity to remain open", recovered.RouterBackpressure)
 	}
 	if recovered.Attempts.Attempts != 1 || recovered.Attempts.Risks != 1 || manager.Snapshot() != beforeScrape {
 		t.Fatalf("bounded recovery mutated business accounting: telemetry=%+v manager=%+v", recovered.Attempts, manager.Snapshot())
@@ -639,44 +650,6 @@ func TestRequestAwareAdapterShadowDoesNotProjectRequestSpecificHardProtection(t 
 		!snapshot.RouterBackpressure.LatestRejectAt.IsZero() || snapshot.Attempts.Attempts != 1 ||
 		snapshot.Attempts.Risks != 1 || !snapshot.Attempts.LastRejectAt.IsZero() || manager.Snapshot().Reservations != 0 {
 		t.Fatalf("shadow request-specific telemetry/manager=%+v/%+v, want non-authoritative", snapshot, manager.Snapshot())
-	}
-}
-
-func TestRecentRequestAwareRejectProjectionIsBoundedAndScopeAware(t *testing.T) {
-	now := time.Unix(200, 0)
-	base := predictiveAttemptSnapshot{
-		LastRejectReason: domainpredictive.ReasonKVOverBudget,
-		LastRejectSource: runtimepredictive.PredictionSourceDeterministic,
-		LastRejectScope:  predictiveProtectionScopeLoad,
-		LastRejectAt:     now,
-	}
-
-	load, ok := recentRequestAwareRejectProjection(now, base)
-	if !ok || !load.Active || load.InspectCapacity != 1 ||
-		load.Scope != predictiveProtectionScopeLoad || load.Reason != domainpredictive.ReasonKVOverBudget {
-		t.Fatalf("recent load projection=%+v/%v, want selective load protection", load, ok)
-	}
-	availabilityInput := base
-	availabilityInput.LastRejectScope = predictiveProtectionScopeAvailability
-	availability, ok := recentRequestAwareRejectProjection(now, availabilityInput)
-	if !ok || !availability.Active || availability.InspectCapacity != 0 ||
-		availability.Scope != predictiveProtectionScopeAvailability {
-		t.Fatalf("recent availability projection=%+v/%v, want hard availability protection", availability, ok)
-	}
-	requestInput := base
-	requestInput.LastRejectScope = predictiveProtectionScopeRequest
-	if projection, ok := recentRequestAwareRejectProjection(now, requestInput); ok || projection.Active {
-		t.Fatalf("request-scoped reject projection=%+v/%v, want no Router capacity change", projection, ok)
-	}
-	expiredInput := base
-	expiredInput.LastRejectAt = now.Add(-requestAwareRouterRejectProjectionHold)
-	if projection, ok := recentRequestAwareRejectProjection(now, expiredInput); ok || projection.Active {
-		t.Fatalf("expired reject projection=%+v/%v, want open", projection, ok)
-	}
-	futureInput := base
-	futureInput.LastRejectAt = now.Add(time.Nanosecond)
-	if projection, ok := recentRequestAwareRejectProjection(now, futureInput); ok || projection.Active {
-		t.Fatalf("future reject projection=%+v/%v, want open", projection, ok)
 	}
 }
 
@@ -733,7 +706,7 @@ func TestV0121RequestAwareTelemetryUsesOneObserverGenerationForRouterProjection(
 	}
 }
 
-func TestRequestAwareAdapterTelemetryProbeRecoversWithoutNewBusinessRequest(t *testing.T) {
+func TestRequestAwareAdapterTelemetryProbeRecoversImmediatelyOnNewObservation(t *testing.T) {
 	adapter, manager := newRequestAwareAdapterTestFixture(t, 8_990, 0)
 	decision := adapter.Decide(context.Background(), "telemetry-recovery", requestAwareAdapterInput(16, 0))
 	if decision.Outcome != predictiveAdmissionOutcomeLoadProtection {
@@ -751,14 +724,12 @@ func TestRequestAwareAdapterTelemetryProbeRecoversWithoutNewBusinessRequest(t *t
 	}
 
 	setRequestAwareAdapterObservation(t, adapter, manager, 5_000, 4, 0)
-	held := adapter.PredictiveAdmissionTelemetry()
-	if !held.RouterBackpressure.Active || held.RouterBackpressure.InspectCapacity != 1 {
-		t.Fatalf("recovered current state lost bounded reject projection: %+v", held.RouterBackpressure)
-	}
-	adapter.now = func() time.Time { return time.Unix(1, 0).Add(requestAwareRouterRejectProjectionHold) }
 	recovered := adapter.PredictiveAdmissionTelemetry()
 	if recovered.RouterBackpressure.Active || recovered.RouterBackpressure.InspectCapacity != 0 {
-		t.Fatalf("recovered Router telemetry=%+v, want OPEN at bounded hold without another request", recovered.RouterBackpressure)
+		t.Fatalf("recovered Router telemetry=%+v, want immediate OPEN without another request", recovered.RouterBackpressure)
+	}
+	if recovered.RouterBackpressure.LatestRejectAt.IsZero() {
+		t.Fatalf("recovered Router telemetry lost reject timestamp: %+v", recovered.RouterBackpressure)
 	}
 	if recovered.Attempts.Attempts != 1 || manager.Snapshot().Reservations != 0 || manager.Snapshot().EventSequence != beforeProbe.EventSequence {
 		t.Fatalf("recovery probe mutated business accounting: telemetry=%+v manager=%+v", recovered.Attempts, manager.Snapshot())
@@ -822,7 +793,6 @@ func TestRequestAwareAdapterConcurrentTelemetryAndAdmissionRecoversFreshOpen(t *
 		managerSnapshot.Virtual.Upper.DecodeSequences != 4 {
 		t.Fatalf("concurrent scrape/admission lifecycle leaked virtual capacity: %+v", managerSnapshot)
 	}
-	adapter.now = func() time.Time { return time.Unix(1, 0).Add(requestAwareRouterRejectProjectionHold) }
 	telemetry := adapter.PredictiveAdmissionTelemetry()
 	if telemetry.Attempts.Attempts != decisionCount {
 		t.Fatalf("business attempts=%d, want %d without scrape accounting", telemetry.Attempts.Attempts, decisionCount)
