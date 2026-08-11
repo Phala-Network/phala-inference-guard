@@ -496,6 +496,9 @@ func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testi
 		telemetry.RouterBackpressure.Active || telemetry.RouterBackpressure.InspectCapacity != 0 {
 		t.Fatalf("long-prefill telemetry=%+v", telemetry)
 	}
+	if status := srv.upstreamStatusCode(); status != upstreamStatusGreen {
+		t.Fatalf("request-scoped long-prefill status=%d, want green capacity for fitting traffic", status)
+	}
 	if len(decisionLogs) != 1 || !decisionLogs[0].Enforced ||
 		decisionLogs[0].Reason != runtimepredictive.RequestAwareReasonPrefillBusy ||
 		decisionLogs[0].PressureSource != runtimepredictive.RequestAwarePressurePrefill ||
@@ -513,8 +516,10 @@ func TestRequestAwareHTTPLongPrefillProtectionIsPreForwardAndObservable(t *testi
 	srv.writePredictiveAndDynamicMetrics(&rendered)
 	for _, want := range []string{
 		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_busy",pressure_source="prefill",prefill_class="quiescent"} 1`,
+		`pig_predictive_admission_last_reject_info{reason="request_size_at_pressure",source="deterministic",scope="request"} 1`,
 		"pig_predictive_request_aware_estimated_prefill_tokens ",
 		"pig_predictive_request_aware_post_admit_pending_prefill_tokens ",
+		"pig_predictive_router_backpressure_active 0",
 		"pig_predictive_router_inspect_capacity 0",
 	} {
 		if !strings.Contains(rendered.String(), want) {
@@ -645,26 +650,49 @@ func TestRequestAwareHTTPPreemptionSelectsContentionWithoutGlobalLock(t *testing
 
 func TestRequestAwareHTTPHardGuardsRejectBeforeUpstreamWithZeroInspectCapacity(t *testing.T) {
 	for _, test := range []struct {
-		name         string
-		prepare      func(*requestAwarePredictiveAdapter, *runtimepredictive.Manager)
-		content      string
-		wantReason   runtimepredictive.RequestAwareReason
-		wantInspect  int
-		largeProfile bool
+		name           string
+		prepare        func(testing.TB, *requestAwarePredictiveAdapter, *runtimepredictive.Manager)
+		content        string
+		wantReason     runtimepredictive.RequestAwareReason
+		wantHTTPReason string
+		wantSource     string
+		wantScope      predictiveProtectionScope
+		wantClass      string
+		wantInspect    int
+		largeProfile   bool
 	}{
 		{
+			name: "hard_kv_load",
+			prepare: func(tb testing.TB, adapter *requestAwarePredictiveAdapter, manager *runtimepredictive.Manager) {
+				setRequestAwareAdapterObservation(tb, adapter, manager, 8_990, 4, 0)
+			},
+			wantReason:     runtimepredictive.RequestAwareReasonKV,
+			wantHTTPReason: "kv_over_budget",
+			wantSource:     "deterministic",
+			wantScope:      predictiveProtectionScopeLoad,
+			wantClass:      "regular",
+		},
+		{
 			name: "stale",
-			prepare: func(adapter *requestAwarePredictiveAdapter, _ *runtimepredictive.Manager) {
+			prepare: func(_ testing.TB, adapter *requestAwarePredictiveAdapter, _ *runtimepredictive.Manager) {
 				adapter.now = func() time.Time { return time.Unix(1, 0).Add(2 * time.Hour) }
 			},
-			wantReason: runtimepredictive.RequestAwareReasonStale,
+			wantReason:     runtimepredictive.RequestAwareReasonStale,
+			wantHTTPReason: "metrics_stale",
+			wantSource:     "unavailable",
+			wantScope:      predictiveProtectionScopeAvailability,
+			wantClass:      "regular",
 		},
 		{
 			name: "epoch_invalid",
-			prepare: func(_ *requestAwarePredictiveAdapter, manager *runtimepredictive.Manager) {
+			prepare: func(_ testing.TB, _ *requestAwarePredictiveAdapter, manager *runtimepredictive.Manager) {
 				manager.InvalidateEpoch()
 			},
-			wantReason: runtimepredictive.RequestAwareReasonUnavailable,
+			wantReason:     runtimepredictive.RequestAwareReasonUnavailable,
+			wantHTTPReason: "metrics_stale",
+			wantSource:     "unavailable",
+			wantScope:      predictiveProtectionScopeAvailability,
+			wantClass:      "unknown",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -679,7 +707,7 @@ func TestRequestAwareHTTPHardGuardsRejectBeforeUpstreamWithZeroInspectCapacity(t
 			adapter.onDecision = func(event requestAwareDecisionLogEvent) {
 				decisionLogs = append(decisionLogs, event)
 			}
-			test.prepare(adapter, manager)
+			test.prepare(t, adapter, manager)
 			backendCalls := 0
 			backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 				backendCalls++
@@ -699,11 +727,35 @@ func TestRequestAwareHTTPHardGuardsRejectBeforeUpstreamWithZeroInspectCapacity(t
 			telemetry := adapter.PredictiveAdmissionTelemetry()
 			if telemetry.RequestAware.Action != runtimepredictive.RequestAwareHardProtect ||
 				telemetry.RequestAware.Reason != test.wantReason || !telemetry.RouterBackpressure.Active ||
-				telemetry.RouterBackpressure.InspectCapacity != test.wantInspect || telemetry.Attempts.Attempts != 1 {
+				telemetry.RouterBackpressure.InspectCapacity != test.wantInspect ||
+				telemetry.RouterBackpressure.Scope != test.wantScope ||
+				string(telemetry.RouterBackpressure.Reason) != test.wantHTTPReason ||
+				string(telemetry.RouterBackpressure.Source) != test.wantSource || telemetry.Attempts.Attempts != 1 {
 				t.Fatalf("hard guard telemetry=%+v", telemetry)
 			}
-			if len(decisionLogs) != 1 || !decisionLogs[0].Enforced || decisionLogs[0].Reason != test.wantReason {
+			if len(decisionLogs) != 1 || !decisionLogs[0].Enforced ||
+				decisionLogs[0].Reason != test.wantReason || decisionLogs[0].Scope != test.wantScope ||
+				string(decisionLogs[0].HTTPReason) != test.wantHTTPReason {
 				t.Fatalf("hard guard decision logs=%+v", decisionLogs)
+			}
+			if status := srv.upstreamStatusCode(); status != upstreamStatusRed {
+				t.Fatalf("hard guard status=%d, want red for scope=%s", status, test.wantScope)
+			}
+			var rendered strings.Builder
+			srv.writePredictiveAndDynamicMetrics(&rendered)
+			for _, want := range []string{
+				`pig_predictive_request_aware_last_decision_info{action="hard_protect",reason="` +
+					string(test.wantReason) + `",pressure_source="none",prefill_class="` + test.wantClass + `"} 1`,
+				`pig_predictive_admission_last_reject_info{reason="` + test.wantHTTPReason +
+					`",source="` + test.wantSource + `",scope="` + string(test.wantScope) + `"} 1`,
+				"pig_predictive_router_backpressure_active 1",
+				`pig_predictive_router_backpressure_state_info{scope="` + string(test.wantScope) +
+					`",reason="` + test.wantHTTPReason + `",source="` + test.wantSource + `"} 1`,
+				"pig_predictive_router_inspect_capacity 0",
+			} {
+				if !strings.Contains(rendered.String(), want) {
+					t.Fatalf("hard guard metrics missing %q\n%s", want, rendered.String())
+				}
 			}
 		})
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -74,6 +75,48 @@ func TestV0125AutomaticCapabilityIsBusyInvariant(t *testing.T) {
 			"idle and busy startup derived different capability contracts:\nidle=%+v/%s\nbusy=%+v/%s",
 			profiles[0], reasons[0], profiles[1], reasons[1],
 		)
+	}
+}
+
+func TestV0125AutomaticCapabilityBusyStartupAdmitsAndDrainsFittingRegularRequest(t *testing.T) {
+	fixture := newV0125CapabilityFixture(t, 1, 256*1024)
+	defer fixture.Close()
+	cfg := v0125CapabilityFactoryConfig(fixture.URL())
+	cfg.PredictiveAdmissionMode = "enforce"
+
+	shadow, err := newDefaultPredictiveShadow(cfg)
+	if err != nil {
+		t.Fatalf("construct automatic factory against busy backend: %v", err)
+	}
+	defer func() {
+		if err := shadow.Close(); err != nil {
+			t.Errorf("close automatic factory against busy backend: %v", err)
+		}
+	}()
+	adapter := shadow.(*requestAwarePredictiveAdapter)
+
+	decision := adapter.Decide(
+		context.Background(), "busy-startup-fitting-regular", requestAwareAdapterInput(8*1024, 0),
+	)
+	telemetry := adapter.PredictiveAdmissionTelemetry().RequestAware
+	if telemetry.Running != 1 {
+		t.Fatalf("decision observation running=%d, want coherent busy startup base", telemetry.Running)
+	}
+	if decision.Outcome != predictiveAdmissionOutcomeForward || decision.Reservation == nil {
+		t.Fatalf("busy-startup fitting decision=%+v, want immediate forward", decision)
+	}
+	if snapshot := adapter.manager.Snapshot(); snapshot.Reservations != 1 ||
+		snapshot.ForwardedPendingPrefills != 0 || snapshot.ForwardedPendingPrefillTokens != 0 {
+		t.Fatalf("busy-startup reservation snapshot=%+v, want one unforwarded reservation", snapshot)
+	}
+	if !decision.Reservation.MarkForwarded() ||
+		!decision.Reservation.MarkPrefillComplete() ||
+		!decision.Reservation.Terminate(runtimepredictive.TerminalCompleted) {
+		t.Fatalf("busy-startup fitting lifecycle failed for decision=%+v", decision)
+	}
+	if snapshot := adapter.manager.Snapshot(); snapshot.Reservations != 0 ||
+		snapshot.ForwardedPendingPrefills != 0 || snapshot.ForwardedPendingPrefillTokens != 0 {
+		t.Fatalf("busy-startup fitting lifecycle leaked: %+v", snapshot)
 	}
 }
 
