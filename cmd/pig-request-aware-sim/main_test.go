@@ -36,10 +36,10 @@ func TestSimulationReportUsesCurrentCandidateVersionKey(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &fields); err != nil {
 		t.Fatalf("decode report fields: %v", err)
 	}
-	if _, exists := fields["v0_12_9_aggregate"]; !exists {
+	if _, exists := fields["v0_12_10_aggregate"]; !exists {
 		t.Fatal("current candidate field is missing")
 	}
-	if _, exists := fields["v0_12_7_aggregate"]; exists {
+	if _, exists := fields["v0_12_9_aggregate"]; exists {
 		t.Fatal("superseded candidate field is still present")
 	}
 }

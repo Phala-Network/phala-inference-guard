@@ -13,7 +13,7 @@ type PolicyName string
 const (
 	PolicyNoAdmission PolicyName = "no_admission"
 	PolicyV0122       PolicyName = "v0.12.2"
-	PolicyV0129       PolicyName = "v0.12.9"
+	PolicyV01210      PolicyName = "v0.12.10"
 )
 
 type Metrics struct {
@@ -51,7 +51,7 @@ type Suite struct {
 }
 
 func RunSuite() (Suite, error) {
-	return runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV0129})
+	return runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV01210})
 }
 
 func runSuite(policyOrder []PolicyName) (Suite, error) {
@@ -98,7 +98,7 @@ func validatePolicyOrder(policyOrder []PolicyName) error {
 	seen := make(map[PolicyName]struct{}, 3)
 	for _, policyName := range policyOrder {
 		switch policyName {
-		case PolicyNoAdmission, PolicyV0122, PolicyV0129:
+		case PolicyNoAdmission, PolicyV0122, PolicyV01210:
 		default:
 			return fmt.Errorf("simulation policy order contains unknown policy %q", policyName)
 		}

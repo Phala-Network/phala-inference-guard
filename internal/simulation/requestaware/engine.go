@@ -99,7 +99,7 @@ func runScenario(
 			running:    spec.backgroundRunning,
 		},
 	}
-	if policyName == PolicyV0129 {
+	if policyName == PolicyV01210 {
 		runner.manager = runtimepredictive.NewManager(simulationManifestID, domainpredictive.VirtualState{
 			PhysicalKVUpper:     spec.initialKVTokens,
 			ActiveKVUpper:       spec.initialKVTokens,
@@ -272,7 +272,7 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 	case PolicyV0122:
 		return r.decideV0122(request, effectiveKV, hardFit, metricsFresh, preemptionCooldown)
 	}
-	if r.policyName != PolicyV0129 || r.policy == nil || r.manager == nil {
+	if r.policyName != PolicyV01210 || r.policy == nil || r.manager == nil {
 		return false, true
 	}
 	r.productionPolicyCalls++
