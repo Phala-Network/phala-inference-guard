@@ -1,11 +1,12 @@
 # PIG v0.12 Clean Admission Rebuild Plan
 
 Status: active architecture and execution authority. `PIG-v0.12.11` is assigned
-on exact pushed identity commit `16d1940`; its exact builder-local image,
-isolated canary, c21 PIG-only replacement, and primary runtime smoke are
-accepted. Complete lifecycle, long-input, low/no-flow, QoS, goodput, and Pareto
-gates are not yet accepted. `PIG-v0.12.10` and its local image are diagnostic
-rollback evidence only; they are not releasable.
+on exact pushed identity commit `16d1940`. Its exact builder-local image,
+isolated canary, c21 PIG-only replacement, primary smoke, and basic terminal
+paths produced valid evidence, but the real long-input gate exposed a hard
+estimator under-reservation failure. The candidate is rejected and not
+releasable; c21 is rolled back to `PIG-v0.12.10` while the estimator is rebuilt.
+QoS, goodput, Pareto, registry, production, and Router gates have not started.
 
 This plan supersedes implementation instructions in
 `PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md`. That document remains a
@@ -762,6 +763,44 @@ This accepts those primary-runtime terminal paths and their low/no-flow reopen
 contract. It does not replace isolated fake-upstream transport, timeout,
 metrics-failure, reset, or capability-drift gates.
 
+### 10.3 Long-input hard failure and runtime rollback
+
+The first real long-input batch rejected the v0.12.11 candidate. Repeated
+single-character words produced the following exact vLLM usage versus PIG
+selection estimates:
+
+```text
+actual prompt tokens    PIG selection estimate    ratio
+60,013                  15,014                    4.00x
+96,013                  24,014                    4.00x
+250,013                 62,514                    4.00x
+```
+
+The fixed 1.5x KV-reservation margin therefore did not cover this supported
+text shape. A 270K-word request was estimated as 67,514 tokens and classified
+as weighted, so PIG admitted it and vLLM returned its own context-length 400.
+PIG should have protected this request before forwarding. This is a hard
+request-estimation and reservation-counterfactual failure, not a QoS threshold
+or runtime-lifecycle failure.
+
+The batch stopped immediately. PIG reservations, pending Prefills, vLLM
+running/waiting/KV, and preemptions were all zero afterward. After three further
+drained samples, only PIG was rolled back: v0.12.11 remains as the stopped
+`pig-v0124-runtime-v01211-failed-underestimate` evidence container,
+`PIG-v0.12.10` again owns port 18080, and the vLLM container identity and
+StartedAt remain unchanged. Evidence is retained at:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-runtime-long-input-r1.7MdEfF
+```
+
+No further GPU QoS or goodput test may use this candidate. The next source
+slice must add the repeated-short-lexeme fixture as red evidence, rebuild the
+model-neutral estimator without a model asset or tokenizer RPC, rerun the full
+oracle/latency/source matrix, assign a new `0.12.x` identity only after source
+acceptance, build a new local-only image, and repeat runtime gates from the
+beginning.
+
 Runtime iteration is PIG-only. Preserve the current vLLM container and CVM.
 Required c21 workloads include:
 
@@ -1310,6 +1349,9 @@ inherited from this result.
 - [x] replace only the c21 PIG primary runtime with that exact image, preserve
   vLLM and the stopped v0.12.10 rollback container, and pass primary runtime
   normal/stream/tool/schema smoke with drained admission lifecycle state.
+- [ ] rebuild and re-accept the estimator after the real repeated-short-lexeme
+  4x underestimation rejected the v0.12.11 candidate and forced PIG-only
+  rollback.
 - [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
   QoS, goodput, and Pareto gates.
 - [x] complete independent pre-version source/evidence audit on exact clean
