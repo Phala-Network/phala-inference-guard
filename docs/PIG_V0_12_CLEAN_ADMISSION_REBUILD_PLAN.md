@@ -945,6 +945,144 @@ pushed as `caa0138c70282f6876fe1cc4669f48703e177d35`. HEAD and
 The following closure update is documentation-only; it does not change or
 inherit new executable evidence beyond the r2 candidate recorded above.
 
+### 2026-08-14 Slice C/D clean-runtime cutover review
+
+Slice C started from pushed HEAD `95561bc9022f6f50a1679c9a8f8fed30ce5fe5e4`
+in `pig-v0124-workbench` on c21. The implementation cut the real request path
+directly to `AdmissionController`; it did not adapt the deleted Manager, Policy,
+Adapter, or shadow coordinator. Three review passes revised the candidate before
+acceptance.
+
+1. Model and causality: the bounded HTTP classifier now supplies its complete
+   `RequestEstimate` to `AdmissionRuntime.Decide`, which calls
+   `AdmissionController.Admit` before any upstream operation. A focused HTTP
+   contract holds backend state constant and proves request size changes that
+   pre-forward decision. Review found that the ignored estimator-validity bit
+   obscured unsupported-input behavior. The path now explicitly turns an
+   unsupported estimate into request-scoped `invalid_request` protection; a
+   contract proves it reserves nothing, leaves canonical capacity open, and
+   cannot lock a following supported request. Shadow and enforce share policy
+   and policy-admitted reservation evolution; only the HTTP handling of a
+   protected decision differs. The simulator executes the same Controller and
+   labels `v0.12.10` only as a frozen historical fixture.
+2. Safety and lifecycle: real proxy contracts cover successful first byte and
+   EOF, upstream 5xx, transport failure, timeout, client cancellation and
+   disconnect, outer-defer duplication, and positive residual debt until a
+   covering observation. Every case performs exactly one successful terminal
+   mutation. Observer failure leaves the last coherent state to age stale, a
+   fresh sample immediately recovers low/no-flow state, and identity/geometry
+   drift closes. Review found that the old observer appeared to validate
+   `max_model_len` while merely replaying the startup value. c21's actual vLLM
+   metrics were read-only checked and expose `process_start_time_seconds`.
+   Runtime epoch changes are now detected from that optional metric even when
+   monotonic counters increase; counter decrease remains the fallback for older
+   metrics. Before an automatically initialized reset sample can reopen intake,
+   one bounded `/v1/models` revalidation must confirm model identity and
+   `max_model_len`. Failure publishes nothing and ages stale; changed metadata
+   permanently closes the old Controller. Explicit profiles remain governed by
+   their explicit immutable contract.
+3. SOLID, efficiency, and release scope: Controller is the sole mutable
+   admission-state owner; Observer performs I/O/publication, Reporter owns only
+   bounded reporting state, and Router/status/metrics are pure snapshot
+   projections. Production source contains no old `Manager`, `RequestAware`,
+   `predictiveShadow`, `RequestCost`, or `VirtualState` execution symbol. The
+   unused TPS/TPOT histogram and `chooseBackend` helper were deleted. The
+   simulation-only `requestaware` namespace and external
+   `pig_predictive_request_aware_*` wire strings remain because renaming them
+   adds churn without creating a second production path. The candidate reports
+   `PIG-v0.12-dev` / OCI `0.12-dev`, not the historical v0.12.10 release and not
+   a newly assigned `0.12.x` release.
+
+The frozen baseline initially had CRLF worktree bytes with SHA-256
+`1812c2cf2a0dad1c0562a252ba32844bc0d1116d489a68f22b6702f25a08e9c4`,
+while Git's `eol=lf` index normalization produced different release bytes. The
+fixture was normalized to the actual tracked LF blob and both worktree and
+index now have SHA-256
+`cb1a57553e3f709fd3825e01e56bf6f8eb6d6f0f30883cfa8df280f5cd16f462`.
+It remains 36/36 scenarios from source commit
+`caa0138c70282f6876fe1cc4669f48703e177d35` and source-suite SHA-256
+`c678b7a2734df0b68a8e22fa5cd9f8ad64323c3c883a2564e83cd4dea1e09075`.
+`git checkout-index` exported the exact candidate without `.git`, included the
+fixture, and passed `go test ./...`; therefore the embedded baseline no longer
+depends on an ignored workbench file.
+
+### 2026-08-14 Slice C/D source acceptance
+
+The exact staged candidate patch SHA-256 was
+`fe68bcc64736506787761024b3aee758b328daa390a1adba9c9aff41b4de5c6c`.
+The runner used Go `1.24.13 linux/amd64`, `set -euo pipefail`, per-command test
+timeouts, a new evidence directory, and a final success sentinel. It passed:
+
+- focused admission, server, simulation, metrics, predictive-domain, and
+  Prometheus-parser tests;
+- `go test ./... -count=1` both in the worktree and in an exact clean-index
+  export;
+- focused race tests for admission, server, simulation, metrics, and the
+  Prometheus parser;
+- `go vet ./...` and `go build ./...`;
+- registered deterministic acceptance, replay, and alternate policy order;
+- the public simulation command;
+- Controller constant-time/allocation gates at 256 and 4,096 reservations;
+- 4-MiB classifier and estimator native latency/allocation gates plus three
+  benchmark repetitions; and
+- gofmt, staged diff, structural deletion, release-identity, fixture, and
+  added-line credential audits.
+
+The outer Codex SSH control call was mistakenly given a 10-second wrapper
+timeout, but the already-started remote runner was not killed. It continued to
+natural completion. Acceptance was recorded only after its parent process had
+exited, `SUCCESS` contained `SLICE_C_ACCEPTANCE_PASS`, every log matched
+`SHA256SUMS`, the staged patch hash was unchanged, and no unstaged source drift
+existed. This was a control-channel timeout, not a Go test timeout or a manually
+reconstructed success result.
+
+Ordinary-build performance evidence was:
+
+```text
+Controller 256 reservations    Snapshot p99 280 ns  Admit p99 312 ns  0 allocs
+Controller 4096 reservations   Snapshot p99 279 ns  Admit p99 312 ns  0 allocs
+4-MiB full classifier          p50 29.49 ms  p99 41.28 ms
+4-MiB long-string estimator    p50 20.97 ms  p99 29.26 ms  0 allocs
+4-MiB many-string estimator    p50 37.93 ms  p99 49.29 ms  0 allocs
+```
+
+The deterministic aggregate remained:
+
+```text
+policy              raw output tokens  QoS-qualified tokens  preemptions  max idle with demand
+no_admission               79,114.46              70,112.34           57                     0 s
+v0.12.2                    76,621.10              70,825.16            1                  15.3 s
+v0.12.10 historical        91,998.25              90,092.07            1                   0.4 s
+candidate                  91,998.25              90,092.07            1                   0.4 s
+```
+
+Evidence log SHA-256 values are:
+
+```text
+benchmarks             213658638ffa2902e4fa52a319918dfef4fa139f63e491d249bac7bc773b506c
+build                  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+classifier-performance fdc0a58ec1e1df34b99a41ec4dd7da5096611ce59e83c9d9c666d930351c433a
+clean-index-full       0fe1570bc3c8102805ec8424445fc1fea302c62a9787796b828c272c8abf9867
+controller-performance 497f4a012b9cbbb7904ecaf9c7b800583c8839d125a421597016e660cf78ab2d
+estimator-performance  63eb85bc7ce2f76992b50db5bb46a28976771ab115e1d09e946755d737f33fd3
+focused                2c5a8a6b7893884c85a2fd94ff5de6b5aaf026dee73fdd615bd89b3464da5b9a
+full                   8d5be136027616cd9778a9fe25e610c2e61ae28b7868816a0489bcaaec2827c1
+race                   5fbb07c5f4a67e5cb1890db0e2241f9482cf1413a4bc086c703a7f091d320857
+simulation-acceptance  6f44c196dee53dd24df5b58a986a9ce1950310de6609c919f0129dade310131d
+simulation-command     253f9b13b54b8db7a26f64ebf104e06d7be9d0b3a3dad0698b998367babe1bcc
+source                 d4958a7b85a84e215cbef2b5840170ba294649fe3b89504389fa2692beba3c41
+structural             afae4fed0f3d00c1ef4f898631e7abf3cfedad1b15addcf247f1989424dc2578
+vet                    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+The exact executable source was committed and pushed as
+`c2e58cc66675c9632e536d73aece1641cf0fca71` with message
+`refactor: cut over to clean admission runtime`; HEAD and
+`origin/codex/pig-v0.11.0-request-aware` matched. This accepts the complete
+source cutover and source matrix only. It does not assign a release version,
+build or publish an image, replace the running c21 PIG, restart vLLM/CVM,
+modify Router, or provide GPU/runtime/production-goodput evidence.
+
 ## 12. Active checklist
 
 - [x] freeze v0.12.10 as diagnostic-only evidence and retain rollback assets.
@@ -965,11 +1103,11 @@ inherit new executable evidence beyond the r2 candidate recorded above.
 - [x] Slice B candidate passes the complete c21 source matrix without modifying
   the old Manager/Policy or production HTTP path.
 - [x] the exact Slice B source commit `caa0138` is pushed and recorded.
-- [ ] Slice C atomic HTTP/observer cutover passes; old Manager, Policy, Adapter,
+- [x] Slice C atomic HTTP/observer cutover passes; old Manager, Policy, Adapter,
   shadow naming, request cost, and duplicate observation code is deleted and
-  the slice is pushed.
-- [ ] Slice D complete source acceptance and three code reviews pass on one
-  exact pushed commit.
+  exact commit `c2e58cc` is pushed.
+- [x] Slice D complete source acceptance and three code reviews pass on exact
+  pushed commit `c2e58cc`.
 - [ ] assign exactly one next `0.12.x` identity.
 - [ ] build and validate one local-only image.
 - [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
