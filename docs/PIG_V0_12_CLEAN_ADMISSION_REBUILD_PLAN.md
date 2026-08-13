@@ -968,6 +968,85 @@ This accepts only the unique v0.12.12 source identity. It does not build,
 upload, deploy, or runtime-accept an image and does not modify vLLM, the CVM,
 Router, or production traffic.
 
+### 10.6 v0.12.12 local-only image and isolated contract acceptance
+
+The image was built from an exact clean archive of pushed commit
+`bc9513117c36f1021896e17825289c94945b79e5`. It is local to c21 and has this
+identity:
+
+```text
+tag       ghcr.io/phala-network/phala-inference-guard:0.12.12-bc95131-local
+image ID  sha256:3670d0db8d1e472a505d2feb68d4aeff9cb261ebabc4eb13014688524d9b51a6
+version   0.12.12
+revision  bc9513117c36f1021896e17825289c94945b79e5
+digests   []
+```
+
+The build evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-image-build-r1.UpaX28
+```
+
+Its recorded `SHA256SUMS` independently verify. The `PASS` summary SHA-256 is
+`166eb40e3095e8574325acb2c1ff770f11b09be669c49462b2b5f487f08ada72`.
+This is a builder-local image, not a registry image; it has no RepoDigest and
+was not retagged from the rejected v0.12.11 image.
+
+Three ordered isolated image gates then passed without replacing the primary
+PIG, restarting vLLM or the CVM, changing Router, or sending production
+traffic:
+
+1. Startup and automatic capability canary:
+
+   ```text
+   /var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-image-canary-r2.saChKs
+   ```
+
+   `/healthz`, `/v1/models`, and `/pig/metrics` returned 200. The image started
+   in default enforce mode with no explicit `PREDICTIVE_*` setting, derived the
+   automatic metadata profile, and used the required 500-ms observer interval.
+   The summary SHA-256 is
+   `1375c6765b8e50f319b3c3c68a020dc11dc94cdf6068eb8cbe68933771c109f6`.
+
+2. Request-preservation contract:
+
+   ```text
+   /var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-request-preservation-r1.ZM7E17
+   ```
+
+   The forwarded body SHA-256, declared and observed length, content type, and
+   custom header were unchanged; the response was valid, reservations drained,
+   and neither the credential nor prompt appeared in PIG logs. The summary
+   SHA-256 is
+   `13471f23d3723409a6256afa8cb43fea8076532646a280b7b0127ae1eaabd172`.
+
+3. Shadow/enforce decision and forward-causality contract:
+
+   ```text
+   /var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-shadow-enforce-r1.uSWiiI
+   ```
+
+   The enforce container inherited no `PREDICTIVE_*` setting, while the shadow
+   container had exactly the test-only
+   `PREDICTIVE_ADMISSION_MODE=shadow` override. The same chunked request
+   produced `protect / invalid_request / request` in both policies. Enforce
+   returned 429 and the direct vLLM request-count delta was zero. Shadow
+   forwarded the decision, returned 200, and the direct vLLM request-count
+   delta was one. Logs and metrics agreed on action, reason, scope, mode, and
+   enforcement; enforce recorded one enforced reject while shadow recorded
+   none. Both reservations drained, intake reopened, and a following supported
+   request returned 200 in each mode. The summary SHA-256 is
+   `25e8d899de6ff378a4d57154b4828bb2fe62cc88964c945086d2d63d4fe18368`.
+
+All isolated v0.12.12 test containers were removed. Before and after each gate,
+the primary v0.12.10 PIG and existing vLLM retained their container identity,
+start time, and restart count. This accepts the local image and its isolated
+startup, preservation, and shadow/enforce contracts only. Primary-runtime API,
+long-input, fake-upstream, low/no-flow, GPU QoS/goodput/Pareto, registry, and
+production gates remain open. This documentation-only acceptance does not
+change the executable bytes or the image revision above.
+
 Runtime iteration is PIG-only. Preserve the current vLLM container and CVM.
 Required c21 workloads include:
 
@@ -1518,8 +1597,9 @@ inherited from this result.
   forced PIG-only rollback.
 - [x] assign the replacement `PIG-v0.12.12` identity on exact pushed commit
   `74b5c76` after proving the Git and registry tags were unoccupied.
-- [ ] build and validate one exact v0.12.12 local-only image without a registry
-  digest.
+- [x] build one exact v0.12.12 local-only image without a registry digest and
+  pass isolated startup/capability, request-preservation, and shadow/enforce
+  decision/forward-causality gates without changing the primary PIG or vLLM.
 - [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
   QoS, goodput, and Pareto gates.
 - [x] complete independent pre-version source/evidence audit on exact clean
