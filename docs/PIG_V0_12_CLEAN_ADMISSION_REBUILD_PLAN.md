@@ -826,6 +826,11 @@ consumed by a new Controller or by the real pre-forward HTTP transaction. The
 shared estimator behavior has changed, but there is no new enforce path,
 image, deployment, runtime, GPU-goodput, or production evidence.
 
+The exact Slice A source was committed and pushed as
+`a86d4c1852c1c30864bcd209b9ab71d17af32852`. The executable Go files are
+byte-identical to the r4 candidate; the only post-gate change inside that
+commit was this evidence/checklist documentation.
+
 ## 12. Active checklist
 
 - [x] freeze v0.12.10 as diagnostic-only evidence and retain rollback assets.
@@ -842,7 +847,7 @@ image, deployment, runtime, GPU-goodput, or production evidence.
 - [x] commit and push the new authority plan before production-code changes
   (`5bb0ef2`).
 - [x] Slice A candidate passes the c21 r4 source-acceptance matrix.
-- [ ] Slice A exact source commit is pushed and recorded.
+- [x] Slice A exact source commit `a86d4c1` is pushed and recorded.
 - [ ] Slice B new Controller/policy/simulator passes without modifying the old
   Manager/Policy path and is pushed.
 - [ ] Slice C atomic HTTP/observer cutover passes; old Manager, Policy, Adapter,
