@@ -731,6 +731,37 @@ This accepts the local image and primary-runtime smoke layer only. It does not
 accept the remaining lifecycle, long-input, low/no-flow, QoS, goodput, Pareto,
 registry, production, or Router layers.
 
+### 10.2 Primary-runtime protocol and terminal-path evidence
+
+The first primary-runtime failure/lifecycle batch exercised malformed JSON,
+unsupported content type, unknown-length chunked input, an upstream model
+error, and a client-side 100-ms cancellation. Each case was followed by a
+normal supported request after the applicable no-flow interval. The observed
+HTTP results were `400`, `429`, `429`, `404`, and client timeout respectively;
+every following request returned `200`. After every case and at the final
+snapshot:
+
+```text
+reservations=0
+pending Prefills=0
+intake open=1
+Router backpressure=0
+dynamic_global_limit=0
+vLLM running=0
+vLLM waiting=0
+lifecycle failures=0
+```
+
+Evidence is retained at:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-runtime-lifecycle-r1.MJYhKO
+```
+
+This accepts those primary-runtime terminal paths and their low/no-flow reopen
+contract. It does not replace isolated fake-upstream transport, timeout,
+metrics-failure, reset, or capability-drift gates.
+
 Runtime iteration is PIG-only. Preserve the current vLLM container and CVM.
 Required c21 workloads include:
 
@@ -738,7 +769,12 @@ Required c21 workloads include:
 - low flow after request, upstream, cancel, and timeout failures;
 - same-snapshot bursts and near-KV concurrent arrivals;
 - streaming and non-streaming lifecycle drain;
-- regular/weighted/exclusive long-input cases supported by the 262K context;
+- real regular, weighted, and near-context long-input cases supported by the
+  262K context; its automatic maximum admissible input is 261,888 tokens, so
+  the 262,144-token exclusive boundary is intentionally unreachable there;
+- isolated high-context fake-upstream exclusive, quiescent, 512K, and 650K
+  classification and lifecycle cases, without forwarding those requests to
+  the real 262K vLLM;
 - an intentionally over-context request proving upstream rejection occurs
   without GPU scheduling growth and all PIG/Router state drains;
 - estimator-oracle cases, including prefix perturbation and high entropy; and
