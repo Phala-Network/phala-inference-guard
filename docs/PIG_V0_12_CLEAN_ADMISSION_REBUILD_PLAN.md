@@ -939,6 +939,12 @@ Slice B. The simulation candidate does execute the new Controller transaction
 and reservation lifecycle, but that remains deterministic model evidence until
 Slice C performs the real HTTP/Observer cutover.
 
+The exact Slice B executable source and acceptance record were committed and
+pushed as `caa0138c70282f6876fe1cc4669f48703e177d35`. HEAD and
+`origin/codex/pig-v0.11.0-request-aware` matched that SHA with a clean worktree.
+The following closure update is documentation-only; it does not change or
+inherit new executable evidence beyond the r2 candidate recorded above.
+
 ## 12. Active checklist
 
 - [x] freeze v0.12.10 as diagnostic-only evidence and retain rollback assets.
@@ -958,7 +964,7 @@ Slice C performs the real HTTP/Observer cutover.
 - [x] Slice A exact source commit `a86d4c1` is pushed and recorded.
 - [x] Slice B candidate passes the complete c21 source matrix without modifying
   the old Manager/Policy or production HTTP path.
-- [ ] the exact Slice B source commit is pushed and recorded.
+- [x] the exact Slice B source commit `caa0138` is pushed and recorded.
 - [ ] Slice C atomic HTTP/observer cutover passes; old Manager, Policy, Adapter,
   shadow naming, request cost, and duplicate observation code is deleted and
   the slice is pushed.
