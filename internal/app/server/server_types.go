@@ -12,9 +12,9 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// The clean rebuild must not impersonate the historical v0.12.10 release or
-// allocate the next release identity before complete source and c21 acceptance.
-const version = "PIG-v0.12-dev"
+// v0.12.11 is the first release identity assigned to the clean admission
+// rebuild. Historical v0.12.10 artifacts remain diagnostic-only evidence.
+const version = "PIG-v0.12.11"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 
