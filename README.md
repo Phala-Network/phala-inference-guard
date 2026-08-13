@@ -140,6 +140,7 @@ endpoint, and a token for protected PIG endpoints.
 UPSTREAM=http://backend:8000
 DYNAMIC_METRICS_URL=http://backend:8000/metrics
 TOKEN=<bearer token for PIG-protected routes>
+ADMIN_TOKEN=<optional separate bearer token for admin routes>
 ```
 
 With those variables, dynamic QoS is enabled and enforced. The same token also
@@ -152,6 +153,24 @@ controls:
 /v1/completions
 /v1/responses
 ```
+
+### Runtime admission configuration
+
+`GET` and `PUT /pig/admin/v1/admission-config` expose a process-local override
+for the global concurrency limit and all dynamic admission/QoS algorithm
+tunables: enabled/enforce and failsafe state, KV/running/waiting/preemption and
+pressure thresholds, single-user TPS thresholds/counts/grace, TTFT policy,
+dynamic state limits, and capacity learning.
+The endpoint always requires `Authorization: Bearer <token>`. `ADMIN_TOKEN` is
+preferred when set, otherwise `TOKEN` is used. A `PUT` sends the complete
+object returned by `GET`, including its `revision`; stale revisions return
+`409 Conflict`. Overrides are atomic, are not persisted, and disappear on
+restart. Lowering `global_limit` below current inflight traffic drains safely;
+raising it makes the added capacity available immediately. Every update publishes
+a conservative snapshot and resets learned capacity/pressure history. With dynamic
+enforcement enabled, admission remains closed until a poll begun under the new
+revision succeeds. Setting `global_limit` and all three dynamic global limits to
+`0` is an emergency stop for new admissions; existing requests drain normally.
 
 ## Production Compose Integration
 

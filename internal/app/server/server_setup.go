@@ -56,6 +56,7 @@ func newProxyServer(cfg config) (*proxyServer, error) {
 		requestSemanticTTFT: newDurationHistogram(),
 		proxyTotal:          newDurationHistogram(),
 		internalOverhead:    newDurationHistogram(),
+		admissionRevision:   1,
 	}
 	srv.qosGate = gate.New(gate.Config{
 		QueueWait: cfg.QoSQueueWait,
@@ -80,7 +81,7 @@ func newProxyServer(cfg config) (*proxyServer, error) {
 		MediumOutput:   srv.mediumOutputLn,
 		LongOutput:     srv.longOutputLn,
 		VeryLongOutput: srv.veryLongOutputLn,
-	}, srv.currentDynamicState)
+	}, srv.currentDynamicState, func() bool { return srv.dynamicController.AdmissionConfig().Enabled })
 	for _, backend := range srv.backends {
 		backend := backend
 		backend.SetHandlers(srv.modifyBackendResponse, func(w http.ResponseWriter, r *http.Request, err error) {

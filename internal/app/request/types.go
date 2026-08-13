@@ -45,11 +45,12 @@ type Lanes struct {
 }
 
 type Classifier struct {
-	cfg       Config
-	lanes     Lanes
-	stateFunc func() string
-	tokens    chan struct{}
-	inflight  atomic.Int64
-	rejected  atomic.Uint64
-	outputs   *token.Window
+	cfg         Config
+	lanes       Lanes
+	stateFunc   func() string
+	enabledFunc func() bool
+	tokens      chan struct{}
+	inflight    atomic.Int64
+	rejected    atomic.Uint64
+	outputs     *token.Window
 }

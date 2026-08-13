@@ -22,7 +22,7 @@ func (c *Classifier) outputLane(tokens int) *lane.Lane {
 
 func (c *Classifier) effectiveOutputThresholds() output.Thresholds {
 	base := output.Normalize(c.staticOutputThresholds())
-	if !c.cfg.AdaptiveOutput || c.outputs == nil {
+	if !c.cfg.AdaptiveOutput || c.outputs == nil || !c.dynamicEnabled() {
 		return base
 	}
 	values := c.outputs.SortedSnapshot()
@@ -47,7 +47,7 @@ func (c *Classifier) staticOutputThresholds() output.Thresholds {
 }
 
 func (c *Classifier) currentDynamicState() string {
-	if !c.cfg.DynamicEnabled {
+	if !c.dynamicEnabled() {
 		return "green"
 	}
 	if c.stateFunc == nil {
@@ -58,6 +58,13 @@ func (c *Classifier) currentDynamicState() string {
 		return c.cfg.DynamicFailsafeState
 	}
 	return state
+}
+
+func (c *Classifier) dynamicEnabled() bool {
+	if c.enabledFunc != nil {
+		return c.enabledFunc()
+	}
+	return c.cfg.DynamicEnabled
 }
 
 func (c *Classifier) observeOutputTokens(tokens int) {

@@ -18,10 +18,11 @@ func (s *proxyServer) chooseBackend() *backendProxy {
 	var best *backendProxy
 	bestScore := math.Inf(1)
 	capacityRatio := s.currentCapacityRatio()
+	cfg := s.dynamicController.AdmissionConfig()
 	for _, backend := range s.backends {
 		status := backend.Status()
 		stale := !status.Updated.IsZero() && now.Sub(status.Updated) > 3*s.cfg.DynamicPollInterval
-		if s.cfg.DynamicEnabled && (status.Failed || stale) {
+		if cfg.Enabled && (status.Failed || stale) {
 			continue
 		}
 		score := decision.BackendScore(decision.BackendScoreInput{
@@ -31,7 +32,7 @@ func (s *proxyServer) chooseBackend() *backendProxy {
 			KVCacheUsage:       status.KVCacheUsage,
 			GenerationTPS:      status.GenerationTPS,
 			GenerationTPSValid: status.GenerationTPSValid,
-			TargetTPS:          s.cfg.DynamicUserTPSYellow,
+			TargetTPS:          cfg.UserTPSYellow,
 			CapacityRatio:      capacityRatio,
 		})
 		if best == nil || score < bestScore {

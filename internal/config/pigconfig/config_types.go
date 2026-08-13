@@ -18,6 +18,7 @@ type Config struct {
 	Backends                           []Backend
 	BackendRouting                     bool
 	Token                              string
+	AdminToken                         string
 	QoSPaths                           []string
 	APIAuthEnabled                     bool
 	APIAuthPaths                       []string

@@ -1,6 +1,7 @@
 package lane
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -27,8 +28,8 @@ type Snapshot struct {
 
 type Lane struct {
 	name            string
-	limit           int
-	tokens          chan struct{}
+	capacityMu      sync.Mutex
+	limit           atomic.Int64
 	durationBounds  []float64
 	bodyBounds      []int64
 	accepted        atomic.Uint64
@@ -46,15 +47,12 @@ type Lane struct {
 func New(name string, limit int, buckets Buckets) *Lane {
 	lane := &Lane{
 		name:            name,
-		limit:           limit,
 		durationBounds:  append([]float64(nil), buckets.DurationSeconds...),
 		bodyBounds:      append([]int64(nil), buckets.BodyBytes...),
 		durationBuckets: make([]atomic.Uint64, len(buckets.DurationSeconds)),
 		bodyBuckets:     make([]atomic.Uint64, len(buckets.BodyBytes)),
 	}
-	if limit > 0 {
-		lane.tokens = make(chan struct{}, limit)
-	}
+	lane.limit.Store(int64(limit))
 	return lane
 }
 
@@ -69,7 +67,17 @@ func (l *Lane) Limit() int {
 	if l == nil {
 		return 0
 	}
-	return l.limit
+	return int(l.limit.Load())
+}
+
+// SetLimit atomically changes the bounded concurrency limit. Existing
+// requests drain naturally when the new limit is below current inflight.
+func (l *Lane) SetLimit(limit int) {
+	if l != nil {
+		l.capacityMu.Lock()
+		l.limit.Store(int64(limit))
+		l.capacityMu.Unlock()
+	}
 }
 
 func (l *Lane) Inflight() int64 {
@@ -80,16 +88,18 @@ func (l *Lane) Inflight() int64 {
 }
 
 func (l *Lane) TryAcquire() bool {
-	if l == nil || l.limit <= 0 {
+	if l == nil {
 		return false
 	}
-	select {
-	case l.tokens <- struct{}{}:
-		l.inflight.Add(1)
-		return true
-	default:
+	l.capacityMu.Lock()
+	defer l.capacityMu.Unlock()
+	limit := l.limit.Load()
+	current := l.inflight.Load()
+	if limit <= 0 || current >= limit {
 		return false
 	}
+	l.inflight.Add(1)
+	return true
 }
 
 func (l *Lane) AcquireUnbounded() {
@@ -105,13 +115,13 @@ func (l *Lane) ReleaseUnbounded() {
 }
 
 func (l *Lane) Release() {
-	if l == nil || l.tokens == nil {
+	if l == nil {
 		return
 	}
-	select {
-	case <-l.tokens:
+	l.capacityMu.Lock()
+	defer l.capacityMu.Unlock()
+	if l.inflight.Load() > 0 {
 		l.inflight.Add(-1)
-	default:
 	}
 }
 
@@ -167,7 +177,7 @@ func (l *Lane) Snapshot() Snapshot {
 	}
 	snapshot := Snapshot{
 		Name:            l.name,
-		Limit:           l.limit,
+		Limit:           int(l.limit.Load()),
 		Accepted:        l.accepted.Load(),
 		Rejected:        l.rejected.Load(),
 		Completed:       l.completed.Load(),

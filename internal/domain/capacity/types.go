@@ -58,6 +58,12 @@ func (c *PressureCap) Load() int64 {
 	return c.value.Load()
 }
 
+func (c *PressureCap) Reset() {
+	if c != nil {
+		c.value.Store(0)
+	}
+}
+
 func (c *PressureCap) compareAndSwap(old, new int64) bool {
 	return c.value.CompareAndSwap(old, new)
 }

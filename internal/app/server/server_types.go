@@ -3,6 +3,7 @@ package server
 import (
 	"net/http/httputil"
 	"net/url"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -81,6 +82,8 @@ type proxyServer struct {
 	priorityInjector         *request.PriorityInjector
 	attestation              *attestation.Service
 	dynamicController        *dynamic.Controller
+	admissionMu              sync.Mutex
+	admissionRevision        uint64
 	started                  time.Time
 	total429                 atomic.Uint64
 	backendUnavailable       atomic.Uint64

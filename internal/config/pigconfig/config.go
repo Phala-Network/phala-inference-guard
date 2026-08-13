@@ -6,6 +6,7 @@ func Load() (Config, error) {
 	cfg := Config{
 		Listen:            env.String("LISTEN", ":8000"),
 		Token:             env.String("TOKEN", ""),
+		AdminToken:        env.String("ADMIN_TOKEN", ""),
 		QoSPaths:          env.CSV("PIG_PATHS", "/v1/chat/completions,/v1/completions,/v1/responses"),
 		OutputTokenFields: env.CSV("OUTPUT_TOKEN_FIELD_NAMES", "max_tokens,max_completion_tokens,max_output_tokens"),
 	}

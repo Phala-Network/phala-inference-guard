@@ -7,10 +7,7 @@ import (
 )
 
 func (s *proxyServer) streamBridgeAllowed() bool {
-	if !s.cfg.DynamicEnabled {
-		return true
-	}
-	if s.dynamicController == nil {
+	if s.dynamicController == nil || !s.dynamicController.AdmissionConfig().Enabled {
 		return true
 	}
 	snapshot := s.dynamicController.Snapshot()
@@ -36,10 +33,7 @@ func (s *proxyServer) shouldInjectSSEKeepAlive(response *http.Response) bool {
 	if !s.cfg.SSEKeepAliveEnabled || !sse.EligibleResponse(response) {
 		return false
 	}
-	if !s.cfg.DynamicEnabled {
-		return true
-	}
-	if s.dynamicController == nil {
+	if s.dynamicController == nil || !s.dynamicController.AdmissionConfig().Enabled {
 		return true
 	}
 	snapshot := s.dynamicController.Snapshot()
