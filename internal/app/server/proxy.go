@@ -10,6 +10,10 @@ import (
 )
 
 func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == admissionConfigPath {
+		s.admissionConfig(w, r)
+		return
+	}
 	if r.URL.Path == "/healthz" {
 		_, _ = w.Write([]byte("ok\n"))
 		return

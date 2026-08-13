@@ -98,14 +98,15 @@ func (s *proxyServer) writeBackendMetricsRaw(w io.Writer) {
 func (s *proxyServer) runtimeMetricsInput() metrics.RuntimeInput {
 	currentLimit, _, _ := s.currentQoSLimit()
 	dynamicCounters := s.dynamicController.Counters()
+	dynamicCfg := s.dynamicController.AdmissionConfig()
 	return metrics.RuntimeInput{
 		Config: metrics.RuntimeConfig{
 			Version:                    version,
 			QueueWait:                  s.cfg.QoSQueueWait,
 			QueueWaitEffectiveCap:      num.MinDuration(s.cfg.QoSQueueWait, maxQoSQueueWait),
 			QueuePoll:                  s.cfg.QoSQueuePoll,
-			DynamicEnabled:             s.cfg.DynamicEnabled,
-			DynamicEnforce:             s.cfg.DynamicEnforce,
+			DynamicEnabled:             dynamicCfg.Enabled,
+			DynamicEnforce:             dynamicCfg.Enforce,
 			SemanticTTFTScanLimitBytes: semantic.ScanLimitBytes,
 			BackendCount:               len(s.backends),
 		},
@@ -178,30 +179,31 @@ func (s *proxyServer) writeDynamicMetrics(w io.Writer) {
 		return
 	}
 	snapshot := s.dynamicController.Snapshot()
+	cfg := s.dynamicController.AdmissionConfig()
 	metrics.WriteDynamic(w, snapshot, metrics.DynamicConfig{
-		TTFTEnabled:               s.cfg.DynamicTTFTEnabled,
-		TTFTPolicy:                s.cfg.DynamicTTFTPolicy,
-		PressureEnabled:           s.cfg.DynamicPressureEnabled,
-		PressureHeadroom:          s.cfg.DynamicPressureHeadroom,
-		PressureMinLimit:          s.cfg.DynamicPressureMinLimit,
-		PressureLearnRatio:        s.cfg.DynamicPressureLearnRatio,
-		PressureLearnMinRunning:   s.cfg.DynamicPressureLearnMinRunning,
-		UserTPSEnabled:            s.cfg.DynamicUserTPSEnabled,
-		UserTPSYellow:             s.cfg.DynamicUserTPSYellow,
-		UserTPSRed:                s.cfg.DynamicUserTPSRed,
-		UserTPSYellowN:            s.cfg.DynamicUserTPSYellowN,
-		UserTPSRedN:               s.cfg.DynamicUserTPSRedN,
-		UserTPSGraceMin:           s.cfg.DynamicUserTPSGraceMin,
-		UserTPSGraceMax:           s.cfg.DynamicUserTPSGraceMax,
-		UserTPSGraceBps:           s.cfg.DynamicUserTPSGraceBps,
-		UserTPSGraceMul:           s.cfg.DynamicUserTPSGraceMul,
-		UserTPSCapacityLearn:      s.cfg.DynamicUserTPSCapacityLearn,
-		UserTPSCapacityRatio:      s.cfg.DynamicUserTPSCapacityRatio,
-		UserTPSCapacityRatioMax:   s.cfg.DynamicUserTPSCapacityRatioMax,
-		UserTPSCapacityStepUp:     s.cfg.DynamicUserTPSCapacityStepUp,
-		UserTPSCapacityHealthyN:   s.cfg.DynamicUserTPSCapacityHealthyN,
-		UserTPSCapacityHealthyMul: s.cfg.DynamicUserTPSCapacityHealthyMul,
-		UserTPSCapacitySmoothing:  s.cfg.DynamicUserTPSCapacitySmoothing,
+		TTFTEnabled:               cfg.TTFTEnabled,
+		TTFTPolicy:                cfg.TTFTPolicy,
+		PressureEnabled:           cfg.PressureEnabled,
+		PressureHeadroom:          cfg.PressureHeadroom,
+		PressureMinLimit:          cfg.PressureMinLimit,
+		PressureLearnRatio:        cfg.PressureLearnRatio,
+		PressureLearnMinRunning:   cfg.PressureLearnMinRunning,
+		UserTPSEnabled:            cfg.UserTPSEnabled,
+		UserTPSYellow:             cfg.UserTPSYellow,
+		UserTPSRed:                cfg.UserTPSRed,
+		UserTPSYellowN:            cfg.UserTPSYellowN,
+		UserTPSRedN:               cfg.UserTPSRedN,
+		UserTPSGraceMin:           cfg.UserTPSGraceMin,
+		UserTPSGraceMax:           cfg.UserTPSGraceMax,
+		UserTPSGraceBps:           cfg.UserTPSGraceBps,
+		UserTPSGraceMul:           cfg.UserTPSGraceMul,
+		UserTPSCapacityLearn:      cfg.UserTPSCapacityLearn,
+		UserTPSCapacityRatio:      cfg.UserTPSCapacityRatio,
+		UserTPSCapacityRatioMax:   cfg.UserTPSCapacityRatioMax,
+		UserTPSCapacityStepUp:     cfg.UserTPSCapacityStepUp,
+		UserTPSCapacityHealthyN:   cfg.UserTPSCapacityHealthyN,
+		UserTPSCapacityHealthyMul: cfg.UserTPSCapacityHealthyMul,
+		UserTPSCapacitySmoothing:  cfg.UserTPSCapacitySmoothing,
 	}, s.dynamicController.PressureCap())
 }
 

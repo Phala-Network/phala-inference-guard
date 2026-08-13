@@ -8,22 +8,23 @@ import (
 )
 
 func (c *Controller) initialSnapshot(source string) dynamic.Snapshot {
+	cfg := c.AdmissionConfig()
 	state := "disabled"
 	globalLimit := c.recommendedGlobalLimit(state)
 	backendCount := c.backendCount()
 	backendFailed := 0
 	yellowReasons := []string{}
 	finalLimitReason := "disabled"
-	if c.cfg.Enabled {
-		state = c.cfg.FailsafeState
+	if cfg.Enabled {
+		state = cfg.FailsafeState
 		globalLimit = 0
 		backendFailed = backendCount
 		yellowReasons = append(yellowReasons, "backend_unavailable")
 		finalLimitReason = "backend_unavailable"
 	}
 	return dynamic.Snapshot{
-		Enabled:                    c.cfg.Enabled,
-		Enforce:                    c.cfg.Enforce,
+		Enabled:                    cfg.Enabled,
+		Enforce:                    cfg.Enforce,
 		Decision:                   decision.New(state, yellowReasons, nil, decision.Limits{HardGlobal: c.globalLimit(), BaseGlobal: globalLimit, State: globalLimit, QOS: globalLimit, Throughput: globalLimit, Capacity: globalLimit, TTFT: globalLimit, Pressure: globalLimit, Prefill: globalLimit, Availability: globalLimit, Final: globalLimit}),
 		State:                      state,
 		Source:                     source,
@@ -33,7 +34,7 @@ func (c *Controller) initialSnapshot(source string) dynamic.Snapshot {
 		GlobalLimit:                globalLimit,
 		FinalLimitReason:           finalLimitReason,
 		QOSLimit:                   globalLimit,
-		CapacityRatio:              c.cfg.UserTPSCapacityRatio,
+		CapacityRatio:              cfg.UserTPSCapacityRatio,
 		CapacityLimit:              globalLimit,
 		CapacityEstimateConfidence: "startup",
 		HardGlobalLimit:            c.globalLimit(),
@@ -60,13 +61,23 @@ func (c *Controller) initialSnapshot(source string) dynamic.Snapshot {
 }
 
 func (c *Controller) storeError(err error) {
+	c.storeErrorForGeneration(err, c.configGeneration.Load())
+}
+
+func (c *Controller) storeErrorForGeneration(err error, generation uint64) {
+	c.publishMu.Lock()
+	defer c.publishMu.Unlock()
+	if generation != c.configGeneration.Load() {
+		return
+	}
 	c.pollFailed.Add(1)
-	state := c.cfg.FailsafeState
+	cfg := c.AdmissionConfig()
+	state := cfg.FailsafeState
 	backendCount := c.backendCount()
 	backendFailed := backendCount
 	c.snapshot.Store(dynamic.Snapshot{
-		Enabled:                    c.cfg.Enabled,
-		Enforce:                    c.cfg.Enforce,
+		Enabled:                    cfg.Enabled,
+		Enforce:                    cfg.Enforce,
 		Decision:                   decision.New(state, []string{"backend_unavailable"}, nil, decision.Limits{Availability: 0, Final: 0}),
 		State:                      state,
 		Source:                     "error",
@@ -77,7 +88,7 @@ func (c *Controller) storeError(err error) {
 		GlobalLimit:                0,
 		FinalLimitReason:           "backend_unavailable",
 		QOSLimit:                   0,
-		CapacityRatio:              c.cfg.UserTPSCapacityRatio,
+		CapacityRatio:              cfg.UserTPSCapacityRatio,
 		CapacityLimit:              0,
 		CapacityEstimateConfidence: "unavailable",
 		HardGlobalLimit:            c.globalLimit(),
@@ -105,12 +116,13 @@ func (c *Controller) storeError(err error) {
 }
 
 func (c *Controller) recommendedGlobalLimit(state string) int {
-	value := c.cfg.GlobalGreen
+	cfg := c.AdmissionConfig()
+	value := cfg.GlobalGreen
 	switch state {
 	case "yellow":
-		value = c.cfg.GlobalYellow
+		value = cfg.GlobalYellow
 	case "red":
-		value = c.cfg.GlobalRed
+		value = cfg.GlobalRed
 	}
 	globalLimit := c.globalLimit()
 	if value > globalLimit {

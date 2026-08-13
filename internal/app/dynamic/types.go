@@ -1,6 +1,7 @@
 package dynamic
 
 import (
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -36,6 +37,9 @@ type Counters struct {
 
 type Controller struct {
 	cfg                 Config
+	admission           atomic.Pointer[Config]
+	configGeneration    atomic.Uint64
+	publishMu           sync.Mutex
 	deps                Dependencies
 	snapshot            atomic.Value
 	lastMetricsSnapshot atomic.Value

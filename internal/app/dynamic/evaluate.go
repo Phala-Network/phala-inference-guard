@@ -9,13 +9,23 @@ import (
 )
 
 func (c *Controller) updateFromMetricSamplesWithFailed(samples []telemetry.Sample, backendFailed int) runtimedynamic.Snapshot {
+	return c.updateFromMetricSamplesForGeneration(samples, backendFailed, c.configGeneration.Load())
+}
+
+func (c *Controller) updateFromMetricSamplesForGeneration(samples []telemetry.Sample, backendFailed int, generation uint64) runtimedynamic.Snapshot {
+	c.publishMu.Lock()
+	defer c.publishMu.Unlock()
+	if generation != c.configGeneration.Load() {
+		return c.Snapshot()
+	}
 	now := time.Now()
+	cfg := c.AdmissionConfig()
 	prefillProtected := 0
-	if c.cfg.UserTPSEnabled && c.deps.PrefillProtected != nil {
+	if cfg.UserTPSEnabled && c.deps.PrefillProtected != nil {
 		prefillProtected = c.deps.PrefillProtected(now)
 	}
 	previous := c.previousMetrics()
-	snapshot := domaindynamic.Evaluate(c.cfg.policyConfig(), domaindynamic.Input{
+	snapshot := domaindynamic.Evaluate(cfg.policyConfig(), domaindynamic.Input{
 		Now:              now,
 		Samples:          samples,
 		BackendFailed:    backendFailed,

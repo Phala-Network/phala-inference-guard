@@ -22,18 +22,22 @@ func (c *Controller) Snapshot() dynamic.Snapshot {
 }
 
 func (c *Controller) State() string {
-	if c == nil || !c.cfg.Enabled {
+	if c == nil {
+		return "green"
+	}
+	cfg := c.AdmissionConfig()
+	if !cfg.Enabled {
 		return "green"
 	}
 	state := c.Snapshot().DecisionState()
 	if !decision.ValidState(state) {
-		return c.cfg.FailsafeState
+		return cfg.FailsafeState
 	}
 	return state
 }
 
 func (c *Controller) GlobalLimit() int {
-	if c == nil || !c.cfg.Enabled {
+	if c == nil || !c.AdmissionConfig().Enabled {
 		return 0
 	}
 	return c.Snapshot().GlobalLimit
@@ -55,11 +59,12 @@ func (c *Controller) CapacityRatio() float64 {
 	if c == nil {
 		return 0
 	}
-	ratio := c.cfg.UserTPSCapacityRatio
+	cfg := c.AdmissionConfig()
+	ratio := cfg.UserTPSCapacityRatio
 	if snapshot := c.Snapshot(); snapshot.CapacityRatio > 0 {
 		ratio = snapshot.CapacityRatio
 	}
-	return num.ClampFloat(ratio, c.cfg.UserTPSCapacityRatio, c.cfg.UserTPSCapacityRatioMax)
+	return num.ClampFloat(ratio, cfg.UserTPSCapacityRatio, cfg.UserTPSCapacityRatioMax)
 }
 
 func (c *Controller) Counters() Counters {
@@ -80,10 +85,11 @@ func (c *Controller) PressureCap() *capacity.PressureCap {
 }
 
 func (c *Controller) backendCount() int {
-	if c.cfg.BackendRouting && len(c.deps.Backends) > 0 {
+	cfg := c.AdmissionConfig()
+	if cfg.BackendRouting && len(c.deps.Backends) > 0 {
 		return len(c.deps.Backends)
 	}
-	return len(c.cfg.MetricsURLs)
+	return len(cfg.MetricsURLs)
 }
 
 func (c *Controller) semanticTTFT() telemetry.HistogramSample {

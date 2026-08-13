@@ -10,7 +10,11 @@ import (
 )
 
 func (s *proxyServer) currentQoSLimit() (limit int, dynamic bool, rejectCode string) {
-	if s.cfg.DynamicEnabled && s.cfg.DynamicEnforce {
+	if s.dynamicController == nil {
+		return s.globalLn.Limit(), false, ""
+	}
+	cfg := s.dynamicController.AdmissionConfig()
+	if cfg.Enabled && cfg.Enforce {
 		limit := 0
 		if s.dynamicController != nil {
 			limit = s.dynamicController.GlobalLimit()
@@ -36,6 +40,7 @@ func (s *proxyServer) effectiveQoSQueueWait(code string) time.Duration {
 		return wait
 	}
 	snapshot := s.dynamicController.Snapshot()
+	cfg := s.dynamicController.AdmissionConfig()
 	if snapshot.Source != "metrics" {
 		return wait
 	}
@@ -48,22 +53,23 @@ func (s *proxyServer) effectiveQoSQueueWait(code string) time.Duration {
 		State:        snapshot.DecisionState(),
 		RedReasons:   snapshot.DecisionRedReasons(),
 		KVCacheUsage: snapshot.KVCacheUsage,
-		KVRed:        s.cfg.DynamicKVRed,
+		KVRed:        cfg.KVRed,
 		GlobalLimit:  snapshot.GlobalLimit,
 		Running:      snapshot.Running,
 		Waiting:      snapshot.Waiting,
-		WaitingRed:   s.cfg.DynamicWaitingRed,
+		WaitingRed:   cfg.WaitingRed,
 	})
 }
 
 func (s *proxyServer) prefillGraceDuration(r *http.Request) time.Duration {
+	cfg := s.dynamicController.AdmissionConfig()
 	return qospolicy.PrefillGrace(qospolicy.PrefillGraceInput{
-		Enabled:        s.cfg.DynamicUserTPSEnabled,
-		Min:            s.cfg.DynamicUserTPSGraceMin,
-		Max:            s.cfg.DynamicUserTPSGraceMax,
+		Enabled:        cfg.UserTPSEnabled,
+		Min:            cfg.UserTPSGraceMin,
+		Max:            cfg.UserTPSGraceMax,
 		BodyBytes:      r.ContentLength,
-		BytesPerSec:    s.cfg.DynamicUserTPSGraceBps,
-		BodyMultiplier: s.cfg.DynamicUserTPSGraceMul,
+		BytesPerSec:    cfg.UserTPSGraceBps,
+		BodyMultiplier: cfg.UserTPSGraceMul,
 	})
 }
 

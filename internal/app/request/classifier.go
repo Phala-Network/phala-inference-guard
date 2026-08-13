@@ -2,8 +2,11 @@ package request
 
 import "github.com/Phala-Network/phala-inference-guard/internal/runtime/token"
 
-func New(cfg Config, lanes Lanes, stateFunc func() string) *Classifier {
+func New(cfg Config, lanes Lanes, stateFunc func() string, enabledFunc ...func() bool) *Classifier {
 	classifier := &Classifier{cfg: cfg, lanes: lanes, stateFunc: stateFunc}
+	if len(enabledFunc) > 0 {
+		classifier.enabledFunc = enabledFunc[0]
+	}
 	if cfg.AdaptiveOutput {
 		classifier.outputs = token.New(cfg.AdaptiveOutputWindow)
 	}

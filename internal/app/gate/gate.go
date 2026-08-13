@@ -22,6 +22,7 @@ type Config struct {
 type Gate struct {
 	cfg             Config
 	global          *lane.Lane
+	admissionMu     sync.Mutex
 	currentLimit    LimitFunc
 	effectiveWait   QueueWaitFunc
 	tierLimiter     tier.Limiter
@@ -43,6 +44,17 @@ func New(cfg Config, global *lane.Lane, currentLimit LimitFunc, effectiveWait Qu
 		effectiveWait: effectiveWait,
 		notify:        make(chan struct{}),
 	}
+}
+
+// UpdateAdmission serializes a runtime policy update with complete request
+// admission decisions.
+func (g *Gate) UpdateAdmission(update func()) {
+	if g == nil || update == nil {
+		return
+	}
+	g.admissionMu.Lock()
+	defer g.admissionMu.Unlock()
+	update()
 }
 
 func (g *Gate) QueueCurrent() int64 {
@@ -170,6 +182,8 @@ func (g *Gate) ObserveReject(ln *lane.Lane, tier requesttier.Tier, code string) 
 }
 
 func (g *Gate) tryAcquire(ln *lane.Lane, tier requesttier.Tier) (func(), string) {
+	g.admissionMu.Lock()
+	defer g.admissionMu.Unlock()
 	limit, dynamic, rejectCode := g.currentLimit()
 	if rejectCode != "" {
 		return nil, rejectCode
