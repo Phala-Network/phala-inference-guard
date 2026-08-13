@@ -1,9 +1,11 @@
 # PIG v0.12 Clean Admission Rebuild Plan
 
 Status: active architecture and execution authority. `PIG-v0.12.11` is assigned
-on exact pushed identity commit `16d1940`; it is not yet image- or
-runtime-accepted. `PIG-v0.12.10` and its local image are diagnostic evidence
-only; they are not releasable.
+on exact pushed identity commit `16d1940`; its exact builder-local image,
+isolated canary, c21 PIG-only replacement, and primary runtime smoke are
+accepted. Complete lifecycle, long-input, low/no-flow, QoS, goodput, and Pareto
+gates are not yet accepted. `PIG-v0.12.10` and its local image are diagnostic
+rollback evidence only; they are not releasable.
 
 This plan supersedes implementation instructions in
 `PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md`. That document remains a
@@ -666,6 +668,69 @@ labels, binary version, source commit, architecture, startup, health,
 authenticated metrics, `/v1/models`, normal chat, streaming, forced tool call,
 structured output, and request preservation before replacing the existing PIG.
 
+### 10.1 Accepted local-image and primary-runtime evidence
+
+The exact executable candidate is:
+
+```text
+source revision: cf1e53e517e9630945a4808e2ee1c2c6b89a4664
+image tag: ghcr.io/phala-network/phala-inference-guard:0.12.11-cf1e53e-local
+image ID: sha256:13a645d77a2cb0822e232f286f62353b43ea43a6c6de41b427b2c6f44857c509
+OCI version: 0.12.11
+RepoDigests: []
+```
+
+Local image build evidence is retained at:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-local-image-r2.bQ2AK4
+```
+
+The exact image passed isolated startup/contract, real-request, request-byte
+preservation, and shadow/enforce canaries:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-image-canary-r3.Lgs6WN
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-image-request-suite-r1.qnW6Iw
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-request-preservation-r1.OCANbV
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-shadow-enforce-r1.iIcHgT
+```
+
+The first primary-runtime replacement attempt failed before candidate startup
+because copied Compose labels were rendered as `key = value`; automatic
+rollback restored v0.12.10. Its evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-runtime-replace-r1.W3cDjB
+```
+
+The corrected replacement did not copy Compose-internal labels. It sampled
+PIG and vLLM drain state three times at 500-ms intervals, stopped and retained
+only the old PIG as `pig-v0124-runtime-v01210-rollback`, and started the exact
+candidate with the same network, alias, ports, socket mounts, and non-predictive
+environment. No `PREDICTIVE_*` environment variable is present. The source
+defaults produced enforce mode, automatic metadata capability, and a 500-ms
+observer. The vLLM container ID, image ID, StartedAt, and restart count remained
+unchanged. Evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-runtime-replace-r2.bsSDqu
+```
+
+Primary runtime smoke then passed normal, streaming, forced-tool, and strict
+JSON-schema requests. All four admissions were `fit`; enforced rejects,
+reservations, pending Prefills, lifecycle failures, raw vLLM running, and raw
+vLLM waiting all drained to zero. Whole request times were 67.8--113.1 ms.
+Evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01211-runtime-smoke-r1.B3kHx9
+```
+
+This accepts the local image and primary-runtime smoke layer only. It does not
+accept the remaining lifecycle, long-input, low/no-flow, QoS, goodput, Pareto,
+registry, production, or Router layers.
+
 Runtime iteration is PIG-only. Preserve the current vLLM container and CVM.
 Required c21 workloads include:
 
@@ -1205,7 +1270,10 @@ inherited from this result.
   pushed commit `c2e58cc`.
 - [x] assign exactly one next `0.12.x` identity: `PIG-v0.12.11` on exact pushed
   commit `16d1940`.
-- [ ] build and validate one local-only image.
+- [x] build and validate one exact local-only image without a registry digest.
+- [x] replace only the c21 PIG primary runtime with that exact image, preserve
+  vLLM and the stopped v0.12.10 rollback container, and pass primary runtime
+  normal/stream/tool/schema smoke with drained admission lifecycle state.
 - [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
   QoS, goodput, and Pareto gates.
 - [x] complete independent pre-version source/evidence audit on exact clean
