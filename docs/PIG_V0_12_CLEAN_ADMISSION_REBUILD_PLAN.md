@@ -937,6 +937,37 @@ It does not accept a release identity, image, c21 runtime, real GPU long-input,
 QoS/goodput/Pareto, registry publication, Router change, or production
 traffic.
 
+### 10.5 Replacement v0.12.12 identity assignment
+
+After exact pushed estimator acceptance, both local and remote Git tag checks
+were empty for 0.12.12 and v0.12.12. Authenticated GHCR manifest GET requests,
+using the registry Bearer-token challenge flow rather than HEAD or direct Basic
+authentication, returned 404 for both candidate tags. The replacement identity
+was assigned exactly once as:
+
+    runtime  PIG-v0.12.12
+    OCI      0.12.12
+    commit   74b5c76bab33f02f2e0f6cbc394459053b6d0550
+
+The identity commit changes exactly Dockerfile, server_types.go, and
+release_identity_test.go. It is pushed; HEAD and origin match, and the
+worktree is clean. The exact pushed identity gate is:
+
+    /workspace/tmp/pig-v01212-identity-postpush-r1.YiyJX9
+
+It passed the release identity tests, go test ./... -count=1, go build ./...,
+empty local/remote Git tag checks, and repeated authenticated registry GET
+404 checks. Key SHA-256 values are:
+
+    release-test   3e3ddca2867e87c281484ec8d032eaca40d3038f967ee45e6e6e9c85f4b9e6a4
+    go-test-all    142fdc1e2dfde8ecfc01c7a3e7650e64aa10830813b406b0a5269638bef3e154
+    build          e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+    registry       08b4780f365265f783a309766521b2ce642bbcfc55b3e0d0b1989818b627660f
+
+This accepts only the unique v0.12.12 source identity. It does not build,
+upload, deploy, or runtime-accept an image and does not modify vLLM, the CVM,
+Router, or production traffic.
+
 Runtime iteration is PIG-only. Preserve the current vLLM container and CVM.
 Required c21 workloads include:
 
@@ -1479,15 +1510,16 @@ inherited from this result.
   exact commit `c2e58cc` is pushed.
 - [x] Slice D complete source acceptance and three code reviews pass on exact
   pushed commit `c2e58cc`.
-- [x] assign exactly one next `0.12.x` identity: `PIG-v0.12.11` on exact pushed
-  commit `16d1940`.
-- [x] build and validate one exact local-only image without a registry digest.
-- [x] replace only the c21 PIG primary runtime with that exact image, preserve
-  vLLM and the stopped v0.12.10 rollback container, and pass primary runtime
-  normal/stream/tool/schema smoke with drained admission lifecycle state.
+- [x] assign the initial `PIG-v0.12.11` identity on exact pushed commit `16d1940`,
+  build its local-only image, and pass initial primary smoke before the
+  long-input estimator failure rejected it.
 - [x] rebuild and re-accept the estimator on exact pushed commit 8ddd87b after
   the real repeated-short-lexeme 4x underestimation rejected v0.12.11 and
   forced PIG-only rollback.
+- [x] assign the replacement `PIG-v0.12.12` identity on exact pushed commit
+  `74b5c76` after proving the Git and registry tags were unoccupied.
+- [ ] build and validate one exact v0.12.12 local-only image without a registry
+  digest.
 - [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
   QoS, goodput, and Pareto gates.
 - [x] complete independent pre-version source/evidence audit on exact clean
