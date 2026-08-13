@@ -912,6 +912,31 @@ exact pushed commit, assign v0.12.12, build an image, replace the c21 PIG,
 validate real long-input/GPU QoS/goodput behavior, publish a digest, modify
 Router, or use production traffic.
 
+The complete estimator slice was then committed and pushed exactly as:
+
+    commit  8ddd87b32889ec1adaa2433e307f0c9e2a565814
+    branch  codex/pig-v0.11.0-request-aware
+
+HEAD and origin matched and the worktree was clean. The exact pushed source
+was re-tested independently at:
+
+    /workspace/tmp/pig-v01212-estimator-postpush-r1.uMh3V0
+
+That gate again passed the complete Go suite, focused race packages, vet,
+build, the eleven-fixture oracle, two byte-identical accepted simulations,
+legacy verification, diff validation, and untracked-file audit. Key exact-
+commit SHA-256 values are:
+
+    go-test-all        c1b412d9b19a42b3b44323213ba9a54ea6e4efdee7078a050fdb399677e131db
+    go-race            41bd0a6b8ad0078cad0e5da97afcca59ba6fc287a0a647f33f269a8b2b7ee31f
+    oracle             50ce24c94b0faefb1d7759b4262fba3abce7f04c772bece26deae2afcb80795f
+    simulation-1/2     253f9b13b54b8db7a26f64ebf104e06d7be9d0b3a3dad0698b998367babe1bcc
+
+This accepts the rebuilt estimator source layer on the exact pushed commit.
+It does not accept a release identity, image, c21 runtime, real GPU long-input,
+QoS/goodput/Pareto, registry publication, Router change, or production
+traffic.
+
 Runtime iteration is PIG-only. Preserve the current vLLM container and CVM.
 Required c21 workloads include:
 
@@ -1460,9 +1485,9 @@ inherited from this result.
 - [x] replace only the c21 PIG primary runtime with that exact image, preserve
   vLLM and the stopped v0.12.10 rollback container, and pass primary runtime
   normal/stream/tool/schema smoke with drained admission lifecycle state.
-- [ ] rebuild and re-accept the estimator after the real repeated-short-lexeme
-  4x underestimation rejected the v0.12.11 candidate and forced PIG-only
-  rollback.
+- [x] rebuild and re-accept the estimator on exact pushed commit 8ddd87b after
+  the real repeated-short-lexeme 4x underestimation rejected v0.12.11 and
+  forced PIG-only rollback.
 - [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
   QoS, goodput, and Pareto gates.
 - [x] complete independent pre-version source/evidence audit on exact clean
