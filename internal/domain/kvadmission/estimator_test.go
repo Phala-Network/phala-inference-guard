@@ -101,6 +101,35 @@ func TestFixedMarginTokensRejectsInvalidAndOverflowingInputs(t *testing.T) {
 	}
 }
 
+func TestAddApproximateRoundedRunRejectsInvalidAndOverflowingInputs(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		total         *int64
+		runBytes      int64
+		bytesPerToken int64
+	}{
+		{name: "nil total", runBytes: 1, bytesPerToken: 4},
+		{name: "negative run", total: new(int64), runBytes: -1, bytesPerToken: 4},
+		{name: "zero divisor", total: new(int64), runBytes: 1},
+		{name: "rounding overflow", total: new(int64), runBytes: math.MaxInt64, bytesPerToken: 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if addApproximateRoundedRun(test.total, test.runBytes, test.bytesPerToken) {
+				t.Fatalf("accepted invalid rounded run: %+v", test)
+			}
+		})
+	}
+
+	total := int64(math.MaxInt64 - 3)
+	if addApproximateRoundedRun(&total, 1, 4) {
+		t.Fatal("accepted rounded run whose quarter-token sum overflows")
+	}
+	total = 0
+	if !addApproximateRoundedRun(&total, 5, 4) || total != 8 {
+		t.Fatalf("rounded five-byte run=%d want 8 quarter-token units", total)
+	}
+}
+
 func TestApproximateJSONStringTokensSmallPrefixDoesNotDominate(t *testing.T) {
 	plain := []byte(strings.Repeat("word ", 8*1024))
 	prefixed := append([]byte(nil), plain...)
@@ -117,6 +146,36 @@ func TestApproximateJSONStringTokensSmallPrefixDoesNotDominate(t *testing.T) {
 	}
 	if difference > plainTokens/10 {
 		t.Fatalf("one 16-byte prefix outlier changed long-string estimate: plain=%d prefixed=%d", plainTokens, prefixedTokens)
+	}
+}
+
+func TestApproximateJSONStringTokensChargesEachShortLexicalRun(t *testing.T) {
+	const lexicalRuns = 60_000
+	raw := []byte(strings.Repeat("x ", lexicalRuns))
+	want := int64(lexicalRuns + ceilDiv(lexicalRuns, approximateSpaceBytesPerToken))
+
+	tokens, known := approximateJSONStringTokens(raw)
+	if !known || tokens != want {
+		t.Fatalf("repeated short lexical runs=%d/%t want %d/true", tokens, known, want)
+	}
+}
+
+func TestApproximateJSONStringTokensChargesWhitespaceInsideTheString(t *testing.T) {
+	const spaces = 64 * 1024
+	tokens, known := approximateJSONStringTokens([]byte(strings.Repeat(" ", spaces)))
+	want := int64(ceilDiv(spaces, approximateSpaceBytesPerToken))
+	if !known || tokens != want {
+		t.Fatalf("string whitespace=%d/%t want %d/true", tokens, known, want)
+	}
+}
+
+func TestApproximateJSONStringTokensChargesEveryDigit(t *testing.T) {
+	const pairs = 64 * 1024
+	raw := []byte(strings.Repeat("01", pairs))
+	want := int64(len(raw))
+	tokens, known := approximateJSONStringTokens(raw)
+	if !known || tokens != want {
+		t.Fatalf("dense digits=%d/%t want %d/true", tokens, known, want)
 	}
 }
 
@@ -349,8 +408,10 @@ func TestApproximateInputTokenHintInspectsTheCompleteString(t *testing.T) {
 }
 
 func TestApproximateInputTokenHintExcludesTrailingJSONWhitespace(t *testing.T) {
-	body := []byte(`{"model":"google/gemma-4-31B-it","prompt":"Return exactly OK.","max_tokens":8,"temperature":0}` + strings.Repeat(" ", 1_600_000))
+	trimmedBody := []byte(`{"model":"google/gemma-4-31B-it","prompt":"Return exactly OK.","max_tokens":8,"temperature":0}`)
+	body := append(bytes.Clone(trimmedBody), bytes.Repeat([]byte(" "), 1_600_000)...)
 	cost := EstimateJSON(body, 8, true, DefaultEstimatorConfig())
+	trimmedCost := EstimateJSON(trimmedBody, 8, true, DefaultEstimatorConfig())
 	if !cost.Supported {
 		t.Fatalf("trailing-whitespace fixture unsupported: %+v", cost)
 	}
@@ -358,8 +419,12 @@ func TestApproximateInputTokenHintExcludesTrailingJSONWhitespace(t *testing.T) {
 		t.Fatalf("raw conservative high=%d want 800047", cost.EstimatedInputHigh)
 	}
 	hint, known := cost.ApproximateInputTokenHint()
-	if !known || hint != 14 {
-		t.Fatalf("lexical hint=%d/%t want 14/true without trailing JSON whitespace", hint, known)
+	trimmedHint, trimmedKnown := trimmedCost.ApproximateInputTokenHint()
+	if !known || !trimmedKnown || hint != trimmedHint {
+		t.Fatalf(
+			"trailing JSON whitespace changed lexical hint: padded=%d/%t trimmed=%d/%t",
+			hint, known, trimmedHint, trimmedKnown,
+		)
 	}
 }
 

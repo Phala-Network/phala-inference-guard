@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	fixedKVReservationMarginNumerator   int64 = 3
-	fixedKVReservationMarginDenominator int64 = 2
+	fixedKVReservationMarginNumerator   int64 = 9
+	fixedKVReservationMarginDenominator int64 = 8
 )
 
 func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig) Cost {

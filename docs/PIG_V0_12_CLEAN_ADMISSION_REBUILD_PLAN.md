@@ -801,6 +801,117 @@ oracle/latency/source matrix, assign a new `0.12.x` identity only after source
 acceptance, build a new local-only image, and repeat runtime gates from the
 beginning.
 
+### 10.4 Estimator rebuild review and pre-commit source acceptance
+
+The replacement estimator was reviewed three times after the v0.12.11
+rejection. Each review changed the candidate rather than merely approving the
+previous revision.
+
+1. Model and causality review: the first red test reproduced the original
+   defect at both the pure estimator and real HTTP pre-forward boundary.
+   Sixty thousand independent "x " lexemes produced a selection estimate
+   near 15K before the fix. A 270K-lexeme request reached the fake backend
+   instead of ContextGate. The replacement settles each complete ASCII lexical
+   run as ceil(run bytes / 4), charges bounded string whitespace separately,
+   and makes the 270K request return request-scoped input_limit before any
+   upstream call. A following small request is admitted, proving there is no
+   low-flow self-lock.
+2. Safety and SOLID review: expanded offline vLLM oracle probes found a second
+   structural high-density shape. Repeated digits can be one token per byte,
+   while the first rebuild still grouped them at four bytes per token. Digits
+   are now charged individually; overflow, invalid helper input, request
+   preservation, ContextGate causality, and lifecycle reopen are covered by
+   focused tests. The estimator remains a pure request-domain component. It
+   creates no state, performs no request mutation, and adds no dependency from
+   the Controller to HTTP, vLLM, a tokenizer asset, or a learning service.
+3. Throughput and evidence review: a proposed two-token surcharge for every
+   complete two- or three-byte lexical run was rejected. It covered the
+   tokenizer-specific "qz " counterexample, but it also estimated repeated
+   common "of " and "the " text at about 122K tokens when vLLM reported
+   about 60K. That would move ordinary 60K work from regular to weighted and
+   protect it under active Decode, directly harming the goodput objective.
+   The surcharge was removed. Common short-word fixtures remain in the oracle
+   matrix to prevent that over-protection regression.
+
+The accepted fixed, model-neutral hot path is therefore:
+
+    one complete bounded JSON-string scan
+      -> settle each ASCII letter/underscore run at ceil(run bytes / 4)
+      -> charge each ASCII digit as one token
+      -> charge string whitespace at ceil(total whitespace bytes / 32)
+      -> retain punctuation, Unicode-leading-byte, escape/schema, multimodal,
+         and high-entropy rules
+      -> selection estimate
+      -> fixed 9/8 KV-reservation margin
+      -> one RequestEstimate consumed by Context/KV/Prefill gates
+
+This is O(body bytes), allocation-free inside EstimateJSON, and has no
+vocabulary lookup, model identity branch, tokenizer asset, RPC, FFI, cache
+lookup, runtime calibration, or online learning. Selection and KV reservation
+remain distinct: ContextGate uses selection, while Controller-owned
+block-rounded KV work uses the 9/8 reservation.
+
+The fixed 9/8 margin is not an arbitrary relaxation. The preregistered
+candidate order is 9/8, 5/4, 3/2, 2/1; 9/8 is the first candidate for which
+every accepted frozen oracle fixture has selection no lower than actual,
+reservation headroom of at least about 10%, and reservation no greater than
+2.25x actual. Eleven accepted fixtures cover repeated common short words,
+single-character words, dense digits, ordinary long words, CJK, code, escapes,
+high entropy, and large tool schema. Representative final results are:
+
+    shape                    actual   selection   reservation
+    "x " x 60K               60,013      61,893        69,630
+    "of " x 60K              60,013      61,893        69,630
+    "the " x 60K             60,013      61,893        69,630
+    "01" x 64K              131,085     131,090       147,477
+    "word " x 64K            65,549      67,602        76,053
+    CJK 64K                  65,549      65,554        73,749
+    code fixture            131,084     150,034       168,789
+
+One diagnostic counterexample is deliberately not hidden: on the current
+Gemma4 oracle, "qz " x 60K is about 120K tokens while a model-neutral
+run-length estimate is about 62K. Characters alone cannot distinguish that
+vocabulary-dependent shape from common "of " text, which is about 60K
+tokens. Closing every such case without a model tokenizer requires a
+throughput-hostile byte-level ceiling. This release therefore does not claim
+exact ContextGate parity for adversarial vocabulary-dependent strings. The
+declared contract remains best-effort model-neutral sizing plus immutable KV
+headroom and real runtime safety/goodput validation. If production requires an
+exact context guarantee later, that is a separate product decision to add a
+backend-equivalent tokenizer contract, not another lexical special case.
+
+Final 4 MiB ordinary-build estimator evidence remained below the user-approved
+100 ms extreme-input budget with zero allocations:
+
+    shape               p50          p99          allocations
+    one long string     24.97 ms     34.00 ms     0
+    "x " lexemes        31.86 ms     40.91 ms     0
+    "qz " lexemes       27.36 ms     37.19 ms     0
+    dense digits        21.74 ms     26.93 ms     0
+    many strings        37.63 ms     47.29 ms     0
+
+The final dirty-tree pre-commit gate is:
+
+    /workspace/tmp/pig-v01212-estimator-final-precommit-r1.POulLw
+
+It passed gofmt, git diff --check, go test ./... -count=1, focused
+race tests for kvadmission/admission/server/simulation, go vet ./...,
+go build ./..., two byte-identical simulations with acceptance="passed",
+the corrected production-only legacy audit, and credential/generated-artifact
+scans. Key SHA-256 values are:
+
+    go-test-all              a372e1751c8be4238fbfa13dcee691b3ef36500ce729dd0f479ad3cde5200f2c
+    go-race                  2ce4ed0f3714b4ba97af5121578c47a2d5d1ad35a2899a86f0ced2c2d6579031
+    simulation-1/2           253f9b13b54b8db7a26f64ebf104e06d7be9d0b3a3dad0698b998367babe1bcc
+    oracle                   c0e713523df3cf8b43c6890ca46de9830f74c8a40343de63a9e5e36653dba196
+    estimator-performance    cfd685933a829f9dee1aecb2661000c29f76672f6af0d60846aae66aad6ff558
+    executable-diff          9e93cd32b6f8830e7667fded01e5ff1e8d8d02a67a604d864cecdf94b37bcd75
+
+This accepts the pre-commit source candidate only. It does not yet accept an
+exact pushed commit, assign v0.12.12, build an image, replace the c21 PIG,
+validate real long-input/GPU QoS/goodput behavior, publish a digest, modify
+Router, or use production traffic.
+
 Runtime iteration is PIG-only. Preserve the current vLLM container and CVM.
 Required c21 workloads include:
 

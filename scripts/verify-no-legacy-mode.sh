@@ -20,10 +20,10 @@ search_active_go() {
 list_compatibility_files() {
     pattern=$1
     if command -v rg >/dev/null 2>&1; then
-        rg -l "$pattern" internal --glob '*.go'
+        rg -l "$pattern" internal --glob '*.go' --glob '!**/*_test.go'
         return
     fi
-    grep -R -l -E --include='*.go' "$pattern" internal
+    grep -R -l -E --include='*.go' --exclude='*_test.go' "$pattern" internal
 }
 
 for path in \
@@ -109,7 +109,7 @@ then
 fi
 
 compat_files=$(list_compatibility_files 'pig_dynamic_(observed_(running|waiting)(_raw)?|global_limit(_raw)?)' || true)
-unexpected_compat=$(printf '%s\n' "$compat_files" | grep -E -v '^internal/observability/metrics/router_capacity_compatibility(_test)?\.go$' || true)
+unexpected_compat=$(printf '%s\n' "$compat_files" | grep -E -v '^internal/observability/metrics/router_capacity_compatibility\.go$' || true)
 if [ -n "$unexpected_compat" ]; then
     printf '%s\n' "$unexpected_compat" >&2
     fail "Router compatibility names exist outside the predictive compatibility writer"

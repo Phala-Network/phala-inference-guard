@@ -15,12 +15,18 @@ import (
 func TestEstimatorMaximumBodyLatencyAndAllocations(t *testing.T) {
 	const maximumBodyBytes = 4 * 1024 * 1024
 	longString := maximumBodyEstimatorFixture(t, maximumBodyBytes)
+	shortLexemes := repeatedLexemeEstimatorFixture(t, maximumBodyBytes, []byte("x "))
+	shortQZLexemes := repeatedLexemeEstimatorFixture(t, maximumBodyBytes, []byte("qz "))
+	denseDigits := repeatedLexemeEstimatorFixture(t, maximumBodyBytes, []byte("01"))
 	manyStrings := manyStringEstimatorFixture(t, maximumBodyBytes)
 	for _, fixture := range []struct {
 		name string
 		body []byte
 	}{
 		{name: "long_string", body: longString},
+		{name: "short_lexemes", body: shortLexemes},
+		{name: "short_qz_lexemes", body: shortQZLexemes},
+		{name: "dense_digits", body: denseDigits},
 		{name: "many_strings", body: manyStrings},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
@@ -55,6 +61,25 @@ func TestEstimatorMaximumBodyLatencyAndAllocations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func repeatedLexemeEstimatorFixture(t *testing.T, targetBytes int, unit []byte) []byte {
+	t.Helper()
+	prefix := []byte(`{"messages":[{"role":"user","content":"`)
+	suffix := []byte(`"}],"max_tokens":256}`)
+	payloadBytes := targetBytes - len(prefix) - len(suffix)
+	if payloadBytes <= 0 {
+		t.Fatal("short-lexeme fixture has no payload")
+	}
+	if len(unit) == 0 {
+		t.Fatal("short-lexeme fixture has an empty unit")
+	}
+	lexemes := bytes.Repeat(unit, ceilDiv(payloadBytes, len(unit)))
+	body := make([]byte, 0, targetBytes)
+	body = append(body, prefix...)
+	body = append(body, lexemes[:payloadBytes]...)
+	body = append(body, suffix...)
+	return body
 }
 
 func maximumBodyEstimatorFixture(t *testing.T, targetBytes int) []byte {

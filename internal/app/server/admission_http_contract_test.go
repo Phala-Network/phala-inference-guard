@@ -56,6 +56,79 @@ func TestAdmissionHTTPInputEstimateChangesPreForwardDecision(t *testing.T) {
 	}
 }
 
+func TestAdmissionHTTPProtectsRepeatedShortLexemeOverContextBeforeForward(t *testing.T) {
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 862_437, MaxModelLen: 262_144, KVHardRatio: 0.88,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+
+	protected := serveAdmissionRequest(t, srv, strings.Repeat("x ", 270_000))
+	snapshot := runtime.Snapshot(clock.Now())
+	if protected.Code != http.StatusTooManyRequests || backendCalls.Load() != 0 ||
+		snapshot.Report.LastDecision.Reason != coreadmission.ReasonInputLimit ||
+		snapshot.Report.LastDecision.Scope != coreadmission.ProtectionRequest ||
+		snapshot.Report.LastDecision.Estimate.SelectionInputTokens <= 261_888 {
+		t.Fatalf(
+			"over-context short lexemes reached upstream or missed ContextGate: status=%d calls=%d snapshot=%+v",
+			protected.Code, backendCalls.Load(), snapshot,
+		)
+	}
+
+	following := serveAdmissionRequest(t, srv, "following supported request")
+	if following.Code != http.StatusOK || backendCalls.Load() != 1 ||
+		!runtime.Snapshot(clock.Now()).Report.LastDecision.Admitted() {
+		t.Fatalf("over-context protection locked following request: status=%d calls=%d snapshot=%+v",
+			following.Code, backendCalls.Load(), runtime.Snapshot(clock.Now()))
+	}
+}
+
+func TestAdmissionHTTPProtectsHighTokenDensityTextBeforeForward(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		content string
+	}{
+		{name: "dense-digits", content: strings.Repeat("01", 132_000)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var backendCalls atomic.Int64
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backendCalls.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+			runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+				Mode: "enforce", KVCapacity: 862_437, MaxModelLen: 262_144, KVHardRatio: 0.88,
+			})
+			srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+
+			protected := serveAdmissionRequest(t, srv, test.content)
+			snapshot := runtime.Snapshot(clock.Now())
+			if protected.Code != http.StatusTooManyRequests || backendCalls.Load() != 0 ||
+				snapshot.Report.LastDecision.Reason != coreadmission.ReasonInputLimit ||
+				snapshot.Report.LastDecision.Scope != coreadmission.ProtectionRequest ||
+				snapshot.Report.LastDecision.Estimate.SelectionInputTokens <= 261_888 {
+				t.Fatalf(
+					"high-token-density input reached upstream or missed ContextGate: status=%d calls=%d snapshot=%+v",
+					protected.Code, backendCalls.Load(), snapshot,
+				)
+			}
+
+			following := serveAdmissionRequest(t, srv, "following supported request")
+			if following.Code != http.StatusOK || backendCalls.Load() != 1 ||
+				!runtime.Snapshot(clock.Now()).Report.LastDecision.Admitted() {
+				t.Fatalf("high-token-density protection locked following request: status=%d calls=%d snapshot=%+v",
+					following.Code, backendCalls.Load(), runtime.Snapshot(clock.Now()))
+			}
+		})
+	}
+}
+
 func TestAdmissionHTTPEnforceProtectionIsOpenAICompatibleAndObservable(t *testing.T) {
 	var backendCalls atomic.Int64
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

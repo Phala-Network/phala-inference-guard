@@ -7,6 +7,7 @@ import (
 
 const (
 	approximateASCIIBytesPerToken   = 4
+	approximateSpaceBytesPerToken   = 32
 	approximateDenseMinimumLength   = 256
 	approximateDenseMinimumDistinct = 12
 )
@@ -26,6 +27,8 @@ func approximateJSONStringTokens(raw []byte) (int64, bool) {
 	}
 
 	var quarterTokenUnits int64
+	var asciiWordRunBytes int64
+	var stringSpaceBytes int64
 	var seenLow uint64
 	var seenHigh uint64
 	denseASCIIBytes := 0
@@ -36,17 +39,49 @@ func approximateJSONStringTokens(raw []byte) (int64, bool) {
 			transitions++
 		}
 		previous = value
-		switch {
-		case value < 0x80 && isApproximateASCIIWord(value):
-			if !addApproximateQuarterTokenUnits(&quarterTokenUnits, 1) {
+		if value < 0x80 && isApproximateASCIIDigit(value) {
+			if !addApproximateRoundedRun(
+				&quarterTokenUnits,
+				asciiWordRunBytes,
+				approximateASCIIBytesPerToken,
+			) ||
+				!addApproximateQuarterTokenUnits(
+					&quarterTokenUnits,
+					approximateASCIIBytesPerToken,
+				) {
 				return 0, false
 			}
+			asciiWordRunBytes = 0
 			denseASCIIBytes++
 			if value < 64 {
 				seenLow |= uint64(1) << value
 			} else {
 				seenHigh |= uint64(1) << (value - 64)
 			}
+			continue
+		}
+		if value < 0x80 && isApproximateASCIIWord(value) {
+			if asciiWordRunBytes == math.MaxInt64 {
+				return 0, false
+			}
+			asciiWordRunBytes++
+			denseASCIIBytes++
+			if value < 64 {
+				seenLow |= uint64(1) << value
+			} else {
+				seenHigh |= uint64(1) << (value - 64)
+			}
+			continue
+		}
+		if !addApproximateRoundedRun(
+			&quarterTokenUnits,
+			asciiWordRunBytes,
+			approximateASCIIBytesPerToken,
+		) {
+			return 0, false
+		}
+		asciiWordRunBytes = 0
+		switch {
 		case value < 0x80 && isApproximateDenseASCII(value):
 			if !addApproximateQuarterTokenUnits(&quarterTokenUnits, approximateASCIIBytesPerToken) {
 				return 0, false
@@ -54,6 +89,10 @@ func approximateJSONStringTokens(raw []byte) (int64, bool) {
 			denseASCIIBytes++
 			seenLow |= uint64(1) << value
 		case value < 0x80 && isJSONSpace(value):
+			if stringSpaceBytes == math.MaxInt64 {
+				return 0, false
+			}
+			stringSpaceBytes++
 		case value < 0x80:
 			if !addApproximateQuarterTokenUnits(&quarterTokenUnits, approximateASCIIBytesPerToken) {
 				return 0, false
@@ -63,6 +102,17 @@ func approximateJSONStringTokens(raw []byte) (int64, bool) {
 				return 0, false
 			}
 		}
+	}
+	if !addApproximateRoundedRun(
+		&quarterTokenUnits,
+		asciiWordRunBytes,
+		approximateASCIIBytesPerToken,
+	) || !addApproximateRoundedRun(
+		&quarterTokenUnits,
+		stringSpaceBytes,
+		approximateSpaceBytesPerToken,
+	) {
+		return 0, false
 	}
 
 	distinct := bits.OnesCount64(seenLow) + bits.OnesCount64(seenHigh)
@@ -87,11 +137,36 @@ func approximateJSONStringTokens(raw []byte) (int64, bool) {
 		approximateASCIIBytesPerToken, true
 }
 
+// addApproximateRoundedRun settles one complete lexical category rather than
+// pooling bytes across boundaries. That preserves the cheap bytes-per-token
+// approximation while ensuring many independent one-byte words cannot collapse
+// into one token merely because whitespace separated them.
+func addApproximateRoundedRun(total *int64, runBytes, bytesPerToken int64) bool {
+	if runBytes == 0 {
+		return true
+	}
+	if runBytes < 0 || bytesPerToken <= 0 ||
+		runBytes > math.MaxInt64-(bytesPerToken-1) {
+		return false
+	}
+	tokens := (runBytes + bytesPerToken - 1) / bytesPerToken
+	if tokens > math.MaxInt64/approximateASCIIBytesPerToken {
+		return false
+	}
+	return addApproximateQuarterTokenUnits(
+		total,
+		tokens*approximateASCIIBytesPerToken,
+	)
+}
+
 func isApproximateASCIIWord(value byte) bool {
 	return value >= 'a' && value <= 'z' ||
 		value >= 'A' && value <= 'Z' ||
-		value >= '0' && value <= '9' ||
 		value == '_'
+}
+
+func isApproximateASCIIDigit(value byte) bool {
+	return value >= '0' && value <= '9'
 }
 
 func isApproximateDenseASCII(value byte) bool {

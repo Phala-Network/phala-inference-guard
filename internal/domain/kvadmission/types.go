@@ -31,18 +31,19 @@ func (c Cost) PredictiveEstimate() (predictive.RequestEstimate, bool) {
 	return c.Estimate, true
 }
 
-// ApproximateInputTokenHint returns a model-neutral lexical-size hint. The
-// value is optional evidence for a later combined forecast; it is neither an
-// exact tokenizer result nor an admission decision.
+// ApproximateInputTokenHint returns the model-neutral lexical-size estimate.
+// It is not an exact tokenizer result. EstimateJSON combines it with the fixed
+// reservation margin when constructing the one admission RequestEstimate.
 func (c Cost) ApproximateInputTokenHint() (int64, bool) {
 	return c.ApproximateInputTokens, c.ApproximateInputTokensKnown && c.ApproximateInputTokens > 0
 }
 
 // ApproximatePrefillTokenHint returns the model-neutral work estimate used to
 // predict Prefill interference. Text-only requests keep the bounded lexical
-// hint. For a recognized multimodal request, the lexical URL or marker is not
-// representative of backend media expansion, so use the existing conservative
-// input upper bound. Hard-KV accounting remains independent of this hint.
+// estimate. For a recognized multimodal request, the lexical URL or marker is
+// not representative of backend media expansion, so use the conservative input
+// upper bound. The Controller later derives block-rounded KV work from the
+// separately margined KV-reservation estimate.
 func (c Cost) ApproximatePrefillTokenHint() (int64, bool) {
 	if c.ModalityCount > 0 && c.EstimatedInputHigh > 0 {
 		return c.EstimatedInputHigh, true

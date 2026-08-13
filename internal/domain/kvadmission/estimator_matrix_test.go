@@ -55,6 +55,7 @@ type fixedMarginCandidate struct {
 }
 
 var registeredFixedMarginCandidates = [...]fixedMarginCandidate{
+	{numerator: 9, denominator: 8},
 	{numerator: 5, denominator: 4},
 	{numerator: 3, denominator: 2},
 	{numerator: 2, denominator: 1},
@@ -79,7 +80,7 @@ func TestEstimatorGemma4OracleEvidence(t *testing.T) {
 			cost := EstimateJSON(fixture.body, 256, true, DefaultEstimatorConfig())
 			selection, known := cost.ApproximatePrefillTokenHint()
 			reservation, valid := fixedMarginTokens(selection, candidate.numerator, candidate.denominator)
-			if !cost.Supported || !known || !valid ||
+			if !cost.Supported || !known || !valid || selection < fixture.actualTokens ||
 				fixture.actualTokens*oracleHeadroomActualMultiplier >
 					reservation*oracleHeadroomReservationMultiplier ||
 				reservation*oracleMaximumOverreservationDenominator >
@@ -110,6 +111,14 @@ func TestEstimatorGemma4OracleEvidence(t *testing.T) {
 		if !cost.Supported || !known {
 			t.Fatalf("fixture=%s cost=%+v estimate=%+v/%t", fixture.name, cost, estimate, known)
 		}
+		if estimate.SelectionInputTokens < fixture.actualTokens {
+			t.Fatalf(
+				"fixture=%s selection=%d underestimates actual=%d",
+				fixture.name,
+				estimate.SelectionInputTokens,
+				fixture.actualTokens,
+			)
+		}
 		if len(fixture.body) != fixture.bodyBytes {
 			t.Fatalf("fixture=%s body bytes=%d want=%d", fixture.name, len(fixture.body), fixture.bodyBytes)
 		}
@@ -134,6 +143,10 @@ func TestEstimatorGemma4OracleEvidence(t *testing.T) {
 func exactTokenizerFixtures(t *testing.T) []exactTokenizerFixture {
 	t.Helper()
 	return []exactTokenizerFixture{
+		exactTokenizerFixtureFor(t, "common_of_60k_words", "of ", 60_000, 180_092, "db99699ba2962eab171d5869bdbcdc324160a1d7592c5d93000513dc1e083d76", 60_013),
+		exactTokenizerFixtureFor(t, "common_the_60k_words", "the ", 60_000, 240_092, "80b3b51f975392d27542ba0eb10faaeebdf4432177bac64a4f7a2e796e153af6", 60_013),
+		exactTokenizerFixtureFor(t, "short_lexeme_60k_words", "x ", 60_000, 120_092, "7db92f83f6dccd47d345dfadbc12ade77dc38ff30ea251522c5d46032cddb118", 60_013),
+		exactTokenizerFixtureFor(t, "numeric_64k_pairs", "01", 64*1024, 131_164, "a28247c1cfe136411423e94f596b951049823c299a147c6b4dea6c6e853b380f", 131_085),
 		exactTokenizerFixtureFor(t, "natural_64k_words", "word ", 64*1024, 327_772, "c8b6e8f708dc91bec38bf8b2316c03051cb2498fcc6cc8dd534c6b2606cc52ae", 65_549),
 		exactTokenizerFixtureFor(t, "natural_120k_words", "word ", 120*1024, 614_492, "0d8d864ced416362e5e7e6534d8db63b998ca01ea31c463aa7000658d819ef14", 122_893),
 		exactTokenizerFixtureFor(t, "cjk_64k", "\u4e2d", 64*1024, 196_700, "d9c7e77d2c535849e9b441a543f58972d26668d42119ebe3b98bc0d05908cad9", 65_549),
