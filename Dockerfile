@@ -11,7 +11,7 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
 
 FROM gcr.io/distroless/base-debian12@sha256:348dac1808083ccc3366399d6db835875b4eaf7c9b694783f5a3f353c4b58a28
 ARG SOURCE_REVISION
-LABEL org.opencontainers.image.version="0.12.11" \
+LABEL org.opencontainers.image.version="0.12.12" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 ENV NVIDIA_VISIBLE_DEVICES=all
 COPY --from=go-build /out/phala-inference-guard /phala-inference-guard

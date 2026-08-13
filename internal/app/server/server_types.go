@@ -12,9 +12,9 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.11 is the first release identity assigned to the clean admission
-// rebuild. Historical v0.12.10 artifacts remain diagnostic-only evidence.
-const version = "PIG-v0.12.11"
+// v0.12.12 replaces the rejected v0.12.11 estimator candidate. Historical
+// v0.12.10 and v0.12.11 artifacts remain diagnostic-only evidence.
+const version = "PIG-v0.12.12"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 
