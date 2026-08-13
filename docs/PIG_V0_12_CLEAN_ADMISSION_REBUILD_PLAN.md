@@ -1048,6 +1048,134 @@ production gates remain open. This documentation-only acceptance does not
 change the executable bytes or the image revision above.
 
 Runtime iteration is PIG-only. Preserve the current vLLM container and CVM.
+
+### 10.7 c21 primary-runtime, lifecycle, long-input, and fake-upstream acceptance
+
+The accepted local-only image replaced only the c21 primary PIG. v0.12.10 was
+stopped and preserved as `pig-v0124-runtime-v01210-rollback`; vLLM and the CVM
+were not restarted or replaced. The successful replacement evidence is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-runtime-replace-r3.WzKbSc
+```
+
+The new primary container used image ID
+`sha256:3670d0db8d1e472a505d2feb68d4aeff9cb261ebabc4eb13014688524d9b51a6`,
+reported `PIG-v0.12.12`, default enforce mode and automatic metadata, inherited
+no explicit `PREDICTIVE_*` setting, returned 200 for models and normal chat,
+and drained reservations and pending Prefill. The PIG-only unavailable window
+was one whole second at the runner's POSIX clock resolution. The vLLM ID,
+StartedAt and restart count remained unchanged. The summary SHA-256 is
+`78380b1c723b79bfbe3901ca22e586c5f449e85026174b9fe4187ea116804c1e`.
+
+Two earlier replacement runners automatically restored v0.12.10 before this
+success. The first emitted Docker labels as `key = value`; the second assumed
+GNU `date +%s%3N` on the BusyBox host. Both were runner portability defects,
+not image or admission failures. Each rollback was independently checked for
+v0.12.10 health and an unchanged running vLLM before retrying.
+
+Primary success-path API acceptance is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-primary-api-success-r1.vXy9BD
+```
+
+Normal, streaming, forced-tool and strict JSON-schema requests returned 200.
+All four incremented admission fit exactly once, returned valid protocol
+results, and individually drained reservation, pending Prefill, pending token,
+and intake state. No lifecycle failure counter, credential, or prompt leak was
+found. The summary SHA-256 is
+`e7dd5a31ef274ef1d047e747753c351349363d4b07dcea33ffbbcd85c63233f8`.
+
+Primary error and low/no-flow acceptance is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-primary-failure-lifecycle-r2.q1UZfW
+```
+
+Malformed JSON returned 400 before admission/upstream. Unsupported content and
+chunked transfer each returned request-scoped 429 before upstream and exposed
+the same `invalid_request` protection in logs and metrics. An upstream model
+miss returned the real 404. A client was terminated only after live evidence
+showed one PIG reservation and one vLLM running request. Every failure then
+reached zero reservations, pending Prefill, pending tokens, vLLM running and
+waiting; an immediate following small request returned 200. The matrix added
+nine attempts, seven fits and two enforced risks with zero lifecycle failures.
+The summary SHA-256 is
+`8b3bf4578e4879f4da3a29e2b1e035221d44893e98bfd38bcc3c46d53f9d826e`.
+
+Real 262K-vLLM long-input acceptance is aggregated at:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-real-long-acceptance-r2.CHuSsk
+```
+
+The admitted sequential requests reported 60,013, 96,013 and 250,013 actual
+prompt tokens. Their maximum PIG pending Prefill values were 61,893, 99,018 and
+257,831 tokens. Each produced one upstream call, vLLM running reached one,
+waiting stayed zero, and the preemption delta was zero. The 250K request took
+72 seconds and reached maximum observed KV usage 0.256413 without an OOM,
+restart or preemption. After every request, PIG and vLLM fully drained.
+
+Both repeated `"x "` 270K and dense-digit 270K inputs returned request-scoped
+429 with the authoritative Context Gate reason `input_limit`. The vLLM request
+and prompt-token deltas were zero, preemption delta was zero, logs and metrics
+exposed the protection, and the following small request returned 200. The
+aggregate summary SHA-256 is
+`6ec2a9843506e1222145e736231a3713be03f6f2d18c3b443d25564c17f43607`.
+An initial runner expected the non-contract label `context_limit`; the source
+and this plan both define `input_limit`, so the accepted protection slice was
+rerun with the correct wire contract rather than changing production code.
+
+High-context behavior that cannot be forwarded to the real 262K vLLM used a
+bounded, ignored, test-only Go fake upstream. Its binary SHA-256 was
+`471f2babccf7e35d95e9cc2c9c8c4b79926e621a50d2d93b652f65ce9371259a`.
+The aggregate acceptance is:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-fake-runtime-acceptance-r1.9TPu1T
+```
+
+Automatic metadata for a 650K context derived maximum input 665,344 and the
+65,536 / 262,144 / 524,288 Prefill boundaries with 262,144 aggregate budget.
+The observed model-neutral selections were 278,447 for the exclusive case,
+525,947 for the 512K quiescent case and 649,697 for the 650K quiescent case.
+While an exclusive or quiescent request was forwarded but still absent from
+fake backend metrics, PIG already published one reservation and respectively
+278,447 or 525,947 pending Prefill tokens. Before any HTTP reject, Router
+compatibility metrics showed active/applied backpressure, raw running zero,
+effective running one, and dynamic global limit one. A second request returned
+429 without a second upstream call using `prefill_exclusive/load` or
+`prefill_quiescent/load`; after completion all state drained and a request
+returned 200. The corrected high-context summary SHA-256 is
+`5f12aad5e78e89dc6a40aade3725bc3e19138d5abbf03bf7ba17dc2ad72e3970`.
+
+Same-capability generation/preemption/start-time reset increased the runtime
+epoch from one to two and reopened without restarting PIG. A transient metrics
+failure admitted from the last coherent observation; after its 600-ms maximum
+age, PIG returned availability-scoped `observation_stale`, made Router
+backpressure active/applied with dynamic global limit one, made no upstream
+call, and reopened after metrics recovered. The stale/recovery summary SHA-256
+is `0f2dec29d5441bb4a6cf381399a03575d2a6f19fe3348a9f59d8b435f37e83ad`.
+A true KV-capacity capability drift permanently closed intake even after the
+fake geometry was restored; both requests returned 429 without an upstream
+call while the test PIG remained running. Its summary SHA-256 is
+`435dbf37ddb8f00ef96514b3eec4cd04b5c0f920340094521500c129753c712a`.
+With test-only `PROXY_TIMEOUT_SECONDS=1`, a delayed upstream was canceled after
+one second, returned 429, drained all PIG/backend state with zero lifecycle
+failures, and immediately reopened after delay removal. Its summary SHA-256 is
+`ea381c7d6822e299191cd0acc45bf1d4c5c4a72258747c51164015edfcfe4181`.
+
+All fake PIG containers and the fake server were removed, and the workbench was
+disconnected from the temporary serving network. The primary PIG and vLLM
+identity, start time, and restart count remained unchanged throughout. This
+accepts c21 compatibility, request lifecycle, low/no-flow recovery, real and
+simulated long-input behavior, Router pressure visibility, reset, stale,
+drift, and timeout gates. Matched QoS/goodput/Pareto repetitions, registry
+publication, Router enablement, and production traffic remain open. The main
+PIG remains the accepted local-only v0.12.12 image so the matched GPU gate can
+continue; the v0.12.10 rollback container remains stopped and preserved.
+
 Required c21 workloads include:
 
 - sustained regular Decode and the 12-by-2 small-request case;
@@ -1600,8 +1728,10 @@ inherited from this result.
 - [x] build one exact v0.12.12 local-only image without a registry digest and
   pass isolated startup/capability, request-preservation, and shadow/enforce
   decision/forward-causality gates without changing the primary PIG or vLLM.
-- [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
-  QoS, goodput, and Pareto gates.
+- [x] complete c21 PIG-only compatibility, lifecycle, real and fake long-input,
+  low/no-flow, Router-pressure visibility, reset, stale, drift, and timeout
+  gates while retaining the v0.12.10 rollback asset and leaving vLLM unchanged.
+- [ ] complete matched c21 QoS, completion-goodput, and Pareto repetitions.
 - [x] complete independent pre-version source/evidence audit on exact clean
   pushed HEAD `24654d6`.
 - [ ] upload only the exact accepted digest.
