@@ -1083,6 +1083,57 @@ source cutover and source matrix only. It does not assign a release version,
 build or publish an image, replace the running c21 PIG, restart vLLM/CVM,
 modify Router, or provide GPU/runtime/production-goodput evidence.
 
+### 2026-08-14 independent source/evidence audit
+
+An independent audit started from clean pushed HEAD
+`24654d61a5423b2476a626ff97196ece8d2bbb4e`. The only path changed after the
+accepted executable commit `c2e58cc` was this plan. The executable binary patch
+SHA-256 was independently reproduced as
+`fe68bcc64736506787761024b3aee758b328daa390a1adba9c9aff41b4de5c6c`, exactly
+matching the recorded acceptance patch.
+
+The audit directory is:
+
+```text
+/tmp/pig-independent-source-audit-r1.hNLPVa
+```
+
+The audit independently verified:
+
+- HEAD, branch, remote HEAD, and a clean worktree;
+- every file in `/tmp/pig-slice-c-acceptance-r1/SHA256SUMS` with
+  `sha256sum -c`, including the original success marker;
+- the frozen `v0.12.10` fixture is tracked, present in a clean index export,
+  and has identical index/worktree SHA-256
+  `cb1a57553e3f709fd3825e01e56bf6f8eb6d6f0f30883cfa8df280f5cd16f462`;
+- no deleted production Manager, RequestAware, predictiveShadow, RequestCost,
+  VirtualState, or NewManager declaration returned;
+- no credential-like added line or unexpected private-key/patch artifact was
+  present; and
+- an exact `git checkout-index` export passed `go test ./... -count=1`, focused
+  Controller/server/simulation `go test -race`, `go vet ./...`, `go build
+  ./...`, and `git diff --check` on c21 with Go 1.24.13.
+
+Independent audit log SHA-256 values are:
+
+```text
+build             e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+clean-full        1c6d30bf73a57f8f63e5a2eac18cc49a7356ddc90e97accb4e24b8ffa926493f
+clean-race        20904ef64bc562b539a38038be4aac7fb3103eea3dd502769c1b026a7c60a68a
+evidence-hashes   cc965e34b0457b216443fb043f4b4e26f2c74f6657dce69946e3c87c9c81e2e4
+fixture-hash      30dcc73db0d96dbe32ce3d3fa63cc69c074396e7fceef4bc10dd07d053224323
+fixture-tracked   324f7904424b6c9292c0f448993aa6f72c72e634037e59f98910ae25c3aafdbb
+identity          1688600abae7910cbc406145c2025303f57365418e4205c9330a7b5b208ba133
+legacy-symbols    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+patch             673380429daf8b252c0ca0ff6c33dbb3349f98aa6bacc390e094cd75f513b31f
+vet               e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+This closes the independent pre-version source/evidence audit. It does not
+convert model-neutral estimator error into tokenizer parity evidence, and it
+does not accept c21 runtime lifecycle, QoS/goodput/Pareto behavior, an image,
+registry publication, deployment, Router changes, or production traffic.
+
 ## 12. Active checklist
 
 - [x] freeze v0.12.10 as diagnostic-only evidence and retain rollback assets.
@@ -1112,7 +1163,8 @@ modify Router, or provide GPU/runtime/production-goodput evidence.
 - [ ] build and validate one local-only image.
 - [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
   QoS, goodput, and Pareto gates.
-- [ ] complete independent source/evidence audit.
+- [x] complete independent pre-version source/evidence audit on exact clean
+  pushed HEAD `24654d6`.
 - [ ] upload only the exact accepted digest.
 
 ## 13. Stop rules
