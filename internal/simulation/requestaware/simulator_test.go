@@ -16,7 +16,10 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		t.Fatalf("seed=%d want=%d", suite.Seed, SimulationSeed)
 	}
 	if suite.ProductionPolicyCalls == 0 {
-		t.Fatal("simulation did not call production RequestAwarePolicy")
+		t.Fatal("simulation did not retain the frozen v0.12.10 baseline")
+	}
+	if suite.ControllerPolicyCalls == 0 {
+		t.Fatal("simulation did not call the candidate AdmissionController")
 	}
 	required := map[string]bool{
 		"short-only": false, "large-only": false,
@@ -39,7 +42,7 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 		"prefill-quiescent-cancel-recovery": false, "prefill-quiescent-exclusive-recovery": false,
 		"completion-before-next-poll": false,
 	}
-	wantPolicies := []PolicyName{"no_admission", "v0.12.2", "v0.12.10"}
+	wantPolicies := []PolicyName{"no_admission", "v0.12.2", "v0.12.10", "candidate"}
 	for _, scenario := range suite.Scenarios {
 		if _, ok := required[scenario.Name]; ok {
 			required[scenario.Name] = true
@@ -75,9 +78,9 @@ func TestSimulationUsesAtomicResourceAndPrefillQoSGates(t *testing.T) {
 		if !ok {
 			continue
 		}
-		metrics, present := scenario.Policies[PolicyName("v0.12.10")]
+		metrics, present := scenario.Policies[PolicyCandidate]
 		if !present || metrics.Admitted != expected.admitted || metrics.Rejected != expected.rejected {
-			t.Fatalf("scenario %s v0.12.10=%+v present=%t, want admitted/rejected=%d/%d",
+			t.Fatalf("scenario %s candidate=%+v present=%t, want admitted/rejected=%d/%d",
 				scenario.Name, metrics, present, expected.admitted, expected.rejected)
 		}
 		delete(want, scenario.Name)
@@ -96,7 +99,7 @@ func TestSimulationDoesNotFabricateCapacityBeforeNextPoll(t *testing.T) {
 		if scenario.Name != "completion-before-next-poll" {
 			continue
 		}
-		candidate := scenario.Policies[PolicyV01210]
+		candidate := scenario.Policies[PolicyCandidate]
 		if candidate.Arrivals != 7 || candidate.Admitted != 2 || candidate.Rejected != 5 ||
 			candidate.HardProtects != 0 || candidate.Preemptions != 0 {
 			t.Fatalf("completion-before-next-poll candidate=%+v, want 7 arrivals, 2 admits, 5 size protects, and no hard protection/preemption", candidate)
@@ -121,11 +124,11 @@ func TestDeterministicRequestAwareGoodputSuiteIsReplayable(t *testing.T) {
 }
 
 func TestDeterministicRequestAwareGoodputSuiteIsPolicyOrderIndependent(t *testing.T) {
-	forward, err := runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV01210})
+	forward, err := runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV01210, PolicyCandidate})
 	if err != nil {
 		t.Fatalf("forward policy order: %v", err)
 	}
-	reverse, err := runSuite([]PolicyName{PolicyV01210, PolicyV0122, PolicyNoAdmission})
+	reverse, err := runSuite([]PolicyName{PolicyCandidate, PolicyV01210, PolicyV0122, PolicyNoAdmission})
 	if err != nil {
 		t.Fatalf("reverse policy order: %v", err)
 	}
@@ -137,8 +140,8 @@ func TestDeterministicRequestAwareGoodputSuiteIsPolicyOrderIndependent(t *testin
 func TestDeterministicRequestAwareGoodputSuiteRejectsInvalidPolicyOrder(t *testing.T) {
 	for _, order := range [][]PolicyName{
 		{PolicyNoAdmission, PolicyV0122},
-		{PolicyNoAdmission, PolicyV0122, PolicyV0122},
-		{PolicyNoAdmission, PolicyV0122, PolicyName("unknown")},
+		{PolicyNoAdmission, PolicyV0122, PolicyV0122, PolicyCandidate},
+		{PolicyNoAdmission, PolicyV0122, PolicyV01210, PolicyName("unknown")},
 	} {
 		if _, err := runSuite(order); err == nil {
 			t.Fatalf("invalid policy order passed: %v", order)
@@ -193,9 +196,16 @@ func TestDeterministicRequestAwareGoodputSuiteMeetsRegisteredAcceptance(t *testi
 			"scenario=%s baseline=%+v candidate=%+v",
 			scenario.Name,
 			scenario.Policies[PolicyV0122],
-			scenario.Policies[PolicyV01210],
+			scenario.Policies[PolicyCandidate],
 		)
 	}
+	t.Logf(
+		"aggregate no_admission=%+v v0.12.2=%+v v0.12.10=%+v candidate=%+v",
+		suite.Aggregate(PolicyNoAdmission),
+		suite.Aggregate(PolicyV0122),
+		suite.Aggregate(PolicyV01210),
+		suite.Aggregate(PolicyCandidate),
+	)
 	if err := ValidateAcceptance(suite); err != nil {
 		t.Fatalf("acceptance: %v", err)
 	}
@@ -211,12 +221,43 @@ func TestValidateAcceptanceTreatsSyntheticTPSAndWaitingAsDiagnostics(t *testing.
 	}
 }
 
+func TestValidateAcceptanceRequiresEveryComparisonPolicy(t *testing.T) {
+	candidate := Metrics{Arrivals: 1, Admitted: 1, PeakKVTokens: 64, MaximumRunning: 1}
+	for _, missing := range []PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV01210, PolicyCandidate} {
+		t.Run(string(missing), func(t *testing.T) {
+			suite := acceptanceSuite(candidate)
+			delete(suite.Scenarios[0].Policies, missing)
+			if err := ValidateAcceptance(suite); err == nil {
+				t.Fatalf("acceptance passed without comparison policy %q", missing)
+			}
+		})
+	}
+}
+
 func TestValidateAcceptanceRejectsPreemptionRegression(t *testing.T) {
 	suite := acceptanceSuite(Metrics{
 		Arrivals: 1, Admitted: 1, PeakKVTokens: 64, MaximumRunning: 1, Preemptions: 1,
 	})
 	if err := ValidateAcceptance(suite); err == nil {
 		t.Fatal("candidate preemption regression passed")
+	}
+}
+
+func TestValidateAcceptanceRejectsAggregateGoodputRegression(t *testing.T) {
+	suite := acceptanceSuite(Metrics{
+		Arrivals: 1, Admitted: 1, Completed: 1,
+		CompletionTokens: 1, SLOCompletionTokens: 1,
+		PeakKVTokens: 64, MaximumRunning: 1,
+	})
+	baseline := suite.Scenarios[0].Policies[PolicyNoAdmission]
+	baseline.Completed = 1
+	baseline.CompletionTokens = 2
+	baseline.SLOCompletionTokens = 2
+	baseline.CompletionTokensPerSecond = 2
+	baseline.SLOCompletionTokensPerSecond = 2
+	suite.Scenarios[0].Policies[PolicyNoAdmission] = baseline
+	if err := ValidateAcceptance(suite); err == nil {
+		t.Fatal("aggregate output-token goodput regression passed")
 	}
 }
 
@@ -273,7 +314,7 @@ func TestSimulationCandidateSizeAwareAdmissionContracts(t *testing.T) {
 		if !exists {
 			continue
 		}
-		candidate := scenario.Policies[PolicyV01210]
+		candidate := scenario.Policies[PolicyCandidate]
 		if candidate.Admitted != contract[0] || candidate.Rejected != contract[1] {
 			t.Fatalf(
 				"scenario %s admitted/rejected=%d/%d want=%d/%d",
@@ -295,6 +336,7 @@ func acceptanceSuite(candidate Metrics) Suite {
 	baseline := Metrics{Arrivals: 1, Admitted: 1, PeakKVTokens: 64, MaximumRunning: 1}
 	return Suite{
 		ProductionPolicyCalls: 1,
+		ControllerPolicyCalls: 1,
 		Scenarios: []ScenarioResult{{
 			Name: "acceptance-unit",
 			CapabilityProfile: runtimepredictive.BackendCapabilityProfile{
@@ -304,6 +346,7 @@ func acceptanceSuite(candidate Metrics) Suite {
 				PolicyNoAdmission: baseline,
 				PolicyV0122:       baseline,
 				PolicyV01210:      candidate,
+				PolicyCandidate:   candidate,
 			},
 		}},
 	}

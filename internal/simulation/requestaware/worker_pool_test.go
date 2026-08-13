@@ -66,7 +66,7 @@ func TestSustainedReplacementWaveCompletesAll24Requests(t *testing.T) {
 			comparison.SizeProtects != 7 || comparison.Completed != 17 || comparison.Preemptions != 0 {
 			t.Fatalf("sustained replacement v0.12.2 comparison=%+v, want reproduced 17/24 overprotection", comparison)
 		}
-		candidate := scenario.Policies[PolicyV01210]
+		candidate := scenario.Policies[PolicyCandidate]
 		if candidate.Arrivals != 24 || candidate.Admitted != 24 || candidate.Rejected != 0 ||
 			candidate.Completed != 24 || candidate.Preemptions != 0 {
 			t.Fatalf("sustained replacement candidate=%+v, want 24/24 completed without protection or preemption", candidate)

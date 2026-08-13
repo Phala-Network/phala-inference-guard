@@ -831,6 +831,114 @@ The exact Slice A source was committed and pushed as
 byte-identical to the r4 candidate; the only post-gate change inside that
 commit was this evidence/checklist documentation.
 
+### 2026-08-14 Slice B three-pass implementation review
+
+Slice B starts from pushed HEAD `ae2402e` and adds a new independent
+`internal/admission` package. It does not modify or adapt either old Manager,
+the old request-aware Policy/Gates, or the production HTTP path.
+
+1. Model and causality: `AdmissionController.Admit` consumes the canonical
+   `RequestEstimate`, derives `RequestWork` from its immutable capability, and
+   applies Context, KV, and Prefill Gates to the same pre-admit projected
+   state. The deterministic suite now names this implementation `candidate`
+   and retains `v0.12.10` as a frozen historical comparison. Review found that
+   the old suite protected KV/preemption/self-lock but did not directly lock
+   the objective, so aggregate raw and QoS-qualified output-token goodput
+   non-regression against no-admission, `v0.12.2`, and `v0.12.10` was added.
+   Review also corrected protected DecisionRecords so their post-admit KV and
+   Prefill fields remain counterfactual forecasts instead of silently
+   reverting to the pre-admit values.
+2. Safety and lifecycle: behavior-level red tests first demonstrated that a
+   policy-only implementation admitted all concurrent near-KV arrivals and
+   never accumulated Prefill work. The implemented atomic transaction now owns
+   epoch-fenced monotonic handles, a checked O(1) aggregate, sample-watermark
+   coverage, completion-before-poll residual debt, same-capability counter
+   reset recovery, permanent capability-drift closure, bounded maps, and
+   fail-closed sequence overflow. Tests cover an in-flight old sample, covered
+   first byte, every terminal shape, duplicate events, reset, drift, stale
+   recovery, busy startup, concurrent publication/admission, 32 near-KV
+   arrivals, 5,000 deterministic lifecycle transitions, shutdown, and a slow
+   reference fold after every state change.
+3. SOLID and efficiency: the new core has one mutable owner and concrete pure
+   Gates/Projector; it introduces no compatibility interface, forwarding
+   wrapper, model asset, cache path, learning state, timer, request mutation,
+   or mode branch. Snapshot and protected Admit use the aggregate without
+   scanning reservations. On c21, both 256 and 4,096 live reservations measured
+   zero allocations; Snapshot p99 was `254 ns` and protected Admit p99 was
+   `320-321 ns`, with no 16x live-count scaling. Observation publication and
+   shutdown are the intentionally bounded O(n) reconciliation paths.
+
+The deterministic candidate currently reproduces the frozen `v0.12.10`
+aggregate behavior: `91,998.25` raw output tokens, `90,092.07` QoS-qualified
+tokens, one simulated preemption, and at most `0.4 s` idle with demand. This is
+architecture and deterministic evidence, not a claim of GPU improvement or
+production readiness. The new Controller is still disconnected from the real
+observer and pre-forward HTTP transaction until Slice C.
+
+### 2026-08-14 Slice B source acceptance and release review
+
+The exact executable candidate was tested in `pig-v0124-workbench` on c21 from
+base HEAD `ae2402e1d9273b1399c2eed4bdcd65411443abc3`, branch
+`codex/pig-v0.11.0-request-aware`, with Go `1.24.13 linux/amd64`. The final r2
+runner SHA-256 was
+`d9bfa04ebe9f6500f3af754a5ddb291f4f099f5c02d6d1b97a58a33725372b9d`.
+It refused to reuse an existing evidence directory and used
+`set -euo pipefail`, so a failed command on either side of `tee` could not
+produce the success sentinel. It passed:
+
+- focused admission and deterministic-simulation tests;
+- `go test ./... -count=1`;
+- race tests for admission, simulation, and the unchanged HTTP server;
+- `go vet ./...` and `go build ./...`;
+- the ordinary-build O(1)/zero-allocation Controller performance gate;
+- registered deterministic raw and QoS-qualified goodput acceptance;
+- the public simulation command; and
+- `git diff --check`.
+
+The third evidence/release review found one acceptance-harness false-positive:
+the aggregate formula read the frozen `v0.12.10` baseline, but a missing
+per-scenario `v0.12.10` result aggregated to zero and could pass. A focused red
+test failed only for that missing comparison. The harness now requires all
+four policies and equal arrivals for each scenario; the focused test and the
+complete r2 matrix then passed. This changes acceptance integrity, not the
+Controller policy or its deterministic result.
+
+The r2 ordinary-build performance evidence was zero allocations for Snapshot
+and protected Admit with both 256 and 4,096 live reservations. Snapshot/Admit
+p99 was `335 ns`/`439 ns` at 256 and `253 ns`/`320 ns` at 4,096. The 16x live
+reservation count did not cause linear hot-path scaling. The deterministic
+aggregate remained:
+
+```text
+policy        raw output tokens  QoS-qualified tokens  preemptions  max idle with demand
+no_admission          79,114.46              70,112.34           57                     0 s
+v0.12.2               76,621.10              70,825.16            1                  15.3 s
+v0.12.10              91,998.25              90,092.07            1                   0.4 s
+candidate             91,998.25              90,092.07            1                   0.4 s
+```
+
+Final r2 log SHA-256 values are:
+
+```text
+build                  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+diff-check             e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+focused                4f51cc56490b7faa79b1e564e80a641947caa14051b1bbb906710d79e040821c
+full                   d019f330a2267122800f70378bca2edfbc97da6a707c302b5b9fe1cb07e049c3
+performance            ed2a67ca72db141cfeef39a5a04514beecfd20187e5a6ad2ea537f1c9f80f35a
+race                   b35d48b35403353c3dc5d82522934f3aa296eeb99e2d0bc7a1d498a2c5aeed0b
+simulation-acceptance  29fb7c5f9ea281fad8f8d478426441020037eb0e484e4552a446b80ee6a4958b
+simulation-command     c678b7a2734df0b68a8e22fa5cd9f8ad64323c3c883a2564e83cd4dea1e09075
+source                 9e444ba6060ffff72e2c0acf1283f5ac44d101a35f8c825878fbf05b8fefbc02
+vet                    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+The final scope review found zero tracked diff bytes under
+`internal/runtime/predictive` and `internal/app/server`; no production HTTP,
+Observer, Router, Compose, image, deployment, GPU, or traffic claim is part of
+Slice B. The simulation candidate does execute the new Controller transaction
+and reservation lifecycle, but that remains deterministic model evidence until
+Slice C performs the real HTTP/Observer cutover.
+
 ## 12. Active checklist
 
 - [x] freeze v0.12.10 as diagnostic-only evidence and retain rollback assets.
@@ -848,8 +956,9 @@ commit was this evidence/checklist documentation.
   (`5bb0ef2`).
 - [x] Slice A candidate passes the c21 r4 source-acceptance matrix.
 - [x] Slice A exact source commit `a86d4c1` is pushed and recorded.
-- [ ] Slice B new Controller/policy/simulator passes without modifying the old
-  Manager/Policy path and is pushed.
+- [x] Slice B candidate passes the complete c21 source matrix without modifying
+  the old Manager/Policy or production HTTP path.
+- [ ] the exact Slice B source commit is pushed and recorded.
 - [ ] Slice C atomic HTTP/observer cutover passes; old Manager, Policy, Adapter,
   shadow naming, request cost, and duplicate observation code is deleted and
   the slice is pushed.

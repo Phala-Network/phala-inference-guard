@@ -8,22 +8,24 @@ import (
 const simulationDurationEpsilon = 0.000001
 
 func ValidateAcceptance(suite Suite) error {
-	if suite.ProductionPolicyCalls <= 0 {
-		return fmt.Errorf("production v0.12.10 Manager policy was not called")
+	if suite.ControllerPolicyCalls <= 0 {
+		return fmt.Errorf("candidate AdmissionController policy was not called")
 	}
 	for _, scenario := range suite.Scenarios {
 		noAdmission, noAdmissionOK := scenario.Policies[PolicyNoAdmission]
 		v0122, v0122OK := scenario.Policies[PolicyV0122]
-		candidate, candidateOK := scenario.Policies[PolicyV01210]
-		if !noAdmissionOK || !v0122OK || !candidateOK {
-			return fmt.Errorf("scenario %s does not contain all three policies", scenario.Name)
+		v01210, v01210OK := scenario.Policies[PolicyV01210]
+		candidate, candidateOK := scenario.Policies[PolicyCandidate]
+		if !noAdmissionOK || !v0122OK || !v01210OK || !candidateOK {
+			return fmt.Errorf("scenario %s does not contain every required comparison policy", scenario.Name)
 		}
-		if noAdmission.Arrivals != v0122.Arrivals || noAdmission.Arrivals != candidate.Arrivals {
+		if noAdmission.Arrivals != v0122.Arrivals || noAdmission.Arrivals != v01210.Arrivals || noAdmission.Arrivals != candidate.Arrivals {
 			return fmt.Errorf(
-				"scenario %s policies saw different arrivals no-admission/v0.12.2/v0.12.10=%d/%d/%d",
+				"scenario %s policies saw different arrivals no-admission/v0.12.2/v0.12.10/candidate=%d/%d/%d/%d",
 				scenario.Name,
 				noAdmission.Arrivals,
 				v0122.Arrivals,
+				v01210.Arrivals,
 				candidate.Arrivals,
 			)
 		}
@@ -56,6 +58,32 @@ func ValidateAcceptance(suite Suite) error {
 				candidate.MaximumIdleWithDemandSeconds,
 			)
 		}
+	}
+	noAdmission := suite.Aggregate(PolicyNoAdmission)
+	v0122 := suite.Aggregate(PolicyV0122)
+	v01210 := suite.Aggregate(PolicyV01210)
+	candidate := suite.Aggregate(PolicyCandidate)
+	if candidate.CompletionTokens+simulationFloatTolerance < noAdmission.CompletionTokens ||
+		candidate.CompletionTokens+simulationFloatTolerance < v0122.CompletionTokens ||
+		candidate.CompletionTokens+simulationFloatTolerance < v01210.CompletionTokens {
+		return fmt.Errorf(
+			"candidate aggregate output-token goodput %.3f regresses no-admission/v0.12.2/v0.12.10 %.3f/%.3f/%.3f",
+			candidate.CompletionTokens,
+			noAdmission.CompletionTokens,
+			v0122.CompletionTokens,
+			v01210.CompletionTokens,
+		)
+	}
+	if candidate.SLOCompletionTokens+simulationFloatTolerance < noAdmission.SLOCompletionTokens ||
+		candidate.SLOCompletionTokens+simulationFloatTolerance < v0122.SLOCompletionTokens ||
+		candidate.SLOCompletionTokens+simulationFloatTolerance < v01210.SLOCompletionTokens {
+		return fmt.Errorf(
+			"candidate aggregate QoS-qualified output-token goodput %.3f regresses no-admission/v0.12.2/v0.12.10 %.3f/%.3f/%.3f",
+			candidate.SLOCompletionTokens,
+			noAdmission.SLOCompletionTokens,
+			v0122.SLOCompletionTokens,
+			v01210.SLOCompletionTokens,
+		)
 	}
 	return nil
 }

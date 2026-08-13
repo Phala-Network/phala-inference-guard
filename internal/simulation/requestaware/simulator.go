@@ -14,6 +14,7 @@ const (
 	PolicyNoAdmission PolicyName = "no_admission"
 	PolicyV0122       PolicyName = "v0.12.2"
 	PolicyV01210      PolicyName = "v0.12.10"
+	PolicyCandidate   PolicyName = "candidate"
 )
 
 type Metrics struct {
@@ -47,11 +48,12 @@ type ScenarioResult struct {
 type Suite struct {
 	Seed                  int64            `json:"seed"`
 	ProductionPolicyCalls int              `json:"production_policy_calls"`
+	ControllerPolicyCalls int              `json:"controller_policy_calls"`
 	Scenarios             []ScenarioResult `json:"scenarios"`
 }
 
 func RunSuite() (Suite, error) {
-	return runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV01210})
+	return runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV01210, PolicyCandidate})
 }
 
 func runSuite(policyOrder []PolicyName) (Suite, error) {
@@ -69,7 +71,7 @@ func runSuite(policyOrder []PolicyName) (Suite, error) {
 			Category:          scenario.category,
 			DurationSeconds:   scenario.duration.Seconds(),
 			CapabilityProfile: profile,
-			Policies:          make(map[PolicyName]Metrics, 3),
+			Policies:          make(map[PolicyName]Metrics, 4),
 		}
 		for _, policyName := range policyOrder {
 			metrics, calls, runErr := runScenario(scenario, policyName, profile, policy)
@@ -77,7 +79,11 @@ func runSuite(policyOrder []PolicyName) (Suite, error) {
 				return Suite{}, fmt.Errorf("scenario %s policy %s: %w", scenario.name, policyName, runErr)
 			}
 			result.Policies[policyName] = metrics
-			suite.ProductionPolicyCalls += calls
+			if policyName == PolicyCandidate {
+				suite.ControllerPolicyCalls += calls
+			} else if policyName == PolicyV01210 {
+				suite.ProductionPolicyCalls += calls
+			}
 		}
 		suite.Scenarios = append(suite.Scenarios, result)
 	}
@@ -92,13 +98,13 @@ func scenarioMaxModelLen(scenario scenarioSpec) int64 {
 }
 
 func validatePolicyOrder(policyOrder []PolicyName) error {
-	if len(policyOrder) != 3 {
-		return fmt.Errorf("simulation policy order must contain three policies")
+	if len(policyOrder) != 4 {
+		return fmt.Errorf("simulation policy order must contain four policies")
 	}
-	seen := make(map[PolicyName]struct{}, 3)
+	seen := make(map[PolicyName]struct{}, 4)
 	for _, policyName := range policyOrder {
 		switch policyName {
-		case PolicyNoAdmission, PolicyV0122, PolicyV01210:
+		case PolicyNoAdmission, PolicyV0122, PolicyV01210, PolicyCandidate:
 		default:
 			return fmt.Errorf("simulation policy order contains unknown policy %q", policyName)
 		}

@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
@@ -27,7 +28,6 @@ type activeRequest struct {
 	unabsorbed       bool
 	materialized     bool
 	prefillComplete  bool
-	violatedFloor    bool
 	cancelAt         time.Duration
 }
 
@@ -58,6 +58,8 @@ type scenarioRunner struct {
 	profile                runtimepredictive.BackendCapabilityProfile
 	policy                 *runtimepredictive.RequestAwarePolicy
 	manager                *runtimepredictive.Manager
+	controller             *coreadmission.AdmissionController
+	controllerHandles      map[string]coreadmission.ReservationHandle
 	productionPolicyCalls  int
 	active                 map[string]*activeRequest
 	order                  []string
@@ -106,6 +108,14 @@ func runScenario(
 			DecodeSequences:     spec.backgroundRunning,
 			ActiveContextTokens: spec.initialKVTokens,
 		})
+	} else if policyName == PolicyCandidate {
+		capability := simulationAdmissionCapability(profile)
+		controller, controllerErr := coreadmission.NewAdmissionController(capability)
+		if controllerErr != nil {
+			return Metrics{}, 0, fmt.Errorf("construct candidate AdmissionController: %w", controllerErr)
+		}
+		runner.controller = controller
+		runner.controllerHandles = make(map[string]coreadmission.ReservationHandle)
 	}
 	runner.metrics.PeakKVTokens = spec.initialKVTokens
 	if err := runner.initializeArrivals(); err != nil {
@@ -139,7 +149,33 @@ func runScenario(
 	if runner.manager != nil && runner.manager.Snapshot().Reservations != 0 {
 		return Metrics{}, runner.productionPolicyCalls, fmt.Errorf("candidate manager leaked reservations")
 	}
+	if runner.controller != nil {
+		runner.publishControllerObservation(spec.duration, true)
+		snapshot := runner.controller.Snapshot(time.Unix(0, int64(spec.duration)))
+		if snapshot.State.LiveReservations != 0 || snapshot.State.ResidualDebts != 0 ||
+			snapshot.State.ReservationKVTokens != 0 {
+			return Metrics{}, runner.productionPolicyCalls, fmt.Errorf("candidate Controller leaked reservations: %+v", snapshot.State)
+		}
+		runner.controller.Close()
+	}
 	return runner.metrics, runner.productionPolicyCalls, nil
+}
+
+func simulationAdmissionCapability(profile runtimepredictive.BackendCapabilityProfile) coreadmission.Capability {
+	return coreadmission.Capability{
+		Fingerprint:                  simulationManifestID,
+		MaxModelLenTokens:            profile.MaxModelLenTokens,
+		KVCapacityTokens:             profile.KVCapacityTokens,
+		KVBlockSize:                  profile.KVBlockSize,
+		KVHardLimitTokens:            profile.KVHardLimitTokens,
+		MaximumInputTokens:           profile.MaximumAdmissibleInputTokens,
+		MinimumDecodeHorizonTokens:   runtimepredictive.DefaultCapabilityDecodeHorizonTokens,
+		PrefillRegularTokens:         profile.PrefillRegularTokens,
+		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
+		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
+		PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
+		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
+	}
 }
 
 func (r *scenarioRunner) initializeArrivals() error {
@@ -271,6 +307,24 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 		return true, false
 	case PolicyV0122:
 		return r.decideV0122(request, effectiveKV, hardFit, metricsFresh, preemptionCooldown)
+	case PolicyCandidate:
+		if r.controller == nil {
+			return false, true
+		}
+		r.productionPolicyCalls++
+		result := r.controller.Admit(
+			time.Unix(0, int64(at)),
+			simulationRequestEstimate(request),
+		)
+		if !result.Decision.Admitted() {
+			return false, candidateHardProtection(result.Decision)
+		}
+		if !result.Handle.MarkForwarded() {
+			result.Handle.Terminate(coreadmission.TerminalError)
+			return false, true
+		}
+		r.controllerHandles[request.id] = result.Handle
+		return true, false
 	}
 	if r.policyName != PolicyV01210 || r.policy == nil || r.manager == nil {
 		return false, true
@@ -311,6 +365,18 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 	}
 }
 
+func candidateHardProtection(decision coreadmission.DecisionRecord) bool {
+	switch decision.Reason {
+	case coreadmission.ReasonPrefillContention,
+		coreadmission.ReasonPrefillBudget,
+		coreadmission.ReasonPrefillExclusive,
+		coreadmission.ReasonPrefillQuiescent:
+		return false
+	default:
+		return true
+	}
+}
+
 func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	seconds := elapsed.Seconds()
 	if seconds <= 0 {
@@ -347,10 +413,20 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		consumed := math.Min(active.prefillRemaining, prefillBudget)
 		active.prefillRemaining -= consumed
 		prefillBudget -= consumed
-		if active.prefillRemaining <= simulationFloatTolerance && !active.prefillComplete {
-			active.prefillComplete = true
-			if r.manager != nil && !r.manager.MarkPrefillComplete(request.id) {
-				panic("simulation manager rejected Prefill completion")
+	}
+	for _, request := range scheduled {
+		active := request.active
+		if active.prefillRemaining > simulationFloatTolerance || active.prefillComplete {
+			continue
+		}
+		active.prefillComplete = true
+		if r.manager != nil && !r.manager.MarkPrefillComplete(request.id) {
+			panic("simulation manager rejected Prefill completion")
+		}
+		if r.controller != nil {
+			handle, exists := r.controllerHandles[request.id]
+			if !exists || !handle.MarkFirstByte() {
+				panic("simulation Controller rejected first-byte transition")
 			}
 		}
 	}
@@ -383,9 +459,6 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		active.outputRemaining -= requestTokens
 		active.generated += requestTokens
 		generated += requestTokens
-		if perUserTPS+simulationFloatTolerance < simulationTPSFloor {
-			active.violatedFloor = true
-		}
 	}
 	r.metrics.CompletionTokens += generated
 	if decodeSequences > 0 && perUserTPS+simulationFloatTolerance >= simulationTPSFloor {
@@ -409,6 +482,15 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 }
 
 func (r *scenarioRunner) poll(at time.Duration) {
+	var controllerWindow coreadmission.SampleWindow
+	publishController := r.controller != nil && !insideAny(r.spec.staleMetrics, at)
+	if publishController {
+		var ok bool
+		controllerWindow, ok = r.controller.StartSampleWindow()
+		if !ok {
+			panic("simulation Controller rejected sample window")
+		}
+	}
 	used := r.trueKVTokens()
 	running, waiting := r.schedulerCounts(at)
 	aggregateTPS := 0.0
@@ -462,10 +544,50 @@ func (r *scenarioRunner) poll(at time.Duration) {
 			panic(fmt.Sprintf("simulation reconcile: %v", err))
 		}
 	}
+	if publishController {
+		r.publishControllerObservationWindow(controllerWindow, at, used, running, waiting)
+	}
 	r.observed = nextObserved
 	r.lastObservedGeneration = r.metrics.CompletionTokens
 	for _, active := range r.active {
 		active.unabsorbed = false
+	}
+}
+
+func (r *scenarioRunner) publishControllerObservation(at time.Duration, force bool) {
+	if r.controller == nil || !force && insideAny(r.spec.staleMetrics, at) {
+		return
+	}
+	window, ok := r.controller.StartSampleWindow()
+	if !ok {
+		panic("simulation Controller rejected sample window")
+	}
+	running, waiting := r.schedulerCounts(at)
+	r.publishControllerObservationWindow(window, at, r.trueKVTokens(), running, waiting)
+}
+
+func (r *scenarioRunner) publishControllerObservationWindow(
+	window coreadmission.SampleWindow,
+	at time.Duration,
+	used int64,
+	running int,
+	waiting int,
+) {
+	result := r.controller.PublishObservation(window, coreadmission.BackendObservation{
+		CapabilityFingerprint: simulationManifestID,
+		MaxModelLenTokens:     r.profile.MaxModelLenTokens,
+		KVCapacityTokens:      r.profile.KVCapacityTokens,
+		KVBlockSize:           r.profile.KVBlockSize,
+		ObservedAt:            time.Unix(0, int64(at)),
+		MaximumAge:            simulationPollInterval,
+		UsedKVTokens:          used,
+		Running:               int64(running),
+		Waiting:               int64(waiting),
+		GenerationTokensTotal: uint64(math.Floor(r.metrics.CompletionTokens)),
+		PreemptionsTotal:      uint64(r.metrics.Preemptions),
+	})
+	if !result.Accepted {
+		panic(fmt.Sprintf("simulation Controller observation: %+v", result))
 	}
 }
 
@@ -613,8 +735,28 @@ func (r *scenarioRunner) removeActive(at time.Duration, id string, cause runtime
 	if r.manager != nil && !r.manager.Terminate(id, cause) {
 		panic("simulation manager rejected terminal event")
 	}
+	if r.controller != nil {
+		handle, exists := r.controllerHandles[id]
+		if !exists || !handle.Terminate(simulationTerminalCause(cause)) {
+			panic("simulation Controller rejected terminal event")
+		}
+		delete(r.controllerHandles, id)
+	}
 	delete(r.active, id)
 	r.releaseWorkerPoolSlot(at, id)
+}
+
+func simulationTerminalCause(cause runtimepredictive.TerminalCause) coreadmission.TerminalCause {
+	switch cause {
+	case runtimepredictive.TerminalCompleted:
+		return coreadmission.TerminalSuccess
+	case runtimepredictive.TerminalClientCancelled:
+		return coreadmission.TerminalCancel
+	case runtimepredictive.TerminalExpired:
+		return coreadmission.TerminalTimeout
+	default:
+		return coreadmission.TerminalError
+	}
 }
 
 func (r *scenarioRunner) terminateAll(at time.Duration, cause runtimepredictive.TerminalCause) {
@@ -637,6 +779,18 @@ func simulationRequestCost(request requestSpec) domainpredictive.RequestCost {
 		panic(fmt.Sprintf("simulation request cost for %q: %v", request.id, err))
 	}
 	return cost
+}
+
+func simulationRequestEstimate(request requestSpec) domainpredictive.RequestEstimate {
+	estimate := domainpredictive.RequestEstimate{
+		SelectionInputTokens:     request.selectionInput,
+		KVReservationInputTokens: request.safetyInput,
+		DecodeHorizonTokens:      request.decodeHorizon,
+	}
+	if err := estimate.Validate(); err != nil {
+		panic(fmt.Sprintf("simulation request estimate for %q: %v", request.id, err))
+	}
+	return estimate
 }
 
 func simulationReservedTokens(request requestSpec) int64 {
