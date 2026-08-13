@@ -1,8 +1,9 @@
 # PIG v0.12 Clean Admission Rebuild Plan
 
-Status: active architecture and execution authority. No next `0.12.x` version
-is assigned. `PIG-v0.12.10` and its local image are diagnostic evidence only;
-they are not releasable.
+Status: active architecture and execution authority. `PIG-v0.12.11` is assigned
+on exact pushed identity commit `16d1940`; it is not yet image- or
+runtime-accepted. `PIG-v0.12.10` and its local image are diagnostic evidence
+only; they are not releasable.
 
 This plan supersedes implementation instructions in
 `PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md`. That document remains a
@@ -1134,6 +1135,49 @@ convert model-neutral estimator error into tokenizer parity evidence, and it
 does not accept c21 runtime lifecycle, QoS/goodput/Pareto behavior, an image,
 registry publication, deployment, Router changes, or production traffic.
 
+### 2026-08-14 v0.12.11 identity assignment
+
+The version gate started from clean pushed HEAD
+`139fe91f5cbac2a776eb2b489c6948e1ee6eac26`. Authenticated registry `GET`
+checks, deliberately not `HEAD`, returned `404` for both candidate tags
+`0.12.11` and `v0.12.11`; Git also had no v0.12.11 tag. The release identity was
+therefore assigned once as:
+
+```text
+runtime  PIG-v0.12.11
+OCI      0.12.11
+commit   16d1940e2fba0f608357fa8428a4553ddd712ba3
+```
+
+The identity commit changes exactly `Dockerfile`, `server_types.go`, and
+`release_identity_test.go`. Its binary patch SHA-256 is
+`6f6c3c09c2b9a072eac492d957f87c454ce650e87e4908c500d9f53d5673141c`.
+The explicit release test locks the assigned runtime identity and the existing
+cross-file test locks runtime/OCI equality.
+
+The clean pushed identity gate is:
+
+```text
+/tmp/pig-v01211-pushed-identity-r1.7dqenW
+```
+
+On exact pushed commit `16d1940`, it passed the focused release tests,
+`go test ./... -count=1`, and `go build ./...`. It also reconfirmed that neither
+candidate registry tag existed before any image build or upload. Log SHA-256
+values are:
+
+```text
+build         e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+full          3a21814041c7202b2bf7bb4bdbc7cad685e2b5700931ada240eb92da0bc308ab
+identity      64943361393b74cc996ad103b4e7c0c9df775683fd59f962d8a5178333a9a460
+registry      9fd02cad39f78678386a09728c87d58637b1d3b8a4b39f1c642e17400dd4c020
+release-test  bd6d57a8f88bd34753af08bb8f90f92af586b457ffe9466ee3210f1cad7f3b29
+```
+
+This accepts only the unique v0.12.11 source identity. No image has been built,
+uploaded, or deployed, and no runtime, GPU, Router, or production gate is
+inherited from this result.
+
 ## 12. Active checklist
 
 - [x] freeze v0.12.10 as diagnostic-only evidence and retain rollback assets.
@@ -1159,7 +1203,8 @@ registry publication, deployment, Router changes, or production traffic.
   exact commit `c2e58cc` is pushed.
 - [x] Slice D complete source acceptance and three code reviews pass on exact
   pushed commit `c2e58cc`.
-- [ ] assign exactly one next `0.12.x` identity.
+- [x] assign exactly one next `0.12.x` identity: `PIG-v0.12.11` on exact pushed
+  commit `16d1940`.
 - [ ] build and validate one local-only image.
 - [ ] complete c21 PIG-only compatibility, lifecycle, long-input, low-flow,
   QoS, goodput, and Pareto gates.
