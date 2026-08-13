@@ -2,6 +2,7 @@ package kvadmission
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 )
@@ -38,6 +39,108 @@ func TestEstimateJSONBoundsDecodeByRequestedMaximum(t *testing.T) {
 	}
 }
 
+func TestEstimateJSONBuildsIndependentKVReservationEstimate(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("word ", 64*1024) + `"}]}`)
+	cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig())
+	selection, known := cost.ApproximatePrefillTokenHint()
+	if !cost.Supported || !known || selection <= 0 {
+		t.Fatalf("cost=%+v selection=%d/%t", cost, selection, known)
+	}
+	estimate, estimateKnown := cost.PredictiveEstimate()
+	if !estimateKnown || estimate.SelectionInputTokens != selection ||
+		estimate.DecodeHorizonTokens != int64(DefaultEstimatorConfig().BlindOutputTokens) {
+		t.Fatalf("estimate=%+v/%t selection=%d", estimate, estimateKnown, selection)
+	}
+	wantReservation := (selection*fixedKVReservationMarginNumerator +
+		fixedKVReservationMarginDenominator - 1) / fixedKVReservationMarginDenominator
+	if estimate.KVReservationInputTokens != wantReservation ||
+		estimate.KVReservationInputTokens >= cost.EstimatedInputHigh {
+		t.Fatalf("KV reservation=%d want=%d high=%d", estimate.KVReservationInputTokens, wantReservation, cost.EstimatedInputHigh)
+	}
+}
+
+func TestEstimateJSONUsesConservativeKVReservationForMultimodal(t *testing.T) {
+	body := []byte(`{"messages":[{"content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,x"}}]}]}`)
+	cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig())
+	estimate, known := cost.PredictiveEstimate()
+	if !cost.Supported || !known || cost.ModalityCount == 0 ||
+		estimate.SelectionInputTokens != cost.EstimatedInputHigh ||
+		estimate.KVReservationInputTokens != cost.EstimatedInputHigh {
+		t.Fatalf("multimodal cost=%+v estimate=%+v/%t", cost, estimate, known)
+	}
+}
+
+func TestEstimateJSONUsesConservativeGenericJSONEstimate(t *testing.T) {
+	for _, body := range [][]byte{[]byte(`null`), []byte(`[]`), []byte(`"value"`), []byte(`42`)} {
+		cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig())
+		estimate, known := cost.PredictiveEstimate()
+		if !cost.Supported || !known || estimate.SelectionInputTokens != cost.EstimatedInputHigh ||
+			estimate.KVReservationInputTokens != cost.EstimatedInputHigh {
+			t.Fatalf("generic JSON %q cost=%+v estimate=%+v/%t", body, cost, estimate, known)
+		}
+	}
+}
+
+func TestFixedMarginTokensRejectsInvalidAndOverflowingInputs(t *testing.T) {
+	for _, test := range []struct {
+		tokens      int64
+		numerator   int64
+		denominator int64
+	}{
+		{},
+		{tokens: 1, numerator: 1, denominator: 2},
+		{tokens: 1, numerator: 3},
+		{tokens: math.MaxInt64, numerator: 3, denominator: 2},
+	} {
+		if value, ok := fixedMarginTokens(test.tokens, test.numerator, test.denominator); ok {
+			t.Fatalf("accepted invalid margin %+v => %d", test, value)
+		}
+	}
+	if value, ok := fixedMarginTokens(5, 3, 2); !ok || value != 8 {
+		t.Fatalf("margin 5*3/2=%d/%t want 8/true", value, ok)
+	}
+}
+
+func TestApproximateJSONStringTokensSmallPrefixDoesNotDominate(t *testing.T) {
+	plain := []byte(strings.Repeat("word ", 8*1024))
+	prefixed := append([]byte(nil), plain...)
+	copy(prefixed[:16], []byte("!@#$%^&*()[]{}:;"))
+
+	plainTokens, plainKnown := approximateJSONStringTokens(plain)
+	prefixedTokens, prefixedKnown := approximateJSONStringTokens(prefixed)
+	if !plainKnown || !prefixedKnown || plainTokens <= 0 || prefixedTokens <= 0 {
+		t.Fatalf("plain=%d/%t prefixed=%d/%t", plainTokens, plainKnown, prefixedTokens, prefixedKnown)
+	}
+	difference := prefixedTokens - plainTokens
+	if difference < 0 {
+		difference = -difference
+	}
+	if difference > plainTokens/10 {
+		t.Fatalf("one 16-byte prefix outlier changed long-string estimate: plain=%d prefixed=%d", plainTokens, prefixedTokens)
+	}
+}
+
+func TestApproximateJSONStringTokensDistinguishesHighEntropyUnbrokenASCII(t *testing.T) {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	highEntropy := make([]byte, 16*1024)
+	for index := range highEntropy {
+		highEntropy[index] = alphabet[(index*29+index/7)%len(alphabet)]
+	}
+	repeated := bytes.Repeat([]byte("a"), len(highEntropy))
+
+	highTokens, highKnown := approximateJSONStringTokens(highEntropy)
+	repeatedTokens, repeatedKnown := approximateJSONStringTokens(repeated)
+	if !highKnown || !repeatedKnown {
+		t.Fatalf("high/repeated known=%t/%t", highKnown, repeatedKnown)
+	}
+	if highTokens < int64(len(highEntropy))/2 {
+		t.Fatalf("high-entropy estimate=%d want at least %d", highTokens, len(highEntropy)/2)
+	}
+	if repeatedTokens > int64(len(repeated))/3 {
+		t.Fatalf("low-entropy repeated estimate=%d want at most %d", repeatedTokens, len(repeated)/3)
+	}
+}
+
 func TestEstimateJSONCountsMultimodalMarkers(t *testing.T) {
 	body := []byte(`{"messages":[{"content":[{"type":"input_text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,x"}}]}]}`)
 	cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig())
@@ -50,14 +153,21 @@ func TestEstimateJSONCountsMultimodalMarkers(t *testing.T) {
 }
 
 func TestEstimateJSONRejectsMalformedOrTrailingData(t *testing.T) {
-	for _, body := range [][]byte{[]byte(`{"messages":`), []byte(`{"prompt":"x"} {}`)} {
-		if cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig()); cost.Supported {
-			t.Fatalf("accepted invalid body %q: %#v", body, cost)
+	for _, body := range [][]byte{
+		[]byte(`{"messages":`),
+		[]byte(`{"prompt":"x"} {}`),
+		[]byte(`{"a":"b" "c":"d"}`),
+		[]byte(`{"a":tru}`),
+		[]byte(`{"a":01}`),
+		[]byte(`{"a":"\x"}`),
+	} {
+		if cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig()); cost.Supported || cost.UnsupportedReason != "invalid_json" {
+			t.Fatalf("invalid body %q cost=%#v", body, cost)
 		}
 	}
 }
 
-func TestV0121EstimateJSONSupportsValidNonObjectValuesConservatively(t *testing.T) {
+func TestEstimateJSONSupportsValidNonObjectValuesConservatively(t *testing.T) {
 	for _, body := range [][]byte{[]byte(`null`), []byte(`[]`), []byte(`"value"`), []byte(`42`)} {
 		cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig())
 		if !cost.Supported || cost.EstimatedInputLow <= 0 || cost.EstimatedInputHigh < cost.EstimatedInputLow ||
@@ -97,7 +207,7 @@ func TestApproximateInputTokenHintSeparatesEqualByteLanguageShapes(t *testing.T)
 }
 
 func TestApproximateInputTokenHintPreservesShapeAfterEarlierStrings(t *testing.T) {
-	prefixValue := strings.Repeat("a", approximateLexicalPerStringLimit)
+	prefixValue := strings.Repeat("a", 64)
 	prefix := `{"a":"` + prefixValue + `","b":"` + prefixValue + `","c":"` + prefixValue + `","d":"` + prefixValue + `","prompt":"`
 	const payloadBytes = 3 * 1024
 	asciiBody := []byte(prefix + strings.Repeat("a", payloadBytes) + `"}`)
@@ -116,7 +226,7 @@ func TestApproximateInputTokenHintPreservesShapeAfterEarlierStrings(t *testing.T
 }
 
 func TestApproximateInputTokenHintKeepsLate650KCJKQuiescentSized(t *testing.T) {
-	prefixValue := strings.Repeat("a", approximateLexicalPerStringLimit)
+	prefixValue := strings.Repeat("a", 64)
 	prefix := `{"a":"` + prefixValue + `","b":"` + prefixValue + `","c":"` + prefixValue + `","d":"` + prefixValue + `","prompt":"`
 	body := []byte(prefix + strings.Repeat("\xe4\xb8\xad", 650*1024) + `"}`)
 
@@ -185,8 +295,8 @@ func TestApproximateInputTokenHintModelNeutralShapeCorpus(t *testing.T) {
 		})
 	}
 
-	ascii, _, asciiKnown := approximateJSONStringTokensWithBudget([]byte("aaaaaaaaaaaaaaaa"), 16)
-	punctuation, _, punctuationKnown := approximateJSONStringTokensWithBudget([]byte("!!!!!!!!!!!!!!!!"), 16)
+	ascii, asciiKnown := approximateJSONStringTokens([]byte("aaaaaaaaaaaaaaaa"))
+	punctuation, punctuationKnown := approximateJSONStringTokens([]byte("!!!!!!!!!!!!!!!!"))
 	if !asciiKnown || !punctuationKnown || punctuation <= ascii {
 		t.Fatalf("equal-byte lexical differentiation ascii=%d/%t punctuation=%d/%t", ascii, asciiKnown, punctuation, punctuationKnown)
 	}
@@ -226,14 +336,15 @@ func TestApproximateInputTokenHintMaximumBodyFixtureIsDeterministic(t *testing.T
 	)
 }
 
-func TestApproximateInputTokenHintUsesBoundedSampling(t *testing.T) {
-	raw := bytes.Repeat([]byte("bounded lexical sample "), 128*1024)
-	tokens, sampled, known := approximateJSONStringTokensWithBudget(raw, approximateLexicalPerStringLimit)
-	if !known || tokens <= 0 {
-		t.Fatalf("bounded lexical hint unavailable: tokens=%d known=%t", tokens, known)
+func TestApproximateInputTokenHintInspectsTheCompleteString(t *testing.T) {
+	const size = 256 * 1024
+	raw := []byte(exactEntropyText(size))
+	for _, start := range []int{0, size/3 - 32, 2*size/3 - 32, size - 64} {
+		copy(raw[start:start+64], bytes.Repeat([]byte{'a'}, 64))
 	}
-	if sampled != approximateLexicalPerStringLimit {
-		t.Fatalf("sampled bytes=%d want per-string bound=%d", sampled, approximateLexicalPerStringLimit)
+	tokens, known := approximateJSONStringTokens(raw)
+	if !known || tokens < size/2 {
+		t.Fatalf("complete lexical estimate=%d/%t want at least %d", tokens, known, size/2)
 	}
 }
 
@@ -249,12 +360,6 @@ func TestApproximateInputTokenHintExcludesTrailingJSONWhitespace(t *testing.T) {
 	hint, known := cost.ApproximateInputTokenHint()
 	if !known || hint != 14 {
 		t.Fatalf("lexical hint=%d/%t want 14/true without trailing JSON whitespace", hint, known)
-	}
-	// The matching integration fixture reports four prompt tokens. The raw
-	// ratio is intentionally too small to learn, while 4/14 remains inside the
-	// calibrator's [0.25, 8] qualification band.
-	if rawRatio, hintRatio := 4/float64(cost.EstimatedInputHigh), 4/float64(hint); rawRatio >= 0.25 || hintRatio < 0.25 || hintRatio > 8 {
-		t.Fatalf("fixture ratios raw=%g hint=%g do not isolate the hint channel", rawRatio, hintRatio)
 	}
 }
 

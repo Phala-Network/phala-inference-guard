@@ -136,7 +136,7 @@ transaction and application boundary.
 | Area | Decision | Required result |
 |---|---|---|
 | bounded HTTP body preservation and protocol classification | keep, then rename only where needed | request bytes and headers remain unchanged |
-| model-neutral lexical estimator | keep the bounded scanner; correct sampling and reservation semantics behind tests | no model asset, RPC, FFI, or learning |
+| model-neutral lexical estimator | keep the bounded JSON scanner; replace blind sampling with measured complete lexical counting and fixed reservation semantics | no model asset, RPC, FFI, or learning |
 | vLLM startup probe, metadata lookup, Prometheus parser | keep with narrow interfaces | immutable identity, context, KV capacity, and block size |
 | capability profile | keep the startup-only concept; simplify its consumers | no runtime threshold mutation |
 | positive-only reservation overlay and sample watermarks | preserve the invariants, rewrite the owner | one atomic Controller owns them |
@@ -301,8 +301,8 @@ for representative long text, which is throughput-hostile. Before the Builder
 is accepted, a fixed offline estimator matrix must select and document one
 model-neutral bounded formula. The formula must:
 
-- use robust fixed-window evidence so one small prefix cannot dominate a long
-  string;
+- inspect the complete bounded raw string values so neither a small prefix nor
+  an unsampled region can dominate or evade the estimate;
 - explicitly detect escape-heavy and high-entropy/unbroken shapes rather than
   assuming every alphanumeric run is natural prose;
 - retain conservative multimodal fallback because URL length is not media
@@ -525,16 +525,23 @@ No Controller lock may cover HTTP, logging, metrics formatting, clock lookup,
 or other I/O. Pass `now` into Admit and Snapshot. The checked aggregate overlay
 produces the decision/capacity state without a per-request reservation scan;
 the Adapter and Reporter may not trigger a second fold for the same record. The
-estimator adds no second body copy and no additional unbounded full-body pass.
+estimator adds no second body copy. It may perform a second lightweight lexical
+scan of string values inside the existing 4-MiB request bound because c21
+maximum-body p99 must remain below 100 ms; an unbounded body pass is forbidden.
+Native latency/allocation acceptance is excluded from race-instrumented builds;
+the same functional estimator corpus still runs under `go test -race`.
 
 ### Slice A: minimal estimate/work domain and estimator contract
 
 - introduce `RequestEstimate` plus the internal derived `RequestWork` record;
-- add robust fixed-window estimator fixtures and the offline safety/efficiency
+- add complete bounded lexical estimator fixtures and the offline safety/efficiency
   matrix;
 - separate context selection from KV reservation;
 - do not migrate any old Manager, Policy, Adapter, or simulator caller; this
-  slice is a tested foundation and is not yet wired production behavior; and
+  slice's new `RequestEstimate` is not yet consumed by the real HTTP decision
+  transaction. The shared retained estimator is corrected in place, so an
+  unreleased build of the old path can observe its better selection hint; this
+  is source behavior only and authorizes no runtime replacement; and
 - benchmark maximum body p50/p99 and allocation bounds.
 
 ### Slice B: Controller and pure policy
@@ -752,6 +759,73 @@ three passes as permanent approval.
    aggregate plus a slow-fold test oracle. The new core may reuse independent
    kernels but may not adapt or extend the old stateful path.
 
+### 2026-08-14 Slice A simplification review
+
+The first Slice A implementation used four lexical windows and outlier
+discarding to keep incremental work nearly constant. Re-review rejected it as
+unnecessary complexity and as a correctness blind spot: content between the
+four windows could evade estimation even though PIG already bounds the request
+body at 4 MiB and scans it for JSON structure.
+
+The replacement counts complete raw string values while the same bounded body
+is classified. Submission review then found that the old estimator API itself
+accepted some malformed JSON even though the HTTP caller happened to validate
+first. The domain API now performs standard bounded JSON validation rather than
+maintaining a second partial parser. On c21 the final r3 ordinary-build
+estimator remained allocation-free: one 4-MiB string measured p50 20.76 ms /
+p99 28.71 ms, and the adversarial many-short-string body measured p50 36.73 ms /
+p99 46.05 ms. Full body read, preservation, strict parsing, field extraction,
+and estimation together measured p50 29.79 ms / p99 40.50 ms, below the accepted
+100-ms extreme-input budget.
+
+The registered exact-tokenizer evidence matrix also exposed and fixed schema
+structure undercount. It rejected the registered 1.25x candidate and selected
+the fixed 1.5x KV-reservation margin; all seven fixtures retained at least 10%
+evidence headroom without exceeding 2.25x actual tokens. The frozen Gemma4
+oracle fixtures bind request byte length and SHA-256 to the recorded token
+counts. That oracle remains target evidence only; the portable contract is
+still a fixed model-neutral formula plus startup KV headroom and later GPU
+acceptance.
+
+### 2026-08-14 Slice A source acceptance
+
+The final Slice A candidate was tested in `pig-v0124-workbench` on c21 from
+base HEAD `d8590670ac773d12da676a959a5b739abe1e9f70`, branch
+`codex/pig-v0.11.0-request-aware`, with Go `1.24.13 linux/amd64`. The runner
+used `set -euo pipefail`; therefore a failed command on either side of `tee`
+could not produce the success sentinel. The candidate passed:
+
+- focused tests for `kvadmission`, `predictive`, and request classification;
+- `go test ./... -count=1`;
+- focused `go test -race`;
+- `go vet ./...` and `go build ./...`;
+- the seven-fixture exact-tokenizer oracle and fixed-margin acceptance matrix;
+- 4-MiB estimator/classifier native latency and allocation gates;
+- five benchmark repetitions; and
+- `git diff --check`.
+
+The ordinary-build extreme-input evidence was p50 `20.53 ms` / p99
+`29.64 ms` / zero allocations for one 4-MiB string, p50 `37.31 ms` / p99
+`38.26 ms` / zero allocations for 4 MiB of many short strings, and full
+classifier p50 `28.92 ms` / p99 `42.53 ms`. The r4 log SHA-256 values are:
+
+```text
+bench       9d4d58e5124988a81457f84c737fe203627648484f8f4d6655933ccf6dad405c
+build       e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+diff-check  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+evidence    9f532055974284f8aba44153ca2b24484b9e69972894cbdaec6fc36e42aa8567
+focused     1ac2a7bbee4ab505883d10f412863f5f1312d6bf4cc37a77d5380b50978151cc
+full        88e8ac20482f762659f67ed0139e7fe63e139c59a651059c68060a31c057558a
+race        fe9d8b393a631ed6763ffbae7c4c541ae6af71af85c618c26ac39e8ed05d9cf7
+source      b2c030b5a18efb031404a97ac9a92b16e4d722ede7b3b609438719f154b8b422
+vet         e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+This accepts only the Slice A foundation. `RequestEstimate` is not yet
+consumed by a new Controller or by the real pre-forward HTTP transaction. The
+shared estimator behavior has changed, but there is no new enforce path,
+image, deployment, runtime, GPU-goodput, or production evidence.
+
 ## 12. Active checklist
 
 - [x] freeze v0.12.10 as diagnostic-only evidence and retain rollback assets.
@@ -767,7 +841,8 @@ three passes as permanent approval.
   lifecycle/reset/efficiency flaws, and eliminate throw-away old-path migration.
 - [x] commit and push the new authority plan before production-code changes
   (`5bb0ef2`).
-- [ ] Slice A passes and is pushed.
+- [x] Slice A candidate passes the c21 r4 source-acceptance matrix.
+- [ ] Slice A exact source commit is pushed and recorded.
 - [ ] Slice B new Controller/policy/simulator passes without modifying the old
   Manager/Policy path and is pushed.
 - [ ] Slice C atomic HTTP/observer cutover passes; old Manager, Policy, Adapter,

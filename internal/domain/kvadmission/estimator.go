@@ -4,6 +4,14 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
+
+	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
+)
+
+const (
+	fixedKVReservationMarginNumerator   int64 = 3
+	fixedKVReservationMarginDenominator int64 = 2
 )
 
 func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig) Cost {
@@ -20,13 +28,13 @@ func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 		cost.UnsupportedReason = "empty_body"
 		return cost
 	}
+	if !json.Valid(body) {
+		cost.UnsupportedReason = "invalid_json"
+		return cost
+	}
 
 	features, valid := scanJSONFeatures(body)
 	if !valid {
-		if !json.Valid(body) {
-			cost.UnsupportedReason = "invalid_json"
-			return cost
-		}
 		return estimateGenericJSONValue(cost, body, cfg)
 	}
 	cost.TextBytes = features.StringValueBytes
@@ -66,6 +74,10 @@ func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 	cost.EstimatedInputLow = low
 	cost.EstimatedInputHigh = high
 	cost.BoundedDecodeTokens = int64(decode)
+	if !setTextPredictiveEstimate(&cost) {
+		cost.UnsupportedReason = "request_estimate_overflow"
+		return cost
+	}
 	cost.Supported = true
 	return cost
 }
@@ -86,8 +98,57 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 	cost.ApproximateInputTokens = high
 	cost.ApproximateInputTokensKnown = true
 	cost.BoundedDecodeTokens = int64(cfg.BlindOutputTokens)
+	cost.Estimate = predictive.RequestEstimate{
+		SelectionInputTokens:     high,
+		KVReservationInputTokens: high,
+		DecodeHorizonTokens:      cost.BoundedDecodeTokens,
+	}
+	if cost.Estimate.Validate() != nil {
+		cost.UnsupportedReason = "request_estimate_overflow"
+		return cost
+	}
 	cost.Supported = true
 	return cost
+}
+
+func setTextPredictiveEstimate(cost *Cost) bool {
+	if cost == nil || cost.EstimatedInputHigh <= 0 || cost.BoundedDecodeTokens < 0 {
+		return false
+	}
+	selection, known := cost.ApproximateInputTokenHint()
+	reservation := int64(0)
+	if cost.ModalityCount > 0 || !known || selection <= 0 {
+		selection = cost.EstimatedInputHigh
+		reservation = cost.EstimatedInputHigh
+	} else {
+		var ok bool
+		reservation, ok = fixedMarginTokens(
+			selection,
+			fixedKVReservationMarginNumerator,
+			fixedKVReservationMarginDenominator,
+		)
+		if !ok {
+			return false
+		}
+	}
+	cost.Estimate = predictive.RequestEstimate{
+		SelectionInputTokens:     selection,
+		KVReservationInputTokens: reservation,
+		DecodeHorizonTokens:      cost.BoundedDecodeTokens,
+	}
+	return cost.Estimate.Validate() == nil
+}
+
+func fixedMarginTokens(tokens, numerator, denominator int64) (int64, bool) {
+	if tokens <= 0 || numerator < denominator || denominator <= 0 ||
+		tokens > math.MaxInt64/numerator {
+		return 0, false
+	}
+	product := tokens * numerator
+	if product > math.MaxInt64-(denominator-1) {
+		return 0, false
+	}
+	return (product + denominator - 1) / denominator, true
 }
 
 type jsonFeatures struct {
@@ -146,7 +207,11 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 				features.ToolCount++
 			case bytes.Equal(raw, []byte("tools")), bytes.Equal(raw, []byte("functions")), bytes.Equal(raw, []byte("response_format")):
 				valueStart := skipJSONSpace(body, next+1)
-				features.ToolSchemaBytes += jsonValueEnd(body, valueStart) - valueStart
+				valueBytes := jsonValueEnd(body, valueStart) - valueStart
+				if valueBytes < 0 || features.ToolSchemaBytes > math.MaxInt-valueBytes {
+					return features, false
+				}
+				features.ToolSchemaBytes += valueBytes
 			}
 			if modalityMarker(raw) {
 				features.ModalityCount++
@@ -175,6 +240,14 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 		}
 	}
 	if !addApproximateInputTokens(&features.ApproximateInputTokens, int64(features.MessageCount)*4) {
+		features.ApproximateInputTokensKnown = false
+	}
+	// String-value sampling cannot see JSON property names, delimiters, or the
+	// template serialization of tool/response schemas. Charge one token per
+	// four raw schema bytes in addition to sampled values. This is fixed,
+	// model-neutral structural evidence, not a model-specific tokenizer rule.
+	toolStructureTokens := int64(ceilDiv(features.ToolSchemaBytes, approximateASCIIBytesPerToken))
+	if !addApproximateInputTokens(&features.ApproximateInputTokens, toolStructureTokens) {
 		features.ApproximateInputTokensKnown = false
 	}
 	return features, depth == 0

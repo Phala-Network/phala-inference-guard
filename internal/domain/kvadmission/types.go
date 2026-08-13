@@ -1,5 +1,7 @@
 package kvadmission
 
+import predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
+
 type Cost struct {
 	Supported                   bool
 	UnsupportedReason           string
@@ -16,6 +18,17 @@ type Cost struct {
 	ApproximateInputTokens      int64
 	ApproximateInputTokensKnown bool
 	BoundedDecodeTokens         int64
+	Estimate                    predictive.RequestEstimate
+}
+
+// PredictiveEstimate returns the one complete estimator output accepted by the
+// new admission core. Legacy interval fields remain only until the atomic HTTP
+// cutover; callers must not rebuild this record from parallel scalar values.
+func (c Cost) PredictiveEstimate() (predictive.RequestEstimate, bool) {
+	if !c.Supported || c.Estimate.Validate() != nil {
+		return predictive.RequestEstimate{}, false
+	}
+	return c.Estimate, true
 }
 
 // ApproximateInputTokenHint returns a model-neutral lexical-size hint. The
