@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -95,23 +95,19 @@ func TestSimulationSchedulerPromotesWaitingRequestAfterSlotRelease(t *testing.T)
 	}
 }
 
-func TestSimulationSchedulerReconcilesEachSequenceOnce(t *testing.T) {
-	runner := newSchedulerInvariantRunner(1)
-	runner.manager = runtimepredictive.NewManager(
-		simulationManifestID,
-		domainpredictive.VirtualState{},
-	)
+func TestSimulationSchedulerPublishesDisjointCountsToController(t *testing.T) {
+	runner := newCandidateSchedulerInvariantRunner(t, 1)
 	runner.arrive(0, schedulerInvariantRequest("first", 100))
 	runner.arrive(0, schedulerInvariantRequest("second", 100))
 
 	runner.poll(0)
 
-	upper := runner.manager.Snapshot().Virtual.Upper
-	if upper.DecodeSequences != 2 || upper.PendingPrefillSequences != 1 {
+	snapshot := runner.controller.Snapshot(time.Unix(0, 0))
+	if snapshot.State.RawRunning != 1 || snapshot.State.RawWaiting != 1 {
 		t.Fatalf(
-			"reconciled Decode/Pending sequences=%d/%d want=2/1",
-			upper.DecodeSequences,
-			upper.PendingPrefillSequences,
+			"Controller running/waiting=%d/%d want=1/1",
+			snapshot.State.RawRunning,
+			snapshot.State.RawWaiting,
 		)
 	}
 }
@@ -138,6 +134,34 @@ func newSchedulerInvariantRunner(maximumNoWait int) *scenarioRunner {
 		},
 		active: make(map[string]*activeRequest),
 	}
+}
+
+func newCandidateSchedulerInvariantRunner(t *testing.T, maximumNoWait int) *scenarioRunner {
+	t.Helper()
+	spec := scenarioSpec{
+		duration:       time.Second,
+		maximumNoWait:  maximumNoWait,
+		capacityTokens: 1_000_000,
+	}
+	profile, err := simulationCapabilityProfile(spec, 650*1024)
+	if err != nil {
+		t.Fatalf("construct scheduler capability: %v", err)
+	}
+	controller, err := coreadmission.NewAdmissionController(simulationAdmissionCapability(profile))
+	if err != nil {
+		t.Fatalf("construct scheduler Controller: %v", err)
+	}
+	runner := &scenarioRunner{
+		spec:              spec,
+		policyName:        PolicyCandidate,
+		profile:           profile,
+		controller:        controller,
+		controllerHandles: make(map[string]coreadmission.ReservationHandle),
+		active:            make(map[string]*activeRequest),
+	}
+	runner.publishControllerObservation(0, true)
+	t.Cleanup(controller.Close)
+	return runner
 }
 
 func schedulerInvariantRequest(id string, output float64) requestSpec {

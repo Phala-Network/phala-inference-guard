@@ -3,7 +3,9 @@ package requestaware
 import (
 	"reflect"
 	"testing"
+	"time"
 
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -15,7 +17,7 @@ func TestDeterministicRequestAwareGoodputSuiteUsesProductionPolicyAndRequiredMat
 	if suite.Seed != SimulationSeed {
 		t.Fatalf("seed=%d want=%d", suite.Seed, SimulationSeed)
 	}
-	if suite.ProductionPolicyCalls == 0 {
+	if suite.HistoricalBaselineRecords == 0 {
 		t.Fatal("simulation did not retain the frozen v0.12.10 baseline")
 	}
 	if suite.ControllerPolicyCalls == 0 {
@@ -151,39 +153,61 @@ func TestDeterministicRequestAwareGoodputSuiteRejectsInvalidPolicyOrder(t *testi
 
 func TestCapabilityProfilesKeepFixedPrefillBandsAcrossContextLengths(t *testing.T) {
 	scenario := scenarioSpec{capacityTokens: 4 * 1024 * 1024}
-	shortProfile, shortPolicy, err := simulationCapabilityPolicy(scenario, 256*1024)
+	shortProfile, err := simulationCapabilityProfile(scenario, 256*1024)
 	if err != nil {
-		t.Fatalf("construct short-context capability policy: %v", err)
+		t.Fatalf("construct short-context capability: %v", err)
 	}
-	longProfile, longPolicy, err := simulationCapabilityPolicy(scenario, 650*1024)
+	longProfile, err := simulationCapabilityProfile(scenario, 650*1024)
 	if err != nil {
-		t.Fatalf("construct long-context capability policy: %v", err)
+		t.Fatalf("construct long-context capability: %v", err)
 	}
-	input := runtimepredictive.RequestAwareInput{
-		MetricsFresh:                true,
-		IdentityValid:               true,
-		CapacityTokens:              scenario.capacityTokens,
-		UsedTokens:                  100_000,
-		RequestReservedTokens:       200 * 1024,
-		SelectionInputTokens:        200 * 1024,
-		EstimatedPrefillTokens:      200 * 1024,
-		Running:                     0,
-		EffectiveSequences:          0,
-		PendingPrefillSequences:     1,
-		PendingPrefillTokens:        32 * 1024,
-		PendingLongPrefillSequences: 0,
-	}
-	short := shortPolicy.Evaluate(input)
-	long := longPolicy.Evaluate(input)
 	if shortProfile.PrefillRegularTokens != longProfile.PrefillRegularTokens ||
 		shortProfile.PrefillExclusiveTokens != longProfile.PrefillExclusiveTokens ||
 		shortProfile.PrefillQuiescentTokens != longProfile.PrefillQuiescentTokens ||
 		shortProfile.MaximumAdmissibleInputTokens >= longProfile.MaximumAdmissibleInputTokens {
 		t.Fatalf("short/long capability profiles changed band semantics: short=%+v long=%+v", shortProfile, longProfile)
 	}
-	if short.Action != runtimepredictive.RequestAwareAdmit || long.Action != runtimepredictive.RequestAwareAdmit {
+	short := admissionDecisionForProfile(t, shortProfile)
+	long := admissionDecisionForProfile(t, longProfile)
+	if !short.Admitted() || !long.Admitted() {
 		t.Fatalf("same fitting request received context-scaled decisions: short=%+v long=%+v", short, long)
 	}
+}
+
+func admissionDecisionForProfile(t *testing.T, profile runtimepredictive.BackendCapabilityProfile) coreadmission.DecisionRecord {
+	t.Helper()
+	controller, err := coreadmission.NewAdmissionController(simulationAdmissionCapability(profile))
+	if err != nil {
+		t.Fatalf("construct admission Controller: %v", err)
+	}
+	defer controller.Close()
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("start admission sample window")
+	}
+	now := time.Unix(1, 0)
+	publication := controller.PublishObservation(window, coreadmission.BackendObservation{
+		CapabilityFingerprint: simulationManifestID,
+		MaxModelLenTokens:     profile.MaxModelLenTokens,
+		KVCapacityTokens:      profile.KVCapacityTokens,
+		KVBlockSize:           profile.KVBlockSize,
+		ObservedAt:            now,
+		MaximumAge:            time.Second,
+		UsedKVTokens:          100_000,
+	})
+	if !publication.Accepted {
+		t.Fatalf("publish admission observation: %+v", publication)
+	}
+	result := controller.Admit(now, simulationRequestEstimate(requestSpec{
+		id:             "fixed-band-contract",
+		selectionInput: 200 * 1024,
+		safetyInput:    200 * 1024,
+		decodeHorizon:  256,
+	}))
+	if result.Decision.Admitted() {
+		result.Handle.Terminate(coreadmission.TerminalCancel)
+	}
+	return result.Decision
 }
 
 func TestDeterministicRequestAwareGoodputSuiteMeetsRegisteredAcceptance(t *testing.T) {
@@ -335,8 +359,8 @@ func TestSimulationCandidateSizeAwareAdmissionContracts(t *testing.T) {
 func acceptanceSuite(candidate Metrics) Suite {
 	baseline := Metrics{Arrivals: 1, Admitted: 1, PeakKVTokens: 64, MaximumRunning: 1}
 	return Suite{
-		ProductionPolicyCalls: 1,
-		ControllerPolicyCalls: 1,
+		HistoricalBaselineRecords: 1,
+		ControllerPolicyCalls:     1,
 		Scenarios: []ScenarioResult{{
 			Name: "acceptance-unit",
 			CapabilityProfile: runtimepredictive.BackendCapabilityProfile{

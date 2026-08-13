@@ -31,55 +31,49 @@ type PredictiveAdmissionInput struct {
 	// EnforcedRejects counts HTTP requests for which the proxy emitted an
 	// enforced predictive rejection. Router protection is published earlier
 	// from RouterBackpressure and must never be inferred from this counter.
-	EnforcedRejects                                          uint64
-	LastReason                                               string
-	LastSource                                               string
-	LastRejectReason                                         string
-	LastRejectSource                                         string
-	LastRejectScope                                          string
-	LastRejectAt                                             time.Time
-	IntakeOpen                                               bool
-	Reservations                                             int
-	VirtualDecodeSequences                                   int
-	ForwardedPendingPrefills                                 int
-	ForwardedPendingPrefillTokens                            int64
-	FailureClose                                             uint64
-	FailureDecide                                            uint64
-	FailureForward                                           uint64
-	FailurePrefill                                           uint64
-	FailureTerminal                                          uint64
-	PredictionDuration                                       *histogram.DurationHistogram
-	BodyReadDuration                                         *histogram.DurationHistogram
-	EstimatorDuration                                        *histogram.DurationHistogram
-	PreForwardDuration                                       *histogram.DurationHistogram
-	RouterBackpressure                                       PredictiveRouterBackpressureInput
-	RequestAwareAction                                       string
-	RequestAwareReason                                       string
-	RequestAwarePressureSource                               string
-	RequestAwarePressure                                     float64
-	RequestAwareSelectionInputTokens                         int64
-	RequestAwareReservedTokens                               int64
-	RequestAwareAllowanceTokens                              int64
-	RequestAwareEffectiveKV                                  int64
-	RequestAwarePostAdmitKV                                  int64
-	RequestAwareRemainingKV                                  int64
-	RequestAwareRunning                                      int
-	RequestAwareWaiting                                      int
-	RequestAwareEffectiveSequences                           int
-	RequestAwareAggregateTPSProxy                            float64
-	RequestAwareMeanActiveTPSProxy                           float64
-	RequestAwarePrefillClass                                 string
-	RequestAwareEstimatedPrefillTokens                       int64
-	RequestAwarePendingPrefillSequences                      int
-	RequestAwarePendingPrefillTokens                         int64
-	RequestAwarePostAdmitPendingPrefillTokens                int64
-	RequestAwarePendingLongPrefillSequences                  int
-	RequestAwarePendingQuiescentPrefillSequences             int
-	RequestAwareLastDecisionPendingPrefillSequences          int
-	RequestAwareLastDecisionPendingPrefillTokens             int64
-	RequestAwareLastDecisionPostAdmitPendingPrefillTokens    int64
-	RequestAwareLastDecisionPendingLongPrefillSequences      int
-	RequestAwareLastDecisionPendingQuiescentPrefillSequences int
+	EnforcedRejects                        uint64
+	LastReason                             string
+	LastSource                             string
+	LastRejectReason                       string
+	LastRejectSource                       string
+	LastRejectScope                        string
+	LastRejectAt                           time.Time
+	IntakeOpen                             bool
+	Reservations                           int
+	VirtualDecodeSequences                 int
+	ForwardedPendingPrefills               int
+	ForwardedPendingPrefillTokens          int64
+	FailureClose                           uint64
+	FailureDecide                          uint64
+	FailureForward                         uint64
+	FailureFirstByte                       uint64
+	FailureTerminal                        uint64
+	PredictionDuration                     *histogram.DurationHistogram
+	BodyReadDuration                       *histogram.DurationHistogram
+	EstimatorDuration                      *histogram.DurationHistogram
+	PreForwardDuration                     *histogram.DurationHistogram
+	RouterBackpressure                     PredictiveRouterBackpressureInput
+	AdmissionAction                        string
+	AdmissionReason                        string
+	AdmissionPressureSource                string
+	AdmissionSelectionInputTokens          int64
+	AdmissionReservedTokens                int64
+	AdmissionAllowanceTokens               int64
+	AdmissionEffectiveKV                   int64
+	AdmissionPostAdmitKV                   int64
+	AdmissionRemainingKV                   int64
+	AdmissionRunning                       int
+	AdmissionWaiting                       int
+	AdmissionEffectiveSequences            int
+	AdmissionAggregateTPS                  float64
+	AdmissionMeanActiveTPS                 float64
+	AdmissionPrefillClass                  string
+	AdmissionEstimatedPrefillTokens        int64
+	AdmissionPendingPrefillSequences       int
+	AdmissionPendingPrefillTokens          int64
+	AdmissionPostAdmitPendingPrefillTokens int64
+	AdmissionPendingExclusiveSequences     int
+	AdmissionPendingQuiescentSequences     int
 }
 
 type PredictiveRouterBackpressureInput struct {
@@ -130,10 +124,10 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	if backpressureScope == "" {
 		backpressureScope = "none"
 	}
-	requestAwareAction := normalizeRequestAwareAction(input.RequestAwareAction)
-	requestAwareReason := normalizeRequestAwareReason(input.RequestAwareReason)
-	requestAwarePressureSource := normalizeRequestAwarePressureSource(input.RequestAwarePressureSource)
-	requestAwarePrefillClass := normalizeRequestAwarePrefillClass(input.RequestAwarePrefillClass)
+	admissionAction := normalizeAdmissionAction(input.AdmissionAction)
+	admissionReason := normalizeAdmissionReason(input.AdmissionReason)
+	admissionPressureSource := normalizeAdmissionPressureSource(input.AdmissionPressureSource)
+	admissionPrefillClass := normalizeAdmissionPrefillClass(input.AdmissionPrefillClass)
 	capabilitySource := normalizeCapabilityProfileSource(input.CapabilityProfileSource)
 	capabilityReason := normalizeCapabilityInitializationReason(input.CapabilityInitializationReason)
 	capabilitySchema := input.CapabilityProfileSchema
@@ -179,35 +173,36 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_effective_running %d\n", input.RouterBackpressure.EffectiveRunning)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_raw_global_limit %d\n", input.RouterBackpressure.RawGlobalLimit)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_effective_global_limit %d\n", input.RouterBackpressure.EffectiveGlobalLimit)
-	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_info{action=%q,reason=%q,pressure_source=%q,prefill_class=%q} 1\n", requestAwareAction, requestAwareReason, requestAwarePressureSource, requestAwarePrefillClass)
-	fmt.Fprintf(w, "pig_predictive_request_aware_pressure %.6f\n", input.RequestAwarePressure)
-	fmt.Fprintf(w, "pig_predictive_request_aware_selection_input_tokens %d\n", input.RequestAwareSelectionInputTokens)
-	fmt.Fprintf(w, "pig_predictive_request_aware_reserved_tokens %d\n", input.RequestAwareReservedTokens)
-	fmt.Fprintf(w, "pig_predictive_request_aware_allowance_tokens %d\n", input.RequestAwareAllowanceTokens)
-	fmt.Fprintf(w, "pig_predictive_request_aware_effective_kv_tokens %d\n", input.RequestAwareEffectiveKV)
-	fmt.Fprintf(w, "pig_predictive_request_aware_post_admit_kv_tokens %d\n", input.RequestAwarePostAdmitKV)
-	fmt.Fprintf(w, "pig_predictive_request_aware_remaining_kv_tokens %d\n", input.RequestAwareRemainingKV)
-	fmt.Fprintf(w, "pig_predictive_request_aware_running %d\n", input.RequestAwareRunning)
-	fmt.Fprintf(w, "pig_predictive_request_aware_waiting %d\n", input.RequestAwareWaiting)
-	fmt.Fprintf(w, "pig_predictive_request_aware_effective_sequences %d\n", input.RequestAwareEffectiveSequences)
-	fmt.Fprintf(w, "pig_predictive_request_aware_aggregate_tps_proxy %.6f\n", input.RequestAwareAggregateTPSProxy)
-	fmt.Fprintf(w, "pig_predictive_request_aware_mean_active_tps_proxy %.6f\n", input.RequestAwareMeanActiveTPSProxy)
-	fmt.Fprintf(w, "pig_predictive_request_aware_estimated_prefill_tokens %d\n", input.RequestAwareEstimatedPrefillTokens)
-	fmt.Fprintf(w, "pig_predictive_request_aware_pending_prefill_sequences %d\n", input.RequestAwarePendingPrefillSequences)
-	fmt.Fprintf(w, "pig_predictive_request_aware_pending_prefill_tokens %d\n", input.RequestAwarePendingPrefillTokens)
-	fmt.Fprintf(w, "pig_predictive_request_aware_post_admit_pending_prefill_tokens %d\n", input.RequestAwarePostAdmitPendingPrefillTokens)
-	fmt.Fprintf(w, "pig_predictive_request_aware_pending_long_prefill_sequences %d\n", input.RequestAwarePendingLongPrefillSequences)
-	fmt.Fprintf(w, "pig_predictive_request_aware_pending_quiescent_prefill_sequences %d\n", input.RequestAwarePendingQuiescentPrefillSequences)
-	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_prefill_sequences %d\n", input.RequestAwareLastDecisionPendingPrefillSequences)
-	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_prefill_tokens %d\n", input.RequestAwareLastDecisionPendingPrefillTokens)
-	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_post_admit_pending_prefill_tokens %d\n", input.RequestAwareLastDecisionPostAdmitPendingPrefillTokens)
-	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_long_prefill_sequences %d\n", input.RequestAwareLastDecisionPendingLongPrefillSequences)
-	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_quiescent_prefill_sequences %d\n", input.RequestAwareLastDecisionPendingQuiescentPrefillSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_info{action=%q,reason=%q,pressure_source=%q,prefill_class=%q} 1\n", admissionAction, admissionReason, admissionPressureSource, admissionPrefillClass)
+	fmt.Fprintf(w, "pig_predictive_request_aware_pressure %.6f\n", 0.0)
+	fmt.Fprintf(w, "pig_predictive_request_aware_selection_input_tokens %d\n", input.AdmissionSelectionInputTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_reserved_tokens %d\n", input.AdmissionReservedTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_allowance_tokens %d\n", input.AdmissionAllowanceTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_effective_kv_tokens %d\n", input.AdmissionEffectiveKV)
+	fmt.Fprintf(w, "pig_predictive_request_aware_post_admit_kv_tokens %d\n", input.AdmissionPostAdmitKV)
+	fmt.Fprintf(w, "pig_predictive_request_aware_remaining_kv_tokens %d\n", input.AdmissionRemainingKV)
+	fmt.Fprintf(w, "pig_predictive_request_aware_running %d\n", input.AdmissionRunning)
+	fmt.Fprintf(w, "pig_predictive_request_aware_waiting %d\n", input.AdmissionWaiting)
+	fmt.Fprintf(w, "pig_predictive_request_aware_effective_sequences %d\n", input.AdmissionEffectiveSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_aggregate_tps_proxy %.6f\n", input.AdmissionAggregateTPS)
+	fmt.Fprintf(w, "pig_predictive_request_aware_mean_active_tps_proxy %.6f\n", input.AdmissionMeanActiveTPS)
+	fmt.Fprintf(w, "pig_predictive_request_aware_estimated_prefill_tokens %d\n", input.AdmissionEstimatedPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_pending_prefill_sequences %d\n", input.AdmissionPendingPrefillSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_pending_prefill_tokens %d\n", input.AdmissionPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_post_admit_pending_prefill_tokens %d\n", input.AdmissionPostAdmitPendingPrefillTokens)
+	longPrefills := input.AdmissionPendingExclusiveSequences + input.AdmissionPendingQuiescentSequences
+	fmt.Fprintf(w, "pig_predictive_request_aware_pending_long_prefill_sequences %d\n", longPrefills)
+	fmt.Fprintf(w, "pig_predictive_request_aware_pending_quiescent_prefill_sequences %d\n", input.AdmissionPendingQuiescentSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_prefill_sequences %d\n", input.AdmissionPendingPrefillSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_prefill_tokens %d\n", input.AdmissionPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_post_admit_pending_prefill_tokens %d\n", input.AdmissionPostAdmitPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_long_prefill_sequences %d\n", longPrefills)
+	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_quiescent_prefill_sequences %d\n", input.AdmissionPendingQuiescentSequences)
 	fmt.Fprintf(w, "pig_predictive_router_inspect_capacity %d\n", input.RouterBackpressure.InspectCapacity)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "decide", input.FailureDecide)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "forward", input.FailureForward)
-	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "prefill", input.FailurePrefill)
+	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "prefill", input.FailureFirstByte)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "terminal", input.FailureTerminal)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_prediction_duration_seconds", input.PredictionDuration)
 	writePredictiveDurationHistogram(w, "pig_predictive_admission_body_read_duration_seconds", input.BodyReadDuration)
@@ -233,7 +228,7 @@ func normalizeCapabilityInitializationReason(value string) string {
 	}
 }
 
-func normalizeRequestAwareAction(value string) string {
+func normalizeAdmissionAction(value string) string {
 	switch value {
 	case "admit", "size_protect", "hard_protect":
 		return value
@@ -242,16 +237,16 @@ func normalizeRequestAwareAction(value string) string {
 	}
 }
 
-func normalizeRequestAwareReason(value string) string {
+func normalizeAdmissionReason(value string) string {
 	switch value {
-	case "open", "stale", "kv", "input_limit", "prefill_budget", "prefill_concurrency", "prefill_exclusive", "prefill_busy", "duplicate", "unavailable", "invalid":
+	case "open", "controller_unavailable", "observation_missing", "observation_invalid", "observation_stale", "invalid_request", "input_limit", "kv_capacity", "prefill_contention", "prefill_budget", "prefill_exclusive", "prefill_quiescent", "capability_drift", "resource_exhausted", "counter_overflow", "closed":
 		return value
 	default:
 		return "unknown"
 	}
 }
 
-func normalizeRequestAwarePressureSource(value string) string {
+func normalizeAdmissionPressureSource(value string) string {
 	switch value {
 	case "none", "prefill":
 		return value
@@ -260,7 +255,7 @@ func normalizeRequestAwarePressureSource(value string) string {
 	}
 }
 
-func normalizeRequestAwarePrefillClass(value string) string {
+func normalizeAdmissionPrefillClass(value string) string {
 	switch value {
 	case "regular", "weighted", "exclusive", "quiescent":
 		return value

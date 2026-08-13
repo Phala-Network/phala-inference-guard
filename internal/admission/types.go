@@ -65,8 +65,10 @@ type ProjectedState struct {
 	ResidualDebts             int64
 	RawRunning                int64
 	RawWaiting                int64
+	PreviousRawRunning        int64
 	GenerationDelta           uint64
 	PreemptionDelta           uint64
+	ObservationInterval       time.Duration
 }
 
 type DecisionRecord struct {
@@ -104,6 +106,7 @@ type BackendObservation struct {
 	Waiting               int64
 	GenerationTokensTotal uint64
 	PreemptionsTotal      uint64
+	RuntimeStartTime      float64
 }
 
 type AdmissionResult struct {
@@ -112,9 +115,12 @@ type AdmissionResult struct {
 }
 
 type CapacitySnapshot struct {
+	IntakeOpen          bool
+	HasObservation      bool
 	Available           bool
 	MinimumDecision     DecisionRecord
 	State               ProjectedState
+	Observation         BackendObservation
 	ObservationSequence uint64
 	ControllerSequence  uint64
 	RuntimeEpoch        uint64

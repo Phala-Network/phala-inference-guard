@@ -37,6 +37,8 @@ type Sample struct {
 	GenerationValid       bool
 	GenerationTPS         float64
 	GenerationTPSDirect   bool
+	RuntimeStartTime      float64
+	RuntimeStartTimeValid bool
 	PromptLocalCompute    uint64
 	PromptLocalComputeOK  bool
 	PromptLocalCacheHit   uint64

@@ -8,6 +8,8 @@ import (
 )
 
 const (
+	// CapabilityProfileSchema is an externally reported v0.12 wire label.
+	// Retaining it does not retain the deleted request-aware execution path.
 	CapabilityProfileSchema                    = "request-aware-capability-v3"
 	DefaultCapabilityDecodeHorizonTokens int64 = 256
 )
@@ -55,7 +57,7 @@ type BackendCapabilityProfile struct {
 func NewBackendCapabilityProfile(input CapabilityProfileInput) (BackendCapabilityProfile, error) {
 	if input.ModelIdentitySHA256 == "" || input.KVCapacityTokens <= 0 || input.KVCapacityTokens > 1<<53 ||
 		input.KVBlockSize <= 0 || input.KVBlockSize >= input.KVCapacityTokens ||
-		!requestAwareFinite(input.KVHardRatio) || input.KVHardRatio <= 0 || input.KVHardRatio >= 1 ||
+		!capabilityFinite(input.KVHardRatio) || input.KVHardRatio <= 0 || input.KVHardRatio >= 1 ||
 		input.MaxModelLen <= 0 || input.MaxModelLen > 1<<53 {
 		return BackendCapabilityProfile{}, fmt.Errorf("backend capability geometry is invalid")
 	}
@@ -159,7 +161,7 @@ func (p BackendCapabilityProfile) Validate() error {
 }
 
 func capabilityRatioTokens(capacity, blockSize int64, ratio float64) (int64, bool) {
-	if capacity <= 0 || blockSize <= 0 || !requestAwareFinite(ratio) || ratio <= 0 || ratio >= 1 {
+	if capacity <= 0 || blockSize <= 0 || !capabilityFinite(ratio) || ratio <= 0 || ratio >= 1 {
 		return 0, false
 	}
 	raw := math.Floor(float64(capacity) * ratio)
@@ -167,6 +169,10 @@ func capabilityRatioTokens(capacity, blockSize int64, ratio float64) (int64, boo
 		return 0, false
 	}
 	return capabilityBlockRoundDown(int64(raw), blockSize), true
+}
+
+func capabilityFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func automaticPrefillBounds(maximumInput, blockSize int64) (PrefillTokenBounds, int64, error) {

@@ -50,6 +50,7 @@ func ParseSample(metricsText string) telemetry.Sample {
 		"sglang:kv_evictable_tokens":       GaugeMax,
 		"sglang:kv_cache_evictable_tokens": GaugeMax,
 		"sglang:evictable_tokens":          GaugeMax,
+		"process_start_time_seconds":       GaugeMax,
 	})
 	ttft := ParseFirstHistogram(metricsText,
 		"vllm:time_to_first_token_seconds",
@@ -83,6 +84,11 @@ func ParseSample(metricsText string) telemetry.Sample {
 		"sglang:generation_tokens_total",
 	)
 	generation, generationValid := exactNonNegativeMetricUint64(generationValue, generationValid)
+	runtimeStartTime, runtimeStartTimeValid := values["process_start_time_seconds"]
+	runtimeStartTimeValid = runtimeStartTimeValid && finitePositive(runtimeStartTime)
+	if !runtimeStartTimeValid {
+		runtimeStartTime = 0
+	}
 	modelName, modelNameValid := parseRequiredUniqueMetricLabel(metricsText, []string{
 		"vllm:num_requests_running",
 		"vllm:num_requests_waiting",
@@ -97,20 +103,22 @@ func ParseSample(metricsText string) telemetry.Sample {
 	}
 
 	sample := telemetry.Sample{
-		ModelName:           modelName,
-		ModelNameValid:      modelNameValid,
-		Running:             running,
-		RunningValid:        runningValid,
-		Waiting:             waiting,
-		WaitingValid:        waitingValid,
-		KVCacheUsage:        kvValue,
-		Preemptions:         preemptions,
-		PreemptionsValid:    preemptionsValid,
-		Generation:          generation,
-		GenerationValid:     generationValid,
-		GenerationTPS:       generationTPSValue,
-		GenerationTPSDirect: generationTPSDirect,
-		TTFT:                ttft,
+		ModelName:             modelName,
+		ModelNameValid:        modelNameValid,
+		Running:               running,
+		RunningValid:          runningValid,
+		Waiting:               waiting,
+		WaitingValid:          waitingValid,
+		KVCacheUsage:          kvValue,
+		Preemptions:           preemptions,
+		PreemptionsValid:      preemptionsValid,
+		Generation:            generation,
+		GenerationValid:       generationValid,
+		GenerationTPS:         generationTPSValue,
+		GenerationTPSDirect:   generationTPSDirect,
+		RuntimeStartTime:      runtimeStartTime,
+		RuntimeStartTimeValid: runtimeStartTimeValid,
+		TTFT:                  ttft,
 	}
 	adaptVLLMCapabilityCounters(metricsText, &sample)
 	adaptKVTokenMetrics(metricsText, values, &sample)

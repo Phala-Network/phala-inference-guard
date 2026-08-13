@@ -61,13 +61,3 @@ vllm:generation_tokens_total{model_name="vendor/model-a",engine="0"} 0
 		t.Fatalf("startup error lost semantic or fetch evidence: %v", err)
 	}
 }
-
-func TestPredictiveProtectedTokensUsesObservedCapacityAndBlockAlignment(t *testing.T) {
-	protected, err := predictiveProtectedTokens(1_003, 64, 0.84)
-	if err != nil {
-		t.Fatalf("derive protected tokens: %v", err)
-	}
-	if protected != 832 {
-		t.Fatalf("protected tokens = %d, want floor(floor(1003*0.84)/64)*64 = 832", protected)
-	}
-}

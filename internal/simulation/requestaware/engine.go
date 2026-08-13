@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	simulationManifestID      = "deterministic-request-aware-simulation"
+	simulationManifestID      = "deterministic-admission-simulation"
 	simulationAggregateTPS    = 140.0
 	simulationUncontendedTPS  = 30.0
 	simulationPrefillTokensPS = 20_000.0
@@ -42,25 +42,22 @@ type workerPoolState struct {
 }
 
 type observedState struct {
-	usedTokens          int64
-	running             int
-	waiting             int
-	aggregateTPS        float64
-	tps                 float64
-	tpsValid            bool
-	observationSequence uint64
-	at                  time.Duration
+	usedTokens   int64
+	running      int
+	waiting      int
+	aggregateTPS float64
+	tps          float64
+	tpsValid     bool
+	at           time.Duration
 }
 
 type scenarioRunner struct {
 	spec                   scenarioSpec
 	policyName             PolicyName
 	profile                runtimepredictive.BackendCapabilityProfile
-	policy                 *runtimepredictive.RequestAwarePolicy
-	manager                *runtimepredictive.Manager
 	controller             *coreadmission.AdmissionController
 	controllerHandles      map[string]coreadmission.ReservationHandle
-	productionPolicyCalls  int
+	controllerPolicyCalls  int
 	active                 map[string]*activeRequest
 	order                  []string
 	observed               observedState
@@ -79,7 +76,6 @@ func runScenario(
 	spec scenarioSpec,
 	policyName PolicyName,
 	profile runtimepredictive.BackendCapabilityProfile,
-	policy *runtimepredictive.RequestAwarePolicy,
 ) (Metrics, int, error) {
 	capacity := spec.capacityTokens
 	if capacity <= 0 {
@@ -92,7 +88,6 @@ func runScenario(
 		spec:              spec,
 		policyName:        policyName,
 		profile:           profile,
-		policy:            policy,
 		active:            make(map[string]*activeRequest),
 		arrivals:          make(map[time.Duration][]requestSpec),
 		requestWorkerPool: make(map[string]int),
@@ -102,13 +97,9 @@ func runScenario(
 		},
 	}
 	if policyName == PolicyV01210 {
-		runner.manager = runtimepredictive.NewManager(simulationManifestID, domainpredictive.VirtualState{
-			PhysicalKVUpper:     spec.initialKVTokens,
-			ActiveKVUpper:       spec.initialKVTokens,
-			DecodeSequences:     spec.backgroundRunning,
-			ActiveContextTokens: spec.initialKVTokens,
-		})
-	} else if policyName == PolicyCandidate {
+		return Metrics{}, 0, fmt.Errorf("historical v0.12.10 must be loaded from its frozen fixture")
+	}
+	if policyName == PolicyCandidate {
 		capability := simulationAdmissionCapability(profile)
 		controller, controllerErr := coreadmission.NewAdmissionController(capability)
 		if controllerErr != nil {
@@ -145,20 +136,17 @@ func runScenario(
 		runner.metrics.CompletionTokensPerSecond = runner.metrics.CompletionTokens / durationSeconds
 		runner.metrics.SLOCompletionTokensPerSecond = runner.metrics.SLOCompletionTokens / durationSeconds
 	}
-	runner.terminateAll(spec.duration, runtimepredictive.TerminalExpired)
-	if runner.manager != nil && runner.manager.Snapshot().Reservations != 0 {
-		return Metrics{}, runner.productionPolicyCalls, fmt.Errorf("candidate manager leaked reservations")
-	}
+	runner.terminateAll(spec.duration, coreadmission.TerminalTimeout)
 	if runner.controller != nil {
 		runner.publishControllerObservation(spec.duration, true)
 		snapshot := runner.controller.Snapshot(time.Unix(0, int64(spec.duration)))
 		if snapshot.State.LiveReservations != 0 || snapshot.State.ResidualDebts != 0 ||
 			snapshot.State.ReservationKVTokens != 0 {
-			return Metrics{}, runner.productionPolicyCalls, fmt.Errorf("candidate Controller leaked reservations: %+v", snapshot.State)
+			return Metrics{}, runner.controllerPolicyCalls, fmt.Errorf("candidate Controller leaked reservations: %+v", snapshot.State)
 		}
 		runner.controller.Close()
 	}
-	return runner.metrics, runner.productionPolicyCalls, nil
+	return runner.metrics, runner.controllerPolicyCalls, nil
 }
 
 func simulationAdmissionCapability(profile runtimepredictive.BackendCapabilityProfile) coreadmission.Capability {
@@ -311,7 +299,7 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 		if r.controller == nil {
 			return false, true
 		}
-		r.productionPolicyCalls++
+		r.controllerPolicyCalls++
 		result := r.controller.Admit(
 			time.Unix(0, int64(at)),
 			simulationRequestEstimate(request),
@@ -325,41 +313,6 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 		}
 		r.controllerHandles[request.id] = result.Handle
 		return true, false
-	}
-	if r.policyName != PolicyV01210 || r.policy == nil || r.manager == nil {
-		return false, true
-	}
-	r.productionPolicyCalls++
-	result := r.manager.DecideRequestAwareAndReserve(
-		time.Unix(0, int64(at)),
-		request.id,
-		simulationRequestCost(request),
-		request.selectionInput,
-		r.policy,
-		runtimepredictive.RequestAwareInput{
-			MetricsFresh:        metricsFresh,
-			IdentityValid:       true,
-			ObservationSequence: r.observed.observationSequence,
-			CapacityTokens:      r.capacityTokens(),
-			Running:             r.observed.running,
-			Waiting:             r.observed.waiting,
-			AggregateTPSProxy:   r.observed.aggregateTPS,
-			MeanActiveTPSProxy:  r.observed.tps,
-			TPSValid:            r.observed.tpsValid,
-			PreemptionObserved:  preemptionCooldown,
-		},
-	)
-	switch result.Decision.Action {
-	case runtimepredictive.RequestAwareAdmit:
-		if !result.Reserved || !r.manager.MarkForwarded(request.id) {
-			if result.Reserved {
-				r.manager.Terminate(request.id, runtimepredictive.TerminalLocalQoSReject)
-			}
-			return false, true
-		}
-		return true, false
-	case runtimepredictive.RequestAwareSizeProtect:
-		return false, false
 	default:
 		return false, true
 	}
@@ -385,7 +338,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	for _, id := range r.order {
 		active := r.active[id]
 		if active != nil && active.cancelAt > 0 && at >= active.cancelAt {
-			r.removeActive(at, id, runtimepredictive.TerminalClientCancelled)
+			r.removeActive(at, id, coreadmission.TerminalCancel)
 			r.processArrivals(at)
 		}
 	}
@@ -399,7 +352,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	for _, request := range scheduled {
 		if active := request.active; active.prefillRemaining > 0 {
 			prefillAtStart++
-			if excess := active.prefillRemaining - float64(runtimepredictive.DefaultRequestAwarePrefillRegularTokens); excess > 0 {
+			if excess := active.prefillRemaining - float64(domainpredictive.DefaultPrefillRegularTokens); excess > 0 {
 				prefillExcessAtStart += excess
 			}
 		}
@@ -420,9 +373,6 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 			continue
 		}
 		active.prefillComplete = true
-		if r.manager != nil && !r.manager.MarkPrefillComplete(request.id) {
-			panic("simulation manager rejected Prefill completion")
-		}
 		if r.controller != nil {
 			handle, exists := r.controllerHandles[request.id]
 			if !exists || !handle.MarkFirstByte() {
@@ -444,7 +394,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	aggregateTPS := math.Min(aggregateTPSCap, simulationUncontendedTPS*float64(decodeSequences))
 	if prefillAtStart > 0 {
 		aggregateTPS /= 1 + 0.08*float64(prefillAtStart) +
-			0.9*prefillExcessAtStart/float64(runtimepredictive.DefaultRequestAwarePrefillRegularTokens)
+			0.9*prefillExcessAtStart/float64(domainpredictive.DefaultPrefillRegularTokens)
 	}
 	perUserTPS := 0.0
 	if decodeSequences > 0 {
@@ -470,7 +420,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		active := r.active[id]
 		if active != nil && active.outputRemaining <= simulationFloatTolerance {
 			r.metrics.Completed++
-			r.removeActive(at, id, runtimepredictive.TerminalCompleted)
+			r.removeActive(at, id, coreadmission.TerminalSuccess)
 			r.processArrivals(at)
 		}
 	}
@@ -508,41 +458,14 @@ func (r *scenarioRunner) poll(at time.Duration) {
 			tpsValid = tps > 0
 		}
 	}
-	observationSequence := r.observed.observationSequence
-	if r.manager != nil {
-		if observationSequence == ^uint64(0) {
-			panic("simulation observation sequence overflow")
-		}
-		observationSequence++
-	}
 	nextObserved := observedState{
-		usedTokens:          used,
-		running:             running,
-		waiting:             waiting,
-		aggregateTPS:        aggregateTPS,
-		tps:                 tps,
-		tpsValid:            tpsValid,
-		observationSequence: observationSequence,
-		at:                  at,
-	}
-	if r.manager != nil {
-		started := r.manager.StartSampleWindow()
-		finished := r.manager.EventSequence()
-		decodeSequences := running + waiting
-		if err := r.manager.ReconcileSample(runtimepredictive.SampleWindow{
-			Observed: domainpredictive.VirtualState{
-				PhysicalKVUpper:         used,
-				ActiveKVUpper:           used,
-				DecodeSequences:         decodeSequences,
-				PendingPrefillSequences: waiting,
-				ActiveContextTokens:     used,
-			},
-			StartedSequence:     started,
-			FinishedSequence:    finished,
-			ObservationSequence: observationSequence,
-		}); err != nil {
-			panic(fmt.Sprintf("simulation reconcile: %v", err))
-		}
+		usedTokens:   used,
+		running:      running,
+		waiting:      waiting,
+		aggregateTPS: aggregateTPS,
+		tps:          tps,
+		tpsValid:     tpsValid,
+		at:           at,
 	}
 	if publishController {
 		r.publishControllerObservationWindow(controllerWindow, at, used, running, waiting)
@@ -722,22 +645,19 @@ func (r *scenarioRunner) enforceHardKV(at time.Duration) {
 			ids = append(ids, id)
 		}
 		sort.Strings(ids)
-		r.removeActive(at, ids[len(ids)-1], runtimepredictive.TerminalUpstreamFailure)
+		r.removeActive(at, ids[len(ids)-1], coreadmission.TerminalError)
 		r.processArrivals(at)
 		r.metrics.Preemptions++
 	}
 }
 
-func (r *scenarioRunner) removeActive(at time.Duration, id string, cause runtimepredictive.TerminalCause) {
+func (r *scenarioRunner) removeActive(at time.Duration, id string, cause coreadmission.TerminalCause) {
 	if _, exists := r.active[id]; !exists {
 		return
 	}
-	if r.manager != nil && !r.manager.Terminate(id, cause) {
-		panic("simulation manager rejected terminal event")
-	}
 	if r.controller != nil {
 		handle, exists := r.controllerHandles[id]
-		if !exists || !handle.Terminate(simulationTerminalCause(cause)) {
+		if !exists || !handle.Terminate(cause) {
 			panic("simulation Controller rejected terminal event")
 		}
 		delete(r.controllerHandles, id)
@@ -746,39 +666,11 @@ func (r *scenarioRunner) removeActive(at time.Duration, id string, cause runtime
 	r.releaseWorkerPoolSlot(at, id)
 }
 
-func simulationTerminalCause(cause runtimepredictive.TerminalCause) coreadmission.TerminalCause {
-	switch cause {
-	case runtimepredictive.TerminalCompleted:
-		return coreadmission.TerminalSuccess
-	case runtimepredictive.TerminalClientCancelled:
-		return coreadmission.TerminalCancel
-	case runtimepredictive.TerminalExpired:
-		return coreadmission.TerminalTimeout
-	default:
-		return coreadmission.TerminalError
-	}
-}
-
-func (r *scenarioRunner) terminateAll(at time.Duration, cause runtimepredictive.TerminalCause) {
+func (r *scenarioRunner) terminateAll(at time.Duration, cause coreadmission.TerminalCause) {
 	r.ending = true
 	for _, id := range r.order {
 		r.removeActive(at, id, cause)
 	}
-}
-
-func simulationRequestCost(request requestSpec) domainpredictive.RequestCost {
-	cost, err := domainpredictive.BuildRequestCost(domainpredictive.RequestCostInput{
-		ManifestID:             simulationManifestID,
-		BlockSize:              simulationBlockSize,
-		SelectionPrefillTokens: request.selectionInput,
-		SafetyInputTokens:      request.safetyInput,
-		DecodeHorizonTokens:    request.decodeHorizon,
-		Confidence:             1,
-	})
-	if err != nil {
-		panic(fmt.Sprintf("simulation request cost for %q: %v", request.id, err))
-	}
-	return cost
 }
 
 func simulationRequestEstimate(request requestSpec) domainpredictive.RequestEstimate {
@@ -793,12 +685,16 @@ func simulationRequestEstimate(request requestSpec) domainpredictive.RequestEsti
 	return estimate
 }
 
-func simulationReservedTokens(request requestSpec) int64 {
-	cost := simulationRequestCost(request)
-	if cost.KV.PhysicalKVUpper > cost.KV.ActiveKVUpper {
-		return cost.KV.PhysicalKVUpper
+func simulationRequestWork(request requestSpec) domainpredictive.RequestWork {
+	work, err := domainpredictive.BuildRequestWork(simulationRequestEstimate(request), simulationBlockSize)
+	if err != nil {
+		panic(fmt.Sprintf("simulation request work for %q: %v", request.id, err))
 	}
-	return cost.KV.ActiveKVUpper
+	return work
+}
+
+func simulationReservedTokens(request requestSpec) int64 {
+	return simulationRequestWork(request).TotalKVTokens
 }
 
 func (r *scenarioRunner) recordIdleDuration(at time.Duration) {

@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
-	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
@@ -431,35 +432,38 @@ func testProxyConfig(upstream string) config {
 
 func newTestProxyServer(cfg config) (*proxyServer, error) {
 	return newProxyServerWithDependencies(cfg, serverDependencies{
-		NewPredictiveShadow: func(config) (predictiveAdmissionShadow, error) {
-			return &testForwardPredictiveAdapter{mode: cfg.PredictiveAdmissionMode}, nil
+		NewAdmission: func(config) (admissionService, error) {
+			return &testForwardAdmissionService{}, nil
 		},
 	})
 }
 
-type testForwardPredictiveAdapter struct {
-	mode string
-}
+type testForwardAdmissionService struct{}
 
-func (a *testForwardPredictiveAdapter) Decide(_ context.Context, _ string, _ predictiveShadowInput) predictiveAdmissionDecision {
-	decision := predictiveAdmissionDecision{Outcome: predictiveAdmissionOutcomeForward}
-	if a.mode == "enforce" {
-		decision.Reservation = &testForwardReservation{}
+func (*testForwardAdmissionService) Decide(_ context.Context, estimate domainpredictive.RequestEstimate) admissionDecision {
+	return admissionDecision{
+		Record: coreadmission.DecisionRecord{
+			Action: coreadmission.ActionAdmit, Reason: coreadmission.ReasonOpen, Estimate: estimate,
+		},
+		Reservation: &testForwardReservation{},
 	}
-	return decision
 }
 
-func (*testForwardPredictiveAdapter) PredictiveAdmissionTelemetry() predictiveAdmissionTelemetrySnapshot {
-	return predictiveAdmissionTelemetrySnapshot{}
+func (*testForwardAdmissionService) Snapshot(now time.Time) admissionTelemetrySnapshot {
+	return admissionTelemetrySnapshot{Capacity: coreadmission.CapacitySnapshot{
+		IntakeOpen: true, HasObservation: true, Available: true,
+		MinimumDecision: coreadmission.DecisionRecord{Action: coreadmission.ActionAdmit, Reason: coreadmission.ReasonOpen},
+		Observation:     coreadmission.BackendObservation{ObservedAt: now, MaximumAge: time.Minute},
+	}}
 }
 
-func (*testForwardPredictiveAdapter) Close() error { return nil }
+func (*testForwardAdmissionService) Close() error { return nil }
 
 type testForwardReservation struct{}
 
-func (*testForwardReservation) MarkForwarded() bool       { return true }
-func (*testForwardReservation) MarkPrefillComplete() bool { return true }
-func (*testForwardReservation) Terminate(runtimepredictive.TerminalCause) bool {
+func (*testForwardReservation) MarkForwarded() bool { return true }
+func (*testForwardReservation) MarkFirstByte() bool { return true }
+func (*testForwardReservation) Terminate(coreadmission.TerminalCause) bool {
 	return true
 }
 

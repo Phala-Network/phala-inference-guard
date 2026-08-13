@@ -20,6 +20,25 @@ vllm:num_requests_running 4
 	}
 }
 
+func TestParseSampleCapturesOptionalRuntimeStartTime(t *testing.T) {
+	withEpoch := ParseSample("process_start_time_seconds 1786639534.03\n")
+	if !withEpoch.RuntimeStartTimeValid || withEpoch.RuntimeStartTime != 1786639534.03 {
+		t.Fatalf("runtime start sample=%#v want valid process epoch", withEpoch)
+	}
+	for name, metrics := range map[string]string{
+		"missing":   "vllm:num_requests_running 0\n",
+		"zero":      "process_start_time_seconds 0\n",
+		"nonfinite": "process_start_time_seconds +Inf\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			sample := ParseSample(metrics)
+			if sample.RuntimeStartTimeValid || sample.RuntimeStartTime != 0 {
+				t.Fatalf("invalid runtime start sample=%#v", sample)
+			}
+		})
+	}
+}
+
 func TestParseSampleDeduplicatesSGLangRanksAndExcludesEvictable(t *testing.T) {
 	metrics := `
 sglang:max_total_num_tokens{tp_rank="0"} 1041408

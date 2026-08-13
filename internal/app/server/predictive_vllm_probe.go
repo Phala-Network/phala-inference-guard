@@ -30,6 +30,7 @@ type predictiveVLLMStartup struct {
 	Waiting             int
 	Preemptions         uint64
 	Generation          uint64
+	RuntimeStartTime    float64
 	PromptLocalCompute  uint64
 	PromptLocalCacheHit uint64
 	PrefillRequests     uint64
@@ -117,6 +118,7 @@ func predictiveVLLMStartupFromSample(sample telemetry.Sample, observedAt time.Ti
 		Waiting:             sample.Waiting,
 		Preemptions:         sample.Preemptions,
 		Generation:          sample.Generation,
+		RuntimeStartTime:    sample.RuntimeStartTime,
 		PromptLocalCompute:  sample.PromptLocalCompute,
 		PromptLocalCacheHit: sample.PromptLocalCacheHit,
 		PrefillRequests:     sample.PrefillRequests,

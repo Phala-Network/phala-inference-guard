@@ -123,15 +123,22 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	if c.hasObservation && observation.ObservedAt.Before(c.observation.observation.ObservedAt) {
 		return PublicationResult{Reason: ReasonObservationInvalid, RuntimeEpoch: c.runtimeEpoch}
 	}
+	if c.hasObservation && c.observation.observation.RuntimeStartTime > 0 && observation.RuntimeStartTime == 0 {
+		return PublicationResult{Reason: ReasonObservationInvalid, RuntimeEpoch: c.runtimeEpoch}
+	}
 	if c.observationSequence == math.MaxUint64 {
 		c.failClosedLocked(ReasonCounterOverflow)
 		return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
 	}
 
 	runtimeReset := c.hasObservation &&
-		(observation.GenerationTokensTotal < c.observation.observation.GenerationTokensTotal ||
+		((observation.RuntimeStartTime > 0 && c.observation.observation.RuntimeStartTime > 0 &&
+			observation.RuntimeStartTime != c.observation.observation.RuntimeStartTime) ||
+			observation.GenerationTokensTotal < c.observation.observation.GenerationTokensTotal ||
 			observation.PreemptionsTotal < c.observation.observation.PreemptionsTotal)
 	var generationDelta, preemptionDelta uint64
+	var observationInterval time.Duration
+	var previousRunning int64
 	if runtimeReset {
 		if c.runtimeEpoch == math.MaxUint64 {
 			c.failClosedLocked(ReasonCounterOverflow)
@@ -146,6 +153,8 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		if c.hasObservation {
 			generationDelta = observation.GenerationTokensTotal - c.observation.observation.GenerationTokensTotal
 			preemptionDelta = observation.PreemptionsTotal - c.observation.observation.PreemptionsTotal
+			observationInterval = observation.ObservedAt.Sub(c.observation.observation.ObservedAt)
+			previousRunning = c.observation.observation.Running
 		}
 		nextOverlay, ok := c.reconciledOverlayLocked(window.eventSequence)
 		if !ok {
@@ -163,6 +172,8 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		sequence:        c.observationSequence,
 		generationDelta: generationDelta,
 		preemptionDelta: preemptionDelta,
+		interval:        observationInterval,
+		previousRunning: previousRunning,
 	}
 	c.hasObservation = true
 	return PublicationResult{
@@ -258,8 +269,11 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 	if !ok {
 		decision := c.unavailableDecisionLocked(reason, c.policy.minimumWork.Estimate, c.policy.minimumWork, state)
 		return CapacitySnapshot{
+			IntakeOpen:          c.closedReason == "",
+			HasObservation:      c.hasObservation,
 			MinimumDecision:     decision,
 			State:               state,
+			Observation:         c.observation.observation,
 			ObservationSequence: c.observationSequence,
 			ControllerSequence:  c.eventSequence,
 			RuntimeEpoch:        c.runtimeEpoch,
@@ -272,9 +286,12 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 		state,
 	)
 	return CapacitySnapshot{
+		IntakeOpen:          true,
+		HasObservation:      true,
 		Available:           decision.Admitted(),
 		MinimumDecision:     decision,
 		State:               state,
+		Observation:         c.observation.observation,
 		ObservationSequence: c.observationSequence,
 		ControllerSequence:  c.eventSequence,
 		RuntimeEpoch:        c.runtimeEpoch,
@@ -517,6 +534,10 @@ func validBackendObservation(observation BackendObservation) bool {
 		observation.ObservedAt.IsZero() || observation.MaximumAge <= 0 ||
 		observation.UsedKVTokens < 0 || observation.UsedKVTokens > observation.KVCapacityTokens ||
 		observation.Running < 0 || observation.Waiting < 0 {
+		return false
+	}
+	if observation.RuntimeStartTime < 0 || math.IsNaN(observation.RuntimeStartTime) ||
+		math.IsInf(observation.RuntimeStartTime, 0) {
 		return false
 	}
 	_, ok := addNonnegativeInt64(observation.Running, observation.Waiting)

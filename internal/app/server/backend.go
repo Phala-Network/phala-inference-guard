@@ -8,13 +8,6 @@ import (
 	httpx "github.com/Phala-Network/phala-inference-guard/internal/infra/http"
 )
 
-func (s *proxyServer) chooseBackend() *backendProxy {
-	if s == nil {
-		return nil
-	}
-	return s.backend
-}
-
 func (s *proxyServer) proxyRequest(backend *backendProxy, w http.ResponseWriter, r *http.Request) (result proxyResult) {
 	if backend == nil {
 		return proxyResult{status: http.StatusServiceUnavailable, proxyFailed: true}

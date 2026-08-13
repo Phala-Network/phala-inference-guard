@@ -4,8 +4,9 @@ import (
 	"net/http"
 	"time"
 
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
-	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,45 +59,42 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		openai.WriteInvalidJSON(w)
 		return
 	}
-	decision := s.decidePredictiveShadow(r.Context(), predictiveShadowInput{
-		Cost: classification.Cost,
-	})
+	estimate, estimateKnown := classification.Cost.PredictiveEstimate()
+	if !estimateKnown {
+		// Unsupported or temporarily unclassifiable inputs are request-scoped
+		// protection, not evidence that the whole upstream is unavailable. The
+		// Controller turns this invalid estimate into an observable, non-reserving
+		// decision while its canonical capacity probe remains independent.
+		estimate = domainpredictive.RequestEstimate{}
+	}
+	decision := s.decideAdmission(r.Context(), estimate)
 	reservation := decision.Reservation
-	if s.cfg.PredictiveAdmissionMode == "enforce" && !decision.validEnforceResult() {
-		if reservation != nil {
-			reservation.Terminate(runtimepredictive.TerminalLocalQoSReject)
-		}
-		s.predictiveShadowFailures.decide.Add(1)
+	if s.cfg.PredictiveAdmissionMode == "enforce" && !decision.Record.Admitted() {
 		s.predictiveEnforcedRejects.Add(1)
 		s.total429.Add(1)
 		s.decisionDuration.Observe(time.Since(decisionStart))
 		openai.WriteTooManyRequests(w)
 		return
 	}
-	if s.cfg.PredictiveAdmissionMode == "enforce" && decision.rejectsForward() {
-		s.predictiveEnforcedRejects.Add(1)
-		s.total429.Add(1)
-		s.decisionDuration.Observe(time.Since(decisionStart))
-		openai.WriteTooManyRequests(w)
-		return
-	}
-	terminal := runtimepredictive.TerminalClientCancelled
+	terminal := coreadmission.TerminalCancel
 	if reservation != nil {
 		defer func() { reservation.Terminate(terminal) }()
 		if !reservation.MarkForwarded() {
-			terminal = runtimepredictive.TerminalLocalQoSReject
-			s.predictiveShadowFailures.forward.Add(1)
-			s.predictiveEnforcedRejects.Add(1)
+			terminal = coreadmission.TerminalError
+			s.admissionFailures.forward.Add(1)
+			if s.cfg.PredictiveAdmissionMode == "enforce" {
+				s.predictiveEnforcedRejects.Add(1)
+			}
 			s.total429.Add(1)
 			s.decisionDuration.Observe(time.Since(decisionStart))
 			openai.WriteTooManyRequests(w)
 			return
 		}
-		r = r.WithContext(attachPredictiveReservation(r.Context(), reservation))
+		r = r.WithContext(attachAdmissionReservation(r.Context(), reservation))
 	}
 	s.decisionDuration.Observe(time.Since(decisionStart))
 	result := s.proxyRequest(s.backend, w, r)
-	terminal = predictiveTerminalCause(result)
+	terminal = admissionTerminalCause(result)
 	s.observeProxyResult(result)
 	s.observeInternalOverhead(time.Since(requestStart), 0, result.total)
 }
@@ -112,17 +110,17 @@ func (s *proxyServer) forwardWithoutAdmission(w http.ResponseWriter, r *http.Req
 	s.observeInternalOverhead(time.Since(started), 0, result.total)
 }
 
-func predictiveTerminalCause(result proxyResult) runtimepredictive.TerminalCause {
+func admissionTerminalCause(result proxyResult) coreadmission.TerminalCause {
 	switch {
 	case result.timedOut:
-		return runtimepredictive.TerminalTimeout
+		return coreadmission.TerminalTimeout
 	case result.status == clientClosedRequestStatus:
-		return runtimepredictive.TerminalClientDisconnected
+		return coreadmission.TerminalDisconnect
 	case result.proxyFailed:
-		return runtimepredictive.TerminalUpstreamFailure
+		return coreadmission.TerminalError
 	case result.status >= http.StatusOK && result.status < http.StatusMultipleChoices:
-		return runtimepredictive.TerminalCompleted
+		return coreadmission.TerminalSuccess
 	default:
-		return runtimepredictive.TerminalUpstreamFailure
+		return coreadmission.TerminalError
 	}
 }

@@ -7,38 +7,38 @@ import (
 	"strings"
 	"time"
 
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	"github.com/Phala-Network/phala-inference-guard/internal/app/request"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/backend"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
-	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-type predictiveReservationContextKey struct{}
+type admissionReservationContextKey struct{}
 
 func newProxyServer(cfg config) (*proxyServer, error) {
-	return newProxyServerWithDependencies(cfg, serverDependencies{NewPredictiveShadow: newDefaultPredictiveShadow})
+	return newProxyServerWithDependencies(cfg, serverDependencies{NewAdmission: newDefaultAdmissionService})
 }
 
 func newProxyServerWithDependencies(cfg config, dependencies serverDependencies) (*proxyServer, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
 	}
-	if dependencies.NewPredictiveShadow == nil {
-		return nil, fmt.Errorf("predictive admission adapter is required")
+	if dependencies.NewAdmission == nil {
+		return nil, fmt.Errorf("admission service is required")
 	}
-	predictive, err := dependencies.NewPredictiveShadow(cfg)
+	admission, err := dependencies.NewAdmission(cfg)
 	if err != nil {
-		return nil, fmt.Errorf("construct predictive admission adapter: %w", err)
+		return nil, fmt.Errorf("construct admission service: %w", err)
 	}
-	if predictive == nil {
-		return nil, fmt.Errorf("predictive admission adapter constructor returned nil")
+	if admission == nil {
+		return nil, fmt.Errorf("admission service constructor returned nil")
 	}
 	backends, _, _, err := backend.Build([]backend.Config{{
 		Name: "upstream", Upstream: strings.TrimRight(cfg.Upstream, "/"), MetricsURL: cfg.PredictiveMetricsURL,
 	}})
 	if err != nil || len(backends) != 1 {
-		_ = predictive.Close()
+		_ = admission.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -46,14 +46,14 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 	}
 	attestationService, err := newAttestationService(cfg)
 	if err != nil {
-		_ = predictive.Close()
+		_ = admission.Close()
 		return nil, err
 	}
 	srv := &proxyServer{
 		cfg:               cfg,
 		backend:           backends[0],
 		attestation:       attestationService,
-		predictiveShadow:  predictive,
+		admission:         admission,
 		started:           time.Now(),
 		decisionDuration:  newPredictiveDurationHistogram(),
 		bodyReadDuration:  newPredictiveDurationHistogram(),
@@ -83,19 +83,23 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 func (s *proxyServer) modifyBackendResponse(response *http.Response) error {
 	s.classifyUpstreamErrorResponse(response)
 	if response != nil && response.Request != nil {
-		if reservation, ok := response.Request.Context().Value(predictiveReservationContextKey{}).(predictiveShadowReservation); ok && reservation != nil {
+		if reservation, ok := response.Request.Context().Value(admissionReservationContextKey{}).(admissionReservation); ok && reservation != nil {
 			var onComplete func()
 			if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
 				responseContext := response.Request.Context()
 				onComplete = func() {
-					if responseContext.Err() == nil {
-						reservation.Terminate(runtimepredictive.TerminalCompleted)
+					if responseContext.Err() == nil && !reservation.Terminate(coreadmission.TerminalSuccess) {
+						s.admissionFailures.terminal.Add(1)
 					}
 				}
 			}
-			response.Body = observePredictiveResponseBody(
+			response.Body = observeAdmissionResponseBody(
 				response.Body,
-				func() { reservation.MarkPrefillComplete() },
+				func() {
+					if !reservation.MarkFirstByte() {
+						s.admissionFailures.firstByte.Add(1)
+					}
+				},
 				onComplete,
 			)
 		}
@@ -103,11 +107,11 @@ func (s *proxyServer) modifyBackendResponse(response *http.Response) error {
 	return nil
 }
 
-func attachPredictiveReservation(ctx context.Context, reservation predictiveShadowReservation) context.Context {
+func attachAdmissionReservation(ctx context.Context, reservation admissionReservation) context.Context {
 	if reservation == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, predictiveReservationContextKey{}, reservation)
+	return context.WithValue(ctx, admissionReservationContextKey{}, reservation)
 }
 
 func newAttestationService(cfg config) (*attestation.Service, error) {

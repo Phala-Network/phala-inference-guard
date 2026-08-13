@@ -46,10 +46,10 @@ type ScenarioResult struct {
 }
 
 type Suite struct {
-	Seed                  int64            `json:"seed"`
-	ProductionPolicyCalls int              `json:"production_policy_calls"`
-	ControllerPolicyCalls int              `json:"controller_policy_calls"`
-	Scenarios             []ScenarioResult `json:"scenarios"`
+	Seed                      int64            `json:"seed"`
+	HistoricalBaselineRecords int              `json:"historical_baseline_records"`
+	ControllerPolicyCalls     int              `json:"controller_policy_calls"`
+	Scenarios                 []ScenarioResult `json:"scenarios"`
 }
 
 func RunSuite() (Suite, error) {
@@ -60,9 +60,14 @@ func runSuite(policyOrder []PolicyName) (Suite, error) {
 	if err := validatePolicyOrder(policyOrder); err != nil {
 		return Suite{}, err
 	}
+	frozenV01210, err := loadFrozenV01210()
+	if err != nil {
+		return Suite{}, err
+	}
+	usedHistorical := make(map[string]struct{}, len(frozenV01210))
 	suite := Suite{Seed: SimulationSeed}
 	for _, scenario := range simulationScenarios(SimulationSeed) {
-		profile, policy, err := simulationCapabilityPolicy(scenario, scenarioMaxModelLen(scenario))
+		profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
 		if err != nil {
 			return Suite{}, fmt.Errorf("construct scenario %s capability policy: %w", scenario.name, err)
 		}
@@ -74,18 +79,32 @@ func runSuite(policyOrder []PolicyName) (Suite, error) {
 			Policies:          make(map[PolicyName]Metrics, 4),
 		}
 		for _, policyName := range policyOrder {
-			metrics, calls, runErr := runScenario(scenario, policyName, profile, policy)
+			var metrics Metrics
+			var calls int
+			var runErr error
+			if policyName == PolicyV01210 {
+				var exists bool
+				metrics, exists = frozenV01210[scenario.name]
+				if !exists {
+					return Suite{}, fmt.Errorf("scenario %s has no frozen v0.12.10 baseline", scenario.name)
+				}
+				usedHistorical[scenario.name] = struct{}{}
+				suite.HistoricalBaselineRecords++
+			} else {
+				metrics, calls, runErr = runScenario(scenario, policyName, profile)
+			}
 			if runErr != nil {
 				return Suite{}, fmt.Errorf("scenario %s policy %s: %w", scenario.name, policyName, runErr)
 			}
 			result.Policies[policyName] = metrics
 			if policyName == PolicyCandidate {
 				suite.ControllerPolicyCalls += calls
-			} else if policyName == PolicyV01210 {
-				suite.ProductionPolicyCalls += calls
 			}
 		}
 		suite.Scenarios = append(suite.Scenarios, result)
+	}
+	if len(usedHistorical) != len(frozenV01210) {
+		return Suite{}, fmt.Errorf("frozen v0.12.10 baseline contains unused scenarios")
 	}
 	return suite, nil
 }
@@ -116,10 +135,10 @@ func validatePolicyOrder(policyOrder []PolicyName) error {
 	return nil
 }
 
-func simulationCapabilityPolicy(
+func simulationCapabilityProfile(
 	scenario scenarioSpec,
 	maxModelLen int64,
-) (runtimepredictive.BackendCapabilityProfile, *runtimepredictive.RequestAwarePolicy, error) {
+) (runtimepredictive.BackendCapabilityProfile, error) {
 	capacity := scenario.capacityTokens
 	if capacity <= 0 {
 		capacity = simulationCapacityTokens
@@ -133,22 +152,9 @@ func simulationCapabilityPolicy(
 		Source:              runtimepredictive.CapabilityProfileAutomatic,
 	})
 	if err != nil {
-		return runtimepredictive.BackendCapabilityProfile{}, nil, err
+		return runtimepredictive.BackendCapabilityProfile{}, err
 	}
-	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		HardKVLimitTokens:            profile.KVHardLimitTokens,
-		BlockSize:                    profile.KVBlockSize,
-		MaximumAdmissibleInputTokens: profile.MaximumAdmissibleInputTokens,
-		PrefillRegularTokens:         profile.PrefillRegularTokens,
-		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
-		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
-		PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
-		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
-	})
-	if err != nil {
-		return runtimepredictive.BackendCapabilityProfile{}, nil, err
-	}
-	return profile, policy, nil
+	return profile, nil
 }
 
 func (s Suite) Aggregate(policy PolicyName) Metrics {

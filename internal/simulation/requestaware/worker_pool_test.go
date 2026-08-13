@@ -23,11 +23,11 @@ func TestSimulationWorkerPoolImmediatelyReleasesAfterReject(t *testing.T) {
 		initialKVTokens: 89_900,
 		workerPools:     []workerPoolSpec{{at: 100 * time.Millisecond, concurrency: 1, requests: requests}},
 	}
-	profile, policy, err := simulationCapabilityPolicy(scenario, 650*1024)
+	profile, err := simulationCapabilityProfile(scenario, 650*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	metrics, _, err := runScenario(scenario, PolicyV0122, profile, policy)
+	metrics, _, err := runScenario(scenario, PolicyV0122, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +38,7 @@ func TestSimulationWorkerPoolImmediatelyReleasesAfterReject(t *testing.T) {
 
 func TestSustainedReplacementWaveUsesC21CapabilityGeometry(t *testing.T) {
 	scenario := newSustainedReplacementWaveScenario()
-	profile, _, err := simulationCapabilityPolicy(scenario, scenarioMaxModelLen(scenario))
+	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,11 +85,11 @@ func TestSimulationWorkerPoolImmediatelyReleasesAfterCompletion(t *testing.T) {
 		name: "worker-completion-release", category: "test", duration: time.Second,
 		workerPools: []workerPoolSpec{{at: 100 * time.Millisecond, concurrency: 1, requests: requests}},
 	}
-	profile, policy, err := simulationCapabilityPolicy(scenario, 650*1024)
+	profile, err := simulationCapabilityProfile(scenario, 650*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	metrics, _, err := runScenario(scenario, PolicyNoAdmission, profile, policy)
+	metrics, _, err := runScenario(scenario, PolicyNoAdmission, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +107,11 @@ func TestSimulationWorkerPoolDoesNotReleaseAtScenarioEnd(t *testing.T) {
 		name: "worker-end-boundary", category: "test", duration: 200 * time.Millisecond,
 		workerPools: []workerPoolSpec{{at: 100 * time.Millisecond, concurrency: 1, requests: requests}},
 	}
-	profile, policy, err := simulationCapabilityPolicy(scenario, 650*1024)
+	profile, err := simulationCapabilityProfile(scenario, 650*1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	metrics, _, err := runScenario(scenario, PolicyNoAdmission, profile, policy)
+	metrics, _, err := runScenario(scenario, PolicyNoAdmission, profile)
 	if err != nil {
 		t.Fatal(err)
 	}

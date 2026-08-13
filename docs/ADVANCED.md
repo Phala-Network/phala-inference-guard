@@ -99,7 +99,12 @@ reach a larger class even though the class boundary remains fixed.
 
 PIG sends no completion, warmup, cache query, or performance probe during
 initialization. Backend busy/idle state does not change the profile. KV and
-Prefill parameters are frozen for the backend epoch and are never learned.
+Prefill parameters are frozen for the Controller lifetime and are never
+learned. Ordinary observation polls do not repeat metadata I/O. When monotonic
+counters indicate a vLLM runtime reset, an automatically initialized profile
+performs one bounded `/v1/models` revalidation before publishing the reset
+sample; failure leaves the old observation to age stale, and a changed
+`max_model_len` closes capability availability.
 
 ## Explicit capability override
 

@@ -73,6 +73,50 @@ func TestControllerSameCapabilityCounterResetRecoversAndFencesOldHandle(t *testi
 	}
 }
 
+func TestControllerRuntimeEpochChangeResetsEvenWhenCountersIncrease(t *testing.T) {
+	now := time.Unix(3_500, 0)
+	capability := testCapability()
+	initial := testObservation(capability, now, 500, 1, 0, 10, 0)
+	initial.RuntimeStartTime = 100.25
+	controller := testControllerWithObservation(t, capability, initial)
+	old := controller.Admit(now.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
+	if !old.Decision.Admitted() || !old.Handle.MarkForwarded() {
+		t.Fatalf("old runtime-epoch admission=%+v", old.Decision)
+	}
+
+	reset := testObservation(capability, now.Add(2*time.Millisecond), 0, 0, 0, 11, 0)
+	reset.RuntimeStartTime = 200.5
+	publication := publishObservation(t, controller, reset)
+	if !publication.RuntimeReset || publication.RuntimeEpoch != old.Decision.RuntimeEpoch+1 {
+		t.Fatalf("runtime-epoch publication=%+v old=%+v", publication, old.Decision)
+	}
+	if old.Handle.MarkFirstByte() || old.Handle.Terminate(TerminalSuccess) {
+		t.Fatal("old handle mutated Controller after process epoch change")
+	}
+}
+
+func TestControllerDoesNotForgetKnownRuntimeEpoch(t *testing.T) {
+	now := time.Unix(3_750, 0)
+	capability := testCapability()
+	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
+	initial.RuntimeStartTime = 100.25
+	controller := testControllerWithObservation(t, capability, initial)
+	missing := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 11, 0)
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("sample window unavailable")
+	}
+	publication := controller.PublishObservation(window, missing)
+	if publication.Accepted || publication.Reason != ReasonObservationInvalid {
+		t.Fatalf("missing known runtime epoch publication=%+v", publication)
+	}
+	snapshot := controller.Snapshot(now.Add(2 * time.Millisecond))
+	if !snapshot.Available || snapshot.Observation.RuntimeStartTime != initial.RuntimeStartTime ||
+		snapshot.Observation.GenerationTokensTotal != initial.GenerationTokensTotal {
+		t.Fatalf("missing runtime epoch overwrote coherent observation: %+v", snapshot)
+	}
+}
+
 func TestControllerCapabilityDriftClosesPermanently(t *testing.T) {
 	now := time.Unix(4_000, 0)
 	capability := testCapability()
@@ -205,6 +249,28 @@ func TestControllerStaleObservationReopensOnFreshSample(t *testing.T) {
 	fresh := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(1_024, 1_536, 256)).Decision
 	if !fresh.Admitted() {
 		t.Fatalf("fresh decision=%+v", fresh)
+	}
+}
+
+func TestControllerSnapshotPublishesOneCoherentObservationRecord(t *testing.T) {
+	now := time.Unix(8_000, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(
+		t,
+		capability,
+		testObservation(capability, now, 1_000, 3, 1, 100, 4),
+	)
+	second := testObservation(capability, now.Add(500*time.Millisecond), 1_500, 5, 2, 170, 5)
+	publishObservation(t, controller, second)
+
+	snapshot := controller.Snapshot(now.Add(600 * time.Millisecond))
+	if !snapshot.IntakeOpen || !snapshot.HasObservation || snapshot.Observation != second {
+		t.Fatalf("snapshot observation=%+v", snapshot)
+	}
+	if snapshot.State.GenerationDelta != 70 || snapshot.State.PreemptionDelta != 1 ||
+		snapshot.State.ObservationInterval != 500*time.Millisecond ||
+		snapshot.State.PreviousRawRunning != 3 {
+		t.Fatalf("snapshot diagnostic state=%+v", snapshot.State)
 	}
 }
 

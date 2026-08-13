@@ -3,18 +3,13 @@ package server
 import (
 	"fmt"
 	"log"
-	"math"
 	"strings"
 
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
-const (
-	predictiveApproximateManifestID = "model-agnostic-json-v1"
-)
-
-func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
+func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	metricsURL, err := predictiveVLLMMetricsURL(cfg)
 	if err != nil {
 		return nil, err
@@ -60,10 +55,14 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		profile.PrefillContendedBudgetTokens,
 		profile.PrefillAggregateBudgetTokens,
 	)
-	policy, err := runtimepredictive.NewRequestAwarePolicy(runtimepredictive.RequestAwareConfig{
-		HardKVLimitTokens:            profile.KVHardLimitTokens,
-		BlockSize:                    int64(startup.BlockSize),
-		MaximumAdmissibleInputTokens: profile.MaximumAdmissibleInputTokens,
+	controller, err := coreadmission.NewAdmissionController(coreadmission.Capability{
+		Fingerprint:                  profile.ModelIdentitySHA256,
+		MaxModelLenTokens:            profile.MaxModelLenTokens,
+		KVCapacityTokens:             profile.KVCapacityTokens,
+		KVBlockSize:                  profile.KVBlockSize,
+		KVHardLimitTokens:            profile.KVHardLimitTokens,
+		MaximumInputTokens:           profile.MaximumAdmissibleInputTokens,
+		MinimumDecodeHorizonTokens:   runtimepredictive.DefaultCapabilityDecodeHorizonTokens,
 		PrefillRegularTokens:         profile.PrefillRegularTokens,
 		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
 		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
@@ -71,60 +70,63 @@ func newDefaultPredictiveShadow(cfg config) (predictiveAdmissionShadow, error) {
 		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("construct deterministic request-aware policy: %w", err)
+		return nil, fmt.Errorf("construct admission Controller: %w", err)
 	}
-	manager := runtimepredictive.NewManager(
-		predictiveApproximateManifestID,
-		domainpredictive.VirtualState{
-			PhysicalKVUpper:         startup.UsedTokens,
-			ActiveKVUpper:           startup.UsedTokens,
-			DecodeSequences:         startup.Running + startup.Waiting,
-			PendingPrefillSequences: startup.Waiting,
-			ActiveContextTokens:     startup.UsedTokens,
-		},
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		controller.Close()
+		return nil, fmt.Errorf("initialize admission observation window")
+	}
+	publication := controller.PublishObservation(window, coreadmission.BackendObservation{
+		CapabilityFingerprint: profile.ModelIdentitySHA256,
+		MaxModelLenTokens:     profile.MaxModelLenTokens,
+		KVCapacityTokens:      profile.KVCapacityTokens,
+		KVBlockSize:           profile.KVBlockSize,
+		ObservedAt:            startup.ObservedAt,
+		MaximumAge:            cfg.PredictiveMaximumMetricsAge,
+		UsedKVTokens:          startup.UsedTokens,
+		Running:               int64(startup.Running),
+		Waiting:               int64(startup.Waiting),
+		GenerationTokensTotal: startup.Generation,
+		PreemptionsTotal:      startup.Preemptions,
+		RuntimeStartTime:      startup.RuntimeStartTime,
+	})
+	if !publication.Accepted {
+		controller.Close()
+		return nil, fmt.Errorf("initialize admission observation: %s", publication.Reason)
+	}
+	runtime, err := newAdmissionRuntime(
+		controller,
+		newAdmissionReporter(defaultAdmissionDecisionLogInterval, logAdmissionDecision),
+		profile,
+		initialization.Reason,
+		cfg.PredictiveAdmissionMode,
+		nil,
 	)
-	if err := manager.InitializeRequestAwareObservation(runtimepredictive.RequestAwareObservation{
-		ObservedAt:          startup.ObservedAt,
-		MaximumAge:          cfg.PredictiveMaximumMetricsAge,
-		IdentityValid:       true,
-		ObservationSequence: 0,
-		CapacityTokens:      startup.CapacityTokens,
-		UsedTokens:          startup.UsedTokens,
-		Running:             startup.Running,
-		Waiting:             startup.Waiting,
-	}); err != nil {
-		return nil, fmt.Errorf("initialize deterministic request-aware observation: %w", err)
-	}
-	observer, err := newPredictiveVLLMObserver(predictiveVLLMObserverConfig{
-		MetricsURL:          metricsURL,
-		ModelIdentitySHA256: startup.ModelIdentitySHA256,
-		MaximumKVTokens:     startup.CapacityTokens,
-		BlockSize:           startup.BlockSize,
-		PollInterval:        cfg.PredictiveObservationPollInterval,
-		MaximumAge:          cfg.PredictiveMaximumMetricsAge,
-		RequestTimeout:      cfg.PredictiveMetricsRequestTimeout,
-		Coordinator:         manager,
-		Initial:             startup,
-	})
 	if err != nil {
-		return nil, fmt.Errorf("construct deterministic vLLM observer: %w", err)
-	}
-	adapter, err := newRequestAwarePredictiveAdapter(requestAwarePredictiveAdapterConfig{
-		Manager:           manager,
-		Policy:            policy,
-		CapabilityProfile: profile,
-		CapabilityReason:  initialization.Reason,
-		Snapshot:          observer,
-		ManifestID:        predictiveApproximateManifestID,
-		BlockSize:         int64(startup.BlockSize),
-		Mode:              cfg.PredictiveAdmissionMode,
-		OnDecision:        logRequestAwareDecision,
-	})
-	if err != nil {
-		_ = observer.Close()
+		controller.Close()
 		return nil, err
 	}
-	return adapter, nil
+	observer, err := newAdmissionVLLMObserver(admissionVLLMObserverConfig{
+		MetricsURL:            metricsURL,
+		UpstreamURL:           cfg.Upstream,
+		ModelName:             startup.modelName,
+		RevalidateMetadata:    initialization.Reason == "metadata",
+		CapabilityFingerprint: profile.ModelIdentitySHA256,
+		MaxModelLenTokens:     profile.MaxModelLenTokens,
+		KVCapacityTokens:      profile.KVCapacityTokens,
+		KVBlockSize:           profile.KVBlockSize,
+		PollInterval:          cfg.PredictiveObservationPollInterval,
+		MaximumAge:            cfg.PredictiveMaximumMetricsAge,
+		RequestTimeout:        cfg.PredictiveMetricsRequestTimeout,
+		Controller:            controller,
+	})
+	if err != nil {
+		_ = runtime.Close()
+		return nil, fmt.Errorf("construct admission vLLM observer: %w", err)
+	}
+	runtime.observer = observer
+	return runtime, nil
 }
 
 func predictiveVLLMMetricsURL(cfg config) (string, error) {
@@ -133,16 +135,4 @@ func predictiveVLLMMetricsURL(cfg config) (string, error) {
 		return "", fmt.Errorf("predictive vLLM metrics URL is empty")
 	}
 	return metricsURL, nil
-}
-
-func predictiveProtectedTokens(capacity int64, blockSize int, ratio float64) (int64, error) {
-	if capacity <= 0 || blockSize <= 0 || ratio <= 0 || ratio > 1 || math.IsNaN(ratio) || math.IsInf(ratio, 0) {
-		return 0, fmt.Errorf("predictive protected KV budget inputs are invalid")
-	}
-	tokens := int64(math.Floor(float64(capacity) * ratio))
-	tokens -= tokens % int64(blockSize)
-	if tokens <= 0 || tokens > capacity {
-		return 0, fmt.Errorf("predictive protected KV budget is empty or exceeds capacity")
-	}
-	return tokens, nil
 }

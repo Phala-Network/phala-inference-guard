@@ -3,6 +3,9 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"time"
+
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 )
 
 const (
@@ -25,26 +28,32 @@ func (s *proxyServer) upstreamStatusCode() int {
 	if s == nil {
 		return upstreamStatusUnknown
 	}
-	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
-	if !ok {
+	if s.admission == nil {
 		if s.cfg.PredictiveAdmissionMode == "enforce" {
 			return upstreamStatusRed
 		}
 		return upstreamStatusUnknown
 	}
-	snapshot := provider.PredictiveAdmissionTelemetry()
+	now := time.Now()
+	snapshot := s.admissionTelemetry(now)
 	if s.cfg.PredictiveAdmissionMode == "shadow" {
-		if snapshot.Observer.MetricsFresh && snapshot.Observer.IdentityValid {
+		if capacityObservationFresh(snapshot.Capacity, now) {
 			return upstreamStatusGreen
 		}
 		return upstreamStatusUnknown
 	}
-	backpressure := snapshot.RouterBackpressure
-	if !backpressure.Active {
+	projection := projectAdmissionCapacity(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, snapshot.Report)
+	if !projection.Active {
 		return upstreamStatusGreen
 	}
-	if backpressure.Scope == predictiveProtectionScopeLoad && backpressure.InspectCapacity > 0 {
+	if projection.Scope == coreadmission.ProtectionLoad {
 		return upstreamStatusYellow
 	}
 	return upstreamStatusRed
+}
+
+func capacityObservationFresh(capacity coreadmission.CapacitySnapshot, now time.Time) bool {
+	observation := capacity.Observation
+	return capacity.IntakeOpen && capacity.HasObservation && !now.IsZero() &&
+		!now.Before(observation.ObservedAt) && now.Sub(observation.ObservedAt) <= observation.MaximumAge
 }

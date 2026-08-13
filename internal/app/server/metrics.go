@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"time"
 
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	"github.com/Phala-Network/phala-inference-guard/internal/observability/metrics"
 	runtimebackend "github.com/Phala-Network/phala-inference-guard/internal/runtime/backend"
 )
@@ -43,175 +44,241 @@ func (s *proxyServer) combinedMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *proxyServer) writeLocalMetrics(w io.Writer) {
-	predictiveInput, predictiveSnapshot := s.predictiveAdmissionMetricsInput()
-	compatibility := predictiveRouterCompatibility(s.cfg.PredictiveAdmissionMode, predictiveSnapshot)
-	applyPredictiveRouterCompatibility(&predictiveInput, predictiveSnapshot, compatibility)
+	now := time.Now()
+	input, snapshot := s.predictiveAdmissionMetricsInput(now)
+	projection := projectAdmissionCapacity(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, snapshot.Report)
+	compatibility := projectRouterCompatibility(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, projection)
+	applyAdmissionRouterMetrics(&input, projection, compatibility)
 	fmt.Fprintf(w, "pig_info{version=%q} 1\n", version)
 	fmt.Fprintf(w, "pig_uptime_seconds %.6f\n", time.Since(s.started).Seconds())
 	fmt.Fprintf(w, "pig_rejected_total %d\n", s.total429.Load())
 	fmt.Fprintf(w, "pig_client_protocol_errors_total{reason=%q} %d\n", "invalid_json", s.clientProtocolInvalidJSON.Load())
 	fmt.Fprintf(w, "pig_predictive_scanner_inflight %d\n", s.requestClassifier.Inflight())
 	fmt.Fprintf(w, "pig_predictive_scanner_saturated_total %d\n", s.requestClassifier.Rejected())
-	metrics.WriteBackends(w, s.backendMetricsInput(predictiveSnapshot.Observer))
-	metrics.WritePredictiveAdmission(w, predictiveInput)
-	metrics.WriteRouterCapacityCompatibility(w, compatibility)
-}
-
-func (s *proxyServer) predictiveAdmissionMetricsInput() (metrics.PredictiveAdmissionInput, predictiveAdmissionTelemetrySnapshot) {
-	input := metrics.PredictiveAdmissionInput{
-		Mode:               s.cfg.PredictiveAdmissionMode,
-		EnforcedRejects:    s.predictiveEnforcedRejects.Load(),
-		FailureClose:       s.predictiveShadowFailures.close.Load(),
-		FailureDecide:      s.predictiveShadowFailures.decide.Load(),
-		FailureForward:     s.predictiveShadowFailures.forward.Load(),
-		FailurePrefill:     s.predictiveShadowFailures.prefill.Load(),
-		FailureTerminal:    s.predictiveShadowFailures.terminal.Load(),
-		BodyReadDuration:   &s.bodyReadDuration,
-		EstimatorDuration:  &s.estimatorDuration,
-		PreForwardDuration: &s.decisionDuration,
-	}
-	provider, ok := s.predictiveShadow.(predictiveAdmissionTelemetryProvider)
-	if !ok {
-		return input, predictiveAdmissionTelemetrySnapshot{}
-	}
-	snapshot := provider.PredictiveAdmissionTelemetry()
-	input.CapabilityProfileSource = string(snapshot.CapabilityProfile.Source)
-	input.CapabilityProfileSchema = snapshot.CapabilityProfile.SchemaVersion
-	input.CapabilityInitializationReason = snapshot.CapabilityReason
-	input.CapabilityKVCapacityTokens = snapshot.CapabilityProfile.KVCapacityTokens
-	input.CapabilityKVBlockSize = snapshot.CapabilityProfile.KVBlockSize
-	input.CapabilityKVHardLimitTokens = snapshot.CapabilityProfile.KVHardLimitTokens
-	input.CapabilityMaxModelLenTokens = snapshot.CapabilityProfile.MaxModelLenTokens
-	input.CapabilityMaximumAdmissibleInputTokens = snapshot.CapabilityProfile.MaximumAdmissibleInputTokens
-	input.CapabilityPrefillRegularTokens = snapshot.CapabilityProfile.PrefillRegularTokens
-	input.CapabilityPrefillExclusiveTokens = snapshot.CapabilityProfile.PrefillExclusiveTokens
-	input.CapabilityPrefillQuiescentTokens = snapshot.CapabilityProfile.PrefillQuiescentTokens
-	input.CapabilityPrefillContendedBudgetTokens = snapshot.CapabilityProfile.PrefillContendedBudgetTokens
-	input.CapabilityPrefillAggregateBudgetTokens = snapshot.CapabilityProfile.PrefillAggregateBudgetTokens
-	input.Attempts = snapshot.Attempts.Attempts
-	input.Fits = snapshot.Attempts.Fits
-	input.Risks = snapshot.Attempts.Risks
-	input.Unknown = snapshot.Attempts.Unknown
-	input.LastReason = string(snapshot.Attempts.LastReason)
-	input.LastSource = string(snapshot.Attempts.LastSource)
-	input.LastRejectReason = string(snapshot.Attempts.LastRejectReason)
-	input.LastRejectSource = string(snapshot.Attempts.LastRejectSource)
-	input.LastRejectScope = string(snapshot.Attempts.LastRejectScope)
-	input.LastRejectAt = snapshot.Attempts.LastRejectAt
-	input.IntakeOpen = snapshot.Manager.IntakeOpen
-	input.Reservations = snapshot.Manager.Reservations
-	input.VirtualDecodeSequences = snapshot.Manager.Virtual.Upper.DecodeSequences
-	input.ForwardedPendingPrefills = snapshot.Manager.ForwardedPendingPrefills
-	input.ForwardedPendingPrefillTokens = snapshot.Manager.ForwardedPendingPrefillTokens
-	input.RequestAwareAction = string(snapshot.RequestAware.Action)
-	input.RequestAwareReason = string(snapshot.RequestAware.Reason)
-	input.RequestAwarePressureSource = string(snapshot.RequestAware.PressureSource)
-	input.RequestAwarePressure = snapshot.RequestAware.Pressure
-	input.RequestAwareSelectionInputTokens = snapshot.RequestAware.SelectionInputTokens
-	input.RequestAwareReservedTokens = snapshot.RequestAware.ReservedTokens
-	input.RequestAwareAllowanceTokens = snapshot.RequestAware.AllowanceTokens
-	input.RequestAwareEffectiveKV = snapshot.RequestAware.EffectiveKV
-	input.RequestAwarePostAdmitKV = snapshot.RequestAware.PostAdmitKV
-	input.RequestAwareRemainingKV = snapshot.RequestAware.RemainingKV
-	input.RequestAwareRunning = snapshot.RequestAware.Running
-	input.RequestAwareWaiting = snapshot.RequestAware.Waiting
-	input.RequestAwareEffectiveSequences = snapshot.RequestAware.EffectiveSequences
-	input.RequestAwareAggregateTPSProxy = snapshot.RequestAware.AggregateTPSProxy
-	input.RequestAwareMeanActiveTPSProxy = snapshot.RequestAware.MeanActiveTPSProxy
-	input.RequestAwarePrefillClass = string(snapshot.RequestAware.PrefillClass)
-	input.RequestAwareEstimatedPrefillTokens = snapshot.RequestAware.EstimatedPrefillTokens
-	input.RequestAwarePendingPrefillSequences = snapshot.RequestAware.PendingPrefillSequences
-	input.RequestAwarePendingPrefillTokens = snapshot.RequestAware.PendingPrefillTokens
-	input.RequestAwarePostAdmitPendingPrefillTokens = snapshot.RequestAware.PostAdmitPendingPrefillTokens
-	input.RequestAwarePendingLongPrefillSequences = snapshot.RequestAware.PendingLongPrefillSequences
-	input.RequestAwarePendingQuiescentPrefillSequences = snapshot.RequestAware.PendingQuiescentPrefillSequences
-	input.RequestAwareLastDecisionPendingPrefillSequences = snapshot.RequestAware.LastDecisionPendingPrefillSequences
-	input.RequestAwareLastDecisionPendingPrefillTokens = snapshot.RequestAware.LastDecisionPendingPrefillTokens
-	input.RequestAwareLastDecisionPostAdmitPendingPrefillTokens = snapshot.RequestAware.LastDecisionPostAdmitPendingPrefillTokens
-	input.RequestAwareLastDecisionPendingLongPrefillSequences = snapshot.RequestAware.LastDecisionPendingLongPrefillSequences
-	input.RequestAwareLastDecisionPendingQuiescentPrefillSequences = snapshot.RequestAware.LastDecisionPendingQuiescentPrefillSequences
-	input.RouterBackpressure = metrics.PredictiveRouterBackpressureInput{
-		Active: snapshot.RouterBackpressure.Active, Activation: snapshot.RouterBackpressure.Activation,
-		Scope: string(snapshot.RouterBackpressure.Scope), MinimumRunning: snapshot.RouterBackpressure.MinimumRunning,
-		InspectCapacity: snapshot.RouterBackpressure.InspectCapacity, Reason: string(snapshot.RouterBackpressure.Reason),
-		Source: string(snapshot.RouterBackpressure.Source), ActivatedAt: snapshot.RouterBackpressure.ActivatedAt,
-		Activations: snapshot.RouterBackpressure.Activations, LatestRejectAt: snapshot.RouterBackpressure.LatestRejectAt,
-	}
-	input.PredictionDuration = snapshot.PredictionDuration
-	return input, snapshot
-}
-
-func (s *proxyServer) writePredictiveAndDynamicMetrics(w io.Writer) {
-	input, snapshot := s.predictiveAdmissionMetricsInput()
-	compatibility := predictiveRouterCompatibility(s.cfg.PredictiveAdmissionMode, snapshot)
-	applyPredictiveRouterCompatibility(&input, snapshot, compatibility)
+	metrics.WriteBackends(w, s.backendMetricsInput(snapshot, now))
 	metrics.WritePredictiveAdmission(w, input)
 	metrics.WriteRouterCapacityCompatibility(w, compatibility)
 }
 
-func applyPredictiveRouterCompatibility(
+func (s *proxyServer) admissionTelemetry(now time.Time) (snapshot admissionTelemetrySnapshot) {
+	if s == nil || s.admission == nil {
+		return admissionTelemetrySnapshot{}
+	}
+	defer func() {
+		if recover() != nil {
+			snapshot = admissionTelemetrySnapshot{}
+		}
+	}()
+	return s.admission.Snapshot(now)
+}
+
+func (s *proxyServer) predictiveAdmissionMetricsInput(
+	now time.Time,
+) (metrics.PredictiveAdmissionInput, admissionTelemetrySnapshot) {
+	input := metrics.PredictiveAdmissionInput{
+		Mode:               s.cfg.PredictiveAdmissionMode,
+		EnforcedRejects:    s.predictiveEnforcedRejects.Load(),
+		FailureClose:       s.admissionFailures.close.Load(),
+		FailureDecide:      s.admissionFailures.decide.Load(),
+		FailureForward:     s.admissionFailures.forward.Load(),
+		FailureFirstByte:   s.admissionFailures.firstByte.Load(),
+		FailureTerminal:    s.admissionFailures.terminal.Load(),
+		BodyReadDuration:   &s.bodyReadDuration,
+		EstimatorDuration:  &s.estimatorDuration,
+		PreForwardDuration: &s.decisionDuration,
+	}
+	snapshot := s.admissionTelemetry(now)
+	profile := snapshot.CapabilityProfile
+	input.CapabilityProfileSource = string(profile.Source)
+	input.CapabilityProfileSchema = profile.SchemaVersion
+	input.CapabilityInitializationReason = snapshot.CapabilityReason
+	input.CapabilityKVCapacityTokens = profile.KVCapacityTokens
+	input.CapabilityKVBlockSize = profile.KVBlockSize
+	input.CapabilityKVHardLimitTokens = profile.KVHardLimitTokens
+	input.CapabilityMaxModelLenTokens = profile.MaxModelLenTokens
+	input.CapabilityMaximumAdmissibleInputTokens = profile.MaximumAdmissibleInputTokens
+	input.CapabilityPrefillRegularTokens = profile.PrefillRegularTokens
+	input.CapabilityPrefillExclusiveTokens = profile.PrefillExclusiveTokens
+	input.CapabilityPrefillQuiescentTokens = profile.PrefillQuiescentTokens
+	input.CapabilityPrefillContendedBudgetTokens = profile.PrefillContendedBudgetTokens
+	input.CapabilityPrefillAggregateBudgetTokens = profile.PrefillAggregateBudgetTokens
+	report := snapshot.Report
+	input.Attempts = report.Attempts
+	input.Fits = report.Admitted
+	input.Risks = report.RequestProtected + report.LoadProtected
+	input.Unknown = report.AvailabilityProtected
+	input.IntakeOpen = snapshot.Capacity.IntakeOpen
+	input.Reservations = nonnegativeInt(snapshot.Capacity.State.LiveReservations)
+	input.VirtualDecodeSequences = projectedDecodeSequences(snapshot.Capacity.State)
+	input.ForwardedPendingPrefills = nonnegativeInt(snapshot.Capacity.State.PendingPrefillSequences)
+	input.ForwardedPendingPrefillTokens = snapshot.Capacity.State.PendingPrefillTokens
+	input.PredictionDuration = snapshot.PredictionDuration
+	if report.HasLastDecision {
+		applyAdmissionDecisionMetrics(&input, report.LastDecision)
+		input.LastReason = string(report.LastDecision.Reason)
+		input.LastSource = admissionDecisionSource(report.LastDecision)
+	}
+	if report.HasLastReject {
+		input.LastRejectReason = string(report.LastReject.Reason)
+		input.LastRejectSource = admissionDecisionSource(report.LastReject)
+		input.LastRejectScope = string(report.LastReject.Scope)
+		input.LastRejectAt = report.LastRejectAt
+	}
+	return input, snapshot
+}
+
+func applyAdmissionDecisionMetrics(
 	input *metrics.PredictiveAdmissionInput,
-	snapshot predictiveAdmissionTelemetrySnapshot,
+	decision coreadmission.DecisionRecord,
+) {
+	if input == nil {
+		return
+	}
+	input.AdmissionAction = admissionMetricAction(decision)
+	input.AdmissionReason = string(decision.Reason)
+	input.AdmissionPressureSource = admissionPressureSource(decision.Reason)
+	input.AdmissionSelectionInputTokens = decision.Estimate.SelectionInputTokens
+	input.AdmissionReservedTokens = decision.Work.TotalKVTokens
+	if decision.HardKVLimitTokens >= decision.State.EffectiveKVTokens {
+		input.AdmissionAllowanceTokens = decision.HardKVLimitTokens - decision.State.EffectiveKVTokens
+	}
+	input.AdmissionEffectiveKV = decision.State.EffectiveKVTokens
+	input.AdmissionPostAdmitKV = decision.PostAdmitKVTokens
+	input.AdmissionRemainingKV = decision.RemainingKVTokens
+	input.AdmissionRunning = nonnegativeInt(decision.State.RawRunning)
+	input.AdmissionWaiting = nonnegativeInt(decision.State.RawWaiting)
+	input.AdmissionEffectiveSequences = projectedDecodeSequences(decision.State)
+	input.AdmissionAggregateTPS, input.AdmissionMeanActiveTPS = admissionGenerationTPS(decision.State)
+	input.AdmissionPrefillClass = string(decision.PrefillClass)
+	input.AdmissionEstimatedPrefillTokens = decision.Estimate.SelectionInputTokens
+	input.AdmissionPendingPrefillSequences = nonnegativeInt(decision.State.PendingPrefillSequences)
+	input.AdmissionPendingPrefillTokens = decision.PendingPrefillTokensBefore
+	input.AdmissionPostAdmitPendingPrefillTokens = decision.PendingPrefillTokensAfter
+	input.AdmissionPendingExclusiveSequences = nonnegativeInt(decision.State.PendingExclusiveSequences)
+	input.AdmissionPendingQuiescentSequences = nonnegativeInt(decision.State.PendingQuiescentSequences)
+}
+
+func admissionMetricAction(decision coreadmission.DecisionRecord) string {
+	if decision.Admitted() {
+		return "admit"
+	}
+	if decision.Scope == coreadmission.ProtectionRequest {
+		return "size_protect"
+	}
+	return "hard_protect"
+}
+
+func admissionPressureSource(reason coreadmission.Reason) string {
+	switch reason {
+	case coreadmission.ReasonPrefillContention,
+		coreadmission.ReasonPrefillBudget,
+		coreadmission.ReasonPrefillExclusive,
+		coreadmission.ReasonPrefillQuiescent:
+		return "prefill"
+	default:
+		return "none"
+	}
+}
+
+func admissionGenerationTPS(state coreadmission.ProjectedState) (aggregate, mean float64) {
+	if state.GenerationDelta == 0 || state.PreemptionDelta > 0 || state.ObservationInterval <= 0 {
+		return 0, 0
+	}
+	aggregate = float64(state.GenerationDelta) / state.ObservationInterval.Seconds()
+	denominator := state.RawRunning
+	if state.PreviousRawRunning > denominator {
+		denominator = state.PreviousRawRunning
+	}
+	if denominator < 1 {
+		denominator = 1
+	}
+	return aggregate, aggregate / float64(denominator)
+}
+
+func projectedDecodeSequences(state coreadmission.ProjectedState) int {
+	value, ok := addNonnegativeForMetrics(state.RawRunning, state.LocalActiveDecode)
+	if !ok {
+		return int(^uint(0) >> 1)
+	}
+	return nonnegativeInt(value)
+}
+
+func addNonnegativeForMetrics(left, right int64) (int64, bool) {
+	if left < 0 || right < 0 || left > int64(^uint64(0)>>1)-right {
+		return 0, false
+	}
+	return left + right, true
+}
+
+func (s *proxyServer) writePredictiveAndDynamicMetrics(w io.Writer) {
+	now := time.Now()
+	input, snapshot := s.predictiveAdmissionMetricsInput(now)
+	projection := projectAdmissionCapacity(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, snapshot.Report)
+	compatibility := projectRouterCompatibility(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, projection)
+	applyAdmissionRouterMetrics(&input, projection, compatibility)
+	metrics.WritePredictiveAdmission(w, input)
+	metrics.WriteRouterCapacityCompatibility(w, compatibility)
+}
+
+func applyAdmissionRouterMetrics(
+	input *metrics.PredictiveAdmissionInput,
+	projection admissionCapacityProjection,
 	compatibility metrics.RouterCapacityCompatibility,
 ) {
 	if input == nil {
 		return
 	}
-	input.RouterBackpressure.Applied = compatibility.GlobalLimit > 0 && snapshot.RouterBackpressure.Active
-	input.RouterBackpressure.PredictiveRunning = compatibility.ObservedRunning
-	input.RouterBackpressure.RawRunning = compatibility.ObservedRunningRaw
-	input.RouterBackpressure.EffectiveRunning = compatibility.ObservedRunning
-	input.RouterBackpressure.RawGlobalLimit = compatibility.GlobalLimitRaw
-	input.RouterBackpressure.EffectiveGlobalLimit = compatibility.GlobalLimit
+	input.RouterBackpressure = metrics.PredictiveRouterBackpressureInput{
+		Active:               projection.Active,
+		Scope:                string(projection.Scope),
+		MinimumRunning:       nonnegativeInt(projection.MinimumRunning),
+		InspectCapacity:      nonnegativeInt(projection.InspectCapacity),
+		Applied:              compatibility.GlobalLimit > 0 && projection.Active,
+		Reason:               string(projection.Reason),
+		Source:               projection.Source,
+		LatestRejectAt:       projection.LatestRejectAt,
+		PredictiveRunning:    compatibility.ObservedRunning,
+		RawRunning:           compatibility.ObservedRunningRaw,
+		EffectiveRunning:     compatibility.ObservedRunning,
+		RawGlobalLimit:       compatibility.GlobalLimitRaw,
+		EffectiveGlobalLimit: compatibility.GlobalLimit,
+	}
 }
 
-func predictiveRouterCompatibility(mode string, snapshot predictiveAdmissionTelemetrySnapshot) metrics.RouterCapacityCompatibility {
-	observer := snapshot.Observer
-	value := metrics.RouterCapacityCompatibility{
-		ObservedRunningRaw: observer.Running,
-		ObservedWaitingRaw: observer.Waiting,
-		ObservedRunning:    observer.Running,
-		ObservedWaiting:    observer.Waiting,
-	}
-	if mode != "enforce" {
-		return value
-	}
-	value.ObservedWaiting = 0
-	if !snapshot.RouterBackpressure.Active {
-		return value
-	}
-	if value.ObservedRunning < snapshot.RouterBackpressure.MinimumRunning {
-		value.ObservedRunning = snapshot.RouterBackpressure.MinimumRunning
-	}
-	if value.ObservedRunning < 1 {
-		value.ObservedRunning = 1
-	}
-	inspect := snapshot.RouterBackpressure.InspectCapacity
-	if inspect < 0 {
-		inspect = 0
-	}
-	value.GlobalLimit = value.ObservedRunning + inspect
-	return value
-}
-
-func (s *proxyServer) backendMetricsInput(observer predictiveObserverSnapshot) []metrics.BackendSnapshot {
+func (s *proxyServer) backendMetricsInput(
+	snapshot admissionTelemetrySnapshot,
+	now time.Time,
+) []metrics.BackendSnapshot {
 	if s.backend == nil {
 		return nil
 	}
 	stats := s.backend.Stats()
-	status := runtimebackend.Runtime{
-		Name: "upstream", BackendKind: "vllm", KVCapacityTokens: observer.CapacityTokens,
-		KVUsedTokens: observer.UsedTokens, KVAvailableTokens: observer.CapacityTokens - observer.UsedTokens,
-		KVTokenMetricsValid: observer.IdentityValid, Running: observer.Running, Waiting: observer.Waiting,
-		GenerationTPS: observer.AggregateTPS, GenerationTPSValid: observer.TPSValid, Updated: observer.ObservedAt,
-		Failed: !observer.MetricsFresh,
+	capacity := snapshot.Capacity
+	observation := capacity.Observation
+	fresh := capacity.IntakeOpen && capacity.HasObservation && !now.IsZero() &&
+		!now.Before(observation.ObservedAt) && now.Sub(observation.ObservedAt) <= observation.MaximumAge
+	aggregateTPS, _ := admissionGenerationTPS(capacity.State)
+	availableKV := observation.KVCapacityTokens - observation.UsedKVTokens
+	if availableKV < 0 {
+		availableKV = 0
 	}
-	if observer.CapacityTokens > 0 {
-		status.KVCacheUsage = float64(observer.UsedTokens) / float64(observer.CapacityTokens)
+	status := runtimebackend.Runtime{
+		Name: "upstream", BackendKind: "vllm", KVCapacityTokens: observation.KVCapacityTokens,
+		KVUsedTokens: observation.UsedKVTokens, KVAvailableTokens: availableKV,
+		KVTokenMetricsValid: fresh, Running: nonnegativeInt(observation.Running),
+		Waiting: nonnegativeInt(observation.Waiting), GenerationTPS: aggregateTPS,
+		GenerationTPSValid: fresh && aggregateTPS > 0, Updated: observation.ObservedAt,
+		Failed: !fresh,
+	}
+	if observation.KVCapacityTokens > 0 {
+		status.KVCacheUsage = float64(observation.UsedKVTokens) / float64(observation.KVCapacityTokens)
 	}
 	return []metrics.BackendSnapshot{{
 		Name: "upstream", Upstream: s.cfg.Upstream,
-		Stats:  metrics.BackendStats{Inflight: stats.Inflight, Accepted: stats.Accepted, Completed: stats.Completed, Failed: stats.Failed, ProxyErrs: stats.ProxyErrs, CopyErrs: stats.CopyErrs},
+		Stats: metrics.BackendStats{
+			Inflight: stats.Inflight, Accepted: stats.Accepted, Completed: stats.Completed,
+			Failed: stats.Failed, ProxyErrs: stats.ProxyErrs, CopyErrs: stats.CopyErrs,
+		},
 		Status: status,
 	}}
 }

@@ -12,7 +12,9 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-const version = "PIG-v0.12.10"
+// The clean rebuild must not impersonate the historical v0.12.10 release or
+// allocate the next release identity before complete source and c21 acceptance.
+const version = "PIG-v0.12-dev"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 
@@ -29,28 +31,12 @@ type proxyResult struct {
 	proxyFailed bool
 }
 
-type predictiveShadowFailureCounters struct {
-	close    atomic.Uint64
-	decide   atomic.Uint64
-	forward  atomic.Uint64
-	prefill  atomic.Uint64
-	terminal atomic.Uint64
-}
-
-func (c *predictiveShadowFailureCounters) add(phase string) {
-	if c == nil {
-		return
-	}
-	switch phase {
-	case "forward":
-		c.forward.Add(1)
-	case "prefill":
-		c.prefill.Add(1)
-	case "terminal":
-		c.terminal.Add(1)
-	default:
-		c.decide.Add(1)
-	}
+type admissionFailureCounters struct {
+	close     atomic.Uint64
+	decide    atomic.Uint64
+	forward   atomic.Uint64
+	firstByte atomic.Uint64
+	terminal  atomic.Uint64
 }
 
 func loadConfig() (config, error)     { return pigconfig.Load() }
@@ -61,16 +47,15 @@ type proxyServer struct {
 	backend                   *backendProxy
 	requestClassifier         *request.Classifier
 	attestation               *attestation.Service
-	predictiveShadow          predictiveAdmissionShadow
+	admission                 admissionService
 	closeOnce                 sync.Once
 	closeErr                  error
 	started                   time.Time
-	nextPredictiveID          atomic.Uint64
 	total429                  atomic.Uint64
 	clientProtocolInvalidJSON atomic.Uint64
 	backendUnavailable        atomic.Uint64
 	predictiveEnforcedRejects atomic.Uint64
-	predictiveShadowFailures  predictiveShadowFailureCounters
+	admissionFailures         admissionFailureCounters
 	decisionDuration          durationHistogram
 	bodyReadDuration          durationHistogram
 	estimatorDuration         durationHistogram

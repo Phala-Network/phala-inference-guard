@@ -98,9 +98,10 @@ nor overrides a later current-capacity result.
 
 ## Router projection
 
-Router-visible state is recomputed by asking Manager to evaluate the canonical
-minimum request without reserving. Candidate classification and canonical scope
-use the same Manager-owned observation/reservation model:
+Router-visible state is a pure projection of `AdmissionController.Snapshot`.
+The snapshot contains the canonical minimum-request decision already evaluated
+from the same Controller-owned observation and reservation overlay used by
+admission; the reporting path never reruns policy or reserves work:
 
 ```text
 candidate protected + canonical admitted    -> request scope

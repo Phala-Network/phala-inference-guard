@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -19,12 +21,12 @@ func TestV0125AutomaticCapabilityUsesMetadataWithoutCompletion(t *testing.T) {
 	fixture := newV0125CapabilityFixture(t, 0, 256*1024)
 	defer fixture.Close()
 
-	shadow, err := newDefaultPredictiveShadow(v0125CapabilityFactoryConfig(fixture.URL()))
+	service, err := newDefaultAdmissionService(v0125CapabilityFactoryConfig(fixture.URL()))
 	if err != nil {
 		t.Fatalf("construct metadata-derived factory: %v", err)
 	}
 	defer func() {
-		if err := shadow.Close(); err != nil {
+		if err := service.Close(); err != nil {
 			t.Errorf("close metadata-derived factory: %v", err)
 		}
 	}()
@@ -36,7 +38,7 @@ func TestV0125AutomaticCapabilityUsesMetadataWithoutCompletion(t *testing.T) {
 	if fixture.AuthorizationSeen() {
 		t.Fatal("automatic metadata request forwarded an Authorization header")
 	}
-	telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
+	telemetry := service.Snapshot(time.Now())
 	assertV0125CapabilityProfile(
 		t, telemetry.CapabilityProfile, "automatic",
 		880_000, 256*1024, 256*1024-256,
@@ -52,16 +54,16 @@ func TestV0125AutomaticCapabilityIsBusyInvariant(t *testing.T) {
 	var reasons [2]string
 	for index, running := range []int{0, 1} {
 		fixture := newV0125CapabilityFixture(t, running, 256*1024)
-		shadow, err := newDefaultPredictiveShadow(v0125CapabilityFactoryConfig(fixture.URL()))
+		service, err := newDefaultAdmissionService(v0125CapabilityFactoryConfig(fixture.URL()))
 		if err != nil {
 			fixture.Close()
 			t.Fatalf("construct automatic factory with running=%d: %v", running, err)
 		}
 		models, completions := fixture.Calls()
-		telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
+		telemetry := service.Snapshot(time.Now())
 		profiles[index] = telemetry.CapabilityProfile
 		reasons[index] = telemetry.CapabilityReason
-		closeErr := shadow.Close()
+		closeErr := service.Close()
 		fixture.Close()
 		if closeErr != nil {
 			t.Errorf("close automatic factory with running=%d: %v", running, closeErr)
@@ -84,38 +86,35 @@ func TestV0125AutomaticCapabilityBusyStartupAdmitsAndDrainsFittingRegularRequest
 	cfg := v0125CapabilityFactoryConfig(fixture.URL())
 	cfg.PredictiveAdmissionMode = "enforce"
 
-	shadow, err := newDefaultPredictiveShadow(cfg)
+	service, err := newDefaultAdmissionService(cfg)
 	if err != nil {
 		t.Fatalf("construct automatic factory against busy backend: %v", err)
 	}
 	defer func() {
-		if err := shadow.Close(); err != nil {
+		if err := service.Close(); err != nil {
 			t.Errorf("close automatic factory against busy backend: %v", err)
 		}
 	}()
-	adapter := shadow.(*requestAwarePredictiveAdapter)
+	runtime := service.(*admissionRuntime)
 
-	decision := adapter.Decide(
-		context.Background(), "busy-startup-fitting-regular", requestAwareAdapterInput(8*1024, 0),
-	)
-	telemetry := adapter.PredictiveAdmissionTelemetry().RequestAware
-	if telemetry.Running != 1 {
-		t.Fatalf("decision observation running=%d, want coherent busy startup base", telemetry.Running)
+	decision := runtime.Decide(context.Background(), domainpredictive.RequestEstimate{
+		SelectionInputTokens: 8 * 1024, KVReservationInputTokens: 8 * 1024,
+	})
+	if decision.Record.State.RawRunning != 1 {
+		t.Fatalf("decision observation running=%d, want coherent busy startup base", decision.Record.State.RawRunning)
 	}
-	if decision.Outcome != predictiveAdmissionOutcomeForward || decision.Reservation == nil {
+	if !decision.Record.Admitted() || decision.Reservation == nil {
 		t.Fatalf("busy-startup fitting decision=%+v, want immediate forward", decision)
 	}
-	if snapshot := adapter.manager.Snapshot(); snapshot.Reservations != 1 ||
-		snapshot.ForwardedPendingPrefills != 0 || snapshot.ForwardedPendingPrefillTokens != 0 {
+	if snapshot := runtime.Snapshot(time.Now()).Capacity.State; snapshot.LiveReservations != 1 ||
+		snapshot.PendingPrefillSequences != 1 || snapshot.PendingPrefillTokens != 8*1024 {
 		t.Fatalf("busy-startup reservation snapshot=%+v, want one unforwarded reservation", snapshot)
 	}
-	if !decision.Reservation.MarkForwarded() ||
-		!decision.Reservation.MarkPrefillComplete() ||
-		!decision.Reservation.Terminate(runtimepredictive.TerminalCompleted) {
-		t.Fatalf("busy-startup fitting lifecycle failed for decision=%+v", decision)
+	if !decision.Reservation.Terminate(coreadmission.TerminalCancel) {
+		t.Fatalf("busy-startup fitting cancellation failed for decision=%+v", decision)
 	}
-	if snapshot := adapter.manager.Snapshot(); snapshot.Reservations != 0 ||
-		snapshot.ForwardedPendingPrefills != 0 || snapshot.ForwardedPendingPrefillTokens != 0 {
+	if snapshot := runtime.Snapshot(time.Now()).Capacity.State; snapshot.LiveReservations != 0 ||
+		snapshot.PendingPrefillSequences != 0 || snapshot.PendingPrefillTokens != 0 {
 		t.Fatalf("busy-startup fitting lifecycle leaked: %+v", snapshot)
 	}
 }
@@ -190,19 +189,19 @@ func TestV0125CompleteExplicitPrefillProfileSkipsMetadata(t *testing.T) {
 	cfg.PredictivePrefillQuiescentTokens = 262_144
 	cfg.PredictivePrefillAggregateBudgetTokens = 196_608
 
-	shadow, err := newDefaultPredictiveShadow(cfg)
+	service, err := newDefaultAdmissionService(cfg)
 	if err != nil {
 		t.Fatalf("construct explicit capability factory: %v", err)
 	}
 	defer func() {
-		if err := shadow.Close(); err != nil {
+		if err := service.Close(); err != nil {
 			t.Errorf("close explicit capability factory: %v", err)
 		}
 	}()
 	if models, completions := fixture.Calls(); models != 0 || completions != 0 {
 		t.Fatalf("explicit profile calls models/completions = %d/%d, want 0/0", models, completions)
 	}
-	telemetry := shadow.(*requestAwarePredictiveAdapter).PredictiveAdmissionTelemetry()
+	telemetry := service.Snapshot(time.Now())
 	assertV0125CapabilityProfile(
 		t, telemetry.CapabilityProfile, "explicit",
 		880_000, 650*1024, 650*1024-256,
@@ -234,7 +233,7 @@ func TestV0125InvalidExplicitCapabilityFailsBeforeMetadata(t *testing.T) {
 			defer fixture.Close()
 			cfg := v0125CapabilityFactoryConfig(fixture.URL())
 			test.mutate(&cfg)
-			if _, err := newDefaultPredictiveShadow(cfg); err == nil {
+			if _, err := newDefaultAdmissionService(cfg); err == nil {
 				t.Fatal("invalid explicit capability was accepted")
 			}
 			if models, completions := fixture.Calls(); models != 0 || completions != 0 {
@@ -367,7 +366,7 @@ func assertV0125CapabilityProfile(
 	wantRegular, wantExclusive, wantQuiescent, wantContended, wantAggregate int64,
 ) {
 	t.Helper()
-	if profile.SchemaVersion != "request-aware-capability-v3" || string(profile.Source) != wantSource ||
+	if profile.SchemaVersion != runtimepredictive.CapabilityProfileSchema || string(profile.Source) != wantSource ||
 		profile.KVHardLimitTokens != wantHard || profile.MaxModelLenTokens != wantMaxModelLen ||
 		profile.MaximumAdmissibleInputTokens != wantMaxInput || profile.PrefillRegularTokens != wantRegular ||
 		profile.PrefillExclusiveTokens != wantExclusive || profile.PrefillQuiescentTokens != wantQuiescent ||

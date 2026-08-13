@@ -1,10 +1,14 @@
 package admission
 
+import "time"
+
 type observedState struct {
 	observation     BackendObservation
 	sequence        uint64
 	generationDelta uint64
 	preemptionDelta uint64
+	interval        time.Duration
+	previousRunning int64
 }
 
 type reservationOverlay struct {
@@ -38,8 +42,10 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		ResidualDebts:             overlay.residualDebts,
 		RawRunning:                observed.observation.Running,
 		RawWaiting:                observed.observation.Waiting,
+		PreviousRawRunning:        observed.previousRunning,
 		GenerationDelta:           observed.generationDelta,
 		PreemptionDelta:           observed.preemptionDelta,
+		ObservationInterval:       observed.interval,
 	}
 	if !validProjectedState(state) {
 		return ProjectedState{}, false
@@ -55,5 +61,6 @@ func validProjectedState(state ProjectedState) bool {
 		state.PendingExclusiveSequences <= state.PendingPrefillSequences &&
 		state.PendingQuiescentSequences <= state.PendingPrefillSequences &&
 		state.LocalActiveDecode >= 0 && state.LiveReservations >= 0 &&
-		state.ResidualDebts >= 0 && state.RawRunning >= 0 && state.RawWaiting >= 0
+		state.ResidualDebts >= 0 && state.RawRunning >= 0 && state.RawWaiting >= 0 &&
+		state.PreviousRawRunning >= 0 && state.ObservationInterval >= 0
 }
