@@ -1,12 +1,12 @@
 # PIG v0.12 Clean Admission Rebuild Plan
 
-Status: active architecture and execution authority. `PIG-v0.12.11` is assigned
-on exact pushed identity commit `16d1940`. Its exact builder-local image,
-isolated canary, c21 PIG-only replacement, primary smoke, and basic terminal
-paths produced valid evidence, but the real long-input gate exposed a hard
-estimator under-reservation failure. The candidate is rejected and not
-releasable; c21 is rolled back to `PIG-v0.12.10` while the estimator is rebuilt.
-QoS, goodput, Pareto, registry, production, and Router gates have not started.
+Status: active architecture and execution authority. The rejected
+`PIG-v0.12.11` history is retained below. The replacement `PIG-v0.12.12`
+builder-local image from exact executable revision `bc95131` has passed source,
+image-contract, c21 lifecycle, long-input, matched QoS, completion-goodput, and
+ordered Pareto gates. Registry upload is the next permitted release gate.
+Production deployment, production traffic, and Router changes are not
+authorized by this acceptance.
 
 This plan supersedes implementation instructions in
 `PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md`. That document remains a
@@ -1169,12 +1169,13 @@ failures, and immediately reopened after delay removal. Its summary SHA-256 is
 All fake PIG containers and the fake server were removed, and the workbench was
 disconnected from the temporary serving network. The primary PIG and vLLM
 identity, start time, and restart count remained unchanged throughout. This
-accepts c21 compatibility, request lifecycle, low/no-flow recovery, real and
+accepted c21 compatibility, request lifecycle, low/no-flow recovery, real and
 simulated long-input behavior, Router pressure visibility, reset, stale,
-drift, and timeout gates. Matched QoS/goodput/Pareto repetitions, registry
-publication, Router enablement, and production traffic remain open. The main
-PIG remains the accepted local-only v0.12.12 image so the matched GPU gate can
-continue; the v0.12.10 rollback container remains stopped and preserved.
+drift, and timeout gates at that checkpoint. Section 10.8 now accepts the
+matched QoS/goodput/Pareto repetitions. Registry publication, Router enablement,
+and production traffic remained open. The main PIG remains the accepted
+local-only v0.12.12 image; the v0.12.10 rollback container remains stopped and
+preserved.
 
 Required c21 workloads include:
 
@@ -1217,6 +1218,87 @@ The accepted local image then undergoes ordered Pareto repetitions and an
 independent source/evidence audit. Only after those gates pass may that exact
 digest be uploaded. Production deployment and Router enablement require a
 separate explicit authorization and are not implied by image publication.
+
+### 10.8 c21 matched QoS, completion-goodput, and Pareto acceptance
+
+The final GPU gate ran on 2026-08-14 against the same unchanged c21 vLLM. The
+benchmark executable SHA-256 was
+`42b68c093d991324d5607adb58c45b932e496f8fa1676d3b00be54fa79081b0a`.
+It used streaming chat with returned usage, a nonce at the beginning of every
+prompt, 384 maximum output tokens, 500-ms PIG/vLLM samples, 300 seconds of
+sustained arrivals per side, and ten complete 30-second windows plus the final
+drain window. Candidate and reference traffic never overlapped. Each side
+started only after both PIGs had zero reservations and pending Prefills and
+vLLM had zero running and waiting requests. vLLM and its prefix cache were not
+restarted or cleared between sides; the two 12-user repetitions reversed order
+to control time and residual-prefix-cache bias.
+
+The accepted matched results are:
+
+| Run and order | Users | Reference goodput | Candidate goodput | Ratio | Reference per-user Decode TPS | Candidate per-user Decode TPS | Ratio | Minimum full-window ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| r1 reference then candidate | 12 | 1568.958506 | 1569.182177 | 1.000143 | 134.861823 | 135.046784 | 1.001371 | 0.989178 |
+| r2 candidate then reference | 12 | 1566.188510 | 1560.672631 | 0.996478 | 134.560732 | 134.183882 | 0.997199 | 0.991405 |
+| Pareto r1 candidate then reference | 24 | 2727.542156 | 2719.835690 | 0.997175 | 117.391055 | 117.259691 | 0.998881 | 0.988048 |
+
+Across the two balanced 12-user repetitions, the median candidate/reference
+completion-goodput ratio was `0.998310` and the median time-weighted per-user
+Decode TPS ratio was `0.999285`. None of the 20 complete windows was below 70%
+of its matched reference; the minimum was `0.989178`. The 24-user matched point
+also had no low window and remained effectively equal to reference.
+
+Within the candidate, moving from the median 12-user point to 24 users raised
+completion-output-token goodput by `73.799%` while retaining `87.107%` of
+per-user Decode TPS. This is an accepted QoS/goodput Pareto improvement, not a
+claim that PIG makes regular-only vLLM Decode faster. The clean rebuild's
+distinct gains remain pre-forward long-input protection, atomic reservation
+lifecycle, and proactive Router-visible backpressure without reducing regular
+Decode performance.
+
+All `9,235` requests across candidate and reference completed successfully
+with zero request failures, unintended 429s, metric-sample errors, waiting,
+preemptions, container restarts, OOM kills, or recent vLLM fatal memory/engine
+errors. Maximum observed KV was `0.108639`; maximum live PIG reservations was
+24. Every side drained reservations, pending Prefills, and pending Prefill
+tokens to zero; intake reopened, lifecycle failures remained zero, and Router
+backpressure returned to zero.
+
+Raw and aggregate evidence is retained at:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-qos-matched-r1.AXfiyX
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-qos-matched-r2.TEAu7g
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-qos-pareto-c24-r1.6gS4AD
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-qos-pareto-aggregate-r1.dn5zqak9
+```
+
+Every directory's `SHA256SUMS` verifies. The earlier smoke evidence at
+`pig-v01212-qos-smoke-r1.u2wPUX` remains rejected because its nonce was at the
+end of the prompt and let the second side inherit the first side's long cached
+prefix. It is not used in any acceptance ratio. The corrected 12-by-2 smoke at
+`pig-v01212-qos-smoke-r2.o7Vqv7` is retained only as a short protocol smoke;
+the 300-second runs above provide the statistical acceptance.
+
+The final three review passes found:
+
+1. **Objective, model, and causality.** Completion tokens came from successful
+   stream usage rather than estimates; Decode TPS used first-content-to-terminal
+   active time; candidate/reference sides shared one unchanged vLLM and used
+   balanced order at the primary point. The result proves no regular Decode
+   regression and an accepted 12-to-24-user Pareto movement, while making no
+   exact-tokenizer or cache-hit attribution claim.
+2. **Safety and lifecycle.** There was no overlap between sides, no stale
+   reservation, self-lock, waiting, preemption, restart, OOM, or terminal leak.
+   The final live snapshot was idle and open. The candidate image ID remained
+   `sha256:3670d0db8d1e472a505d2feb68d4aeff9cb261ebabc4eb13014688524d9b51a6`;
+   vLLM StartedAt remained `2026-08-13T16:45:35.283358031Z` with restart count
+   zero.
+3. **Evidence and release.** The benchmark binary, raw JSONL, summaries,
+   comparisons, aggregate, stdout, and success markers are hash-covered. The
+   image still has `RepoDigests=[]`, OCI version `0.12.12`, and OCI revision
+   `bc9513117c36f1021896e17825289c94945b79e5`. This accepts the exact local
+   image for registry upload only; it does not authorize Router enablement,
+   production deployment, or production traffic.
 
 ## 11. Three-pass design review record
 
@@ -1731,7 +1813,7 @@ inherited from this result.
 - [x] complete c21 PIG-only compatibility, lifecycle, real and fake long-input,
   low/no-flow, Router-pressure visibility, reset, stale, drift, and timeout
   gates while retaining the v0.12.10 rollback asset and leaving vLLM unchanged.
-- [ ] complete matched c21 QoS, completion-goodput, and Pareto repetitions.
+- [x] complete matched c21 QoS, completion-goodput, and Pareto repetitions.
 - [x] complete independent pre-version source/evidence audit on exact clean
   pushed HEAD `24654d6`.
 - [ ] upload only the exact accepted digest.
