@@ -4,9 +4,9 @@ Status: active architecture and execution authority. The rejected
 `PIG-v0.12.11` history is retained below. The replacement `PIG-v0.12.12`
 builder-local image from exact executable revision `bc95131` has passed source,
 image-contract, c21 lifecycle, long-input, matched QoS, completion-goodput, and
-ordered Pareto gates. Registry upload is the next permitted release gate.
-Production deployment, production traffic, and Router changes are not
-authorized by this acceptance.
+ordered Pareto and exact registry publication gates. The accepted digest is
+recorded in section 10.9. Production deployment, production traffic, and Router
+changes remain unauthorized by this acceptance.
 
 This plan supersedes implementation instructions in
 `PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md`. That document remains a
@@ -1304,6 +1304,60 @@ The final three review passes found:
 
 ### Pass 1: objective, model, and causality
 
+### 10.9 exact registry publication and digest-canary acceptance
+
+After section 10.8 and commit `eb38fba` were pushed, authenticated pre-push
+checks returned explicit `manifest unknown` for both intended references. The
+exact accepted builder-local image ID was tagged without rebuilding and
+published as:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:0.12.12
+ghcr.io/phala-network/phala-inference-guard:0.12.12-bc9513117c36
+```
+
+Both tags and the immutable digest reference resolve to:
+
+```text
+sha256:88fe445972412a71e2f03c6347d4868b5f62d1beb205ffb9611827535dd2e11e
+```
+
+Independent manifest inspection and pull of the version tag, revision tag, and
+digest reference all resolved to local image ID
+`sha256:3670d0db8d1e472a505d2feb68d4aeff9cb261ebabc4eb13014688524d9b51a6`
+with OCI version `0.12.12` and revision
+`bc9513117c36f1021896e17825289c94945b79e5`.
+
+A fresh temporary container started directly from the digest reference with no
+explicit `PREDICTIVE_*` environment. It reported `PIG-v0.12.12`, default
+enforce mode, a 500-ms observer, automatic capability, open intake, and zero
+reservations or pending Prefills. Health, authenticated models, and
+authenticated metrics returned 200. The canary was then removed. The primary
+candidate PIG, reference PIG, and vLLM remained at restart count zero; both PIGs
+were open and fully drained, and vLLM running, waiting, and preemption remained
+zero.
+
+The first publish attempt is retained as a rejected runner/authentication
+attempt: all pre-push tag checks were valid and no manifest was created, but an
+expired Docker credential returned `unauthorized` while pushing the revision
+tag. GHCR authentication was refreshed from the existing authorized GitHub
+credential without recording the token, and the same prechecked image then
+published successfully. The first digest-canary run itself was healthy but its
+runner expected the wrong log key; the corrected r2 canary accepted the same
+digest without changing runtime code.
+
+The complete publication evidence, including both rejected harness attempts,
+successful push logs, three manifest documents, three pull logs, canary logs
+and metrics, final runtime state, secret audit, `SUCCESS`, and verified
+`SHA256SUMS`, is retained at:
+
+```text
+/var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-registry-publish-r1.iGfjhT
+```
+
+This completes the exact image registry gate. It does not deploy that digest to
+production, enable a Router node, or authorize production traffic.
+
 Completed on the first complete draft. The review found that the initial wording
 could imply an exact model-neutral token/KV upper bound and could imply a
 numerical TPS predictor. The plan now distinguishes deterministic accounting
@@ -1816,7 +1870,7 @@ inherited from this result.
 - [x] complete matched c21 QoS, completion-goodput, and Pareto repetitions.
 - [x] complete independent pre-version source/evidence audit on exact clean
   pushed HEAD `24654d6`.
-- [ ] upload only the exact accepted digest.
+- [x] upload only the exact accepted digest and verify all published references.
 
 ## 13. Stop rules
 
