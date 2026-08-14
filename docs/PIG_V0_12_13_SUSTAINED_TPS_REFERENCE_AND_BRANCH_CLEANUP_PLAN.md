@@ -659,7 +659,9 @@ matrix. Router and production changes require a later explicit step.
 - [x] c21 platform state re-queried read-only on 2026-08-15; it is `stopped`
 - [ ] c21 executable gates resumed after the owner makes the workbench running;
   no CVM start/restart was performed by this source change
-- [ ] source committed and pushed
+- [x] WIP source commit `1da2644` pushed to
+  `pig-origin/codex/pig-v0.12.13-tps-reference`; it is explicitly unverified and
+  is not a release identity
 - [ ] version identity assigned only after all prior source gates pass
 - [ ] local image, registry upload, Compose, deployment, Router, and live traffic
   remain unperformed
