@@ -77,6 +77,15 @@ func runScenario(
 	policyName PolicyName,
 	profile runtimepredictive.BackendCapabilityProfile,
 ) (Metrics, int, error) {
+	return runScenarioWithTPSReference(spec, policyName, profile, 0)
+}
+
+func runScenarioWithTPSReference(
+	spec scenarioSpec,
+	policyName PolicyName,
+	profile runtimepredictive.BackendCapabilityProfile,
+	tpsReference float64,
+) (Metrics, int, error) {
 	capacity := spec.capacityTokens
 	if capacity <= 0 {
 		capacity = simulationCapacityTokens
@@ -101,7 +110,10 @@ func runScenario(
 	}
 	if policyName == PolicyCandidate {
 		capability := simulationAdmissionCapability(profile)
-		controller, controllerErr := coreadmission.NewAdmissionController(capability)
+		controller, controllerErr := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
+			Capability: capability,
+			TPS:        coreadmission.TPSPolicyConfig{Reference: tpsReference},
+		})
 		if controllerErr != nil {
 			return Metrics{}, 0, fmt.Errorf("construct candidate AdmissionController: %w", controllerErr)
 		}
@@ -135,6 +147,9 @@ func runScenario(
 	if durationSeconds > 0 {
 		runner.metrics.CompletionTokensPerSecond = runner.metrics.CompletionTokens / durationSeconds
 		runner.metrics.SLOCompletionTokensPerSecond = runner.metrics.SLOCompletionTokens / durationSeconds
+	}
+	if runner.metrics.DecodeSequenceSeconds > 0 {
+		runner.metrics.MeanActiveTPS = runner.metrics.CompletionTokens / runner.metrics.DecodeSequenceSeconds
 	}
 	runner.terminateAll(spec.duration, coreadmission.TerminalTimeout)
 	if runner.controller != nil {
@@ -411,6 +426,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		generated += requestTokens
 	}
 	r.metrics.CompletionTokens += generated
+	r.metrics.DecodeSequenceSeconds += float64(decodeSequences) * seconds
 	if decodeSequences > 0 && perUserTPS+simulationFloatTolerance >= simulationTPSFloor {
 		r.metrics.SLOCompletionTokens += generated
 	} else if decodeSequences > 0 {

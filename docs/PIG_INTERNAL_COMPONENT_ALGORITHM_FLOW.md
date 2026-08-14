@@ -10,7 +10,7 @@ path becomes a second controller.
 
 ```text
 configuration loader
-  -> validate one upstream and shadow/enforce mode
+  -> validate one upstream, shadow/enforce mode, and optional TPS reference
   -> derive /metrics from the upstream origin
   -> probe coherent vLLM model identity and exact KV geometry
   -> read one matching positive max_model_len from /v1/models
@@ -28,7 +28,8 @@ non-default deployment.
 Startup performs no completion, warmup, cache lookup, or performance probe. The
 Observer polls every 500 ms by default. Model identity, KV geometry, maximum
 input, and Prefill policy are immutable for the Controller lifetime and are not
-learned.
+learned. The optional TPS reference is a deployment business target; observed
+Decode rates update a bounded trailing window but never rewrite the reference.
 
 ## Pre-forward transaction
 
@@ -42,7 +43,7 @@ protected HTTP path
        -> AdmissionController.Admit(now, estimate), under one lock
             -> derive block-rounded RequestWork from immutable capability
             -> project coherent observation + positive reservation aggregate
-            -> evaluate ContextGate, KVGate, and PrefillGate
+            -> evaluate ContextGate, KVGate, PrefillGate, and optional TPSGate
             -> evaluate canonical minimum work on the same projected state
             -> create immutable DecisionRecord
             -> atomically reserve when admitted
@@ -76,7 +77,9 @@ The ordered pure Gates are:
 2. `KVGate`: observed KV + reservation overlay + candidate total KV must not
    exceed the block-aligned hard limit; and
 3. `PrefillGate`: the candidate class and pending Prefill aggregate must fit the
-   current open or contended interference envelope.
+   current open or contended interference envelope; and
+4. `TPSGate`: when configured and warmed, the post-admit sequence count must fit
+   the sustained rate-derived envelope.
 
 Invalid/stale Controller state is availability-scoped. For a valid state, a
 protected candidate is request-scoped when the canonical minimum work still
@@ -113,6 +116,43 @@ The work-conserving rules are:
 A large request-specific protection does not mutate capacity. A following small
 request is evaluated immediately against the current state. One low TPS value,
 one large rejection, or low/no traffic cannot create a cooldown or self-lock.
+
+## Sustained TPS reference
+
+`PREDICTIVE_TPS_REFERENCE=0` or omission disables `TPSGate` and preserves the
+Context/KV/Prefill decision contract. A positive reference is output tokens per
+second per active Decode sequence. The Controller aggregates qualified
+generation, wall seconds, and sequence-seconds into fixed one-second buckets
+over the latest 60 seconds.
+
+A positive generation delta qualifies even when a short request completes
+between two polls; it uses one sequence when neither endpoint exposes running
+work. A zero-generation interval qualifies only when PIG has an `ActiveDecode`
+reservation at an endpoint. This counts a genuine tracked Decode stall without
+misclassifying pure Prefill or idle `running` as TPS zero. Runtime reset clears
+the buckets.
+
+After at least four samples and eight sequence-seconds:
+
+```text
+base = max(1, floor(window_aggregate_tps / reference))
+explore = base + 1 only when
+  window_mean_active_tps >= 1.05 * reference and
+  window_aggregate_tps / (base + 1) >= 0.95 * reference
+sequence_limit = base or explore
+
+tracked = pending_prefill_sequences + local_active_decode
+current = max(raw_running, tracked)
+post_admit = current + 1
+```
+
+The checked `max` avoids double counting work already visible upstream while
+covering reservations not visible in metrics. Disabled state has no TPS
+hot-path projection. Warming state permits at most two total sequences, or the
+already observed `raw_running` value when it is larger, and therefore cannot
+admit an unbounded cold-start burst. Ready idle state always permits one atomic
+probe. There is no sticky degraded flag, rejection hold, cooldown, online
+reference learning, or background performance probe.
 
 ## Atomic decision, reservation, and scope
 
@@ -163,6 +203,11 @@ post-terminal coherent sample, normally within one polling interval, without a
 guessed expiration timer or negative reconciliation credit. Duplicate and
 old-epoch handle calls are fenced no-ops.
 
+The same publication transaction snapshots local active Decode ownership and
+updates/expires the sustained TPS buckets. `AdmissionController.Snapshot(now)`
+read-only filtering excludes old buckets, so historical throughput cannot remain
+authoritative only because a later interval was idle or pure Prefill.
+
 ## Observation failure, reset, and shutdown
 
 Fetch errors and incomplete non-drift samples leave the last coherent state
@@ -176,7 +221,8 @@ an automatically initialized profile, the Observer first revalidates model
 identity and `max_model_len` with one bounded metadata request. Failure does not
 publish the sample; changed metadata closes capability availability. Only a
 same-capability reset sample atomically advances the epoch, clears old
-reservations and residual debt, resets deltas, and reopens from that sample.
+reservations, residual debt, and the TPS window, resets deltas, and reopens from
+that sample.
 
 Shutdown first stops the Observer, then closes Controller intake and terminates
 all remaining reservations. Later calls through old handles are no-ops.

@@ -80,6 +80,9 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 	if !finite(cfg.PredictiveKVHardRatio) || cfg.PredictiveKVHardRatio <= 0 || cfg.PredictiveKVHardRatio >= 1 {
 		return fmt.Errorf("PREDICTIVE_KV_HARD_RATIO must be between 0 and 1")
 	}
+	if !finite(cfg.PredictiveTPSReference) || cfg.PredictiveTPSReference < 0 || cfg.PredictiveTPSReference > 1_000_000 {
+		return fmt.Errorf("PREDICTIVE_TPS_REFERENCE must be finite and in [0, 1000000]")
+	}
 	regular, exclusive, quiescent, aggregate := predictivePrefillBounds(cfg)
 	automatic := cfg.PredictiveMaxModelLenTokens == 0 && regular == 0 && exclusive == 0 && quiescent == 0 && aggregate == 0
 	if !automatic && (cfg.PredictiveMaxModelLenTokens <= 0 || regular <= 0 || exclusive <= regular ||

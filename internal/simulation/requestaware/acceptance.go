@@ -116,6 +116,8 @@ func validateSimulationMetrics(name string, policy PolicyName, metrics Metrics) 
 		metrics.TPSFloorViolationSeconds,
 		metrics.WaitingSeconds,
 		metrics.MaximumIdleWithDemandSeconds,
+		metrics.DecodeSequenceSeconds,
+		metrics.MeanActiveTPS,
 	}
 	for _, value := range values {
 		if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) {

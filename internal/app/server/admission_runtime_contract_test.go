@@ -396,6 +396,10 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 		Decision: coreadmission.DecisionRecord{
 			Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonKVCapacity,
 			Scope: coreadmission.ProtectionLoad,
+			State: coreadmission.ProjectedState{TPS: coreadmission.TPSSnapshot{
+				Enabled: true, Ready: true, Reference: 20, AggregateTPS: 180, MeanActiveTPS: 22.5,
+			}},
+			TPSSequenceLimit: 9, TPSCurrentSequences: 9, TPSPostAdmitSequences: 10,
 		},
 	})
 	for _, secret := range []string{"request-123", "user prompt", "Bearer secret", "api-key", "public.example"} {
@@ -403,7 +407,11 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 			t.Fatalf("admission log exposed %q: %s", secret, line)
 		}
 	}
-	for _, required := range []string{"action=protect", "reason=kv_capacity", "scope=load", "enforced=true"} {
+	for _, required := range []string{
+		"action=protect", "reason=kv_capacity", "scope=load", "enforced=true",
+		"tps_reference=20.000000", "tps_window_ready=true", "tps_sequence_limit=9",
+		"tps_current_sequences=9", "tps_post_admit_sequences=10",
+	} {
 		if !strings.Contains(line, required) {
 			t.Fatalf("admission log missing %q: %s", required, line)
 		}

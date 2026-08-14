@@ -38,6 +38,10 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	tpsReference, err := env.Float("PREDICTIVE_TPS_REFERENCE", 0)
+	if err != nil {
+		return err
+	}
 	maxModelLen, err := env.Int("PREDICTIVE_MAX_MODEL_LEN_TOKENS", 0)
 	if err != nil {
 		return err
@@ -100,6 +104,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveObservationPollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 	cfg.PredictiveMaximumMetricsAge = time.Duration(maximumAgeMS) * time.Millisecond
 	cfg.PredictiveKVHardRatio = kvHardRatio
+	cfg.PredictiveTPSReference = tpsReference
 	cfg.PredictiveMaxModelLenTokens = int64(maxModelLen)
 	cfg.PredictivePrefillRegularTokens = int64(prefillRegular)
 	cfg.PredictivePrefillExclusiveTokens = int64(prefillExclusive)

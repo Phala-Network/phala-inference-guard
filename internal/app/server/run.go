@@ -17,10 +17,10 @@ func Run() (runErr error) {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, srv.Close()) }()
-	log.Printf("phala-inference-guard %s listen=%s upstream=%s metrics=%s observer=%s freshness=%s predictive_admission=%s upstream_error_classification=%t",
+	log.Printf("phala-inference-guard %s listen=%s upstream=%s metrics=%s observer=%s freshness=%s predictive_admission=%s tps_reference=%.6f upstream_error_classification=%t",
 		version, cfg.Listen, cfg.Upstream, cfg.PredictiveMetricsURL,
 		cfg.PredictiveObservationPollInterval, cfg.PredictiveMaximumMetricsAge,
-		cfg.PredictiveAdmissionMode, cfg.UpstreamErrorClassificationEnabled)
+		cfg.PredictiveAdmissionMode, cfg.PredictiveTPSReference, cfg.UpstreamErrorClassificationEnabled)
 	log.Print(srv.statusLogLine())
 	if cfg.StatusLogInterval > 0 {
 		go srv.statusLogLoop()

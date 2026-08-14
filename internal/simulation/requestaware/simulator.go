@@ -35,6 +35,8 @@ type Metrics struct {
 	HardFitIdleRejects           int     `json:"hard_fit_idle_rejects"`
 	PeakKVTokens                 int64   `json:"peak_kv_tokens"`
 	MaximumRunning               int     `json:"maximum_running"`
+	DecodeSequenceSeconds        float64 `json:"decode_sequence_seconds"`
+	MeanActiveTPS                float64 `json:"mean_active_tps"`
 }
 
 type ScenarioResult struct {
@@ -177,6 +179,7 @@ func (s Suite) Aggregate(policy PolicyName) Metrics {
 		total.Preemptions += metrics.Preemptions
 		total.TPSFloorViolationSeconds += metrics.TPSFloorViolationSeconds
 		total.WaitingSeconds += metrics.WaitingSeconds
+		total.DecodeSequenceSeconds += metrics.DecodeSequenceSeconds
 		total.HardFitIdleRejects += metrics.HardFitIdleRejects
 		if metrics.MaximumIdleWithDemandSeconds > total.MaximumIdleWithDemandSeconds {
 			total.MaximumIdleWithDemandSeconds = metrics.MaximumIdleWithDemandSeconds
@@ -191,6 +194,9 @@ func (s Suite) Aggregate(policy PolicyName) Metrics {
 	if duration > 0 {
 		total.CompletionTokensPerSecond = total.CompletionTokens / duration
 		total.SLOCompletionTokensPerSecond = total.SLOCompletionTokens / duration
+	}
+	if total.DecodeSequenceSeconds > 0 {
+		total.MeanActiveTPS = total.CompletionTokens / total.DecodeSequenceSeconds
 	}
 	return total
 }

@@ -141,7 +141,7 @@ func (r *admissionReporter) Snapshot() admissionReportSnapshot {
 func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
 	decision := event.Decision
 	return fmt.Sprintf(
-		"predictive_admission event=admission_decision mode=%s enforced=%t action=%s reason=%s scope=%s prefill_class=%s selection_input_tokens=%d kv_reservation_input_tokens=%d decode_horizon_tokens=%d effective_kv_tokens=%d post_admit_kv_tokens=%d remaining_kv_tokens=%d pending_prefill_tokens_before=%d pending_prefill_tokens_after=%d running=%d waiting=%d observation_sequence=%d controller_sequence=%d runtime_epoch=%d suppressed=%d observed_at=%s",
+		"predictive_admission event=admission_decision mode=%s enforced=%t action=%s reason=%s scope=%s prefill_class=%s selection_input_tokens=%d kv_reservation_input_tokens=%d decode_horizon_tokens=%d effective_kv_tokens=%d post_admit_kv_tokens=%d remaining_kv_tokens=%d pending_prefill_tokens_before=%d pending_prefill_tokens_after=%d running=%d waiting=%d tps_reference=%.6f tps_window_ready=%t tps_window_aggregate=%.6f tps_window_mean_active=%.6f tps_sequence_limit=%d tps_current_sequences=%d tps_post_admit_sequences=%d observation_sequence=%d controller_sequence=%d runtime_epoch=%d suppressed=%d observed_at=%s",
 		event.Mode,
 		event.Enforced,
 		decision.Action,
@@ -158,6 +158,13 @@ func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
 		decision.PendingPrefillTokensAfter,
 		decision.State.RawRunning,
 		decision.State.RawWaiting,
+		decision.State.TPS.Reference,
+		decision.State.TPS.Ready,
+		decision.State.TPS.AggregateTPS,
+		decision.State.TPS.MeanActiveTPS,
+		decision.TPSSequenceLimit,
+		decision.TPSCurrentSequences,
+		decision.TPSPostAdmitSequences,
 		decision.ObservationSequence,
 		decision.ControllerSequence,
 		decision.RuntimeEpoch,

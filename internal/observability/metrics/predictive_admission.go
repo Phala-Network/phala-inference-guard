@@ -74,6 +74,15 @@ type PredictiveAdmissionInput struct {
 	AdmissionPostAdmitPendingPrefillTokens int64
 	AdmissionPendingExclusiveSequences     int
 	AdmissionPendingQuiescentSequences     int
+	TPSReference                           float64
+	TPSWindowReady                         bool
+	TPSWindowQualifiedSamples              uint64
+	TPSWindowQualifiedSequenceSeconds      float64
+	TPSWindowAggregate                     float64
+	TPSWindowMeanActive                    float64
+	TPSSequenceLimit                       int64
+	TPSCurrentSequences                    int64
+	TPSPostAdmitSequences                  int64
 }
 
 type PredictiveRouterBackpressureInput struct {
@@ -198,6 +207,15 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_post_admit_pending_prefill_tokens %d\n", input.AdmissionPostAdmitPendingPrefillTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_long_prefill_sequences %d\n", longPrefills)
 	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_pending_quiescent_prefill_sequences %d\n", input.AdmissionPendingQuiescentSequences)
+	fmt.Fprintf(w, "pig_predictive_tps_reference %.6f\n", input.TPSReference)
+	fmt.Fprintf(w, "pig_predictive_tps_window_ready %d\n", num.BoolAsInt(input.TPSWindowReady))
+	fmt.Fprintf(w, "pig_predictive_tps_window_qualified_samples %d\n", input.TPSWindowQualifiedSamples)
+	fmt.Fprintf(w, "pig_predictive_tps_window_qualified_sequence_seconds %.6f\n", input.TPSWindowQualifiedSequenceSeconds)
+	fmt.Fprintf(w, "pig_predictive_tps_window_aggregate %.6f\n", input.TPSWindowAggregate)
+	fmt.Fprintf(w, "pig_predictive_tps_window_mean_active %.6f\n", input.TPSWindowMeanActive)
+	fmt.Fprintf(w, "pig_predictive_tps_sequence_limit %d\n", input.TPSSequenceLimit)
+	fmt.Fprintf(w, "pig_predictive_tps_current_sequences %d\n", input.TPSCurrentSequences)
+	fmt.Fprintf(w, "pig_predictive_tps_post_admit_sequences %d\n", input.TPSPostAdmitSequences)
 	fmt.Fprintf(w, "pig_predictive_router_inspect_capacity %d\n", input.RouterBackpressure.InspectCapacity)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "decide", input.FailureDecide)
@@ -239,7 +257,7 @@ func normalizeAdmissionAction(value string) string {
 
 func normalizeAdmissionReason(value string) string {
 	switch value {
-	case "open", "controller_unavailable", "observation_missing", "observation_invalid", "observation_stale", "invalid_request", "input_limit", "kv_capacity", "prefill_contention", "prefill_budget", "prefill_exclusive", "prefill_quiescent", "capability_drift", "resource_exhausted", "counter_overflow", "closed":
+	case "open", "controller_unavailable", "observation_missing", "observation_invalid", "observation_stale", "invalid_request", "input_limit", "kv_capacity", "prefill_contention", "prefill_budget", "prefill_exclusive", "prefill_quiescent", "tps_reference", "capability_drift", "resource_exhausted", "counter_overflow", "closed":
 		return value
 	default:
 		return "unknown"
@@ -248,7 +266,7 @@ func normalizeAdmissionReason(value string) string {
 
 func normalizeAdmissionPressureSource(value string) string {
 	switch value {
-	case "none", "prefill":
+	case "none", "prefill", "tps":
 		return value
 	default:
 		return "none"

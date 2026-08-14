@@ -55,6 +55,17 @@ func TestAdmissionRouterProjectionMatchesCurrentCapacityContract(t *testing.T) {
 			},
 			wantActive: true, wantRunning: 1, wantRawLimit: 0, wantEffectiveLimit: 1,
 		},
+		{
+			name: "TPS reference protection closes Router capacity",
+			capacity: coreadmission.CapacitySnapshot{
+				MinimumDecision: coreadmission.DecisionRecord{
+					Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonTPSReference,
+					Scope: coreadmission.ProtectionLoad,
+				},
+				State: coreadmission.ProjectedState{RawRunning: 8},
+			},
+			wantActive: true, wantRunning: 8, wantRawLimit: 8, wantEffectiveLimit: 8,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -87,7 +98,7 @@ func TestAdmissionMetricsPublishProtectionBeforeAnyHTTPReject(t *testing.T) {
 		admission: &staticAdmissionTelemetryService{snapshot: admissionTelemetrySnapshot{Capacity: capacity}},
 	}
 	var rendered strings.Builder
-	srv.writePredictiveAndDynamicMetrics(&rendered)
+	srv.writeAdmissionAndRouterMetrics(&rendered)
 	body := rendered.String()
 	for _, want := range []string{
 		"pig_predictive_router_backpressure_active 1",
@@ -105,6 +116,22 @@ func TestAdmissionMetricsPublishProtectionBeforeAnyHTTPReject(t *testing.T) {
 	}
 	if strings.Contains(body, "pig_predictive_admission_enforced_rejects_total 1") {
 		t.Fatalf("current capacity was incorrectly made dependent on historical HTTP rejects:\n%s", body)
+	}
+}
+
+func TestTPSReferenceShadowProtectionDoesNotReduceRouterCapacity(t *testing.T) {
+	capacity := coreadmission.CapacitySnapshot{
+		MinimumDecision: coreadmission.DecisionRecord{
+			Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonTPSReference,
+			Scope: coreadmission.ProtectionLoad,
+		},
+		State: coreadmission.ProjectedState{RawRunning: 8, RawWaiting: 2},
+	}
+	projection := projectAdmissionCapacity("shadow", capacity, admissionReportSnapshot{})
+	compatibility := projectRouterCompatibility("shadow", capacity, projection)
+	if projection.Active || compatibility.ObservedRunning != 8 || compatibility.ObservedWaiting != 2 ||
+		compatibility.GlobalLimit != 0 {
+		t.Fatalf("shadow TPS protection changed Router capacity: projection=%+v compatibility=%+v", projection, compatibility)
 	}
 }
 
@@ -135,6 +162,37 @@ func TestAdmissionUpstreamStatusUsesCurrentProtectionScope(t *testing.T) {
 				t.Fatalf("upstream status=%d want=%d capacity=%+v", got, test.want, service.snapshot.Capacity)
 			}
 		})
+	}
+}
+
+func TestStatusLogReportsCurrentTPSCapacityReasonWithoutARequestDecision(t *testing.T) {
+	now := time.Now()
+	capacity := coreadmission.CapacitySnapshot{
+		IntakeOpen: true,
+		HasObservation: true,
+		MinimumDecision: coreadmission.DecisionRecord{
+			Action: coreadmission.ActionProtect,
+			Reason: coreadmission.ReasonTPSReference,
+			Scope:  coreadmission.ProtectionLoad,
+		},
+		State: coreadmission.ProjectedState{
+			RawRunning: 2,
+			TPS: coreadmission.TPSSnapshot{
+				Enabled: true, Reference: 20,
+			},
+		},
+		Observation: coreadmission.BackendObservation{ObservedAt: now, MaximumAge: time.Minute},
+	}
+	srv := &proxyServer{
+		cfg: config{PredictiveAdmissionMode: "enforce"},
+		admission: &staticAdmissionTelemetryService{snapshot: admissionTelemetrySnapshot{
+			Capacity: capacity,
+		}},
+	}
+	line := srv.statusLogLine()
+	if !strings.Contains(line, "capacity=protect/tps_reference") ||
+		!strings.Contains(line, "router=true/load/") {
+		t.Fatalf("status omitted current TPS capacity protection: %s", line)
 	}
 }
 

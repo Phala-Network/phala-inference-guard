@@ -1,13 +1,14 @@
 package pigconfig
 
 import (
+	"math"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestV0121PredictiveAdmissionDefaultsToEnforceAndRetiresProxyOnlyModes(t *testing.T) {
+func TestPredictiveAdmissionDefaultsToEnforceAndRejectsRetiredModes(t *testing.T) {
 	t.Setenv("PREDICTIVE_ADMISSION_MODE", "")
 	cfg, err := Load()
 	if err != nil {
@@ -40,7 +41,7 @@ func TestV0121PredictiveAdmissionDefaultsToEnforceAndRetiresProxyOnlyModes(t *te
 	}
 }
 
-func TestV0121ConfigHasNoLegacyModeOwnership(t *testing.T) {
+func TestConfigHasNoRetiredModeOwnership(t *testing.T) {
 	legacyFields := []string{
 		"Backends", "BackendRouting", "GlobalLimit",
 		"OpenAICompatStripEmptyToolCalls", "OpenAICompatBodyBytes", "OpenAICompatFailOpen",
@@ -77,7 +78,7 @@ func TestV0121ConfigHasNoLegacyModeOwnership(t *testing.T) {
 	}
 }
 
-func TestV0121RetiredEnvironmentCannotReenableLegacyModes(t *testing.T) {
+func TestRetiredEnvironmentCannotReenableRemovedModes(t *testing.T) {
 	retired := map[string]string{
 		"GLOBAL_LIMIT":                           "not-an-int",
 		"DYNAMIC_ENABLED":                        "not-a-bool",
@@ -114,7 +115,7 @@ func TestV0121RetiredEnvironmentCannotReenableLegacyModes(t *testing.T) {
 	}
 }
 
-func TestV0121ValidationRequiresExactlyOneUpstream(t *testing.T) {
+func TestValidationRequiresExactlyOneUpstream(t *testing.T) {
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -125,7 +126,7 @@ func TestV0121ValidationRequiresExactlyOneUpstream(t *testing.T) {
 	}
 }
 
-func TestV0121ProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
+func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	t.Setenv("UPSTREAM", "http://backend:8000/v1")
 	t.Setenv("PREDICTIVE_ADMISSION_MODE", "")
 	t.Setenv("PREDICTIVE_METRICS_URL", "")
@@ -139,6 +140,9 @@ func TestV0121ProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	if cfg.PredictiveObservationPollInterval != 500*time.Millisecond || cfg.PredictiveMaximumMetricsAge != 1500*time.Millisecond {
 		t.Fatalf("default observer cadence/freshness=%s/%s", cfg.PredictiveObservationPollInterval, cfg.PredictiveMaximumMetricsAge)
 	}
+	if cfg.PredictiveTPSReference != 0 {
+		t.Fatalf("default TPS reference=%v, want disabled zero", cfg.PredictiveTPSReference)
+	}
 	if cfg.PredictiveMaxModelLenTokens != 0 || cfg.PredictivePrefillRegularTokens != 0 || cfg.PredictivePrefillExclusiveTokens != 0 ||
 		cfg.PredictivePrefillQuiescentTokens != 0 || cfg.PredictivePrefillAggregateBudgetTokens != 0 {
 		t.Fatalf("minimal production config unexpectedly disables startup Prefill derivation: %+v", cfg)
@@ -149,12 +153,13 @@ func TestV0121ProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	}
 }
 
-func TestV0121TestsCanExplicitlyOverrideTypedPredictivePolicy(t *testing.T) {
+func TestTestsCanExplicitlyOverrideTypedPredictivePolicy(t *testing.T) {
 	t.Setenv("PREDICTIVE_ADMISSION_MODE", "shadow")
 	t.Setenv("PREDICTIVE_METRICS_URL", "http://fixture:9000/custom-metrics")
 	t.Setenv("PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS", "20")
 	t.Setenv("PREDICTIVE_MAX_METRICS_AGE_MS", "100")
 	t.Setenv("PREDICTIVE_KV_HARD_RATIO", "0.90")
+	t.Setenv("PREDICTIVE_TPS_REFERENCE", "23.5")
 	t.Setenv("PREDICTIVE_MAX_MODEL_LEN_TOKENS", "8192")
 	t.Setenv("PREDICTIVE_PREFILL_REGULAR_TOKENS", "1024")
 	t.Setenv("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", "2048")
@@ -169,10 +174,32 @@ func TestV0121TestsCanExplicitlyOverrideTypedPredictivePolicy(t *testing.T) {
 	}
 	if cfg.PredictiveAdmissionMode != "shadow" || cfg.PredictiveObservationPollInterval != 20*time.Millisecond ||
 		cfg.PredictiveMaximumMetricsAge != 100*time.Millisecond || cfg.PredictiveKVHardRatio != 0.90 ||
+		cfg.PredictiveTPSReference != 23.5 ||
 		cfg.PredictiveMaxModelLenTokens != 8192 ||
 		cfg.PredictivePrefillRegularTokens != 1024 || cfg.PredictivePrefillExclusiveTokens != 2048 ||
 		cfg.PredictivePrefillQuiescentTokens != 4096 || cfg.PredictivePrefillAggregateBudgetTokens != 2048 {
 		t.Fatalf("explicit test policy was not loaded exactly: %+v", cfg)
+	}
+}
+
+func TestPredictiveTPSReferenceValidation(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, reference := range []float64{0, 0.001, 20, 1_000_000} {
+		candidate := cfg
+		candidate.PredictiveTPSReference = reference
+		if err := Validate(candidate); err != nil {
+			t.Fatalf("Validate reference %v: %v", reference, err)
+		}
+	}
+	for _, reference := range []float64{-1, math.NaN(), math.Inf(1), math.Inf(-1), 1_000_000.001} {
+		candidate := cfg
+		candidate.PredictiveTPSReference = reference
+		if err := Validate(candidate); err == nil || !strings.Contains(err.Error(), "PREDICTIVE_TPS_REFERENCE") {
+			t.Fatalf("Validate reference %v error=%v, want bounded finite rejection", reference, err)
+		}
 	}
 }
 

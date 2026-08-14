@@ -78,6 +78,15 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		AdmissionPostAdmitPendingPrefillTokens: 3500,
 		AdmissionPendingExclusiveSequences:     1,
 		AdmissionPendingQuiescentSequences:     0,
+		TPSReference:                           20,
+		TPSWindowReady:                         true,
+		TPSWindowQualifiedSamples:              40,
+		TPSWindowQualifiedSequenceSeconds:      120,
+		TPSWindowAggregate:                     200,
+		TPSWindowMeanActive:                    25,
+		TPSSequenceLimit:                       11,
+		TPSCurrentSequences:                    10,
+		TPSPostAdmitSequences:                  11,
 		RouterBackpressure: PredictiveRouterBackpressureInput{
 			Active: true, Activation: 2, Scope: "load", Applied: true,
 			Reason: "request_size", Source: "deterministic", InspectCapacity: 1,
@@ -149,6 +158,15 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		"pig_predictive_request_aware_last_decision_post_admit_pending_prefill_tokens 3500",
 		"pig_predictive_request_aware_last_decision_pending_long_prefill_sequences 1",
 		"pig_predictive_request_aware_last_decision_pending_quiescent_prefill_sequences 0",
+		"pig_predictive_tps_reference 20.000000",
+		"pig_predictive_tps_window_ready 1",
+		"pig_predictive_tps_window_qualified_samples 40",
+		"pig_predictive_tps_window_qualified_sequence_seconds 120.000000",
+		"pig_predictive_tps_window_aggregate 200.000000",
+		"pig_predictive_tps_window_mean_active 25.000000",
+		"pig_predictive_tps_sequence_limit 11",
+		"pig_predictive_tps_current_sequences 10",
+		"pig_predictive_tps_post_admit_sequences 11",
 		"pig_predictive_router_inspect_capacity 1",
 		`pig_predictive_admission_failures_total{phase="forward"} 3`,
 		`pig_predictive_admission_failures_total{phase="prefill"} 4`,
@@ -209,6 +227,19 @@ func TestWritePredictiveAdmissionKeepsInputLimitAndRetiresDecodePressure(t *test
 	want := `pig_predictive_request_aware_last_decision_info{action="hard_protect",reason="input_limit",pressure_source="none",prefill_class="quiescent"} 1`
 	if !strings.Contains(got, want) || strings.Contains(got, `pressure_source="decode"`) {
 		t.Fatalf("input-limit/decode-pressure normalization is wrong:\n%s", got)
+	}
+}
+
+func TestWritePredictiveAdmissionKeepsBoundedTPSReasonAndPressure(t *testing.T) {
+	var out bytes.Buffer
+	WritePredictiveAdmission(&out, PredictiveAdmissionInput{
+		AdmissionAction:         "hard_protect",
+		AdmissionReason:         "tps_reference",
+		AdmissionPressureSource: "tps",
+	})
+	want := `pig_predictive_request_aware_last_decision_info{action="hard_protect",reason="tps_reference",pressure_source="tps",prefill_class="unknown"} 1`
+	if got := out.String(); !strings.Contains(got, want) {
+		t.Fatalf("TPS labels were not retained:\n%s", got)
 	}
 }
 

@@ -52,6 +52,64 @@ func TestControllerHotPathIsConstantTimeAndAllocationFree(t *testing.T) {
 	}
 }
 
+func TestControllerTPSWindowHotPathIsAllocationFree(t *testing.T) {
+	now := time.Unix(17_000, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t,
+		capability,
+		20,
+		testObservation(capability, now, 0, 4, 0, 0, 0),
+	)
+	for step := 1; step <= 4; step++ {
+		publishObservation(t, controller, testObservation(
+			capability,
+			now.Add(time.Duration(step)*time.Second),
+			0,
+			4,
+			0,
+			uint64(step*100),
+			0,
+		))
+	}
+	requestAt := now.Add(4*time.Second + time.Millisecond)
+	protected := testEstimate(900_000, 900_000, 256)
+	if snapshot := controller.Snapshot(requestAt); !snapshot.State.TPS.Ready {
+		t.Fatalf("TPS performance fixture is not ready: %+v", snapshot.State.TPS)
+	}
+	snapshotAllocations := testing.AllocsPerRun(1_000, func() {
+		_ = controller.Snapshot(requestAt)
+	})
+	admitAllocations := testing.AllocsPerRun(1_000, func() {
+		if decision := controller.Admit(requestAt, protected).Decision; decision.Reason != ReasonInputLimit {
+			t.Fatalf("protected TPS decision=%+v", decision)
+		}
+	})
+	if snapshotAllocations != 0 || admitAllocations != 0 {
+		t.Fatalf("TPS allocations snapshot=%g admit=%g", snapshotAllocations, admitAllocations)
+	}
+
+	const runs = 10_001
+	snapshotDurations := make([]time.Duration, runs)
+	admitDurations := make([]time.Duration, runs)
+	for index := range snapshotDurations {
+		started := time.Now()
+		_ = controller.Snapshot(requestAt)
+		snapshotDurations[index] = time.Since(started)
+		started = time.Now()
+		_ = controller.Admit(requestAt, protected)
+		admitDurations[index] = time.Since(started)
+	}
+	sort.Slice(snapshotDurations, func(left, right int) bool { return snapshotDurations[left] < snapshotDurations[right] })
+	sort.Slice(admitDurations, func(left, right int) bool { return admitDurations[left] < admitDurations[right] })
+	snapshotP99 := snapshotDurations[(len(snapshotDurations)*99)/100]
+	admitP99 := admitDurations[(len(admitDurations)*99)/100]
+	t.Logf("TPS snapshot_p99=%s admit_p99=%s snapshot_allocs=%g admit_allocs=%g", snapshotP99, admitP99, snapshotAllocations, admitAllocations)
+	if snapshotP99 >= 100*time.Microsecond || admitP99 >= 100*time.Microsecond {
+		t.Fatalf("TPS snapshot/admit p99=%s/%s exceeds 100us", snapshotP99, admitP99)
+	}
+}
+
 func populatedController(t *testing.T, reservations int, now time.Time) *AdmissionController {
 	t.Helper()
 	capability := testCapability()

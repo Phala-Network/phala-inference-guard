@@ -113,6 +113,7 @@ func (s *proxyServer) predictiveAdmissionMetricsInput(
 	input.ForwardedPendingPrefills = nonnegativeInt(snapshot.Capacity.State.PendingPrefillSequences)
 	input.ForwardedPendingPrefillTokens = snapshot.Capacity.State.PendingPrefillTokens
 	input.PredictionDuration = snapshot.PredictionDuration
+	applyTPSCapacityMetrics(&input, snapshot.Capacity)
 	if report.HasLastDecision {
 		applyAdmissionDecisionMetrics(&input, report.LastDecision)
 		input.LastReason = string(report.LastDecision.Reason)
@@ -175,6 +176,8 @@ func admissionPressureSource(reason coreadmission.Reason) string {
 		coreadmission.ReasonPrefillExclusive,
 		coreadmission.ReasonPrefillQuiescent:
 		return "prefill"
+	case coreadmission.ReasonTPSReference:
+		return "tps"
 	default:
 		return "none"
 	}
@@ -196,11 +199,30 @@ func admissionGenerationTPS(state coreadmission.ProjectedState) (aggregate, mean
 }
 
 func projectedDecodeSequences(state coreadmission.ProjectedState) int {
-	value, ok := addNonnegativeForMetrics(state.RawRunning, state.LocalActiveDecode)
+	tracked, ok := addNonnegativeForMetrics(state.PendingPrefillSequences, state.LocalActiveDecode)
 	if !ok {
 		return int(^uint(0) >> 1)
 	}
-	return nonnegativeInt(value)
+	if state.RawRunning > tracked {
+		tracked = state.RawRunning
+	}
+	return nonnegativeInt(tracked)
+}
+
+func applyTPSCapacityMetrics(input *metrics.PredictiveAdmissionInput, capacity coreadmission.CapacitySnapshot) {
+	if input == nil {
+		return
+	}
+	snapshot := capacity.State.TPS
+	input.TPSReference = snapshot.Reference
+	input.TPSWindowReady = snapshot.Ready
+	input.TPSWindowQualifiedSamples = snapshot.QualifiedSamples
+	input.TPSWindowQualifiedSequenceSeconds = snapshot.QualifiedSequenceSeconds
+	input.TPSWindowAggregate = snapshot.AggregateTPS
+	input.TPSWindowMeanActive = snapshot.MeanActiveTPS
+	input.TPSSequenceLimit = capacity.MinimumDecision.TPSSequenceLimit
+	input.TPSCurrentSequences = capacity.MinimumDecision.TPSCurrentSequences
+	input.TPSPostAdmitSequences = capacity.MinimumDecision.TPSPostAdmitSequences
 }
 
 func addNonnegativeForMetrics(left, right int64) (int64, bool) {
@@ -210,7 +232,7 @@ func addNonnegativeForMetrics(left, right int64) (int64, bool) {
 	return left + right, true
 }
 
-func (s *proxyServer) writePredictiveAndDynamicMetrics(w io.Writer) {
+func (s *proxyServer) writeAdmissionAndRouterMetrics(w io.Writer) {
 	now := time.Now()
 	input, snapshot := s.predictiveAdmissionMetricsInput(now)
 	projection := projectAdmissionCapacity(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, snapshot.Report)

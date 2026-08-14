@@ -1,6 +1,7 @@
 package requestaware
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 	"time"
@@ -125,6 +126,82 @@ func TestDeterministicRequestAwareGoodputSuiteIsReplayable(t *testing.T) {
 	}
 }
 
+func TestTPSReferenceCandidatesPreserveSaturatedThroughputAndBoundLongRunMean(t *testing.T) {
+	scenario := newTPSReferenceSaturationScenario()
+	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
+	if err != nil {
+		t.Fatalf("construct TPS-reference capability: %v", err)
+	}
+	baseline, _, err := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, 0)
+	if err != nil {
+		t.Fatalf("run disabled-reference baseline: %v", err)
+	}
+	for _, test := range []struct {
+		reference      float64
+		maximumRunning int
+	}{
+		{reference: 20, maximumRunning: 7},
+		{reference: 25, maximumRunning: 6},
+	} {
+		t.Run(fmt.Sprintf("reference_%.0f", test.reference), func(t *testing.T) {
+			candidate, _, runErr := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, test.reference)
+			if runErr != nil {
+				t.Fatalf("run reference %.1f: %v", test.reference, runErr)
+			}
+			if candidate.MeanActiveTPS+simulationFloatTolerance < test.reference {
+				t.Fatalf("reference %.1f mean active TPS=%.3f below long-run target: %+v", test.reference, candidate.MeanActiveTPS, candidate)
+			}
+			if candidate.CompletionTokens+simulationFloatTolerance < 0.99*baseline.CompletionTokens {
+				t.Fatalf("reference %.1f completion tokens %.3f regress saturated baseline %.3f", test.reference, candidate.CompletionTokens, baseline.CompletionTokens)
+			}
+			if candidate.MaximumRunning > test.maximumRunning || candidate.Preemptions != 0 || candidate.MaximumIdleWithDemandSeconds > simulationPollInterval.Seconds() {
+				t.Fatalf("reference %.1f candidate=%+v", test.reference, candidate)
+			}
+		})
+	}
+}
+
+func newTPSReferenceSaturationScenario() scenarioSpec {
+	requests := make([]requestSpec, 0, 20)
+	for index := 0; index < 20; index++ {
+		request := shapedRequest("tps-reference-saturation", index, 3*time.Second+time.Duration(index)*500*time.Millisecond, shapeLongStreaming)
+		request.actualOutput = 10_000
+		requests = append(requests, request)
+	}
+	return scenarioSpec{
+		name: "tps-reference-saturation", category: "tps-reference", duration: 60 * time.Second,
+		initialKVTokens: 100_000, backgroundRunning: 4, requests: requests,
+		capacityTokens: 4 * 1024 * 1024, maxModelLen: 256 * 1024,
+		maximumNoWait: 12, aggregateTPSCap: 150,
+	}
+}
+
+func TestTPSReferenceWarmingIsBoundedAndStopsExpansionAfterBelowReferenceEvidence(t *testing.T) {
+	scenario := scenarioSpec{
+		name: "tps-reference-bounded-warming", category: "tps-reference", duration: 15 * time.Second,
+		initialKVTokens: 100_000, backgroundRunning: 0, capacityTokens: 4 * 1024 * 1024,
+		maxModelLen: 256 * 1024, maximumNoWait: 8, aggregateTPSCap: 30,
+		requests: []requestSpec{
+			{id: "warming-seed", at: 0, selectionInput: 256, safetyInput: 512, decodeHorizon: 256, actualInput: 384, actualOutput: 10_000},
+			{id: "warming-second", at: time.Second, selectionInput: 256, safetyInput: 512, decodeHorizon: 256, actualInput: 384, actualOutput: 10_000},
+			{id: "warming-burst-must-stop", at: time.Second, selectionInput: 256, safetyInput: 512, decodeHorizon: 256, actualInput: 384, actualOutput: 10_000},
+			{id: "ready-must-stop", at: 5 * time.Second, selectionInput: 256, safetyInput: 512, decodeHorizon: 256, actualInput: 384, actualOutput: 10_000},
+		},
+	}
+	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
+	if err != nil {
+		t.Fatalf("construct low-flow capability: %v", err)
+	}
+	metrics, _, err := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, 20)
+	if err != nil {
+		t.Fatalf("run low-flow TPS reference: %v", err)
+	}
+	if metrics.Arrivals != 4 || metrics.Admitted != 2 || metrics.Rejected != 2 ||
+		metrics.MaximumRunning != 2 || metrics.Preemptions != 0 {
+		t.Fatalf("bounded warming/reference brake metrics=%+v", metrics)
+	}
+}
+
 func TestDeterministicRequestAwareGoodputSuiteIsPolicyOrderIndependent(t *testing.T) {
 	forward, err := runSuite([]PolicyName{PolicyNoAdmission, PolicyV0122, PolicyV01210, PolicyCandidate})
 	if err != nil {
@@ -176,7 +253,7 @@ func TestCapabilityProfilesKeepFixedPrefillBandsAcrossContextLengths(t *testing.
 
 func admissionDecisionForProfile(t *testing.T, profile runtimepredictive.BackendCapabilityProfile) coreadmission.DecisionRecord {
 	t.Helper()
-	controller, err := coreadmission.NewAdmissionController(simulationAdmissionCapability(profile))
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{Capability: simulationAdmissionCapability(profile)})
 	if err != nil {
 		t.Fatalf("construct admission Controller: %v", err)
 	}

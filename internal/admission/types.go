@@ -28,6 +28,7 @@ const (
 	ReasonPrefillBudget         Reason = "prefill_budget"
 	ReasonPrefillExclusive      Reason = "prefill_exclusive"
 	ReasonPrefillQuiescent      Reason = "prefill_quiescent"
+	ReasonTPSReference          Reason = "tps_reference"
 	ReasonCapabilityDrift       Reason = "capability_drift"
 	ReasonResourceExhausted     Reason = "resource_exhausted"
 	ReasonCounterOverflow       Reason = "counter_overflow"
@@ -69,6 +70,28 @@ type ProjectedState struct {
 	GenerationDelta           uint64
 	PreemptionDelta           uint64
 	ObservationInterval       time.Duration
+	TPS                       TPSSnapshot
+}
+
+type TPSSnapshot struct {
+	Enabled                    bool
+	Ready                      bool
+	Reference                  float64
+	QualifiedSamples           uint64
+	QualifiedTokens            float64
+	QualifiedActiveSeconds     float64
+	QualifiedSequenceSeconds   float64
+	AggregateTPS               float64
+	MeanActiveTPS              float64
+}
+
+type TPSPolicyConfig struct {
+	Reference float64
+}
+
+type ControllerConfig struct {
+	Capability Capability
+	TPS        TPSPolicyConfig
 }
 
 type DecisionRecord struct {
@@ -84,6 +107,9 @@ type DecisionRecord struct {
 	RemainingKVTokens          int64
 	PendingPrefillTokensBefore int64
 	PendingPrefillTokensAfter  int64
+	TPSSequenceLimit           int64
+	TPSCurrentSequences        int64
+	TPSPostAdmitSequences      int64
 	ObservationSequence        uint64
 	ControllerSequence         uint64
 	RuntimeEpoch               uint64

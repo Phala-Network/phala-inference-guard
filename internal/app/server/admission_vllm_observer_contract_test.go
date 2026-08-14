@@ -41,7 +41,7 @@ func TestAdmissionVLLMObserverTransientFailureStalesThenRecoversAndDriftCloses(t
 	if err != nil {
 		t.Fatalf("construct observer capability: %v", err)
 	}
-	controller, err := coreadmission.NewAdmissionController(admissionCapabilityFromProfile(profile))
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{Capability: admissionCapabilityFromProfile(profile)})
 	if err != nil {
 		t.Fatalf("construct observer Controller: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestAdmissionVLLMObserverRevalidatesMetadataBeforeCounterResetRecovery(t *t
 	if err != nil {
 		t.Fatalf("construct reset observer capability: %v", err)
 	}
-	controller, err := coreadmission.NewAdmissionController(admissionCapabilityFromProfile(profile))
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{Capability: admissionCapabilityFromProfile(profile)})
 	if err != nil {
 		t.Fatalf("construct reset observer Controller: %v", err)
 	}

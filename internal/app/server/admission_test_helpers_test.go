@@ -25,6 +25,7 @@ type admissionRuntimeTestConfig struct {
 	MaximumAge   time.Duration
 	Generation   uint64
 	Preemptions  uint64
+	TPSReference float64
 }
 
 func newAdmissionRuntimeForTest(
@@ -58,7 +59,10 @@ func newAdmissionRuntimeForTest(
 	if err != nil {
 		t.Fatalf("construct admission test capability: %v", err)
 	}
-	controller, err := coreadmission.NewAdmissionController(admissionCapabilityFromProfile(profile))
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
+		Capability: admissionCapabilityFromProfile(profile),
+		TPS:        coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
+	})
 	if err != nil {
 		t.Fatalf("construct admission test Controller: %v", err)
 	}

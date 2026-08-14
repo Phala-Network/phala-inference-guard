@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -43,6 +44,7 @@ type AdmissionController struct {
 	capability Capability
 	policy     admissionPolicy
 	projector  stateProjector
+	tpsWindow  tpsWindow
 
 	runtimeEpoch        uint64
 	eventSequence       uint64
@@ -59,9 +61,13 @@ type AdmissionController struct {
 	maximumReservations int64
 }
 
-func NewAdmissionController(capability Capability) (*AdmissionController, error) {
+func NewAdmissionController(config ControllerConfig) (*AdmissionController, error) {
+	capability := config.Capability
 	if err := capability.Validate(); err != nil {
 		return nil, err
+	}
+	if !finiteNonnegative(config.TPS.Reference) || config.TPS.Reference > 1_000_000 {
+		return nil, fmt.Errorf("TPS reference must be finite and in [0, 1000000]")
 	}
 	policy, err := newAdmissionPolicy(capability)
 	if err != nil {
@@ -70,6 +76,7 @@ func NewAdmissionController(capability Capability) (*AdmissionController, error)
 	return &AdmissionController{
 		capability:          capability,
 		policy:              policy,
+		tpsWindow:           newTPSWindow(config.TPS.Reference),
 		runtimeEpoch:        1,
 		reservations:        make(map[uint64]reservation),
 		maximumReservations: capability.KVHardLimitTokens / capability.KVBlockSize,
@@ -149,6 +156,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		c.overlay = reservationOverlay{}
 		c.sampleSequence = 0
 		c.lastPublishedSample = 0
+		c.tpsWindow.reset()
 	} else {
 		if c.hasObservation {
 			generationDelta = observation.GenerationTokensTotal - c.observation.observation.GenerationTokensTotal
@@ -164,6 +172,19 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		c.applyReconciliationLocked(window.eventSequence)
 		c.overlay = nextOverlay
 		c.lastPublishedSample = window.id
+		if c.hasObservation && c.tpsWindow.enabled() && !c.tpsWindow.observe(tpsSample{
+			start:                     c.observation.observation.ObservedAt,
+			end:                       observation.ObservedAt,
+			maximumInterval:           observation.MaximumAge,
+			generatedTokens:           generationDelta,
+			previousRunning:           c.observation.observation.Running,
+			running:                   observation.Running,
+			previousLocalActiveDecode: c.observation.localActiveDecode,
+			localActiveDecode:         c.overlay.localActiveDecode,
+		}) {
+			c.failClosedLocked(ReasonCounterOverflow)
+			return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
+		}
 	}
 
 	c.observationSequence++
@@ -174,6 +195,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		preemptionDelta: preemptionDelta,
 		interval:        observationInterval,
 		previousRunning: previousRunning,
+		localActiveDecode: c.overlay.localActiveDecode,
 	}
 	c.hasObservation = true
 	return PublicationResult{
@@ -413,6 +435,9 @@ func (c *AdmissionController) stateLocked(now time.Time) (ProjectedState, Reason
 	if !ok {
 		return ProjectedState{}, ReasonControllerUnavailable, false
 	}
+	if !now.IsZero() && !now.Before(observation.ObservedAt) {
+		state.TPS = c.tpsWindow.snapshot(now)
+	}
 	if now.IsZero() || now.Before(observation.ObservedAt) || now.Sub(observation.ObservedAt) > observation.MaximumAge {
 		return state, ReasonObservationStale, false
 	}
@@ -443,6 +468,9 @@ func (c *AdmissionController) decisionLocked(policy policyDecision, estimate pre
 		RemainingKVTokens:          remainingKV,
 		PendingPrefillTokensBefore: state.PendingPrefillTokens,
 		PendingPrefillTokensAfter:  policy.pendingPrefillTokensAfter,
+		TPSSequenceLimit:           policy.tpsSequenceLimit,
+		TPSCurrentSequences:        policy.tpsCurrentSequences,
+		TPSPostAdmitSequences:      policy.tpsPostAdmitSequences,
 		ObservationSequence:        c.observationSequence,
 		ControllerSequence:         c.eventSequence,
 		RuntimeEpoch:               c.runtimeEpoch,
@@ -468,6 +496,7 @@ func (c *AdmissionController) failClosedLocked(reason Reason) {
 	}
 	clear(c.reservations)
 	c.overlay = reservationOverlay{}
+	c.tpsWindow.reset()
 }
 
 func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reservationOverlay, bool) {

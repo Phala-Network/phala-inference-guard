@@ -80,6 +80,22 @@ func TestPolicyEnforcesExclusiveAndQuiescentOwnership(t *testing.T) {
 	}
 }
 
+func TestPolicyPreservesPhysicalGateReasonPrecedenceOverTPS(t *testing.T) {
+	policy := testPolicy(t)
+	state := ProjectedState{
+		RawRunning: 100,
+		TPS: TPSSnapshot{
+			Enabled: true, Ready: true, Reference: 20,
+			QualifiedSamples: 4, QualifiedSequenceSeconds: 100,
+			AggregateTPS: 20, MeanActiveTPS: 1,
+		},
+	}
+	decision := policy.evaluate(state, testWork(t, 900_000, 900_000, 256))
+	if decision.reason != ReasonInputLimit || decision.scope != ProtectionRequest {
+		t.Fatalf("TPS obscured Context reason: %+v", decision)
+	}
+}
+
 func testPolicy(t *testing.T) admissionPolicy {
 	t.Helper()
 	capability := testCapability()

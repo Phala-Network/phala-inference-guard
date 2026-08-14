@@ -8,7 +8,8 @@ type observedState struct {
 	generationDelta uint64
 	preemptionDelta uint64
 	interval        time.Duration
-	previousRunning int64
+	previousRunning   int64
+	localActiveDecode int64
 }
 
 type reservationOverlay struct {
@@ -62,5 +63,6 @@ func validProjectedState(state ProjectedState) bool {
 		state.PendingQuiescentSequences <= state.PendingPrefillSequences &&
 		state.LocalActiveDecode >= 0 && state.LiveReservations >= 0 &&
 		state.ResidualDebts >= 0 && state.RawRunning >= 0 && state.RawWaiting >= 0 &&
-		state.PreviousRawRunning >= 0 && state.ObservationInterval >= 0
+		state.PreviousRawRunning >= 0 && state.ObservationInterval >= 0 &&
+		validTPSSnapshot(state.TPS)
 }

@@ -7,6 +7,7 @@ type admissionPolicy struct {
 	contextGate contextGate
 	kvGate      kvGate
 	prefillGate prefillGate
+	tpsGate     tpsGate
 }
 
 type policyDecision struct {
@@ -16,6 +17,9 @@ type policyDecision struct {
 	prefillClass              PrefillClass
 	postAdmitKVTokens         int64
 	pendingPrefillTokensAfter int64
+	tpsSequenceLimit          int64
+	tpsCurrentSequences       int64
+	tpsPostAdmitSequences     int64
 }
 
 func newAdmissionPolicy(capability Capability) (admissionPolicy, error) {
@@ -57,12 +61,16 @@ func (p admissionPolicy) evaluate(state ProjectedState, work predictive.RequestW
 func (p admissionPolicy) evaluateCandidate(state ProjectedState, work predictive.RequestWork) policyDecision {
 	kv, postAdmit := p.kvGate.evaluate(state, work)
 	prefill, class, postPending := p.prefillGate.evaluate(state, work)
+	tps := p.tpsGate.evaluate(state)
 	decision := policyDecision{
 		action:                    ActionProtect,
 		reason:                    ReasonInvalidRequest,
 		prefillClass:              class,
 		postAdmitKVTokens:         postAdmit,
 		pendingPrefillTokensAfter: postPending,
+		tpsSequenceLimit:          tps.sequenceLimit,
+		tpsCurrentSequences:       tps.currentSequences,
+		tpsPostAdmitSequences:     tps.postAdmitSequences,
 	}
 	if context := p.contextGate.evaluate(work); !context.fits {
 		decision.reason = context.reason
@@ -74,6 +82,10 @@ func (p admissionPolicy) evaluateCandidate(state ProjectedState, work predictive
 	}
 	if !prefill.fits {
 		decision.reason = prefill.reason
+		return decision
+	}
+	if !tps.fits {
+		decision.reason = tps.reason
 		return decision
 	}
 	decision.action = ActionAdmit

@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"math"
 	"sync"
 	"testing"
 	"time"
@@ -29,6 +30,17 @@ func TestControllerRetainsCompletionBeforePollDebtUntilCoveringSample(t *testing
 	after := controller.Snapshot(now.Add(4 * time.Millisecond))
 	if after.State.ReservationKVTokens != 0 || !after.Available {
 		t.Fatalf("state after covering sample=%+v snapshot=%+v", after.State, after)
+	}
+}
+
+func TestControllerRejectsInvalidTPSPolicyConfiguration(t *testing.T) {
+	for _, reference := range []float64{-1, math.NaN(), math.Inf(1), 1_000_000.001} {
+		if _, err := NewAdmissionController(ControllerConfig{
+			Capability: testCapability(),
+			TPS:        TPSPolicyConfig{Reference: reference},
+		}); err == nil {
+			t.Fatalf("invalid TPS reference %v constructed a Controller", reference)
+		}
 	}
 }
 
@@ -274,9 +286,130 @@ func TestControllerSnapshotPublishesOneCoherentObservationRecord(t *testing.T) {
 	}
 }
 
+func TestControllerTPSReferenceAloneChangesPreForwardDecision(t *testing.T) {
+	now := time.Unix(9_000, 0)
+	capability := testCapability()
+	strict := testControllerWithTPSObservation(t, capability, 20, testObservation(capability, now, 0, 5, 0, 0, 0))
+	permissive := testControllerWithTPSObservation(t, capability, 15, testObservation(capability, now, 0, 5, 0, 0, 0))
+	for step := 1; step <= 4; step++ {
+		observation := testObservation(capability, now.Add(time.Duration(step)*time.Second), 0, 5, 0, uint64(step*100), 0)
+		publishObservation(t, strict, observation)
+		publishObservation(t, permissive, observation)
+	}
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	strictDecision := strict.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
+	permissiveDecision := permissive.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
+	if strictDecision.Reason != ReasonTPSReference || strictDecision.Scope != ProtectionLoad ||
+		strictDecision.TPSSequenceLimit != 5 || strictDecision.TPSCurrentSequences != 5 || strictDecision.TPSPostAdmitSequences != 6 {
+		t.Fatalf("strict TPS decision=%+v", strictDecision)
+	}
+	if !permissiveDecision.Admitted() || permissiveDecision.TPSSequenceLimit != 7 ||
+		permissiveDecision.TPSCurrentSequences != 5 || permissiveDecision.TPSPostAdmitSequences != 6 {
+		t.Fatalf("permissive TPS decision=%+v", permissiveDecision)
+	}
+}
+
+func TestControllerTPSWarmingAtomicallyCapsSameSnapshotAtTwoSequences(t *testing.T) {
+	now := time.Unix(9_500, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t,
+		capability,
+		20,
+		testObservation(capability, now, 0, 0, 0, 0, 0),
+	)
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	for admitted := int64(1); admitted <= tpsWarmingSequenceLimit; admitted++ {
+		decision := controller.Admit(now.Add(time.Millisecond), estimate).Decision
+		if !decision.Admitted() || decision.TPSSequenceLimit != tpsWarmingSequenceLimit ||
+			decision.TPSPostAdmitSequences != admitted {
+			t.Fatalf("warming admission %d=%+v", admitted, decision)
+		}
+	}
+	protected := controller.Admit(now.Add(time.Millisecond), estimate).Decision
+	if protected.Reason != ReasonTPSReference || protected.Scope != ProtectionLoad ||
+		protected.TPSCurrentSequences != tpsWarmingSequenceLimit ||
+		protected.TPSPostAdmitSequences != tpsWarmingSequenceLimit+1 ||
+		protected.ReservationID != 0 {
+		t.Fatalf("warming overflow=%+v", protected)
+	}
+}
+
+func TestControllerTPSSameSnapshotBurstCannotExceedSequenceLimit(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(t, capability, 20, testObservation(capability, now, 0, 4, 0, 0, 0))
+	for step := 1; step <= 4; step++ {
+		running := int64(4)
+		if step == 4 {
+			running = 0
+		}
+		publishObservation(t, controller, testObservation(
+			capability,
+			now.Add(time.Duration(step)*time.Second),
+			0,
+			running,
+			0,
+			uint64(step*80),
+			0,
+		))
+	}
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	for admitted := int64(1); admitted <= 4; admitted++ {
+		decision := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
+		if !decision.Admitted() || decision.TPSSequenceLimit != 4 || decision.TPSPostAdmitSequences != admitted {
+			t.Fatalf("admission %d=%+v", admitted, decision)
+		}
+	}
+	protected := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
+	if protected.Reason != ReasonTPSReference || protected.TPSCurrentSequences != 4 ||
+		protected.TPSPostAdmitSequences != 5 || protected.ReservationID != 0 {
+		t.Fatalf("same-snapshot overflow=%+v", protected)
+	}
+}
+
+func TestControllerRuntimeResetClearsTPSWindow(t *testing.T) {
+	now := time.Unix(11_000, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(t, capability, 20, testObservation(capability, now, 0, 2, 0, 100, 0))
+	for step := 1; step <= 4; step++ {
+		publishObservation(t, controller, testObservation(capability, now.Add(time.Duration(step)*time.Second), 0, 2, 0, uint64(100+step*40), 0))
+	}
+	if before := controller.Snapshot(now.Add(4*time.Second + time.Millisecond)); !before.State.TPS.Ready {
+		t.Fatalf("TPS window did not warm before reset: %+v", before.State.TPS)
+	}
+	reset := testObservation(capability, now.Add(5*time.Second), 0, 0, 0, 1, 0)
+	publication := publishObservation(t, controller, reset)
+	if !publication.RuntimeReset {
+		t.Fatalf("counter reset publication=%+v", publication)
+	}
+	after := controller.Snapshot(now.Add(5*time.Second + time.Millisecond))
+	if after.State.TPS.Ready || after.State.TPS.QualifiedSamples != 0 || after.State.TPS.QualifiedSequenceSeconds != 0 {
+		t.Fatalf("TPS window survived runtime reset: %+v", after.State.TPS)
+	}
+}
+
 func testControllerWithObservation(t *testing.T, capability Capability, observation BackendObservation) *AdmissionController {
 	t.Helper()
-	controller, err := NewAdmissionController(capability)
+	controller, err := NewAdmissionController(ControllerConfig{Capability: capability})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishObservation(t, controller, observation)
+	return controller
+}
+
+func testControllerWithTPSObservation(
+	t *testing.T,
+	capability Capability,
+	reference float64,
+	observation BackendObservation,
+) *AdmissionController {
+	t.Helper()
+	controller, err := NewAdmissionController(ControllerConfig{
+		Capability: capability,
+		TPS:        TPSPolicyConfig{Reference: reference},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

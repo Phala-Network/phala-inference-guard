@@ -11,7 +11,7 @@ Small requests can still fit while a larger request is protected under the same
 backend pressure.
 
 The Controller first checks availability, then applies independent `ContextGate`,
-`KVGate`, and `PrefillGate` decisions to one immutable projected state. The gates
+`KVGate`, `PrefillGate`, and optional `TPSGate` decisions to one immutable projected state. The gates
 protect observation freshness, model identity, the upstream input ceiling,
 post-admit KV, and Prefill interference. `PrefillGate` applies
 request-size differentiation: under current contention, fitting regular
@@ -20,7 +20,10 @@ weighted requests share a 256K aggregate budget, while exclusive and quiescent
 requests require progressively quieter state. A large request-specific reject
 does not close the node when the canonical minimum request still fits.
 
-Instantaneous TPS and generation deltas are telemetry, not admission gates. A
+Instantaneous TPS and generation deltas remain diagnostic telemetry. When
+`PREDICTIVE_TPS_REFERENCE` is positive, a separate bounded 60-second trailing
+window turns qualified Decode evidence into a pre-forward sequence envelope.
+The reference is a deployment QoS target, not a learned model capability. A
 fresh preemption selects the contended regime for one coherent sample only; it
 does not create a cooldown or delayed capacity lock.
 
@@ -30,7 +33,7 @@ does not create a cooldown or delayed capacity lock.
 bounded read-only JSON scan
   -> model-agnostic lexical input and output-horizon estimate
   -> Controller-owned vLLM KV, running, waiting and preemption observation
-  -> positive reservation overlay and post-admit Context/KV/Prefill gates
+  -> positive reservation overlay and post-admit Context/KV/Prefill/TPS gates
   -> same-snapshot canonical probe for request versus load scope
   -> atomic enforce decision and reservation
   -> unchanged request bytes forwarded to the single upstream
@@ -77,6 +80,26 @@ upper ratio. This safety bound is not a production Compose variable.
 `TOKEN`, TLS, and attestation settings are infrastructure values and depend on
 the deployment. A production manifest may contain a real non-default policy
 choice, but it must not copy the full test matrix into Compose.
+
+`PREDICTIVE_TPS_REFERENCE` is the one intended production QoS override. Its
+unit is output tokens per second per active Decode sequence. Omit it (or set
+`0`) to preserve the v0.12.12 Context/KV/Prefill admission behavior. A positive
+finite value enables a 60-second sequence-second-weighted controller: it warms
+from qualified Decode observations, protects only before forwarding, and uses
+feedback solely to update the next prediction. During window warming it admits
+at most two total sequences (or preserves a larger already-running upstream
+population without adding to it), which gives the controller one bounded
+batching observation without allowing an unlimited same-snapshot burst. Once
+ready, it permits at most one exploration sequence when both current headroom
+and the projected base-plus-one TPS remain within five percent of the
+reference. It is a long-run operating target, not a promise that every request
+or every 500-ms interval stays above the value.
+
+When that business target exists, add only:
+
+```yaml
+- PREDICTIVE_TPS_REFERENCE=${PIG_TPS_REFERENCE}
+```
 
 ## Test configuration
 
@@ -133,12 +156,11 @@ Metrics and administrative endpoints require the configured bearer token.
 Executable Go tests, race checks, simulations, benchmarks, and any later image
 build are run on the dedicated c21 Linux workbench. The current development
 branch has not been assigned another `0.12.x` release identity and has no
-accepted image. The current clean-rebuild plan records exact source commits,
-commands, evidence, and
-the gates that must pass before versioning or image work:
+accepted image. Completed and superseded plans remain available from Git
+history instead of competing with the current contract. The active plan records
+the cleanup, sustained-TPS design, evidence, and gates that must pass before
+versioning or image work:
 
-- [Clean admission rebuild](docs/PIG_V0_12_CLEAN_ADMISSION_REBUILD_PLAN.md)
-- [Historical QoS-constrained goodput redesign](docs/PIG_V0_12_3_QOS_CONSTRAINED_GOODPUT_REDESIGN_PLAN.md)
-- [v0.12.0-v0.12.2 historical audit](docs/PREDICTIVE_ADMISSION_V0_12_1_CORRECTION_AND_LIVE_VALIDATION_PLAN.md)
+- [v0.12.13 sustained TPS reference and branch cleanup](docs/PIG_V0_12_13_SUSTAINED_TPS_REFERENCE_AND_BRANCH_CLEANUP_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

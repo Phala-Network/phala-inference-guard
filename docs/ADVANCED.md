@@ -57,11 +57,36 @@ not alter admission policy.
 | `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS` | `500` | `1..60000` |
 | `PREDICTIVE_MAX_METRICS_AGE_MS` | `3 x poll`, normally `1500` | At least one poll, at most `60000` |
 | `PREDICTIVE_KV_HARD_RATIO` | `0.88` | Strictly between 0 and 1 |
+| `PREDICTIVE_TPS_REFERENCE` | `0` (disabled) | Finite output tokens/s/active Decode sequence in `[0, 1000000]` |
 | `OUTPUT_TOKEN_FIELD_NAMES` | standard OpenAI output-limit fields | Unique supported JSON field names |
 
 The 1500-ms value is observation freshness, not a post-rejection hold. A
 current canonical probe recomputes Router-visible capacity on every inspection;
 the last-reject timestamp is telemetry only.
+
+`PREDICTIVE_TPS_REFERENCE` is not an upstream capability override. Set it only
+when the deployment has a real long-run per-user Decode TPS requirement, for
+example an OpenRouter ranking floor. A positive value enables the fixed
+60-second sustained-TPS controller; zero or omission leaves the TPS gate
+disabled. The source-owned semantics are four qualified samples, eight
+qualified sequence-seconds, five-percent healthy headroom, and at most one
+base-plus-one exploration sequence whose fixed-rate counterfactual remains at
+least 95 percent of the reference. These are algorithm constants, not extra
+production YAML values.
+
+Before the window has four qualified samples and eight qualified
+sequence-seconds, TPS warming admits at most two total sequences. If PIG starts
+while more than two are already running, it preserves that population but does
+not add to it. This bounded warming step supplies initial batching evidence
+without a special recurring one-to-two exception or an unlimited cold-start
+burst. Once the window is ready, only the rate-derived envelope applies.
+
+The window counts positive generation even when a short request begins and
+finishes between polls. A zero-generation interval counts as a Decode stall
+only when a PIG-owned reservation is known to be in active Decode; a pure
+Prefill/idle interval does not fabricate TPS zero. Runtime counter reset clears
+the window. Ordinary drain immediately permits a one-sequence probe without a
+sticky hold or cooldown.
 
 The scanner body ceiling (4 MiB) and scanner concurrency (64) are internal
 bounded defaults. The body ceiling covers a model-neutral 650K-token text

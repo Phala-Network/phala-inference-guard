@@ -147,7 +147,7 @@ func newCandidateSchedulerInvariantRunner(t *testing.T, maximumNoWait int) *scen
 	if err != nil {
 		t.Fatalf("construct scheduler capability: %v", err)
 	}
-	controller, err := coreadmission.NewAdmissionController(simulationAdmissionCapability(profile))
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{Capability: simulationAdmissionCapability(profile)})
 	if err != nil {
 		t.Fatalf("construct scheduler Controller: %v", err)
 	}

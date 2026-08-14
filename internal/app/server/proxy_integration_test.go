@@ -77,7 +77,7 @@ func TestPredictiveTimingSeparatesBodyReadEstimatorAndPreForwardDecision(t *test
 		t.Fatalf("timed request status=%d body=%q, want 200", response.Code, response.Body.String())
 	}
 	var rendered strings.Builder
-	srv.writePredictiveAndDynamicMetrics(&rendered)
+	srv.writeAdmissionAndRouterMetrics(&rendered)
 	metricsBody := rendered.String()
 	bodyRead := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_body_read_duration_seconds_sum")
 	estimator := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_estimator_duration_seconds_sum")

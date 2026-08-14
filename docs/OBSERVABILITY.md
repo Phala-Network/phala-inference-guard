@@ -61,8 +61,10 @@ Prefill rate.
 
 `pig_backend_*` records the single upstream's coherent observed state and proxy
 lifecycle: KV tokens, running, waiting, generation TPS validity, inflight,
-accepted, completed, failures, and copy/proxy errors. TPS and generation deltas
-are diagnostics only; they do not enter the runtime reject condition.
+accepted, completed, failures, and copy/proxy errors. The instantaneous TPS
+proxy and latest generation delta are diagnostics only. They are distinct from
+the qualified sustained window consumed by `TPSGate` when a positive reference
+is configured.
 
 A partial scrape does not immediately zero gauges or close intake. PIG retains
 the last coherent observation until freshness expires. A coherent replacement
@@ -75,8 +77,10 @@ action, reason, pressure source, and Prefill class. Current actions are
 `admit`, `size_protect`, and `hard_protect`. Current policy reasons are:
 
 ```text
-open stale kv input_limit prefill_budget prefill_concurrency
-prefill_exclusive prefill_busy duplicate unavailable invalid
+open controller_unavailable observation_missing observation_invalid
+observation_stale invalid_request input_limit kv_capacity
+prefill_contention prefill_budget prefill_exclusive prefill_quiescent
+tps_reference capability_drift resource_exhausted counter_overflow closed
 ```
 
 Numeric gauges expose:
@@ -91,6 +95,32 @@ Numeric gauges expose:
 The current pending gauges may advance after a decision because lifecycle state
 has changed. The `last_decision_*` gauges preserve the decision-time values so
 operators can distinguish those two snapshots.
+
+The sustained TPS contract is exported without request/user/model labels:
+
+```text
+pig_predictive_tps_reference
+pig_predictive_tps_window_ready
+pig_predictive_tps_window_qualified_samples
+pig_predictive_tps_window_qualified_sequence_seconds
+pig_predictive_tps_window_aggregate
+pig_predictive_tps_window_mean_active
+pig_predictive_tps_sequence_limit
+pig_predictive_tps_current_sequences
+pig_predictive_tps_post_admit_sequences
+```
+
+The reference and window values describe the current Controller-owned trailing
+window. The last three values are the canonical minimum request's current
+pre-forward projection. A not-ready window with a positive reference reports
+the bounded warming limit, so an operator can distinguish cold-start
+protection from a mature rate-derived limit.
+`pig_predictive_request_aware_*_tps_proxy` remains the latest-interval diagnostic
+and must not be interpreted as the sustained policy window.
+
+Periodic status logs distinguish `last=<action>/<reason>` from the live
+`capacity=<action>/<reason>` canonical probe. TPS protection caused by a metrics
+update is therefore visible before another request produces a decision log.
 
 Every enforced protection records a bounded last-reject reason, source, scope,
 and timestamp. The timestamp is telemetry only: it neither keeps intake closed

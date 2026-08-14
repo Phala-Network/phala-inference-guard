@@ -40,7 +40,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	}
 	profile := initialization.Profile
 	log.Printf(
-		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d",
+		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
 		profile.SchemaVersion,
 		profile.Source,
 		initialization.Reason,
@@ -54,8 +54,9 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		profile.PrefillQuiescentTokens,
 		profile.PrefillContendedBudgetTokens,
 		profile.PrefillAggregateBudgetTokens,
+		cfg.PredictiveTPSReference,
 	)
-	controller, err := coreadmission.NewAdmissionController(coreadmission.Capability{
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{Capability: coreadmission.Capability{
 		Fingerprint:                  profile.ModelIdentitySHA256,
 		MaxModelLenTokens:            profile.MaxModelLenTokens,
 		KVCapacityTokens:             profile.KVCapacityTokens,
@@ -68,7 +69,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
 		PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
 		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
-	})
+	}, TPS: coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference}})
 	if err != nil {
 		return nil, fmt.Errorf("construct admission Controller: %w", err)
 	}
