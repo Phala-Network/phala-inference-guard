@@ -1353,6 +1353,13 @@ and metrics, final runtime state, secret audit, `SUCCESS`, and verified
 
 ```text
 /var/volatile/dstack/persistent/pig-v0124/tmp/pig-v01212-registry-publish-r1.iGfjhT
+The immutable source identity is the annotated Git tag `v0.12.12`. Its object
+is `d0721d9b0f6d79e3d5e050fef114c3d13197abee`, and both local and remote
+dereference to the exact image source revision
+`bc9513117c36f1021896e17825289c94945b79e5`. The tag was created only after
+registry publication and digest-canary acceptance. It intentionally does not
+move to the later documentation-only acceptance commits.
+
 ```
 
 This completes the exact image registry gate. It does not deploy that digest to
