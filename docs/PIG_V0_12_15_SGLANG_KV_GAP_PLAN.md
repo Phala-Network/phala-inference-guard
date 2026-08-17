@@ -7,8 +7,8 @@ request must be admitted or protected before it reaches the backend; backend
 feedback only updates the next observation and never rewrites an in-flight
 decision.
 
-v0.12.15 must correct two backend-adapter contract defects discovered after
-v0.12.14:
+v0.12.15 must correct two backend-adapter contract defects and one missing
+admission-accounting input discovered after v0.12.14:
 
 - accept the SGLang protected/session-held KV gap while charging the whole
   non-reclaimable gap to admission;
@@ -16,10 +16,12 @@ v0.12.14:
 - use backend-native token counters to estimate recent cache-aware Prefill
   compute cost without weakening KV fit or long-context safeguards.
 
-Keep the bounded fast tokenizer and complete estimated input tokens as the
-request-size signal. Do not add a cache lookup, per-model asset, learning
-algorithm, TTFT gate, Router behavior, or request mutation. Keep the default
-backend metrics interval at 500 ms and default predictive mode at enforce.
+Keep the bounded model-neutral lexical token estimator and complete estimated
+input tokens as the request-size signal. This is the requested simple, fast
+tokenizer-style approximation, not an exact model tokenizer or chat-template
+oracle. Do not add a cache lookup, per-model asset, learning algorithm, TTFT
+gate, Router behavior, or request mutation. Keep the default backend metrics
+interval at 500 ms and default predictive mode at enforce.
 `PREDICTIVE_TPS_REFERENCE=50` remains the intended f563 production QoS
 reference; isolated tests may explicitly override it.
 
@@ -44,14 +46,14 @@ image, and production transition:
   completion results, and cache counters may affect only the next decision.
   They must never retroactively justify a forwarded request or create a delayed
   cooldown after current capacity has recovered.
-- Request size comes from one bounded, model-independent fast-tokenizer pass
+- Request size comes from one bounded, model-independent lexical estimator pass
   over the supported request body. Reuse the existing bounded body parse; do
-  not add a second JSON parse, model-specific tokenizer assets, a prefix lookup,
-  or a network call. Unsupported, truncated, or oversized bodies use the
-  documented conservative fallback. The complete estimated input, not a
-  cache-discounted value, drives context fit, KV reservation, and long-input
-  class. The hot path must be benchmarked, and the accepted extreme body's p99
-  must remain below 100 ms on f563.
+  not add a second JSON parse, model-specific tokenizer assets, exact tokenizer
+  parity, a prefix lookup, or a network call. Unsupported, truncated, or
+  oversized bodies use the documented conservative fallback. The complete
+  estimated input, not a cache-discounted value, drives context fit, KV
+  reservation, and long-input class. The hot path must be benchmarked, and the
+  accepted extreme body's p99 must remain below 100 ms on f563.
 - Model context, KV capacity/block geometry, KV hard limit, and Prefill class
   thresholds are initialized automatically from one coherent upstream
   capability profile. They are immutable within a backend epoch and are
@@ -66,6 +68,11 @@ image, and production transition:
   active cached tokens consume no KV. Evictable cache is excluded from hard KV
   occupancy; a bounded recent hit fraction may reduce only aggregate Prefill
   compute charge. Full input remains reserved for KV and long-context safety.
+- Admission is request-aware rather than an all-or-nothing node gate. Under the
+  same backend snapshot, a large request may be protected while a smaller
+  fitting request is admitted. A request-scoped large-input decision must not
+  close the node globally, and this work must not turn `429` into an enlarged
+  global queue wait or worse TTFT.
 - `PREDICTIVE_TPS_REFERENCE=50` is the intended f563 long-window QoS reference,
   not a per-sample hard floor. TPS protection must reopen immediately when the
   current predictive state fits, tolerate sparse/low-flow samples, and avoid
@@ -79,7 +86,8 @@ image, and production transition:
   preserve the removed premium/basic or legacy QoS modes. It exposes truthful
   current capacity and protection state for Router consumption, but Router
   policy is outside this repository and release. This source boundary does not
-  alter the exact legacy behavior of the separately verified `0.8.13` fallback.
+  alter the exact legacy behavior of the `0.8.13` fallback once that f563
+  configuration has been separately reconstructed and reverified.
 - Every enforced protection outcome must be visible and mutually consistent in
   bounded decision logs, periodic status, PIG metrics, upstream status, and
   Router-compatible capacity. Agreement is scope-aware: request-scoped
@@ -87,6 +95,11 @@ image, and production transition:
   request fits, while load/availability protection publishes non-open capacity.
   A hidden reject, an open signal during current load/availability protection,
   or a stale lock after recovery is a release-blocking defect.
+- Existing Router and admin/frontend consumers must receive truthful, stable
+  protection and capacity fields from PIG. PIG does not implement their routing
+  or presentation policy. If compatibility requires a change outside this
+  repository, record it as a separate release blocker instead of fabricating a
+  PIG signal or silently leaving protection invisible.
 - Keep backend adapters, observations, policy, reservation lifecycle, HTTP
   projection, and observability behind separate interfaces with single
   responsibilities. Review allocations, parsing, label scans, lock scope, and
@@ -219,9 +232,14 @@ The backend contracts remain independent:
 | SGLang | `sglang:prefill_effective_tokens_total{mode="input|device_hit|host_hit|storage_hit",priority=""}` counters | maximum duplicated TP/PP view per mode; one DP replica |
 | vLLM | `vllm:prefix_cache_queries_total` and `vllm:prefix_cache_hits_total` counters | sum independent `engine` series |
 
-For SGLang, `input` is the uncached Prefill-compute contribution and the hit
-modes are cached token contributions; retraction re-counts are excluded by the
-backend. The recent hit fraction is:
+For SGLang, source inspection confirms that `input` is exported as logged input
+minus reprocessed input. The `device_hit`, `host_hit`, and `storage_hit` modes
+are exported from separate tier counters. Their accumulation source still must
+be traced to prove whether reprocessed/retracted tier hits are excluded before
+publication. Until that proof and a focused fixture exist, SGLang cache credit
+is release-blocked and must conservatively fall back to fully cold Prefill. It
+is not acceptable to infer exclusion from the aggregate `cache_hit_rate`
+calculation. Once this contract is proven, the recent hit fraction is:
 
 ```text
 hits_delta / (input_delta + hits_delta)
@@ -268,6 +286,9 @@ Required focused tests:
   SGLang label rules;
 - SGLang and vLLM accept only their own cache metric TYPE, labels, and
   aggregation contracts;
+- SGLang reprocessed/retracted input and every cache tier have source-backed
+  counter semantics and focused fixtures; an ambiguous tier counter disables
+  cache credit rather than over-crediting Prefill;
 - first sample, missing metrics, low evidence, stale observation, counter reset,
   backend epoch change, and invalid ratios produce zero cache credit;
 - a qualified cache observation is carried across zero-delta polls for at most
@@ -278,6 +299,9 @@ Required focused tests:
   unchanged;
 - exclusive and quiescent requests cannot be downgraded by a high recent global
   cache hit rate;
+- a request-scoped 256K/512K-class protection decision leaves truthful positive
+  capacity for a canonical smaller request whenever that smaller request fits;
+  no blanket node closure or enlarged global queue is introduced;
 - cold traffic following hot traffic does not bypass the long-input safeguards,
   and idle/low-flow intervals do not self-lock admission;
 - the 500 ms observer cadence does not introduce an implicit one-second hold,
@@ -313,11 +337,31 @@ or the retired builder. Record the exact pushed commit, toolchain image digest,
 commands, exit codes, benchmark distributions, and hashes of material logs.
 Executable source evidence is invalidated by the next executable source change.
 
-The tokenizer benchmark must cover representative small bodies, long inputs,
-concurrent requests, and the accepted extreme body. Report parse plus token
-estimate latency separately from total PIG overhead; p99 for the accepted
+The lexical-estimator benchmark must cover representative small bodies, long
+inputs, concurrent requests, and the accepted extreme body. Report parse plus
+token estimate latency separately from total PIG overhead; p99 for the accepted
 extreme input must be below 100 ms in the f563 test environment. A narrow
 microbenchmark is an overhead gate, not a throughput claim.
+
+Current exact-source evidence is tied to pushed commit
+`d7089509e419814572c14f46c14903e649e2993c`, GitHub archive SHA-256
+`5db6b003c4afc8c4f3fd13274908b4277ced4609e5faf05de8b85374814e7416`, and
+`golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`.
+On f563 it passed focused tests/race, serial and default-parallel full tests,
+full race, vet, build, deterministic simulations, TPS simulations, Controller
+hot-path benchmarks, and 4-MiB benchmarks. The first default-parallel full test
+contained one `many_strings` p99 outlier at 312 ms; three isolated repeats were
+approximately 29.7/44.2/29.3 ms, and both the serial and default-parallel full
+test rerun passed without weakening the 100-ms gate. Classifier 4-MiB p50 was
+approximately 15.1-15.5 ms and p99 33.8-49.7 ms across three runs. The
+classifier benchmark was approximately 16.3-17.0 ms/op with 17 allocations and
+38-42 KiB/op; estimator-only 4-MiB runs remained allocation-free.
+
+These results establish the current source matrix only. They do not accept an
+image or release: the SGLang per-tier reprocessed-hit contract above and the
+three release reviews remain open. No v0.12.15 image may be built until that
+metric blocker is resolved in source/tests, or the SGLang cache-credit feature
+is conservatively disabled with corresponding red/green evidence.
 
 Build and smoke one host-local candidate image only after the source matrix
 passes. Validate it
@@ -358,6 +402,17 @@ snapshot.
 The v0.12.14 f563 observation continues as fail-closed evidence while the
 correction is developed. Do not hot-patch the production binary.
 
+Current state is drifted and must not be treated as a deployable Compose
+baseline. The Phala control-plane Compose snapshot names PIG `0.8.13`, but the
+actual running PIG container is still `0.12.14` with restart count zero and
+startup time `2026-08-17T08:32:40Z`. The control-plane SGLang image is also
+older than the running SGLang container. Therefore a control-plane deploy could
+replace or restart SGLang and is forbidden for this PIG-only update. Before any
+candidate promotion, establish and verify an exact host-side PIG-only
+replacement/rollback procedure that preserves the running SGLang, HAProxy, CVM,
+networks, volumes, and secrets. Compose text, container runtime, and endpoint
+behavior must be checked independently.
+
 Every production version update must use the verified f563 `0.8.13` deployment
 as the stable traffic-bearing baseline while the new PIG is being replaced.
 Before the first such transition, recover and verify the exact image and
@@ -386,7 +441,8 @@ running container with request-path readiness.
 The mandatory production order is:
 
 1. snapshot live Compose/hash, exact route state, PIG/backend counters, image
-   identity, and rollback artifacts;
+   identity, actual container configuration, and rollback artifacts; explicitly
+   record any control-plane/runtime drift;
 2. verify, drain to, and validate the exact `0.8.13` PIG configuration as the
    active traffic path without restarting SGLang, HAProxy, or the CVM;
 3. keep the exact pushed v0.12.15 candidate isolated until all source, image,
@@ -407,18 +463,20 @@ to make the PIG-only transition safe.
 
 ## 6. Review Record
 
-Contract-document audit on 2026-08-17:
+Contract-document audit repeated after requirement consolidation on 2026-08-17:
 
 1. requirement coverage pass completed for objective, prediction timing,
-   tokenizer, adaptive initialization, cache/TPS semantics, both backend
-   adapters, configuration, environment, source/image publication, monitoring,
-   and rollback;
+   approximate token estimation, adaptive initialization, request-aware
+   long-input policy, cache/TPS semantics, both backend adapters,
+   Router/admin-facing observability, minimal production configuration,
+   environment, source/image publication, continuous monitoring, and rollback;
 2. algorithm-consistency pass completed; Router visibility was corrected to be
    scope-aware so a large request-specific rejection does not close capacity
    for a smaller fitting request;
 3. operational-order pass completed; every production update uses a verified
    `0.8.13` traffic baseline before the accepted candidate replaces PIG, with
-   PIG-only rollback and at least 30 minutes of live monitoring.
+   PIG-only rollback, explicit control-plane/runtime drift handling, and at
+   least 30 minutes of live monitoring.
 
 This document audit does not satisfy the three release-candidate review passes
 below. Those remain tied to exact executable source and fresh f563 evidence.
@@ -429,17 +487,26 @@ Status: in progress. SGLang source and the f563 live scrape established the
 one-sided KV invariant and selected scheduler-interval decode counter. The live
 SGLang scrape also exposes `prefill_effective_tokens_total` as token-level
 counters with the required input/device/host/storage modes. vLLM upstream source
-established the metric types, per-engine labels, and update sites. Cache metric
-source/update semantics and focused red/green evidence are pending.
+established the metric types, per-engine labels, and update sites. The current
+PIG source matrix is green, but SGLang per-tier reprocessed-hit semantics remain
+a release blocker, so this review is not complete.
 
 Exact-version source was resolved to SGLang commit
 `c4271c3fe1262fc2adbd162c33b25de5255251c5`. Its
 `metrics_collector.py` declares and pre-seeds the four effective Prefill counter
 modes; `metrics_reporter.py` publishes effective input as logged input minus
-reprocessed input and derives cache hit rate after excluding retraction
-re-counts. The f563 scrape confirms only TP0 carries non-zero cumulative values
-while the other TP ranks expose pre-seeded zero views, requiring maximum rather
-than sum aggregation per mode.
+reprocessed input. That reporter derives aggregate cache hit rate after
+excluding reprocessed input, but directly forwards the three cache-tier
+counters; their accumulation path still must prove that reprocessed tier hits
+are excluded. The f563 scrape confirms only TP0 carries non-zero cumulative
+values while the other TP ranks expose pre-seeded zero views, requiring maximum
+rather than sum aggregation per mode.
+
+vLLM source commit `5fd7a888386cff800f32de6b5a33d1dd3ca1e397`
+declares `prefix_cache_queries` and `prefix_cache_hits` as per-engine counters
+with `model_name` and `engine` labels; Prometheus exports their `_total` names.
+The current PIG vLLM cache parser contract matches that declaration and remains
+separate from the SGLang rank/priority contract.
 
 Focused red source `b0d4ab2` was pushed and executed only in the f563 isolated
 workbench. The expected parser, Controller cache-cost, vLLM TYPE, and SGLang
@@ -451,13 +518,8 @@ sha256 c65474696392d9223d0e38aebf92dc743d65b318ef8608560994bb58af5e1f36
 exit 1 (expected red)
 ```
 
-Implementation candidate `4f2bcbf` is pushed but has not passed the focused or
-complete f563 green matrix. It is source implementation evidence only, not an
-accepted image or deployment.
-
-The first f563 green attempt produced mixed evidence. The focused Prometheus,
-admission, server, and observability packages passed, but `go test ./...` failed
-the existing 4-MiB classifier latency gate:
+Historical implementation `4f2bcbf` passed focused packages but failed the
+existing 4-MiB classifier latency gate:
 
 ```text
 /var/volatile/dstack/persistent/pig-v01215-workbench/green-4f2bcbf/focused-4f2bcbf.log
@@ -469,9 +531,30 @@ sha256 2b7e62fe8bc545ff5530bcdbe12adc5bc4c70fc0ca3fbaf1abf194016fd24810
 exit 1: body_bytes=4194300 p50=34.280061ms p99=107.131729ms
 ```
 
-The 100-ms extreme-input requirement therefore remains red. Cache no-delta,
-expiry, runtime-epoch, and preemption-suppression coverage is also required
-before the next implementation candidate can be accepted.
+Current pushed source `d7089509e419814572c14f46c14903e649e2993c`
+supersedes that performance failure without weakening the gate. It also adds
+the required cache no-delta, expiry, runtime-epoch, and current-sample
+preemption-suppression coverage. Its exact f563 matrix passed with these
+material evidence hashes:
+
+```text
+focused             674ff6a57975c6f5a6365c1cc623c7090087deffaef8b044473d1ab05eb93543
+focused race        92d55c65b3f62cefde8f87e79855c020d5962ba63334ad5352ab060094bbe150
+full serial         819b56e0d17408b5befeeaae86cc009392583bcafd24015355f8e1a7d3e561da
+full parallel retry f07f4f71697ed03645f26bd21a67fb1e30a011a7f2bb14f18602393b659408de
+full race           08cad4dcf33db0bd7577b5f9387c0d3149c0cf5ad00af7acc2cf521316e28dd4
+vet                 a6d5a1141a212e9ee49cbf33cba28de14f6e826718cebd0a48a7292765985608
+build               dca46ce5dcda3aaac3e979fefb1d9ef4f8add96f5be7c376b8d2fdeb810c88d7
+classifier latency  30fad4bdc327299cf78bfe0210413b4a8fb53511774b645b9f8650da516c551c
+4-MiB benchmark     565581a0b21010aa262ba3bd6f653376b0283ae0e3a1523841349b13be71d948
+hot path            58ef284226f213963c64dd4f868548c336da44141f74c7b1190b57f21bee93e5
+TPS simulations     c5d926c3c4dd6a4bc128b4709312f171e9e47208072b20a77b0c280e47180a99
+deterministic JSON  2f29cb429523018c4f68f01fea03179e219b8d0919e32e97140450b6fced30e1
+```
+
+This green matrix is not image acceptance. Pass 1 remains open until the
+SGLang tier-counter contract is proven or cache credit is disabled for SGLang
+with focused tests.
 
 ### Pass 2: safety and lifecycle
 
@@ -484,11 +567,17 @@ SOLID ownership boundaries.
 
 Status: pending. No v0.12.15 image has been built or uploaded, production still
 runs the accepted v0.12.14 image, and the exact f563 `0.8.13` rollback
-configuration has not yet been reconstructed and revalidated.
+configuration has not yet been reconstructed and revalidated. The control-plane
+Compose currently names `0.8.13` while the runtime still runs `0.12.14`; this is
+configuration drift, not evidence that the fallback is active.
 
 Repository deployment evidence identifies the former f563 baseline image as
 `ghcr.io/phala-network/phala-inference-guard:v0.8.13@sha256:aec805d6e7bbfd82375199d7950ecfbf6148e501c64822dcb46102a9e24a2ea4`
 with the DeepSeek-v4 SGLang backend, 500 ms dynamic polling, global limit 15,
 zero queue wait, dynamic TPS red/yellow thresholds, and TTFT disabled. This is
-historical reconstruction only; live deployment-history and endpoint
-revalidation are still required before it can become the update fallback.
+historical reconstruction only. The current control-plane snapshot instead
+contains `GLOBAL_LIMIT=20`, so neither value may be guessed into production.
+Live deployment history, exact container configuration, PIG-only replacement,
+authenticated endpoint behavior, metrics, and Router-visible capacity must be
+revalidated before one exact configuration can become the traffic-bearing
+update fallback.
