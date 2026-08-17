@@ -1028,6 +1028,18 @@ tail page at every approximate boundary. A page-alignment discount is allowed
 only if a future estimator supplies explicit, validated exact-block-position
 evidence; backend kind or an approximate integer is not such evidence.
 
+The first focused implementation run also exposed two pre-existing stale TPS
+test assertions at red commit `e3c96ae`: they failed before the backend-work
+implementation. The policy intentionally permits one 5-percent-bounded
+exploration step when healthy mean-active TPS has headroom, and it refills an
+idle backend up to the rate-derived sequence limit when the just-finished
+metrics interval is qualified. Tests that required limits of six instead of
+seven in the 20-TPS/15-reference case, or one instead of four immediately
+after a healthy four-sequence interval, contradicted those rules and recreated
+the low-flow underfill behavior this plan rejects. Their corrected contract is
+to assert the computed limit and that same-snapshot reservations cannot exceed
+it; this does not weaken the waiting or preemption stop conditions.
+
 The corrected minimal work contract is:
 
 ```text

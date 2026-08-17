@@ -124,8 +124,8 @@ func (c FirstByteCoverage) String() string {
 // BackendExecutionProfile contains backend protocol properties only. It is
 // immutable after startup and contains no model identity or learned values.
 type BackendExecutionProfile struct {
-	PrefillExecution PrefillExecution
-	InputKVSharing   InputKVSharing
+	PrefillExecution  PrefillExecution
+	InputKVSharing    InputKVSharing
 	FirstByteCoverage FirstByteCoverage
 }
 
@@ -149,17 +149,17 @@ func (p BackendExecutionProfile) Validate() error {
 // is derived from one RequestEstimate and the Controller's immutable block
 // size; clients never provide pre-rounded KV values.
 type RequestWork struct {
-	Estimate                              RequestEstimate
-	PrefillInputTokens                    int64
-	PrefillComputeTokens                  int64
-	FirstBytePendingPrefillInputTokens    int64
-	FirstBytePendingPrefillComputeTokens  int64
-	FirstBytePendingPrefillSequences      int64
-	InputKVTokens                         int64
-	FirstByteCoverableInputKVTokens       int64
-	FirstBytePendingInputKVTokens         int64
-	TotalKVTokens                         int64
-	FutureKVTokens                        int64
+	Estimate                             RequestEstimate
+	PrefillInputTokens                   int64
+	PrefillComputeTokens                 int64
+	FirstBytePendingPrefillInputTokens   int64
+	FirstBytePendingPrefillComputeTokens int64
+	FirstBytePendingPrefillSequences     int64
+	InputKVTokens                        int64
+	FirstByteCoverableInputKVTokens      int64
+	FirstBytePendingInputKVTokens        int64
+	TotalKVTokens                        int64
+	FutureKVTokens                       int64
 }
 
 func (w RequestWork) Validate() error {
