@@ -1,9 +1,21 @@
 package prometheus
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+const vllmMetricTypeDeclarations = `
+# TYPE vllm:cache_config_info gauge
+# TYPE vllm:kv_cache_usage_perc gauge
+# TYPE vllm:num_requests_running gauge
+# TYPE vllm:num_requests_waiting gauge
+# TYPE vllm:num_preemptions_total counter
+# TYPE vllm:generation_tokens_total counter
+`
 
 func TestParseSampleUsesVLLMGroupAwareTokenCapacity(t *testing.T) {
-	metrics := `
+	metrics := vllmMetricTypeDeclarations + `
 vllm:cache_config_info{block_size="64",kv_cache_size_tokens="862437",num_gpu_blocks="9120"} 1
 vllm:kv_cache_usage_perc 0.5
 vllm:num_requests_running 4
@@ -26,7 +38,7 @@ func TestParseSampleCapturesOptionalRuntimeStartTime(t *testing.T) {
 		t.Fatalf("runtime start sample=%#v want valid process epoch", withEpoch)
 	}
 	for name, metrics := range map[string]string{
-		"missing":   "vllm:num_requests_running 0\n",
+		"missing":   "# TYPE vllm:num_requests_running gauge\nvllm:num_requests_running 0\n",
 		"zero":      "process_start_time_seconds 0\n",
 		"nonfinite": "process_start_time_seconds +Inf\n",
 	} {
@@ -93,7 +105,7 @@ sglang:token_usage 0.5
 
 func TestParseSampleRejectsNonFiniteKVTokenGauges(t *testing.T) {
 	for name, metrics := range map[string]string{
-		"vllm usage": `
+		"vllm usage": vllmMetricTypeDeclarations + `
 vllm:cache_config_info{kv_cache_size_tokens="100000"} 1
 vllm:kv_cache_usage_perc +Inf
 `,
@@ -112,18 +124,18 @@ sglang:kv_used_tokens +Inf
 }
 
 func TestParseSampleMarksGenerationCounterPresence(t *testing.T) {
-	withCounter := ParseSample("vllm:generation_tokens_total 123\n")
+	withCounter := ParseSample("# TYPE vllm:generation_tokens_total counter\nvllm:generation_tokens_total 123\n")
 	if !withCounter.GenerationValid || withCounter.Generation != 123 {
 		t.Fatalf("generation counter sample = %#v, want valid 123", withCounter)
 	}
-	withoutCounter := ParseSample("vllm:num_requests_running 0\n")
+	withoutCounter := ParseSample("# TYPE vllm:num_requests_running gauge\nvllm:num_requests_running 0\n")
 	if withoutCounter.GenerationValid || withoutCounter.Generation != 0 {
 		t.Fatalf("missing generation counter sample = %#v, want invalid zero", withoutCounter)
 	}
 }
 
 func TestParseSampleMarksRequiredPredictiveCountersPresentAndExact(t *testing.T) {
-	valid := ParseSample(`
+	valid := ParseSample(vllmMetricTypeDeclarations + `
 vllm:num_requests_running 2
 vllm:num_requests_waiting 1
 vllm:num_preemptions_total 3
@@ -132,12 +144,80 @@ vllm:num_preemptions_total 3
 		t.Fatalf("valid predictive counters = %#v", valid)
 	}
 
-	invalid := ParseSample(`
+	invalid := ParseSample(vllmMetricTypeDeclarations + `
 vllm:num_requests_running 0.5
 vllm:num_requests_waiting +Inf
 vllm:num_preemptions_total +Inf
 `)
 	if invalid.RunningValid || invalid.WaitingValid || invalid.PreemptionsValid || invalid.Running != 0 || invalid.Waiting != 0 || invalid.Preemptions != 0 {
 		t.Fatalf("invalid predictive counters did not fail closed: %#v", invalid)
+	}
+}
+
+func TestParseSampleRequiresVLLMMetricTypes(t *testing.T) {
+	fixture := vllmMetricTypeDeclarations + `
+vllm:cache_config_info{block_size="16",kv_cache_size_tokens="1000000",engine="0"} 1
+vllm:kv_cache_usage_perc{model_name="vendor/model",engine="0"} 0.25
+vllm:num_requests_running{model_name="vendor/model",engine="0"} 2
+vllm:num_requests_waiting{model_name="vendor/model",engine="0"} 1
+vllm:num_preemptions_total{model_name="vendor/model",engine="0"} 3
+vllm:generation_tokens_total{model_name="vendor/model",engine="0"} 100
+`
+	allValid := func(metrics string) bool {
+		sample := ParseSample(metrics)
+		return sample.ModelNameValid && sample.KVTokenMetricsValid &&
+			sample.RunningValid && sample.WaitingValid &&
+			sample.PreemptionsValid && sample.GenerationValid
+	}
+	if !allValid(fixture) {
+		t.Fatalf("upstream-typed vLLM fixture was rejected: %#v", ParseSample(fixture))
+	}
+
+	for _, metricType := range []struct {
+		name string
+		want string
+		bad  string
+	}{
+		{name: "cache config", want: "# TYPE vllm:cache_config_info gauge\n", bad: "# TYPE vllm:cache_config_info counter\n"},
+		{name: "KV usage", want: "# TYPE vllm:kv_cache_usage_perc gauge\n", bad: "# TYPE vllm:kv_cache_usage_perc counter\n"},
+		{name: "running", want: "# TYPE vllm:num_requests_running gauge\n", bad: "# TYPE vllm:num_requests_running counter\n"},
+		{name: "waiting", want: "# TYPE vllm:num_requests_waiting gauge\n", bad: "# TYPE vllm:num_requests_waiting counter\n"},
+		{name: "preemption", want: "# TYPE vllm:num_preemptions_total counter\n", bad: "# TYPE vllm:num_preemptions_total gauge\n"},
+		{name: "generation", want: "# TYPE vllm:generation_tokens_total counter\n", bad: "# TYPE vllm:generation_tokens_total gauge\n"},
+	} {
+		t.Run(metricType.name+" missing", func(t *testing.T) {
+			if allValid(strings.Replace(fixture, metricType.want, "", 1)) {
+				t.Fatalf("vLLM fixture without %s TYPE was accepted", metricType.name)
+			}
+		})
+		t.Run(metricType.name+" wrong", func(t *testing.T) {
+			if allValid(strings.Replace(fixture, metricType.want, metricType.bad, 1)) {
+				t.Fatalf("vLLM fixture with wrong %s TYPE was accepted", metricType.name)
+			}
+		})
+	}
+}
+
+func TestParseSampleAggregatesVLLMEnginesWithoutSGLangRules(t *testing.T) {
+	metrics := vllmMetricTypeDeclarations + `
+vllm:cache_config_info{block_size="16",kv_cache_size_tokens="1000000",engine="0"} 1
+vllm:cache_config_info{block_size="16",kv_cache_size_tokens="1000000",engine="1"} 1
+vllm:kv_cache_usage_perc{model_name="vendor/model",engine="0"} 0.2
+vllm:kv_cache_usage_perc{model_name="vendor/model",engine="1"} 0.6
+vllm:num_requests_running{model_name="vendor/model",engine="0"} 2
+vllm:num_requests_running{model_name="vendor/model",engine="1"} 3
+vllm:num_requests_waiting{model_name="vendor/model",engine="0"} 1
+vllm:num_requests_waiting{model_name="vendor/model",engine="1"} 2
+vllm:num_preemptions_total{model_name="vendor/model",engine="0"} 4
+vllm:num_preemptions_total{model_name="vendor/model",engine="1"} 5
+vllm:generation_tokens_total{model_name="vendor/model",engine="0"} 100
+vllm:generation_tokens_total{model_name="vendor/model",engine="1"} 200
+`
+	sample := ParseSample(metrics)
+	if sample.Running != 5 || sample.Waiting != 3 || sample.Preemptions != 9 || sample.Generation != 300 {
+		t.Fatalf("vLLM engine counters were not summed: %#v", sample)
+	}
+	if !sample.KVTokenMetricsValid || sample.KVCapacityTokens != 1_000_000 || sample.KVUsedTokens != 600_000 {
+		t.Fatalf("vLLM engine KV geometry/maximum aggregation changed: %#v", sample)
 	}
 }

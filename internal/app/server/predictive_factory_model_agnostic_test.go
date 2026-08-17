@@ -34,6 +34,12 @@ func TestPredictiveStartupAcceptsCoherentSGLangSample(t *testing.T) {
 func TestPredictiveBackendStartupProbeRejectsAmbiguousModelIdentityWithinBound(t *testing.T) {
 	metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `
+# TYPE vllm:cache_config_info gauge
+# TYPE vllm:kv_cache_usage_perc gauge
+# TYPE vllm:num_requests_running gauge
+# TYPE vllm:num_requests_waiting gauge
+# TYPE vllm:num_preemptions_total counter
+# TYPE vllm:generation_tokens_total counter
 vllm:cache_config_info{block_size="4",kv_cache_size_tokens="1000000"} 1
 vllm:kv_cache_usage_perc 0
 vllm:num_requests_running{model_name="vendor/model-a",engine="0"} 0
@@ -61,6 +67,12 @@ func TestPredictiveBackendStartupProbeRetainsSemanticErrorAcrossLaterFetchTimeou
 	metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if requests.Add(1) == 1 {
 			_, _ = fmt.Fprint(w, `
+# TYPE vllm:cache_config_info gauge
+# TYPE vllm:kv_cache_usage_perc gauge
+# TYPE vllm:num_requests_running gauge
+# TYPE vllm:num_requests_waiting gauge
+# TYPE vllm:num_preemptions_total counter
+# TYPE vllm:generation_tokens_total counter
 vllm:cache_config_info{block_size="4",kv_cache_size_tokens="1000000"} 1
 vllm:kv_cache_usage_perc 0
 vllm:num_requests_running{model_name="vendor/model-a",engine="0"} 0

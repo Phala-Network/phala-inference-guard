@@ -463,3 +463,24 @@ Both registry descriptors resolve to the same immutable digest
 The image OCI revision remains executable commit `7896a8c`; this
 documentation-only commit is not an executable image revision. Production
 preparation and deployment remain separate stages.
+
+### 8.4 Production corrections discovered after publication
+
+Production SGLang `0.0.0.dev1+gc4271c3fe` documents `kv_used_tokens` as active
+locked KV only and permits a protected/session-held gap:
+
+```text
+available + evictable + active_used <= capacity
+```
+
+Therefore the equality asserted in section 3.2 is too strict for the general
+SGLang contract. v0.12.14 remains fail-closed, but can reject a valid scrape
+when that gap is non-zero. The executable correction is intentionally assigned
+to v0.12.15 and tracked in `PIG_V0_12_15_SGLANG_KV_GAP_PLAN.md`; this historical
+release record is not rewritten to claim the issue was absent.
+
+The same review found that v0.12.14 does not enforce the Prometheus `TYPE`
+declared by vLLM for its gauge and counter families. The vLLM aggregation rules
+remain correct and framework-specific, but missing or wrong types could make a
+non-counter look like cumulative generation/preemption state. Strict vLLM type
+validation is therefore part of the same v0.12.15 backend-contract correction.

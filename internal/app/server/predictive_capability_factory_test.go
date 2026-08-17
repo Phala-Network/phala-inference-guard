@@ -450,6 +450,12 @@ func (f *v0125CapabilityFixture) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 func (f *v0125CapabilityFixture) writeMetrics(w io.Writer) {
 	_, _ = fmt.Fprintf(w, `
+# TYPE vllm:cache_config_info gauge
+# TYPE vllm:kv_cache_usage_perc gauge
+# TYPE vllm:num_requests_running gauge
+# TYPE vllm:num_requests_waiting gauge
+# TYPE vllm:num_preemptions_total counter
+# TYPE vllm:generation_tokens_total counter
 vllm:cache_config_info{block_size="64",kv_cache_size_tokens="1000000",num_gpu_blocks="15625"} 1
 vllm:kv_cache_usage_perc 0
 vllm:num_requests_running{model_name="vendor/capability-model",engine="0"} %d

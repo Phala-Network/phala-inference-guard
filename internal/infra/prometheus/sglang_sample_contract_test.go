@@ -158,6 +158,30 @@ sglang:kv_used_tokens{engine_type="unified",model_name="meta/test-model",tp_rank
 	}
 }
 
+func TestParseSampleAcceptsProtectedSGLangKVGap(t *testing.T) {
+	metrics := strings.ReplaceAll(
+		coherentSGLangFixture(),
+		"sglang:kv_used_tokens{engine_type=\"unified\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 50000\n",
+		"sglang:kv_used_tokens{engine_type=\"unified\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 40000\n",
+	)
+	sample := ParseSample(metrics)
+	if !sample.KVTokenMetricsValid || sample.KVUsedTokens != 50_000 || sample.KVAvailableTokens != 900_000 {
+		t.Fatalf("protected SGLang KV gap was rejected or excluded from non-reclaimable KV: %#v", sample)
+	}
+}
+
+func TestParseSampleRejectsSGLangActiveKVAboveDerivedNonReclaimableKV(t *testing.T) {
+	metrics := strings.ReplaceAll(
+		coherentSGLangFixture(),
+		"sglang:kv_used_tokens{engine_type=\"unified\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 50000\n",
+		"sglang:kv_used_tokens{engine_type=\"unified\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 50001\n",
+	)
+	sample := ParseSample(metrics)
+	if sample.KVTokenMetricsValid {
+		t.Fatalf("SGLang active KV above derived non-reclaimable KV was accepted: %#v", sample)
+	}
+}
+
 func TestParseSampleRejectsLegacySGLangRetractionGaugesAsPreemptionCounter(t *testing.T) {
 	metrics := coherentSGLangFixtureWithoutRetractionDeclaration() + `
 # TYPE sglang:num_retracted_reqs gauge
