@@ -8,7 +8,28 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
+
+func TestPredictiveStartupAcceptsCoherentSGLangSample(t *testing.T) {
+	sample := telemetry.Sample{
+		BackendKind: "sglang", ModelName: "meta/sglang-model", ModelNameValid: true,
+		KVCapacityTokens: 1_000_000, KVBlockSize: 16, KVBlockSizeValid: true,
+		KVUsedTokens: 100_000, KVTokenMetricsValid: true,
+		Running: 2, RunningValid: true, Waiting: 1, WaitingValid: true,
+		Preemptions: 3, PreemptionsValid: true,
+		Generation: 100, GenerationValid: true,
+	}
+	startup, err := predictiveVLLMStartupFromSample(sample, time.Unix(100, 0))
+	if err != nil {
+		t.Fatalf("coherent SGLang startup rejected: %v", err)
+	}
+	if startup.modelName != "meta/sglang-model" || startup.CapacityTokens != 1_000_000 || startup.BlockSize != 16 ||
+		startup.Generation != 100 || startup.Preemptions != 3 {
+		t.Fatalf("SGLang startup=%#v", startup)
+	}
+}
 
 func TestPredictiveVLLMStartupProbeRejectsAmbiguousModelIdentityWithinBound(t *testing.T) {
 	metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

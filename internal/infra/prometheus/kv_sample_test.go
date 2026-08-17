@@ -47,8 +47,8 @@ sglang:kv_available_tokens{tp_rank="0"} 300000
 sglang:kv_available_tokens{tp_rank="1"} 300000
 sglang:kv_evictable_tokens{tp_rank="0"} 400000
 sglang:kv_evictable_tokens{tp_rank="1"} 400000
-sglang:kv_used_tokens{tp_rank="0"} 741408
-sglang:kv_used_tokens{tp_rank="1"} 741408
+sglang:kv_used_tokens{tp_rank="0"} 341408
+sglang:kv_used_tokens{tp_rank="1"} 341408
 sglang:token_usage{tp_rank="0"} 0.7119
 sglang:token_usage{tp_rank="1"} 0.7119
 `
