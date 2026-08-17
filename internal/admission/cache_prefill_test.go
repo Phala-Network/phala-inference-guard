@@ -66,6 +66,37 @@ func TestControllerCacheCreditDoesNotDowngradeLongInputClasses(t *testing.T) {
 	}
 }
 
+func TestV01215ControllerBoundsCacheCreditByRecentEvidence(t *testing.T) {
+	now := time.Unix(21_500, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 5_000))
+	publishObservation(t, controller, cacheObservation(capability, now.Add(time.Second), 10_000+32*1024, 5_000+32*1024))
+
+	const (
+		inputTokens          = int64(16 * 1024)
+		recentCreditTokens   = int64(24 * 1024)
+		expectedAdmitted     = 17
+		maximumAdmissionLoop = 100
+	)
+	var pendingCreditTokens int64
+	admitted := 0
+	for index := 0; index < maximumAdmissionLoop; index++ {
+		result := controller.Admit(now.Add(time.Second+time.Duration(index+1)*time.Millisecond), testEstimate(inputTokens, inputTokens, 256))
+		if !result.Decision.Admitted() {
+			break
+		}
+		admitted++
+		pendingCreditTokens += inputTokens - result.Decision.Work.PrefillComputeTokens
+	}
+
+	if pendingCreditTokens > recentCreditTokens {
+		t.Fatalf("pending cache credit=%d exceeds recent evidence budget=%d after %d admissions", pendingCreditTokens, recentCreditTokens, admitted)
+	}
+	if admitted != expectedAdmitted {
+		t.Fatalf("cache-aware admissions=%d want %d without exceeding recent evidence", admitted, expectedAdmitted)
+	}
+}
+
 func TestControllerCacheFallbacksNeverCloseLowFlowAdmission(t *testing.T) {
 	now := time.Unix(22_000, 0)
 	capability := testCapability()
