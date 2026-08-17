@@ -8,7 +8,7 @@ import (
 const (
 	cachePrefillMinimumEvidenceTokens uint64        = 4 * 1024
 	cachePrefillMaximumHitCredit      float64       = 0.75
-	cachePrefillObservationLifetime   time.Duration = 10 * time.Second
+	cachePrefillObservationLifetime   time.Duration = time.Second
 )
 
 type cachePrefillObservation struct {
