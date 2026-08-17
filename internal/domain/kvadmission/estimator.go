@@ -189,7 +189,18 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 	for index := start; index <= end; index++ {
 		switch body[index] {
 		case '"':
-			closing, ok := jsonStringEnd(body, index)
+			// Empty and one-byte strings dominate array-style prompt payloads.
+			// The body is already validated, so avoid a general quote search for
+			// these unambiguous forms.
+			closing := index + 1
+			ok := closing <= end && body[closing] == '"'
+			if !ok && closing < end && body[closing] != '\\' && body[closing+1] == '"' {
+				closing++
+				ok = true
+			}
+			if !ok {
+				closing, ok = jsonStringEnd(body, index)
+			}
 			if !ok || closing > end {
 				return features, false
 			}
@@ -197,14 +208,22 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 			next := skipJSONSpace(body, closing+1)
 			if next >= len(body) || body[next] != ':' {
 				features.StringValueBytes += len(raw)
-				if hint, known := approximateJSONStringTokens(raw); known {
+				hint, known := int64(0), true
+				switch len(raw) {
+				case 0:
+				case 1, 2, 3:
+					hint = 1
+				default:
+					hint, known = approximateJSONStringTokens(raw)
+				}
+				if known {
 					if !addApproximateInputTokens(&features.ApproximateInputTokens, hint) {
 						features.ApproximateInputTokensKnown = false
 					}
 				} else {
 					features.ApproximateInputTokensKnown = false
 				}
-				if modalityMarker(raw) {
+				if len(raw) >= len("image_url") && modalityMarker(raw) {
 					features.ModalityCount++
 				}
 				index = closing
@@ -223,7 +242,7 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 				}
 				features.ToolSchemaBytes += valueBytes
 			}
-			if modalityMarker(raw) {
+			if len(raw) >= len("image_url") && modalityMarker(raw) {
 				features.ModalityCount++
 			}
 			index = closing

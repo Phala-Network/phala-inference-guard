@@ -49,6 +49,30 @@ func TestEstimateValidatedJSONMatchesStrictEstimate(t *testing.T) {
 	}
 }
 
+func TestScanJSONFeaturesShortStringFastPathPreservesValues(t *testing.T) {
+	body := []byte(`{"prompt":["","a","ab","abc","a\"b"]}`)
+	features, valid := scanJSONFeatures(body)
+	if !valid {
+		t.Fatal("short-string fixture was not scanned")
+	}
+	wantRaw := [][]byte{nil, []byte("a"), []byte("ab"), []byte("abc"), []byte(`a\"b`)}
+	wantBytes := 0
+	wantTokens := int64(0)
+	for _, raw := range wantRaw {
+		wantBytes += len(raw)
+		tokens, known := approximateJSONStringTokens(raw)
+		if !known || !addApproximateInputTokens(&wantTokens, tokens) {
+			t.Fatalf("reference estimate failed for %q", raw)
+		}
+	}
+	if features.StringValueBytes != wantBytes ||
+		!features.ApproximateInputTokensKnown ||
+		features.ApproximateInputTokens != wantTokens ||
+		features.ModalityCount != 0 {
+		t.Fatalf("features=%+v want bytes/tokens=%d/%d", features, wantBytes, wantTokens)
+	}
+}
+
 func TestEstimateJSONBuildsIndependentKVReservationEstimate(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("word ", 64*1024) + `"}]}`)
 	cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig())
