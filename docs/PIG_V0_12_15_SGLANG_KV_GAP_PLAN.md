@@ -240,6 +240,12 @@ classification, KV reservation, TPS policy, and the final decision. This keeps
 the backend adapters, observation policy, and admission policy separately
 testable.
 
+A positive preemption/retraction delta in the current observation suppresses
+all cache credit for that observation. It is evidence that recent cache reuse
+did not prevent harmful scheduler pressure, so admission must use fully cold
+Prefill cost until a later qualified cache-counter delta establishes a new
+observation. This suppression is sample-scoped and creates no cooldown.
+
 The initial implementation must remain intentionally small: one previous
 counter snapshot plus one bounded recent observation, no learned state, no
 prefix table, no customer cardinality, and no extra upstream request. A longer
@@ -264,6 +270,9 @@ Required focused tests:
   aggregation contracts;
 - first sample, missing metrics, low evidence, stale observation, counter reset,
   backend epoch change, and invalid ratios produce zero cache credit;
+- a qualified cache observation is carried across zero-delta polls for at most
+  10 seconds, then expires; a current preemption/retraction delta suppresses it
+  immediately without creating a later cooldown;
 - a cache observation can reduce only aggregate Prefill compute cost while KV
   fit, KV reservation, maximum input, and long-input class remain byte-for-byte
   unchanged;
@@ -445,6 +454,24 @@ exit 1 (expected red)
 Implementation candidate `4f2bcbf` is pushed but has not passed the focused or
 complete f563 green matrix. It is source implementation evidence only, not an
 accepted image or deployment.
+
+The first f563 green attempt produced mixed evidence. The focused Prometheus,
+admission, server, and observability packages passed, but `go test ./...` failed
+the existing 4-MiB classifier latency gate:
+
+```text
+/var/volatile/dstack/persistent/pig-v01215-workbench/green-4f2bcbf/focused-4f2bcbf.log
+sha256 30ab88d1f8bf855d36d247f3b29a4000b915c9254be7bbcdfce6c90cd5270c70
+exit 0
+
+/var/volatile/dstack/persistent/pig-v01215-workbench/green-4f2bcbf/full-test-4f2bcbf.log
+sha256 2b7e62fe8bc545ff5530bcdbe12adc5bc4c70fc0ca3fbaf1abf194016fd24810
+exit 1: body_bytes=4194300 p50=34.280061ms p99=107.131729ms
+```
+
+The 100-ms extreme-input requirement therefore remains red. Cache no-delta,
+expiry, runtime-epoch, and preemption-suppression coverage is also required
+before the next implementation candidate can be accepted.
 
 ### Pass 2: safety and lifecycle
 

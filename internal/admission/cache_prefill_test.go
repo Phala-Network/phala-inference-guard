@@ -88,6 +88,73 @@ func TestControllerCacheFallbacksNeverCloseLowFlowAdmission(t *testing.T) {
 	}
 }
 
+func TestControllerCacheCreditCarriesWithoutDeltaForTenSecondsThenExpires(t *testing.T) {
+	now := time.Unix(23_000, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 5_000))
+	hotCounters := cacheObservation(capability, now.Add(time.Second), 20_000, 12_500)
+	publishObservation(t, controller, hotCounters)
+
+	atLifetime := cacheObservation(capability, now.Add(11*time.Second), 20_000, 12_500)
+	publishObservation(t, controller, atLifetime)
+	carried := controller.Admit(now.Add(11*time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
+	if !carried.Admitted() || carried.Work.PrefillComputeTokens != 8*1024 {
+		t.Fatalf("cache credit was not carried through its ten-second lifetime: %+v", carried)
+	}
+	carriedHandle := ReservationHandle{controller: controller, runtimeEpoch: carried.RuntimeEpoch, id: carried.ReservationID}
+	_ = carriedHandle.Terminate(TerminalCancel)
+
+	expiredCounters := cacheObservation(capability, now.Add(11*time.Second+2*time.Millisecond), 20_000, 12_500)
+	publishObservation(t, controller, expiredCounters)
+	expired := controller.Admit(now.Add(11*time.Second+3*time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
+	if !expired.Admitted() || expired.Work.PrefillComputeTokens != 32*1024 {
+		t.Fatalf("expired cache credit still changed Prefill compute: %+v", expired)
+	}
+}
+
+func TestControllerCacheCreditIsSuppressedByCurrentPreemption(t *testing.T) {
+	now := time.Unix(24_000, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 5_000))
+
+	preempted := cacheObservation(capability, now.Add(time.Second), 20_000, 12_500)
+	preempted.PreemptionsTotal = 1
+	publishObservation(t, controller, preempted)
+	decision := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
+	if !decision.Admitted() || decision.Work.PrefillComputeTokens != 32*1024 {
+		t.Fatalf("current preemption sample received cache credit: %+v", decision)
+	}
+}
+
+func TestControllerRuntimeEpochResetClearsCacheCredit(t *testing.T) {
+	now := time.Unix(25_000, 0)
+	capability := testCapability()
+	initial := cacheObservation(capability, now, 10_000, 5_000)
+	initial.RuntimeStartTime = 100
+	controller := testControllerWithObservation(t, capability, initial)
+
+	hotCounters := cacheObservation(capability, now.Add(time.Second), 20_000, 12_500)
+	hotCounters.RuntimeStartTime = 100
+	publishObservation(t, controller, hotCounters)
+	hot := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
+	if !hot.Admitted() || hot.Work.PrefillComputeTokens != 8*1024 {
+		t.Fatalf("cache credit did not mature before runtime reset: %+v", hot)
+	}
+	hotHandle := ReservationHandle{controller: controller, runtimeEpoch: hot.RuntimeEpoch, id: hot.ReservationID}
+	_ = hotHandle.Terminate(TerminalCancel)
+
+	reset := cacheObservation(capability, now.Add(2*time.Second), 100, 50)
+	reset.RuntimeStartTime = 200
+	publication := publishObservation(t, controller, reset)
+	if !publication.RuntimeReset {
+		t.Fatalf("backend epoch change was not classified as a reset: %+v", publication)
+	}
+	afterReset := controller.Admit(now.Add(2*time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
+	if !afterReset.Admitted() || afterReset.Work.PrefillComputeTokens != 32*1024 {
+		t.Fatalf("cache credit survived backend epoch reset: %+v", afterReset)
+	}
+}
+
 func cacheObservation(capability Capability, at time.Time, queries, hits uint64) BackendObservation {
 	observation := testObservation(capability, at, 0, 0, 0, uint64(at.Unix()), 0)
 	observation.CacheCountersValid = true
