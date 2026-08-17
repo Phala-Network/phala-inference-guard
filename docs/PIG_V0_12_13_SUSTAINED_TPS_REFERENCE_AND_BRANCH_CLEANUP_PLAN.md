@@ -870,3 +870,40 @@ The new assertion was therefore too strict. Correct it to require that enabling
 TPS adds no hard-fit idle rejection versus the disabled baseline and that the
 maximum idle-with-demand interval remains at most one poll. The production
 Controller remains unchanged. Rerun focused evidence from a new commit.
+
+### 2026-08-17 round 6: corrected representative matrix is green
+
+The assertion correction and round 5 audit note were committed and pushed as
+`96c222d2c4fabb08a86153132fdfee97c484cfdb`. A fresh c21 clone verified the
+exact branch HEAD and upstream, an empty format list, and an empty
+`git diff --check` result. All five focused packages passed:
+
+```text
+internal/admission                 PASS
+internal/config/pigconfig          PASS
+internal/app/server                PASS
+internal/observability/metrics     PASS
+internal/simulation/requestaware   PASS
+```
+
+Evidence directory:
+
+```text
+/workspace/evidence/pig-v01213-tps-focused-r6-96c222d
+```
+
+Material SHA-256 values:
+
+```text
+focused-admission.log   546286e86c05b4a5659de197970c1896490b6ee1b41fec583a63678a27499353
+focused-config.log      f311a7ffcbd3392c2f65d0c08c752471e4a0afedae41607177f0278a6b295d8a
+focused-server.log      7b9044d9344259d8e171b825a6508eee05bb40aae7def743a2b622b402aed8db
+focused-metrics.log     7f94a28d4460d5e6e95d8c672fd27aacef8074b8e7873b786500ae120fdcfa78
+focused-simulation.log  b2fce7c0ae0a32029f2cf9b5b82042d66e67952eaa91884ba767876f5c57037e
+metadata.log            0d5797a16c03579ca1d212c4f60c99be85e741ec940c3a336f17c843ff0c50fc
+```
+
+This establishes focused Linux acceptance for `96c222d`; it does not replace
+the final full/race/vet/build/simulation/performance matrix. Complete review
+passes 2 and 3, revise if needed, and run the final matrix from the resulting
+exact HEAD.
