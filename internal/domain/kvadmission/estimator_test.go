@@ -375,7 +375,7 @@ func TestV01215RiskyLexicalShapesUseConservativeHardReservation(t *testing.T) {
 	}{
 		{name: "non-ascii", body: `{"prompt":"中文输入 日本語 한국어 العربية"}`},
 		{name: "escape-heavy", body: `{"prompt":"line\nquote\"slash\\tab\tunicode\u4e2d"}`},
-		{name: "dense-entropy", body: `{"prompt":"A9+/zQ7=f0-kL2+xV8/mN4pR1sT6wY3A9+/zQ7=f0-kL2+xV8/mN4pR1sT6wY3"}`},
+		{name: "dense-entropy", body: `{"prompt":"` + strings.Repeat("A9+/zQ7=f0-kL2+xV8/mN4pR1sT6wY3", 8) + `"}`},
 		{name: "tool-schema", body: `{"messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}}]}`},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
@@ -390,7 +390,8 @@ func TestV01215RiskyLexicalShapesUseConservativeHardReservation(t *testing.T) {
 			if cost.EstimatedInputHigh > conservative {
 				conservative = cost.EstimatedInputHigh
 			}
-			if cost.Estimate.KVReservationInputTokens < conservative {
+			if cost.InputEstimateConfidence != InputEstimateConservative ||
+				cost.Estimate.KVReservationInputTokens < conservative {
 				t.Fatalf("risk fixture hard reservation=%d want at least %d cost=%+v", cost.Estimate.KVReservationInputTokens, conservative, cost)
 			}
 		})
@@ -413,7 +414,8 @@ func TestV01215RoutineASCIIRetainsNarrowLexicalReservation(t *testing.T) {
 		fixedKVReservationMarginNumerator,
 		fixedKVReservationMarginDenominator,
 	)
-	if !valid || cost.Estimate.KVReservationInputTokens != want {
+	if !valid || cost.InputEstimateConfidence != InputEstimateLexical ||
+		cost.Estimate.KVReservationInputTokens != want {
 		t.Fatalf("routine ASCII reservation=%d want %d cost=%+v", cost.Estimate.KVReservationInputTokens, want, cost)
 	}
 }
