@@ -181,8 +181,8 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 		DecodeHorizonTokens:                     cost.BoundedDecodeTokens,
 		BasePromptCount:                         cost.BasePromptCount,
 		DecodeSequences:                         cost.DecodeSequences,
+		InputEstimateConfidence:                 InputEstimateConservative,
 	}
-	cost.InputEstimateConfidence = InputEstimateConservative
 	if cost.Estimate.Validate() != nil {
 		cost.UnsupportedReason = "request_estimate_overflow"
 		return cost
@@ -206,20 +206,20 @@ func setTextPredictiveEstimate(
 	maximumSelection := maximumSequenceInput
 	reservation := int64(0)
 	maximumReservation := int64(0)
+	inputConfidence := InputEstimateConservative
 	if cost.ModalityCount > 0 || !known || selection <= 0 {
 		selection = cost.EstimatedInputHigh
 		maximumSelection = maximumSequenceHigh
 		reservation = cost.EstimatedInputHigh
 		maximumReservation = maximumSequenceHigh
-		cost.InputEstimateConfidence = InputEstimateConservative
 	} else {
 		marginNumerator := fixedKVReservationMarginNumerator
 		marginDenominator := fixedKVReservationMarginDenominator
-		cost.InputEstimateConfidence = InputEstimateLexical
+		inputConfidence = InputEstimateLexical
 		if conservative {
 			marginNumerator = conservativeMarginNumerator
 			marginDenominator = conservativeMarginDenominator
-			cost.InputEstimateConfidence = InputEstimateConservative
+			inputConfidence = InputEstimateConservative
 		}
 		var ok bool
 		reservation, ok = fixedMarginTokensForSequences(
@@ -256,6 +256,7 @@ func setTextPredictiveEstimate(
 		DecodeHorizonTokens:                     cost.BoundedDecodeTokens,
 		BasePromptCount:                         cost.BasePromptCount,
 		DecodeSequences:                         cost.DecodeSequences,
+		InputEstimateConfidence:                 inputConfidence,
 	}
 	return cost.Estimate.Validate() == nil
 }

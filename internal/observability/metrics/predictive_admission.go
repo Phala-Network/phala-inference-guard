@@ -64,6 +64,7 @@ type PredictiveAdmissionInput struct {
 	AdmissionAction                           string
 	AdmissionReason                           string
 	AdmissionPressureSource                   string
+	AdmissionInputEstimateConfidence          string
 	AdmissionSelectionInputTokens             int64
 	AdmissionMaximumSequenceInputTokens       int64
 	AdmissionBasePromptCount                  int64
@@ -160,6 +161,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	admissionReason := normalizeAdmissionReason(input.AdmissionReason)
 	admissionPressureSource := normalizeAdmissionPressureSource(input.AdmissionPressureSource)
 	admissionPrefillClass := normalizeAdmissionPrefillClass(input.AdmissionPrefillClass)
+	inputEstimateConfidence := normalizeInputEstimateConfidence(input.AdmissionInputEstimateConfidence)
 	capabilitySource := normalizeCapabilityProfileSource(input.CapabilityProfileSource)
 	capabilityReason := normalizeCapabilityInitializationReason(input.CapabilityInitializationReason)
 	capabilitySchema := input.CapabilityProfileSchema
@@ -214,6 +216,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_raw_global_limit %d\n", input.RouterBackpressure.RawGlobalLimit)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_effective_global_limit %d\n", input.RouterBackpressure.EffectiveGlobalLimit)
 	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_info{action=%q,reason=%q,pressure_source=%q,prefill_class=%q} 1\n", admissionAction, admissionReason, admissionPressureSource, admissionPrefillClass)
+	fmt.Fprintf(w, "pig_predictive_request_aware_input_estimate_confidence_info{confidence=%q} 1\n", inputEstimateConfidence)
 	fmt.Fprintf(w, "pig_predictive_request_aware_pressure %.6f\n", 0.0)
 	fmt.Fprintf(w, "pig_predictive_request_aware_selection_input_tokens %d\n", input.AdmissionSelectionInputTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_maximum_sequence_input_tokens %d\n", input.AdmissionMaximumSequenceInputTokens)
@@ -322,6 +325,15 @@ func normalizeAdmissionPressureSource(value string) string {
 func normalizeAdmissionPrefillClass(value string) string {
 	switch value {
 	case "regular", "weighted", "exclusive", "quiescent":
+		return value
+	default:
+		return "unknown"
+	}
+}
+
+func normalizeInputEstimateConfidence(value string) string {
+	switch value {
+	case "lexical", "conservative":
 		return value
 	default:
 		return "unknown"

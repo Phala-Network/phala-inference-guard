@@ -68,6 +68,7 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		AdmissionAction:                           "size_protect",
 		AdmissionReason:                           "prefill_contention",
 		AdmissionPressureSource:                   "prefill",
+		AdmissionInputEstimateConfidence:          "conservative",
 		AdmissionSelectionInputTokens:             1500,
 		AdmissionMaximumSequenceInputTokens:       900,
 		AdmissionBasePromptCount:                  2,
@@ -166,6 +167,7 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		"pig_predictive_router_backpressure_raw_global_limit 50",
 		"pig_predictive_router_backpressure_effective_global_limit 4",
 		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_contention",pressure_source="prefill",prefill_class="weighted"} 1`,
+		`pig_predictive_request_aware_input_estimate_confidence_info{confidence="conservative"} 1`,
 		"pig_predictive_request_aware_pressure 0.000000",
 		"pig_predictive_request_aware_selection_input_tokens 1500",
 		"pig_predictive_request_aware_maximum_sequence_input_tokens 900",
@@ -258,13 +260,15 @@ func TestV01215WritePredictiveAdmissionExposesTPSProxyValidity(t *testing.T) {
 func TestWritePredictiveAdmissionBoundsRequestAwareLabels(t *testing.T) {
 	var out bytes.Buffer
 	WritePredictiveAdmission(&out, PredictiveAdmissionInput{
-		AdmissionAction:         "request-derived-action",
-		AdmissionReason:         "request-derived-reason",
-		AdmissionPressureSource: "request-derived-source",
-		AdmissionPrefillClass:   "request-derived-class",
+		AdmissionAction:                  "request-derived-action",
+		AdmissionReason:                  "request-derived-reason",
+		AdmissionPressureSource:          "request-derived-source",
+		AdmissionPrefillClass:            "request-derived-class",
+		AdmissionInputEstimateConfidence: "request-derived-confidence",
 	})
 	got := out.String()
 	if !strings.Contains(got, `pig_predictive_request_aware_last_decision_info{action="unknown",reason="unknown",pressure_source="none",prefill_class="unknown"} 1`) ||
+		!strings.Contains(got, `pig_predictive_request_aware_input_estimate_confidence_info{confidence="unknown"} 1`) ||
 		strings.Contains(got, "request-derived-") {
 		t.Fatalf("request-aware labels were not normalized:\n%s", got)
 	}

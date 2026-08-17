@@ -5,6 +5,25 @@ import (
 	"math"
 )
 
+type InputEstimateConfidence uint8
+
+const (
+	InputEstimateConfidenceUnknown InputEstimateConfidence = iota
+	InputEstimateConfidenceLexical
+	InputEstimateConfidenceConservative
+)
+
+func (c InputEstimateConfidence) String() string {
+	switch c {
+	case InputEstimateConfidenceLexical:
+		return "lexical"
+	case InputEstimateConfidenceConservative:
+		return "conservative"
+	default:
+		return "unknown"
+	}
+}
+
 // RequestEstimate is the complete model-neutral output of request estimation.
 // It contains no backend geometry, runtime state, request identity, or mode.
 type RequestEstimate struct {
@@ -15,6 +34,7 @@ type RequestEstimate struct {
 	DecodeHorizonTokens                     int64
 	BasePromptCount                         int64
 	DecodeSequences                         int64
+	InputEstimateConfidence                 InputEstimateConfidence
 }
 
 func (e RequestEstimate) Validate() error {
@@ -26,7 +46,8 @@ func (e RequestEstimate) Validate() error {
 		e.DecodeHorizonTokens < 0 || e.BasePromptCount <= 0 ||
 		e.SelectionInputTokens < e.BasePromptCount ||
 		e.KVReservationInputTokens < e.BasePromptCount ||
-		decodeShapeInvalid(e.BasePromptCount, e.DecodeSequences) {
+		decodeShapeInvalid(e.BasePromptCount, e.DecodeSequences) ||
+		e.InputEstimateConfidence > InputEstimateConfidenceConservative {
 		return fmt.Errorf("request estimate is invalid")
 	}
 	inputCapacity, ok := requestWorkMultiply(

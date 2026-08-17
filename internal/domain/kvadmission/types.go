@@ -2,11 +2,9 @@ package kvadmission
 
 import predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 
-type InputEstimateConfidence string
-
 const (
-	InputEstimateLexical      InputEstimateConfidence = "lexical"
-	InputEstimateConservative InputEstimateConfidence = "conservative"
+	InputEstimateLexical      = predictive.InputEstimateConfidenceLexical
+	InputEstimateConservative = predictive.InputEstimateConfidenceConservative
 )
 
 type Cost struct {
@@ -28,7 +26,6 @@ type Cost struct {
 	BoundedDecodeTokens         int64
 	BasePromptCount             int64
 	DecodeSequences             int64
-	InputEstimateConfidence     InputEstimateConfidence
 	Estimate                    predictive.RequestEstimate
 }
 
@@ -51,7 +48,8 @@ func DefaultRequestShape() RequestShape {
 // new admission core. Legacy interval fields remain only until the atomic HTTP
 // cutover; callers must not rebuild this record from parallel scalar values.
 func (c Cost) PredictiveEstimate() (predictive.RequestEstimate, bool) {
-	if !c.Supported || c.Estimate.Validate() != nil {
+	if !c.Supported || c.Estimate.InputEstimateConfidence == predictive.InputEstimateConfidenceUnknown ||
+		c.Estimate.Validate() != nil {
 		return predictive.RequestEstimate{}, false
 	}
 	return c.Estimate, true

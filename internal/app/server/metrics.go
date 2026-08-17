@@ -146,6 +146,7 @@ func applyAdmissionDecisionMetrics(
 	input.AdmissionAction = admissionMetricAction(decision)
 	input.AdmissionReason = string(decision.Reason)
 	input.AdmissionPressureSource = admissionPressureSource(decision.Reason)
+	input.AdmissionInputEstimateConfidence = decision.Estimate.InputEstimateConfidence.String()
 	input.AdmissionSelectionInputTokens = decision.Estimate.SelectionInputTokens
 	input.AdmissionMaximumSequenceInputTokens = decision.Estimate.MaximumSequenceInputTokens
 	input.AdmissionBasePromptCount = decision.Estimate.BasePromptCount

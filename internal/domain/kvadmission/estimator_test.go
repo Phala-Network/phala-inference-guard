@@ -390,7 +390,7 @@ func TestV01215RiskyLexicalShapesUseConservativeHardReservation(t *testing.T) {
 			if cost.EstimatedInputHigh > conservative {
 				conservative = cost.EstimatedInputHigh
 			}
-			if cost.InputEstimateConfidence != InputEstimateConservative ||
+			if cost.Estimate.InputEstimateConfidence != InputEstimateConservative ||
 				cost.Estimate.KVReservationInputTokens < conservative {
 				t.Fatalf("risk fixture hard reservation=%d want at least %d cost=%+v", cost.Estimate.KVReservationInputTokens, conservative, cost)
 			}
@@ -414,7 +414,7 @@ func TestV01215RoutineASCIIRetainsNarrowLexicalReservation(t *testing.T) {
 		fixedKVReservationMarginNumerator,
 		fixedKVReservationMarginDenominator,
 	)
-	if !valid || cost.InputEstimateConfidence != InputEstimateLexical ||
+	if !valid || cost.Estimate.InputEstimateConfidence != InputEstimateLexical ||
 		cost.Estimate.KVReservationInputTokens != want {
 		t.Fatalf("routine ASCII reservation=%d want %d cost=%+v", cost.Estimate.KVReservationInputTokens, want, cost)
 	}
