@@ -399,7 +399,7 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 		Mode: "enforce", Enforced: true, ObservedAt: time.Unix(1, 0),
 		Decision: coreadmission.DecisionRecord{
 			Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonKVCapacity,
-			Scope: coreadmission.ProtectionLoad,
+			Scope:    coreadmission.ProtectionLoad,
 			Estimate: domainpredictive.RequestEstimate{MaximumSequenceInputTokens: 900, DecodeSequences: 4},
 			State: coreadmission.ProjectedState{
 				UnobservedSequences: 2,
