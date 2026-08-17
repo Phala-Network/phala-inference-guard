@@ -155,6 +155,12 @@ Rules:
 - exported PIG logs and backend metrics report the selected backend kind;
 - no new production environment variable selects the framework.
 
+The observer indexes only fields consumed by current admission. Historical
+vLLM prompt-source and prefill-duration counters are not parsed: prefill and KV
+capability are initialized from immutable model metadata and KV geometry, and
+the removed counters had no consumer in prediction, reservation, or admission.
+This version does not imply a hidden prefill-learning path.
+
 This keeps framework detection and parsing open for extension while the
 Controller remains closed to framework-specific changes.
 

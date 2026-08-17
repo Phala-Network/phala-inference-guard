@@ -44,7 +44,6 @@ func parseVLLMSample(metricsText string, index metricIndex) telemetry.Sample {
 		),
 	}
 	adaptVLLMKV(index, usage, usagePresent, &sample)
-	adaptVLLMCapabilityCounters(index, &sample)
 	return sample
 }
 
@@ -72,30 +71,4 @@ func adaptVLLMKV(index metricIndex, usage float64, usagePresent bool, sample *te
 	sample.KVAvailableTokens = capacity - used
 	sample.KVCacheUsage = usage
 	sample.KVTokenMetricsValid = true
-}
-
-func adaptVLLMCapabilityCounters(index metricIndex, sample *telemetry.Sample) {
-	if sample == nil || !sample.ModelNameValid || sample.ModelName == "" {
-		return
-	}
-	model := sample.ModelName
-	matchingModel := func(labels map[string]string) bool { return labels["model_name"] == model }
-	localCompute, localComputeFound := index.sum("vllm:prompt_tokens_by_source_total", func(labels map[string]string) bool {
-		return matchingModel(labels) && labels["source"] == "local_compute"
-	})
-	localCacheHit, localCacheHitFound := index.sum("vllm:prompt_tokens_by_source_total", func(labels map[string]string) bool {
-		return matchingModel(labels) && labels["source"] == "local_cache_hit"
-	})
-	prefillCount, prefillCountFound := index.sum("vllm:request_prefill_time_seconds_count", matchingModel)
-	prefillSeconds, prefillSecondsFound := index.sum("vllm:request_prefill_time_seconds_sum", matchingModel)
-
-	sample.PromptLocalCompute, sample.PromptLocalComputeOK = exactNonNegativeMetricUint64(localCompute, localComputeFound)
-	sample.PromptLocalCacheHit, sample.PromptLocalCacheHitOK = exactNonNegativeMetricUint64(localCacheHit, localCacheHitFound)
-	sample.PrefillRequests, prefillCountFound = exactNonNegativeMetricUint64(prefillCount, prefillCountFound)
-	sample.PrefillSeconds = prefillSeconds
-	sample.PrefillMetricsOK = prefillCountFound && prefillSecondsFound && finiteNonNegative(prefillSeconds)
-	if !sample.PrefillMetricsOK {
-		sample.PrefillRequests = 0
-		sample.PrefillSeconds = 0
-	}
 }

@@ -39,13 +39,6 @@ type Sample struct {
 	GenerationTPSDirect   bool
 	RuntimeStartTime      float64
 	RuntimeStartTimeValid bool
-	PromptLocalCompute    uint64
-	PromptLocalComputeOK  bool
-	PromptLocalCacheHit   uint64
-	PromptLocalCacheHitOK bool
-	PrefillRequests       uint64
-	PrefillSeconds        float64
-	PrefillMetricsOK      bool
 	TTFT                  HistogramSample
 }
 

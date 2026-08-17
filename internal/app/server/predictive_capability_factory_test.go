@@ -384,7 +384,7 @@ func v0125CapabilityStartup(capacity int64) predictiveBackendStartup {
 	return predictiveBackendStartup{
 		BackendKind: "vllm",
 		modelName:   "vendor/capability-model", ModelIdentitySHA256: predictiveModelIdentitySHA256("vendor/capability-model"),
-		CapacityTokens: capacity, BlockSize: 64, CapabilityMetricsOK: true,
+		CapacityTokens: capacity, BlockSize: 64,
 		ObservedAt: time.Unix(1, 0),
 	}
 }
@@ -456,10 +456,6 @@ vllm:num_requests_running{model_name="vendor/capability-model",engine="0"} %d
 vllm:num_requests_waiting{model_name="vendor/capability-model",engine="0"} 0
 vllm:num_preemptions_total{model_name="vendor/capability-model",engine="0"} 0
 vllm:generation_tokens_total{model_name="vendor/capability-model",engine="0"} 0
-vllm:prompt_tokens_by_source_total{model_name="vendor/capability-model",engine="0",source="local_compute"} 0
-vllm:prompt_tokens_by_source_total{model_name="vendor/capability-model",engine="0",source="local_cache_hit"} 0
-vllm:request_prefill_time_seconds_count{model_name="vendor/capability-model",engine="0"} 0
-vllm:request_prefill_time_seconds_sum{model_name="vendor/capability-model",engine="0"} 0
 `, f.running)
 }
 

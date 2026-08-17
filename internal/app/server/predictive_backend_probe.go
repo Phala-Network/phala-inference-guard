@@ -32,11 +32,6 @@ type predictiveBackendStartup struct {
 	Preemptions         uint64
 	Generation          uint64
 	RuntimeStartTime    float64
-	PromptLocalCompute  uint64
-	PromptLocalCacheHit uint64
-	PrefillRequests     uint64
-	PrefillSeconds      float64
-	CapabilityMetricsOK bool
 	ObservedAt          time.Time
 }
 
@@ -124,11 +119,6 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 		Preemptions:         sample.Preemptions,
 		Generation:          sample.Generation,
 		RuntimeStartTime:    sample.RuntimeStartTime,
-		PromptLocalCompute:  sample.PromptLocalCompute,
-		PromptLocalCacheHit: sample.PromptLocalCacheHit,
-		PrefillRequests:     sample.PrefillRequests,
-		PrefillSeconds:      sample.PrefillSeconds,
-		CapabilityMetricsOK: sample.PromptLocalComputeOK && sample.PromptLocalCacheHitOK && sample.PrefillMetricsOK,
 		ObservedAt:          observedAt,
 	}, nil
 }
