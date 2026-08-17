@@ -335,10 +335,10 @@ func TestV01215BackendWorkBoundsEverySmallPromptDistribution(t *testing.T) {
 }
 
 type actualRequestWork struct {
-	prefill                    int64
-	firstBytePendingPrefill    int64
-	inputKV                    int64
-	firstBytePendingInputKV    int64
+	prefill                 int64
+	firstBytePendingPrefill int64
+	inputKV                 int64
+	firstBytePendingInputKV int64
 }
 
 func actualBackendWork(
