@@ -935,6 +935,55 @@ Before the next executable commit, focused tests must prove:
   only part of the children. Any later attempt at partial observation credit
   requires an explicit union-accounting proof rather than a boolean shortcut.
 
+### Corrective review: per-sequence KV block accounting
+
+Status: new red review recorded on 2026-08-18. Exact pushed source `1deaa5f`
+passed the request-shape focused matrix on f563, with archive SHA-256
+`b72765fdfd6c9088de983ec51b68cae8820feeb60a68ca1e8f6e764a021168a3`
+and focused log SHA-256
+`1d33ac577f5dfb1d816a2b5fe095dbaa3bcb2cb5ad85571e9fb207e865c41025`.
+That green result closes only the aggregate-versus-maximum Context estimate;
+it does not make `1deaa5f` a release candidate.
+
+Static review then found that `BuildRequestWork` rounds aggregate input KV once
+for an entire completion prompt batch. Backend KV allocators own blocks per
+sequence, so unused tails from different base prompts cannot be pooled. The
+same defect exists in future Decode accounting: one marginal Decode tail plus
+full blocks for the remaining children is safe for children of one shared base
+prompt, but is not an upper bound for several base prompts with different tail
+positions. Two 63-token base prompts with a two-token horizon and a 64-token
+block each need two new Decode blocks, while the aggregate calculation reserves
+only one.
+
+The normalized contract must therefore retain all three counts separately:
+
+```text
+base_prompt_count = number of independent prompt sequences before n fan-out
+decode_sequences = base_prompt_count * n
+input block rounding = per base prompt, never pooled across prompt sequences
+future Decode rounding = marginal per independent base prompt plus fan-out work
+```
+
+SGLang's exact source proves one pre-cache request per base prompt before `n`
+children are expanded. vLLM expands all children and can reuse prefix-cache
+blocks scheduled earlier in the same scheduler pass, but the pinned source does
+not prove that every long/chunked child shares the complete prompt. PIG must
+therefore isolate this difference in a backend execution capability: SGLang may
+charge unique input per base prompt; vLLM must conservatively charge child input
+until an exact source test or runtime oracle proves a tighter upper bound. This
+is a backend protocol property, not a model-specific setting or learned value.
+
+Required red/green evidence:
+
+- two one-token base prompts consume two input blocks, not one aggregate block;
+- two base prompts crossing a Decode block boundary reserve both marginal
+  blocks;
+- a single base prompt preserves the existing marginal-block optimization;
+- SGLang `n` fan-out and vLLM conservative fan-out use explicit backend
+  execution profiles without model-name checks or production configuration;
+- overflow, validation, lifecycle, log, metric, simulation, race, and hot-path
+  coverage include `base_prompt_count`.
+
 ### Pass 3: exact evidence and release
 
 Status: pending. No v0.12.15 image has been built or uploaded, production still

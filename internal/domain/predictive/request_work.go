@@ -12,6 +12,7 @@ type RequestEstimate struct {
 	MaximumSequenceInputTokens int64
 	KVReservationInputTokens   int64
 	DecodeHorizonTokens        int64
+	BasePromptCount            int64
 	DecodeSequences            int64
 }
 

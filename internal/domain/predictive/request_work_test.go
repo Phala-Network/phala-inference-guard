@@ -58,6 +58,41 @@ func TestV01215BuildRequestWorkChargesEveryDecodeSequence(t *testing.T) {
 	}
 }
 
+func TestV01215BuildRequestWorkRoundsInputKVPerBasePrompt(t *testing.T) {
+	estimate := RequestEstimate{
+		SelectionInputTokens:       2,
+		MaximumSequenceInputTokens: 1,
+		KVReservationInputTokens:   2,
+		BasePromptCount:            2,
+		DecodeSequences:            2,
+	}
+	work, err := BuildRequestWork(estimate, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.InputKVTokens != 128 || work.TotalKVTokens != 128 {
+		t.Fatalf("base-prompt input blocks were pooled across sequences: %+v", work)
+	}
+}
+
+func TestV01215BuildRequestWorkRoundsDecodeKVPerBasePrompt(t *testing.T) {
+	estimate := RequestEstimate{
+		SelectionInputTokens:       126,
+		MaximumSequenceInputTokens: 63,
+		KVReservationInputTokens:   126,
+		DecodeHorizonTokens:        2,
+		BasePromptCount:            2,
+		DecodeSequences:            2,
+	}
+	work, err := BuildRequestWork(estimate, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if work.InputKVTokens != 128 || work.FutureKVTokens != 128 || work.TotalKVTokens != 256 {
+		t.Fatalf("base-prompt Decode tails were pooled across sequences: %+v", work)
+	}
+}
+
 func TestBuildRequestWorkRejectsInvalidAndOverflowingInputs(t *testing.T) {
 	tests := []struct {
 		estimate  RequestEstimate
