@@ -93,6 +93,25 @@ func TestV01215TPSWindowUsesForwardedLiabilitiesForBetweenPollSequenceEvidence(t
 	}
 }
 
+func TestV01215TPSWindowUsesMeasuredShortDecodeExposureInsteadOfFullIntervalLiabilityCount(t *testing.T) {
+	window := newTPSWindow(20)
+	start := time.Unix(30_600, 0)
+	if !window.observe(tpsSample{
+		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
+		generatedTokens: 50, forwardedSequenceLiabilities: 100,
+		localDecodeSequenceSeconds: 0.5,
+	}) {
+		t.Fatal("measured short Decode exposure caused numeric failure")
+	}
+
+	got := window.snapshot(start.Add(500 * time.Millisecond))
+	if got.QualifiedSequenceSamples != 1 ||
+		math.Abs(got.QualifiedSequenceSeconds-0.5) > 1e-9 ||
+		math.Abs(got.MeanActiveTPS-100) > 1e-9 {
+		t.Fatalf("short Decode exposure was charged as full-interval liabilities: %+v", got)
+	}
+}
+
 func TestV01215TPSWindowSeparatesAggregateAndReliableSequenceEvidence(t *testing.T) {
 	window := newTPSWindow(20)
 	start := time.Unix(31_000, 0)
