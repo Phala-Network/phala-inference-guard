@@ -19,6 +19,7 @@ type Cost struct {
 	ApproximateInputTokensKnown bool
 	ExplicitPromptTokens        int64
 	BoundedDecodeTokens         int64
+	BasePromptCount            int64
 	DecodeSequences             int64
 	Estimate                    predictive.RequestEstimate
 }

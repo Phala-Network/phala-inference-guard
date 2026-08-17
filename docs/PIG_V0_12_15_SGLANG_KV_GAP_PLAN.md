@@ -984,6 +984,84 @@ Required red/green evidence:
 - overflow, validation, lifecycle, log, metric, simulation, race, and hot-path
   coverage include `base_prompt_count`.
 
+### Corrective review: block upper bounds and lifecycle coverage
+
+Status: second red design review recorded on 2026-08-18. This section
+supersedes the earlier requirements to preserve marginal future-block
+accounting and to charge all SGLang input KV exactly once per base prompt. The
+implementation after pushed red source `1ceb14c` is dirty and has no executable
+evidence.
+
+The review found four additional release blockers:
+
+1. `KVReservationInputTokens` is an approximate upper bound, not the exact
+   input position within a KV block. The incremental function
+   `ceil((input + decode) / block) - ceil(input / block)` is not monotonic in
+   `input`, so evaluating it at the approximate upper bound is not an upper
+   bound for every possible real input. Once reconciliation marks input as
+   covered, any block slack embedded in the input reservation disappears.
+   `FutureKVTokens` must therefore reserve a complete block-rounded Decode
+   horizon per Decode sequence until exact input/block-position evidence exists.
+2. SGLang's explicit pre-cache pass shares only page-aligned Radix Cache
+   prefix pages. Its insert and match paths truncate the cached key to a page
+   boundary; every expanded child may recompute and allocate the unaligned
+   input tail. SGLang may charge the aligned prefix once per base prompt, but
+   child-tail Prefill and KV liabilities must remain represented separately.
+3. The first response byte proves only that at least one child produced output.
+   It does not prove that every child of a streaming `n > 1` or prompt batch has
+   materialized its input. One HTTP-level `MarkFirstByte` must not release all
+   Prefill and input-KV liabilities. Backend execution profiles must define
+   Prefill fan-out, KV sharing, and first-byte coverage independently.
+4. `RequestEstimate.Validate` accepts an aggregate that cannot be distributed
+   across `base_prompt_count` sequences under the supplied maximum. The
+   block-rounding helper then silently caps the aggregate by
+   `maximum_blocks * sequences`, which can return fewer KV tokens than the
+   accepted aggregate. Inconsistent aggregate/maximum pairs must fail before
+   work construction.
+
+The corrected minimal work contract is:
+
+```text
+RequestEstimate
+  aggregate input and KV upper bounds
+  maximum one-base-prompt input and KV upper bounds
+  base prompt count and Decode sequence count
+
+BackendExecutionProfile
+  Prefill fan-out
+  page-aligned input-KV sharing and child-tail liability
+  first-byte input-coverage semantics
+
+RequestWork
+  Prefill compute upper bound
+  input KV that a coherent observation may cover
+  unmaterialized input KV that must survive first-byte reconciliation
+  complete block-rounded future Decode KV per sequence
+```
+
+The first safe implementation must not add runtime learning, model-name checks,
+production configuration, or request-specific cache lookup. SGLang uses its
+source-proven aligned-prefix sharing plus conservative child-tail liability;
+vLLM keeps conservative child input until exact source/runtime evidence proves
+a tighter lifecycle. A later optimization may reduce at most one future block
+per sequence only if it has exact block-position evidence and a reconciliation
+proof.
+
+Required new red/green evidence:
+
+- an approximate input upper bound at a different block phase cannot reduce
+  future Decode reservation below one complete per-sequence horizon;
+- page-aligned and unaligned SGLang prompts with `n > 1` retain every child-tail
+  block through first-byte and the next metrics publication;
+- one vLLM child producing the first response byte cannot cover the other
+  children's input or Prefill liability;
+- aggregate input or KV above `maximum * base_prompt_count` is rejected with
+  overflow-safe validation;
+- Prefill class and aggregate budget consume explicitly named work dimensions,
+  with a focused decision-path test for backend-expanded work;
+- invalid/overflow fixtures reach their intended branch rather than failing on
+  unrelated zero-valued shape fields.
+
 ### Pass 3: exact evidence and release
 
 Status: pending. No v0.12.15 image has been built or uploaded, production still

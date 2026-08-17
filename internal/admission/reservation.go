@@ -31,7 +31,8 @@ type reservation struct {
 func (r reservation) contribution() (reservationOverlay, bool) {
 	if r.id == 0 || r.runtimeEpoch == 0 || r.work.TotalKVTokens <= 0 ||
 		r.work.FutureKVTokens < 0 || r.work.Estimate.SelectionInputTokens <= 0 ||
-		r.work.PrefillComputeTokens <= 0 || r.work.PrefillComputeTokens > r.work.Estimate.SelectionInputTokens ||
+		r.work.PrefillInputTokens <= 0 || r.work.PrefillComputeTokens <= 0 ||
+		r.work.PrefillComputeTokens > r.work.PrefillInputTokens ||
 		!r.validCacheCredit() {
 		return reservationOverlay{}, false
 	}
@@ -40,7 +41,7 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 		decodeSequences := r.work.Estimate.DecodeSequences
 		contribution := reservationOverlay{
 			kvTokens:                  r.work.TotalKVTokens,
-			pendingPrefillInputTokens: r.work.Estimate.SelectionInputTokens,
+			pendingPrefillInputTokens: r.work.PrefillInputTokens,
 			pendingPrefillTokens:      r.work.PrefillComputeTokens,
 			pendingPrefillSequences:   decodeSequences,
 			sequenceLiabilities:       decodeSequences,
@@ -92,7 +93,7 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 }
 
 func (r reservation) validCacheCredit() bool {
-	expected := r.work.Estimate.SelectionInputTokens - r.work.PrefillComputeTokens
+	expected := r.work.PrefillInputTokens - r.work.PrefillComputeTokens
 	if r.cacheCreditTokens != expected || r.cacheCreditTokens < 0 {
 		return false
 	}

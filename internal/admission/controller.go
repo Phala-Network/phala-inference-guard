@@ -42,6 +42,7 @@ type AdmissionController struct {
 	mu sync.Mutex
 
 	capability Capability
+	workProfile predictive.RequestWorkProfile
 	policy     admissionPolicy
 	projector  stateProjector
 	tpsWindow  tpsWindow
@@ -67,15 +68,19 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 	if err := capability.Validate(); err != nil {
 		return nil, err
 	}
+	if err := config.WorkProfile.Validate(); err != nil {
+		return nil, err
+	}
 	if !finiteNonnegative(config.TPS.Reference) || config.TPS.Reference > 1_000_000 {
 		return nil, fmt.Errorf("TPS reference must be finite and in [0, 1000000]")
 	}
-	policy, err := newAdmissionPolicy(capability)
+	policy, err := newAdmissionPolicy(capability, config.WorkProfile)
 	if err != nil {
 		return nil, err
 	}
 	return &AdmissionController{
 		capability:          capability,
+		workProfile:         config.WorkProfile,
 		policy:              policy,
 		tpsWindow:           newTPSWindow(config.TPS.Reference),
 		runtimeEpoch:        1,
@@ -228,7 +233,7 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 			Estimate: estimate,
 		}}
 	}
-	work, err := predictive.BuildRequestWork(estimate, c.capability.KVBlockSize)
+	work, err := predictive.BuildRequestWork(estimate, c.workProfile, c.capability.KVBlockSize)
 	if err != nil {
 		c.mu.Lock()
 		defer c.mu.Unlock()
@@ -260,7 +265,7 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonCounterOverflow, estimate, work, state)}
 	}
 	reservationID := c.nextReservationID + 1
-	cacheCreditTokens := work.Estimate.SelectionInputTokens - work.PrefillComputeTokens
+	cacheCreditTokens := work.PrefillInputTokens - work.PrefillComputeTokens
 	nextCache, cacheCreditLease, valid := spendCachePrefillCredit(c.observation.cache, cacheCreditTokens)
 	if !valid {
 		c.failClosedLocked(ReasonControllerUnavailable)

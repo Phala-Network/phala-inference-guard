@@ -46,6 +46,7 @@ func estimateJSON(
 		BodyBytes:            len(body),
 		MaxOutputTokens:      maxOutputTokens,
 		HasMaxOutputTokens:   hasMaxOutputTokens,
+		BasePromptCount:      shape.PromptBatchSize,
 		DecodeSequences:      shape.DecodeSequences,
 		ExplicitPromptTokens: shape.ExplicitPromptTokens,
 	}
@@ -158,11 +159,13 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 	cost.ApproximateInputTokensKnown = true
 	cost.BoundedDecodeTokens = int64(cfg.BlindOutputTokens)
 	cost.Estimate = predictive.RequestEstimate{
-		SelectionInputTokens:       high,
-		MaximumSequenceInputTokens: high,
-		KVReservationInputTokens:   high,
-		DecodeHorizonTokens:        cost.BoundedDecodeTokens,
-		DecodeSequences:            cost.DecodeSequences,
+		SelectionInputTokens:                     high,
+		MaximumSequenceInputTokens:              high,
+		KVReservationInputTokens:                high,
+		MaximumSequenceKVReservationInputTokens: high,
+		DecodeHorizonTokens:                      cost.BoundedDecodeTokens,
+		BasePromptCount:                          cost.BasePromptCount,
+		DecodeSequences:                          cost.DecodeSequences,
 	}
 	if cost.Estimate.Validate() != nil {
 		cost.UnsupportedReason = "request_estimate_overflow"
@@ -179,26 +182,39 @@ func setTextPredictiveEstimate(cost *Cost, maximumSequenceInput int64) bool {
 	}
 	selection, known := cost.ApproximateInputTokenHint()
 	reservation := int64(0)
+	maximumReservation := int64(0)
 	if cost.ModalityCount > 0 || !known || selection <= 0 {
 		selection = cost.EstimatedInputHigh
 		reservation = cost.EstimatedInputHigh
+		maximumReservation = reservation
 	} else {
 		var ok bool
-		reservation, ok = fixedMarginTokens(
+		reservation, ok = fixedMarginTokensForSequences(
 			selection,
+			cost.BasePromptCount,
 			fixedKVReservationMarginNumerator,
 			fixedKVReservationMarginDenominator,
 		)
 		if !ok {
 			return false
 		}
+		maximumReservation, ok = fixedMarginTokens(
+			maximumSequenceInput,
+			fixedKVReservationMarginNumerator,
+			fixedKVReservationMarginDenominator,
+		)
+		if !ok || maximumReservation > reservation {
+			return false
+		}
 	}
 	cost.Estimate = predictive.RequestEstimate{
-		SelectionInputTokens:       selection,
-		MaximumSequenceInputTokens: maximumSequenceInput,
-		KVReservationInputTokens:   reservation,
-		DecodeHorizonTokens:        cost.BoundedDecodeTokens,
-		DecodeSequences:            cost.DecodeSequences,
+		SelectionInputTokens:                     selection,
+		MaximumSequenceInputTokens:              maximumSequenceInput,
+		KVReservationInputTokens:                reservation,
+		MaximumSequenceKVReservationInputTokens: maximumReservation,
+		DecodeHorizonTokens:                      cost.BoundedDecodeTokens,
+		BasePromptCount:                          cost.BasePromptCount,
+		DecodeSequences:                          cost.DecodeSequences,
 	}
 	return cost.Estimate.Validate() == nil
 }
@@ -255,6 +271,19 @@ func fixedMarginTokens(tokens, numerator, denominator int64) (int64, bool) {
 		return 0, false
 	}
 	return (product + denominator - 1) / denominator, true
+}
+
+func fixedMarginTokensForSequences(
+	tokens,
+	sequences,
+	numerator,
+	denominator int64,
+) (int64, bool) {
+	margin, ok := fixedMarginTokens(tokens, numerator, denominator)
+	if !ok || sequences <= 0 || margin > math.MaxInt64-(sequences-1) {
+		return 0, false
+	}
+	return margin + sequences - 1, true
 }
 
 type jsonFeatures struct {

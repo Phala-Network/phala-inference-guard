@@ -567,7 +567,10 @@ func TestCapabilityProfilesKeepFixedPrefillBandsAcrossContextLengths(t *testing.
 
 func admissionDecisionForProfile(t *testing.T, profile runtimepredictive.BackendCapabilityProfile) coreadmission.DecisionRecord {
 	t.Helper()
-	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{Capability: simulationAdmissionCapability(profile)})
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
+		Capability:  simulationAdmissionCapability(profile),
+		WorkProfile: simulationRequestWorkProfile(),
+	})
 	if err != nil {
 		t.Fatalf("construct admission Controller: %v", err)
 	}

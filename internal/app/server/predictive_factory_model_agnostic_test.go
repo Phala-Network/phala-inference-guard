@@ -9,8 +9,28 @@ import (
 	"testing"
 	"time"
 
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
+
+func TestV01215PredictiveRequestWorkProfileIsBackendProtocolSpecific(t *testing.T) {
+	tests := []struct {
+		backend string
+		want    domainpredictive.InputAccounting
+	}{
+		{backend: "sglang", want: domainpredictive.InputAccountingBasePrompts},
+		{backend: "vllm", want: domainpredictive.InputAccountingDecodeSequences},
+	}
+	for _, test := range tests {
+		profile, err := predictiveRequestWorkProfile(test.backend)
+		if err != nil || profile.InputAccounting != test.want {
+			t.Fatalf("backend=%s profile=%+v error=%v", test.backend, profile, err)
+		}
+	}
+	if _, err := predictiveRequestWorkProfile("other"); err == nil {
+		t.Fatal("unknown backend constructed a request work profile")
+	}
+}
 
 func TestPredictiveStartupAcceptsCoherentSGLangSample(t *testing.T) {
 	sample := telemetry.Sample{

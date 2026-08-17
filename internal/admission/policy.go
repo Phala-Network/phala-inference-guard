@@ -14,7 +14,7 @@ func (p admissionPolicy) withObservedPrefillCost(
 	state ProjectedState,
 	work predictive.RequestWork,
 ) predictive.RequestWork {
-	work.PrefillComputeTokens = p.prefillGate.computeTokens(state, work.Estimate.SelectionInputTokens)
+	work.PrefillComputeTokens = p.prefillGate.computeTokens(state, work.PrefillInputTokens)
 	return work
 }
 
@@ -30,8 +30,11 @@ type policyDecision struct {
 	tpsPostAdmitSequences     int64
 }
 
-func newAdmissionPolicy(capability Capability) (admissionPolicy, error) {
-	minimumWork, err := capability.minimumWork()
+func newAdmissionPolicy(
+	capability Capability,
+	workProfile predictive.RequestWorkProfile,
+) (admissionPolicy, error) {
+	minimumWork, err := capability.minimumWork(workProfile)
 	if err != nil {
 		return admissionPolicy{}, err
 	}

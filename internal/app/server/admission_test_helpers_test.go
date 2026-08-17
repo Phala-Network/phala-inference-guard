@@ -9,6 +9,7 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -63,8 +64,13 @@ func newAdmissionRuntimeForTest(
 	if err != nil {
 		t.Fatalf("construct admission test capability: %v", err)
 	}
+	workProfile, err := predictiveRequestWorkProfile(config.BackendKind)
+	if err != nil {
+		t.Fatalf("construct admission test work profile: %v", err)
+	}
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
 		Capability: admissionCapabilityFromProfile(profile),
+		WorkProfile: workProfile,
 		TPS:        coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
 	})
 	if err != nil {
@@ -116,6 +122,18 @@ func admissionCapabilityFromProfile(profile runtimepredictive.BackendCapabilityP
 		PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
 		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
 	}
+}
+
+func mustPredictiveRequestWorkProfile(
+	t testing.TB,
+	backendKind string,
+) domainpredictive.RequestWorkProfile {
+	t.Helper()
+	profile, err := predictiveRequestWorkProfile(backendKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profile
 }
 
 func publishAdmissionObservationForTest(

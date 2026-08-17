@@ -134,7 +134,8 @@ func TestAdmissionReporterCallbackFailureCannotChangeDecision(t *testing.T) {
 	decision := runtime.Decide(context.Background(), domainpredictive.RequestEstimate{
 		SelectionInputTokens: 1_024, MaximumSequenceInputTokens: 1_024,
 		KVReservationInputTokens: 1_024, DecodeHorizonTokens: 256,
-		DecodeSequences: 1,
+		MaximumSequenceKVReservationInputTokens: 1_024,
+		BasePromptCount: 1, DecodeSequences: 1,
 	})
 	if !decision.Record.Admitted() || decision.Reservation == nil || controller.Snapshot(clock.Now()).State.LiveReservations != 1 {
 		t.Fatalf("reporter callback changed admission: decision=%+v state=%+v", decision, controller.Snapshot(clock.Now()).State)
@@ -149,7 +150,8 @@ func TestAdmissionResponseEOFAndOuterDeferMutateTerminalOnce(t *testing.T) {
 	decision := runtime.Decide(context.Background(), domainpredictive.RequestEstimate{
 		SelectionInputTokens: 1_024, MaximumSequenceInputTokens: 1_024,
 		KVReservationInputTokens: 1_024, DecodeHorizonTokens: 256,
-		DecodeSequences: 1,
+		MaximumSequenceKVReservationInputTokens: 1_024,
+		BasePromptCount: 1, DecodeSequences: 1,
 	})
 	if decision.Reservation == nil || !decision.Reservation.MarkForwarded() || !decision.Reservation.MarkFirstByte() {
 		t.Fatalf("prepare response lifecycle: %+v", decision)
@@ -400,7 +402,12 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 		Decision: coreadmission.DecisionRecord{
 			Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonKVCapacity,
 			Scope:    coreadmission.ProtectionLoad,
-			Estimate: domainpredictive.RequestEstimate{MaximumSequenceInputTokens: 900, DecodeSequences: 4},
+			Estimate: domainpredictive.RequestEstimate{
+				SelectionInputTokens: 1_500, MaximumSequenceInputTokens: 900,
+				KVReservationInputTokens: 1_600, MaximumSequenceKVReservationInputTokens: 1_000,
+				BasePromptCount: 2, DecodeSequences: 4,
+			},
+			Work: domainpredictive.RequestWork{PrefillInputTokens: 1_500, PrefillComputeTokens: 1_200},
 			State: coreadmission.ProjectedState{
 				UnobservedSequences: 2,
 				TPS: coreadmission.TPSSnapshot{
@@ -418,6 +425,8 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 	for _, required := range []string{
 		"action=protect", "reason=kv_capacity", "scope=load", "enforced=true",
 		"maximum_sequence_input_tokens=900",
+		"base_prompt_count=2", "prefill_input_tokens=1500", "prefill_compute_tokens=1200",
+		"maximum_sequence_kv_reservation_input_tokens=1000",
 		"tps_reference=20.000000", "tps_window_ready=true", "tps_sequence_limit=9",
 		"tps_current_sequences=9", "tps_post_admit_sequences=10", "tps_unobserved_sequences=2",
 		"decode_sequences=4",

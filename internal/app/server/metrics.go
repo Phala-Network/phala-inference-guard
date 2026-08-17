@@ -148,6 +148,9 @@ func applyAdmissionDecisionMetrics(
 	input.AdmissionPressureSource = admissionPressureSource(decision.Reason)
 	input.AdmissionSelectionInputTokens = decision.Estimate.SelectionInputTokens
 	input.AdmissionMaximumSequenceInputTokens = decision.Estimate.MaximumSequenceInputTokens
+	input.AdmissionBasePromptCount = decision.Estimate.BasePromptCount
+	input.AdmissionPrefillInputTokens = decision.Work.PrefillInputTokens
+	input.AdmissionMaximumSequenceKVReservation = decision.Estimate.MaximumSequenceKVReservationInputTokens
 	input.AdmissionDecodeSequences = decision.Estimate.DecodeSequences
 	input.AdmissionReservedTokens = decision.Work.TotalKVTokens
 	if decision.HardKVLimitTokens >= decision.State.EffectiveKVTokens {

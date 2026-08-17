@@ -114,6 +114,7 @@ func runScenarioWithTPSReference(
 		capability := simulationAdmissionCapability(profile)
 		controller, controllerErr := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
 			Capability: capability,
+			WorkProfile: simulationRequestWorkProfile(),
 			TPS:        coreadmission.TPSPolicyConfig{Reference: tpsReference},
 		})
 		if controllerErr != nil {
@@ -715,11 +716,13 @@ func (r *scenarioRunner) terminateAll(at time.Duration, cause coreadmission.Term
 
 func simulationRequestEstimate(request requestSpec) domainpredictive.RequestEstimate {
 	estimate := domainpredictive.RequestEstimate{
-		SelectionInputTokens:       request.selectionInput,
-		MaximumSequenceInputTokens: request.selectionInput,
-		KVReservationInputTokens:   request.safetyInput,
-		DecodeHorizonTokens:        request.decodeHorizon,
-		DecodeSequences:            1,
+		SelectionInputTokens:                     request.selectionInput,
+		MaximumSequenceInputTokens:              request.selectionInput,
+		KVReservationInputTokens:                request.safetyInput,
+		MaximumSequenceKVReservationInputTokens: request.safetyInput,
+		DecodeHorizonTokens:                      request.decodeHorizon,
+		BasePromptCount:                          1,
+		DecodeSequences:                          1,
 	}
 	if err := estimate.Validate(); err != nil {
 		panic(fmt.Sprintf("simulation request estimate for %q: %v", request.id, err))
@@ -728,11 +731,21 @@ func simulationRequestEstimate(request requestSpec) domainpredictive.RequestEsti
 }
 
 func simulationRequestWork(request requestSpec) domainpredictive.RequestWork {
-	work, err := domainpredictive.BuildRequestWork(simulationRequestEstimate(request), simulationBlockSize)
+	work, err := domainpredictive.BuildRequestWork(
+		simulationRequestEstimate(request),
+		simulationRequestWorkProfile(),
+		simulationBlockSize,
+	)
 	if err != nil {
 		panic(fmt.Sprintf("simulation request work for %q: %v", request.id, err))
 	}
 	return work
+}
+
+func simulationRequestWorkProfile() domainpredictive.RequestWorkProfile {
+	return domainpredictive.RequestWorkProfile{
+		InputAccounting: domainpredictive.InputAccountingBasePrompts,
+	}
 }
 
 func simulationReservedTokens(request requestSpec) int64 {

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
+	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
@@ -39,9 +40,14 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		return nil, err
 	}
 	profile := initialization.Profile
+	workProfile, err := predictiveRequestWorkProfile(startup.BackendKind)
+	if err != nil {
+		return nil, err
+	}
 	log.Printf(
-		"predictive_capability event=profile_initialized backend_kind=%s schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
+		"predictive_capability event=profile_initialized backend_kind=%s input_accounting=%s schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
 		startup.BackendKind,
+		workProfile.InputAccounting,
 		profile.SchemaVersion,
 		profile.Source,
 		initialization.Reason,
@@ -57,20 +63,24 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		profile.PrefillAggregateBudgetTokens,
 		cfg.PredictiveTPSReference,
 	)
-	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{Capability: coreadmission.Capability{
-		Fingerprint:                  profile.ModelIdentitySHA256,
-		MaxModelLenTokens:            profile.MaxModelLenTokens,
-		KVCapacityTokens:             profile.KVCapacityTokens,
-		KVBlockSize:                  profile.KVBlockSize,
-		KVHardLimitTokens:            profile.KVHardLimitTokens,
-		MaximumInputTokens:           profile.MaximumAdmissibleInputTokens,
-		MinimumDecodeHorizonTokens:   runtimepredictive.DefaultCapabilityDecodeHorizonTokens,
-		PrefillRegularTokens:         profile.PrefillRegularTokens,
-		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
-		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
-		PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
-		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
-	}, TPS: coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference}})
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
+		Capability: coreadmission.Capability{
+			Fingerprint:                  profile.ModelIdentitySHA256,
+			MaxModelLenTokens:            profile.MaxModelLenTokens,
+			KVCapacityTokens:             profile.KVCapacityTokens,
+			KVBlockSize:                  profile.KVBlockSize,
+			KVHardLimitTokens:            profile.KVHardLimitTokens,
+			MaximumInputTokens:           profile.MaximumAdmissibleInputTokens,
+			MinimumDecodeHorizonTokens:   runtimepredictive.DefaultCapabilityDecodeHorizonTokens,
+			PrefillRegularTokens:         profile.PrefillRegularTokens,
+			PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
+			PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
+			PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
+			PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
+		},
+		WorkProfile: workProfile,
+		TPS:         coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("construct admission Controller: %w", err)
 	}
@@ -134,6 +144,19 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	}
 	runtime.observer = observer
 	return runtime, nil
+}
+
+func predictiveRequestWorkProfile(backendKind string) (domainpredictive.RequestWorkProfile, error) {
+	profile := domainpredictive.RequestWorkProfile{}
+	switch backendKind {
+	case "sglang":
+		profile.InputAccounting = domainpredictive.InputAccountingBasePrompts
+	case "vllm":
+		profile.InputAccounting = domainpredictive.InputAccountingDecodeSequences
+	default:
+		return domainpredictive.RequestWorkProfile{}, fmt.Errorf("predictive backend kind is invalid")
+	}
+	return profile, nil
 }
 
 func predictiveBackendMetricsURL(cfg config) (string, error) {
