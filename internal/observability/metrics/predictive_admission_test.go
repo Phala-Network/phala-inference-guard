@@ -242,6 +242,14 @@ func TestWritePredictiveAdmissionNormalizesInvalidModeAndNilHistograms(t *testin
 	}
 }
 
+func TestV01215WritePredictiveAdmissionExposesTPSProxyValidity(t *testing.T) {
+	var out bytes.Buffer
+	WritePredictiveAdmission(&out, PredictiveAdmissionInput{})
+	if got := out.String(); !strings.Contains(got, "pig_predictive_request_aware_mean_active_tps_proxy_valid 0") {
+		t.Fatalf("mean-active TPS proxy validity missing:\n%s", got)
+	}
+}
+
 func TestWritePredictiveAdmissionBoundsRequestAwareLabels(t *testing.T) {
 	var out bytes.Buffer
 	WritePredictiveAdmission(&out, PredictiveAdmissionInput{

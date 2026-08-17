@@ -418,7 +418,8 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 			State: coreadmission.ProjectedState{
 				UnobservedSequences: 2,
 				TPS: coreadmission.TPSSnapshot{
-					Enabled: true, Ready: true, Reference: 20, AggregateTPS: 180, MeanActiveTPS: 22.5,
+					Enabled: true, Ready: true, Reference: 20,
+					QualifiedSequenceSamples: 4, AggregateTPS: 180, MeanActiveTPS: 22.5,
 				},
 			},
 			TPSSequenceLimit: 9, TPSCurrentSequences: 9, TPSPostAdmitSequences: 10,
@@ -438,12 +439,23 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 		"maximum_sequence_kv_reservation_input_tokens=1000",
 		"input_kv_tokens=1600", "first_byte_coverable_input_kv_tokens=400",
 		"first_byte_pending_input_kv_tokens=1200", "future_kv_tokens=800",
-		"tps_reference=20.000000", "tps_window_ready=true", "tps_sequence_limit=9",
+		"tps_reference=20.000000", "tps_window_ready=true",
+		"tps_window_qualified_sequence_samples=4", "tps_sequence_limit=9",
 		"tps_current_sequences=9", "tps_post_admit_sequences=10", "tps_unobserved_sequences=2",
 		"decode_sequences=4",
 	} {
 		if !strings.Contains(line, required) {
 			t.Fatalf("admission log missing %q: %s", required, line)
 		}
+	}
+}
+
+func TestV01215AdmissionGenerationTPSDoesNotInventOneSequence(t *testing.T) {
+	aggregate, mean := admissionGenerationTPS(coreadmission.ProjectedState{
+		GenerationDelta:     25,
+		ObservationInterval: 500 * time.Millisecond,
+	})
+	if aggregate != 50 || mean != 0 {
+		t.Fatalf("completion-between-polls TPS aggregate=%v mean=%v", aggregate, mean)
 	}
 }
