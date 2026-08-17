@@ -91,6 +91,9 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		Waiting:               int64(startup.Waiting),
 		GenerationTokensTotal: startup.Generation,
 		PreemptionsTotal:      startup.Preemptions,
+		CacheQueryTokensTotal: startup.CacheQueryTokens,
+		CacheHitTokensTotal:   startup.CacheHitTokens,
+		CacheCountersValid:    startup.CacheCountersValid,
 		RuntimeStartTime:      startup.RuntimeStartTime,
 	})
 	if !publication.Accepted {

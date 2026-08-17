@@ -61,11 +61,38 @@ func (g prefillGate) classify(selectionTokens int64) PrefillClass {
 	}
 }
 
+func (g prefillGate) computeTokens(state ProjectedState, selectionTokens int64) int64 {
+	if selectionTokens <= 0 {
+		return 0
+	}
+	credit := float64(0)
+	if state.CacheObservationValid && state.PreemptionDelta == 0 {
+		credit = state.CacheCreditFraction
+	}
+	if !finiteNonnegative(credit) || credit > cachePrefillMaximumHitCredit {
+		credit = 0
+	}
+	computed := int64(math.Ceil(float64(selectionTokens) * (1 - credit)))
+	if computed < 1 {
+		computed = 1
+	}
+	if computed > selectionTokens {
+		computed = selectionTokens
+	}
+	if g.classify(selectionTokens) == PrefillWeighted && computed < g.regularTokens {
+		computed = g.regularTokens
+	}
+	return computed
+}
+
 func (g prefillGate) evaluate(state ProjectedState, work predictive.RequestWork) (gateDecision, PrefillClass, int64) {
 	class := g.classify(work.Estimate.SelectionInputTokens)
+	if work.PrefillComputeTokens <= 0 || work.PrefillComputeTokens > work.Estimate.SelectionInputTokens {
+		return gateDecision{reason: ReasonInvalidRequest}, class, 0
+	}
 	postPending, ok := addNonnegativeInt64(
 		state.PendingPrefillTokens,
-		work.Estimate.SelectionInputTokens,
+		work.PrefillComputeTokens,
 	)
 	if !ok {
 		return gateDecision{reason: ReasonResourceExhausted}, class, 0

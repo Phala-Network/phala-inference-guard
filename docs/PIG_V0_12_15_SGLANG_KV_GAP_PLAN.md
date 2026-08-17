@@ -280,6 +280,25 @@ counters with the required input/device/host/storage modes. vLLM upstream source
 established the metric types, per-engine labels, and update sites. Cache metric
 source/update semantics and focused red/green evidence are pending.
 
+Exact-version source was resolved to SGLang commit
+`c4271c3fe1262fc2adbd162c33b25de5255251c5`. Its
+`metrics_collector.py` declares and pre-seeds the four effective Prefill counter
+modes; `metrics_reporter.py` publishes effective input as logged input minus
+reprocessed input and derives cache hit rate after excluding retraction
+re-counts. The f563 scrape confirms only TP0 carries non-zero cumulative values
+while the other TP ranks expose pre-seeded zero views, requiring maximum rather
+than sum aggregation per mode.
+
+Focused red source `b0d4ab2` was pushed and executed only in the f563 isolated
+workbench. The expected parser, Controller cache-cost, vLLM TYPE, and SGLang
+KV-gap assertions failed for their intended behavioral reasons. Evidence:
+
+```text
+/var/volatile/dstack/persistent/pig-v01215-workbench/red-b0d4ab2.log
+sha256 c65474696392d9223d0e38aebf92dc743d65b318ef8608560994bb58af5e1f36
+exit 1 (expected red)
+```
+
 ### Pass 2: safety and lifecycle
 
 Status: pending.
@@ -289,3 +308,10 @@ Status: pending.
 Status: pending. No v0.12.15 image has been built or uploaded, production still
 runs the accepted v0.12.14 image, and the exact f563 `0.8.13` rollback
 configuration has not yet been reconstructed and revalidated.
+
+Repository deployment evidence identifies the former f563 baseline image as
+`ghcr.io/phala-network/phala-inference-guard:v0.8.13@sha256:aec805d6e7bbfd82375199d7950ecfbf6148e501c64822dcb46102a9e24a2ea4`
+with the DeepSeek-v4 SGLang backend, 500 ms dynamic polling, global limit 15,
+zero queue wait, dynamic TPS red/yellow thresholds, and TTFT disabled. This is
+historical reconstruction only; live deployment-history and endpoint
+revalidation are still required before it can become the update fallback.

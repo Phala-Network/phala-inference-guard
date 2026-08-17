@@ -10,6 +10,14 @@ type admissionPolicy struct {
 	tpsGate     tpsGate
 }
 
+func (p admissionPolicy) withObservedPrefillCost(
+	state ProjectedState,
+	work predictive.RequestWork,
+) predictive.RequestWork {
+	work.PrefillComputeTokens = p.prefillGate.computeTokens(state, work.Estimate.SelectionInputTokens)
+	return work
+}
+
 type policyDecision struct {
 	action                    Action
 	reason                    Reason

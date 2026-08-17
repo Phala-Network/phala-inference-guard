@@ -31,6 +31,9 @@ type predictiveBackendStartup struct {
 	Waiting             int
 	Preemptions         uint64
 	Generation          uint64
+	CacheQueryTokens    uint64
+	CacheHitTokens      uint64
+	CacheCountersValid  bool
 	RuntimeStartTime    float64
 	ObservedAt          time.Time
 }
@@ -118,6 +121,9 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 		Waiting:             sample.Waiting,
 		Preemptions:         sample.Preemptions,
 		Generation:          sample.Generation,
+		CacheQueryTokens:    sample.CacheQueryTokens,
+		CacheHitTokens:      sample.CacheHitTokens,
+		CacheCountersValid:  sample.CacheTokensValid,
 		RuntimeStartTime:    sample.RuntimeStartTime,
 		ObservedAt:          observedAt,
 	}, nil

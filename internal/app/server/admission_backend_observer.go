@@ -217,6 +217,9 @@ func (o *admissionBackendObserver) observation(
 		Waiting:               int64(sample.Waiting),
 		GenerationTokensTotal: sample.Generation,
 		PreemptionsTotal:      sample.Preemptions,
+		CacheQueryTokensTotal: sample.CacheQueryTokens,
+		CacheHitTokensTotal:   sample.CacheHitTokens,
+		CacheCountersValid:    sample.CacheTokensValid,
 		RuntimeStartTime:      sample.RuntimeStartTime,
 	}, disposition
 }

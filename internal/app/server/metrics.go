@@ -112,6 +112,10 @@ func (s *proxyServer) predictiveAdmissionMetricsInput(
 	input.VirtualDecodeSequences = projectedDecodeSequences(snapshot.Capacity.State)
 	input.ForwardedPendingPrefills = nonnegativeInt(snapshot.Capacity.State.PendingPrefillSequences)
 	input.ForwardedPendingPrefillTokens = snapshot.Capacity.State.PendingPrefillTokens
+	input.CacheObservationValid = snapshot.Capacity.State.CacheObservationValid
+	input.CacheHitFraction = snapshot.Capacity.State.CacheHitFraction
+	input.CacheCreditFraction = snapshot.Capacity.State.CacheCreditFraction
+	input.CacheEvidenceTokens = snapshot.Capacity.State.CacheEvidenceTokens
 	input.PredictionDuration = snapshot.PredictionDuration
 	applyTPSCapacityMetrics(&input, snapshot.Capacity)
 	if report.HasLastDecision {
@@ -151,7 +155,7 @@ func applyAdmissionDecisionMetrics(
 	input.AdmissionEffectiveSequences = projectedDecodeSequences(decision.State)
 	input.AdmissionAggregateTPS, input.AdmissionMeanActiveTPS = admissionGenerationTPS(decision.State)
 	input.AdmissionPrefillClass = string(decision.PrefillClass)
-	input.AdmissionEstimatedPrefillTokens = decision.Estimate.SelectionInputTokens
+	input.AdmissionEstimatedPrefillTokens = decision.Work.PrefillComputeTokens
 	input.AdmissionPendingPrefillSequences = nonnegativeInt(decision.State.PendingPrefillSequences)
 	input.AdmissionPendingPrefillTokens = decision.PendingPrefillTokensBefore
 	input.AdmissionPostAdmitPendingPrefillTokens = decision.PendingPrefillTokensAfter

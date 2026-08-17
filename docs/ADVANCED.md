@@ -1,6 +1,6 @@
 # PIG Advanced Configuration
 
-This document describes the `PIG-v0.12.14` candidate source contract. The assigned
+This document describes the `PIG-v0.12.15` candidate source contract. The assigned
 source identity does not by itself imply an accepted registry image or production
 deployment. The loader exposes bounded overrides for controlled tests, but
 parser capability does not define what belongs in production Compose.
@@ -63,6 +63,15 @@ not alter admission policy.
 The 1500-ms value is observation freshness, not a post-rejection hold. A
 current canonical probe recomputes Router-visible capacity on every inspection;
 the last-reject timestamp is telemetry only.
+
+Cache-aware Prefill estimation has no production configuration knob. PIG reads
+vLLM token-level prefix query/hit counters or SGLang effective input/hit
+counters through the selected backend adapter. It requires consecutive valid
+counter samples and at least 4096 recent query tokens, carries a valid
+observation for at most 10 seconds, and caps hit credit at 75%. Missing,
+low-volume, reset, stale, or backend-incoherent cache evidence is a cold
+fallback, not a backend failure. The credit never changes KV reservation,
+maximum input, or the regular/weighted/exclusive/quiescent class.
 
 `PREDICTIVE_TPS_REFERENCE` is not an upstream capability override. Set it only
 when the deployment has a real long-run per-user Decode TPS requirement, for

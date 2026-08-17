@@ -28,14 +28,15 @@ type reservation struct {
 
 func (r reservation) contribution() (reservationOverlay, bool) {
 	if r.id == 0 || r.runtimeEpoch == 0 || r.work.TotalKVTokens <= 0 ||
-		r.work.FutureKVTokens < 0 || r.work.Estimate.SelectionInputTokens <= 0 {
+		r.work.FutureKVTokens < 0 || r.work.Estimate.SelectionInputTokens <= 0 ||
+		r.work.PrefillComputeTokens <= 0 || r.work.PrefillComputeTokens > r.work.Estimate.SelectionInputTokens {
 		return reservationOverlay{}, false
 	}
 	switch r.phase {
 	case reservationReserved, reservationForwardedPrefill:
 		contribution := reservationOverlay{
 			kvTokens:                r.work.TotalKVTokens,
-			pendingPrefillTokens:    r.work.Estimate.SelectionInputTokens,
+			pendingPrefillTokens:    r.work.PrefillComputeTokens,
 			pendingPrefillSequences: 1,
 			liveReservations:        1,
 		}

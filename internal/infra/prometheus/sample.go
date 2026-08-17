@@ -15,6 +15,8 @@ var indexedAdmissionMetrics = metricNameSet(
 	"vllm:num_requests_waiting",
 	"vllm:num_preemptions_total",
 	"vllm:generation_tokens_total",
+	"vllm:prefix_cache_queries_total",
+	"vllm:prefix_cache_hits_total",
 	"sglang:max_total_num_tokens",
 	"sglang:page_size",
 	"sglang:num_pages",
@@ -24,6 +26,7 @@ var indexedAdmissionMetrics = metricNameSet(
 	"sglang:num_running_reqs",
 	"sglang:num_queue_reqs",
 	"sglang:realtime_tokens_total",
+	"sglang:prefill_effective_tokens_total",
 	"sglang:num_retracted_requests_total",
 	"sglang:num_retracted_reqs",
 )

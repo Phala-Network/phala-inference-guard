@@ -146,6 +146,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	var generationDelta, preemptionDelta uint64
 	var observationInterval time.Duration
 	var previousRunning int64
+	var cache cachePrefillObservation
 	if runtimeReset {
 		if c.runtimeEpoch == math.MaxUint64 {
 			c.failClosedLocked(ReasonCounterOverflow)
@@ -163,6 +164,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			preemptionDelta = observation.PreemptionsTotal - c.observation.observation.PreemptionsTotal
 			observationInterval = observation.ObservedAt.Sub(c.observation.observation.ObservedAt)
 			previousRunning = c.observation.observation.Running
+			cache = nextCachePrefillObservation(c.observation, observation)
 		}
 		nextOverlay, ok := c.reconciledOverlayLocked(window.eventSequence)
 		if !ok {
@@ -196,6 +198,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		interval:          observationInterval,
 		previousRunning:   previousRunning,
 		localActiveDecode: c.overlay.localActiveDecode,
+		cache:             cache,
 	}
 	c.hasObservation = true
 	return PublicationResult{
@@ -231,6 +234,7 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 	if !ok {
 		return AdmissionResult{Decision: c.unavailableDecisionLocked(reason, estimate, work, state)}
 	}
+	work = c.policy.withObservedPrefillCost(state, work)
 	policy := c.policy.evaluate(state, work)
 	decision := c.decisionLocked(policy, estimate, work, state)
 	if policy.action != ActionAdmit {
@@ -301,10 +305,11 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 			RuntimeEpoch:        c.runtimeEpoch,
 		}
 	}
+	minimumWork := c.policy.withObservedPrefillCost(state, c.policy.minimumWork)
 	decision := c.decisionLocked(
-		c.policy.evaluate(state, c.policy.minimumWork),
+		c.policy.evaluate(state, minimumWork),
 		c.policy.minimumWork.Estimate,
-		c.policy.minimumWork,
+		minimumWork,
 		state,
 	)
 	return CapacitySnapshot{

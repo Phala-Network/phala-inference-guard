@@ -71,6 +71,10 @@ type ProjectedState struct {
 	GenerationDelta           uint64
 	PreemptionDelta           uint64
 	ObservationInterval       time.Duration
+	CacheObservationValid     bool
+	CacheHitFraction          float64
+	CacheCreditFraction       float64
+	CacheEvidenceTokens       uint64
 	TPS                       TPSSnapshot
 }
 

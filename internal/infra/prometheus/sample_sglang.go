@@ -82,7 +82,67 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 		GenerationValid:  generationValid,
 	}
 	adaptSGLangKV(index, &sample)
+	adaptSGLangCache(index, modelName, &sample)
 	return sample
+}
+
+func adaptSGLangCache(index metricIndex, modelName string, sample *telemetry.Sample) {
+	const metricName = "sglang:prefill_effective_tokens_total"
+	if sample == nil || modelName == "" || !index.declaredType(metricName, "counter") ||
+		!index.hasSamples(metricName) {
+		return
+	}
+	modes := map[string]uint64{
+		"input":       0,
+		"device_hit":  0,
+		"host_hit":    0,
+		"storage_hit": 0,
+	}
+	present := make(map[string]bool, len(modes))
+	dpRank := ""
+	dpRankSet := false
+	for _, item := range index.samples[metricName] {
+		if !item.labelsValid || item.labels["model_name"] != modelName ||
+			item.labels["engine_type"] != "unified" || item.labels["priority"] != "" {
+			return
+		}
+		candidateDP := item.labels["dp_rank"]
+		if dpRankSet && candidateDP != dpRank {
+			return
+		}
+		dpRank = candidateDP
+		dpRankSet = true
+		mode := item.labels["mode"]
+		if _, ok := modes[mode]; !ok {
+			return
+		}
+		value, valid := exactNonNegativeMetricUint64(item.value, item.valueValid)
+		if !valid {
+			return
+		}
+		if !present[mode] || value > modes[mode] {
+			modes[mode] = value
+		}
+		present[mode] = true
+	}
+	for mode := range modes {
+		if !present[mode] {
+			return
+		}
+	}
+	hits := modes["device_hit"]
+	for _, mode := range []string{"host_hit", "storage_hit"} {
+		if hits > (1<<53)-modes[mode] {
+			return
+		}
+		hits += modes[mode]
+	}
+	if modes["input"] > (1<<53)-hits {
+		return
+	}
+	sample.CacheQueryTokens = modes["input"] + hits
+	sample.CacheHitTokens = hits
+	sample.CacheTokensValid = true
 }
 
 func parseSGLangRequestGauge(index metricIndex, name string, value float64, present bool) (int, bool) {
@@ -175,7 +235,10 @@ func adaptSGLangKV(index metricIndex, sample *telemetry.Sample) {
 		return
 	}
 	used := capacity - available - evictable
-	if directUsed != used {
+	// SGLang reports directUsed as active locked KV only. The derived value also
+	// includes protected or session-held slots, so directUsed is a lower bound.
+	// A larger direct value proves the scrape is torn in an unsafe direction.
+	if directUsed > used {
 		return
 	}
 

@@ -6,10 +6,10 @@ upstream call, combines that estimate with one Controller-owned coherent backend
 observation and every live reservation, and decides whether the post-admit state
 can preserve service quality.
 
-Current candidate source identity: `PIG-v0.12.14`. It is not an accepted or
-published image until the vLLM/SGLang adapter plan passes every release gate.
-The last accepted Linux/amd64 image remains `PIG-v0.12.13`, published by digest as
-`ghcr.io/phala-network/phala-inference-guard@sha256:3e714440e683ee2efdc1b7634e427f762b839faaf65a38723d14f8980f0ddd74`.
+Current candidate source identity: `PIG-v0.12.15`. It is not an accepted or
+published image until the cache-aware backend contract plan passes every release
+gate. The last accepted Linux/amd64 image remains `PIG-v0.12.14`, published by
+digest as `ghcr.io/phala-network/phala-inference-guard@sha256:b118bacd259157ee0529dfae7fcbcfa8a99eca5c1c31f1144e7d5e5e954453cb`.
 Source and image acceptance do not by themselves imply a production deployment.
 
 The objective is QoS-constrained throughput, not a fixed request-count limit.
@@ -50,6 +50,13 @@ PIG does not route between backends, inspect prefix cache contents, learn KV or
 Prefill policy, rewrite request bodies, inject priority, classify customer
 tiers, or protect TTFT. Feedback is observation and reconciliation data; it
 does not create a second post-response admission controller.
+
+PIG may consume recent backend-native token counters to estimate the workload's
+cache-aware Prefill compute fraction. This is not a prefix lookup or a promise
+that the next request will hit. Cache credit is bounded, expires, and falls back
+to cold on missing, low-volume, reset, or invalid evidence. It changes only the
+aggregate Prefill compute charge: complete estimated input remains authoritative
+for context validation, long-input class, and KV reservation.
 
 ## Production configuration
 
@@ -165,14 +172,15 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image acceptance
-run on the dedicated c21 Linux workbench. Exact executable source `e260449` is
-the last accepted `PIG-v0.12.13` source and remains published under both
-`0.12.13` and immutable source tag `0.12.13-e2604495fdd5` at the accepted digest
-above. The `PIG-v0.12.14` candidate remains unpublished until the active adapter
-plan records complete source and live SGLang acceptance. No Compose, deployment,
+run in an isolated temporary workbench on f563. Exact executable source `7896a8c` is
+the last accepted `PIG-v0.12.14` source and remains published under both
+`0.12.14` and immutable source tag `0.12.14-7896a8ccd4fe` at the accepted digest
+above. The `PIG-v0.12.15` correction remains unpublished until its active plan
+records complete source and live SGLang acceptance. No Compose, deployment,
 Router, or live-traffic action is implied by source identity alone.
 
 - [v0.12.13 sustained TPS reference and branch cleanup](docs/PIG_V0_12_13_SUSTAINED_TPS_REFERENCE_AND_BRANCH_CLEANUP_PLAN.md)
 - [v0.12.14 vLLM and SGLang backend adapters](docs/PIG_V0_12_14_VLLM_SGLANG_ADAPTER_PLAN.md)
+- [v0.12.15 cache-aware backend contract and release](docs/PIG_V0_12_15_SGLANG_KV_GAP_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

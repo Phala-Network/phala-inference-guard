@@ -10,6 +10,7 @@ type observedState struct {
 	interval          time.Duration
 	previousRunning   int64
 	localActiveDecode int64
+	cache             cachePrefillObservation
 }
 
 type reservationOverlay struct {
@@ -27,6 +28,9 @@ type reservationOverlay struct {
 type stateProjector struct{}
 
 func (stateProjector) project(observed observedState, overlay reservationOverlay) (ProjectedState, bool) {
+	if !validCachePrefillObservation(observed.cache) {
+		return ProjectedState{}, false
+	}
 	effectiveKV, ok := addNonnegativeInt64(observed.observation.UsedKVTokens, overlay.kvTokens)
 	if !ok {
 		return ProjectedState{}, false
@@ -49,6 +53,10 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		GenerationDelta:           observed.generationDelta,
 		PreemptionDelta:           observed.preemptionDelta,
 		ObservationInterval:       observed.interval,
+		CacheObservationValid:     observed.cache.valid,
+		CacheHitFraction:          observed.cache.hitFraction,
+		CacheCreditFraction:       observed.cache.creditFraction,
+		CacheEvidenceTokens:       observed.cache.evidenceTokens,
 	}
 	if !validProjectedState(state) {
 		return ProjectedState{}, false
@@ -71,5 +79,11 @@ func validProjectedState(state ProjectedState) bool {
 		state.UnobservedSequences <= demandCapacity && state.LiveReservations >= 0 &&
 		state.ResidualDebts >= 0 && state.RawRunning >= 0 && state.RawWaiting >= 0 &&
 		state.PreviousRawRunning >= 0 && state.ObservationInterval >= 0 &&
+		finiteNonnegative(state.CacheHitFraction) && state.CacheHitFraction <= 1 &&
+		finiteNonnegative(state.CacheCreditFraction) &&
+		state.CacheCreditFraction <= cachePrefillMaximumHitCredit &&
+		state.CacheCreditFraction <= state.CacheHitFraction &&
+		(!state.CacheObservationValid || state.CacheEvidenceTokens >= cachePrefillMinimumEvidenceTokens) &&
+		(state.CacheObservationValid || (state.CacheHitFraction == 0 && state.CacheCreditFraction == 0 && state.CacheEvidenceTokens == 0)) &&
 		validTPSSnapshot(state.TPS)
 }

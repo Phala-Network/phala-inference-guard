@@ -59,6 +59,7 @@ func AggregateSamples(samples []Sample) Sample {
 		WaitingValid:     true,
 		PreemptionsValid: true,
 		GenerationValid:  true,
+		CacheTokensValid: true,
 	}
 	for _, sample := range samples {
 		aggregated.Running += sample.Running
@@ -76,6 +77,14 @@ func AggregateSamples(samples []Sample) Sample {
 		}
 		aggregated.Generation += sample.Generation
 		aggregated.GenerationValid = aggregated.GenerationValid && sample.GenerationValid
+		if aggregated.CacheQueryTokens > ^uint64(0)-sample.CacheQueryTokens ||
+			aggregated.CacheHitTokens > ^uint64(0)-sample.CacheHitTokens {
+			aggregated.CacheTokensValid = false
+		} else {
+			aggregated.CacheQueryTokens += sample.CacheQueryTokens
+			aggregated.CacheHitTokens += sample.CacheHitTokens
+		}
+		aggregated.CacheTokensValid = aggregated.CacheTokensValid && sample.CacheTokensValid
 		if sample.GenerationTPSDirect {
 			aggregated.GenerationTPS += sample.GenerationTPS
 			aggregated.GenerationTPSDirect = true

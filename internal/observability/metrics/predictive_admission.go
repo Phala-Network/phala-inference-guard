@@ -43,6 +43,10 @@ type PredictiveAdmissionInput struct {
 	VirtualDecodeSequences                 int
 	ForwardedPendingPrefills               int
 	ForwardedPendingPrefillTokens          int64
+	CacheObservationValid                  bool
+	CacheHitFraction                       float64
+	CacheCreditFraction                    float64
+	CacheEvidenceTokens                    uint64
 	FailureClose                           uint64
 	FailureDecide                          uint64
 	FailureForward                         uint64
@@ -171,6 +175,10 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_virtual_decode_sequences %d\n", input.VirtualDecodeSequences)
 	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefills %d\n", input.ForwardedPendingPrefills)
 	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefill_tokens %d\n", input.ForwardedPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_cache_observation_valid %d\n", num.BoolAsInt(input.CacheObservationValid))
+	fmt.Fprintf(w, "pig_predictive_cache_hit_fraction %.6f\n", input.CacheHitFraction)
+	fmt.Fprintf(w, "pig_predictive_cache_credit_fraction %.6f\n", input.CacheCreditFraction)
+	fmt.Fprintf(w, "pig_predictive_cache_evidence_tokens %d\n", input.CacheEvidenceTokens)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_active %d\n", num.BoolAsInt(input.RouterBackpressure.Active))
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_applied %d\n", num.BoolAsInt(input.RouterBackpressure.Applied))
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_state_info{scope=%q,reason=%q,source=%q} 1\n", backpressureScope, backpressureReason, backpressureSource)

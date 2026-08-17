@@ -12,9 +12,9 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.14 keeps the v0.12.13 admission contract while isolating vLLM and
-// SGLang metric semantics behind framework-specific backend adapters.
-const version = "PIG-v0.12.14"
+// v0.12.15 corrects backend metric contracts and applies bounded recent cache
+// evidence only to Prefill compute cost, never to KV or long-input classes.
+const version = "PIG-v0.12.15"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 
