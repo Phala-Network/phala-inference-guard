@@ -30,6 +30,76 @@ could understate non-reclaimable KV. It must also avoid treating evictable
 prefix-cache KV as occupied hard capacity merely because the cache hit rate is
 high.
 
+### 1.1 Non-negotiable execution contract
+
+The following requirements apply to every v0.12.15 source revision, candidate
+image, and production transition:
+
+- The optimization objective is maximum sustained SLO-compliant completion
+  throughput and GPU utilization, not minimum concurrency or a perfect
+  instantaneous TPS floor. Occasional low-TPS observations are acceptable;
+  sustained avoidable degradation, excess preemption, or lower long-window
+  goodput is not.
+- Admission is predictive and occurs before forwarding. Backend metrics,
+  completion results, and cache counters may affect only the next decision.
+  They must never retroactively justify a forwarded request or create a delayed
+  cooldown after current capacity has recovered.
+- Request size comes from one bounded, model-independent fast-tokenizer pass
+  over the supported request body. Reuse the existing bounded body parse; do
+  not add a second JSON parse, model-specific tokenizer assets, a prefix lookup,
+  or a network call. Unsupported, truncated, or oversized bodies use the
+  documented conservative fallback. The complete estimated input, not a
+  cache-discounted value, drives context fit, KV reservation, and long-input
+  class. The hot path must be benchmarked, and even the accepted extreme body
+  must remain below 100 ms on f563.
+- Model context, KV capacity/block geometry, KV hard limit, and Prefill class
+  thresholds are initialized automatically from one coherent upstream
+  capability profile. They are immutable within a backend epoch and are
+  re-derived only after explicit epoch/config drift and full revalidation.
+  Prefill or KV thresholds must not learn from traffic. v0.12.15 introduces no
+  other learning algorithm.
+- vLLM and SGLang are independent metric protocols. Each adapter must validate
+  its own metric names, `TYPE`, labels, rank/engine aggregation, reset behavior,
+  and freshness. A metric from one backend must never be substituted into the
+  other backend's contract. No model family receives special behavior.
+- Cache awareness must prevent compute over-protection without pretending that
+  active cached tokens consume no KV. Evictable cache is excluded from hard KV
+  occupancy; a bounded recent hit fraction may reduce only aggregate Prefill
+  compute charge. Full input remains reserved for KV and long-context safety.
+- `PREDICTIVE_TPS_REFERENCE=50` is the intended f563 long-window QoS reference,
+  not a per-sample hard floor. TPS protection must reopen immediately when the
+  current predictive state fits, tolerate sparse/low-flow samples, and avoid
+  self-lock. Metrics polling defaults to 500 ms; no fixed one-second sleep or
+  one-second admission hold may erase that cadence.
+- Production defaults to `enforce`. `shadow` is allowed only when explicitly
+  configured for an isolated test. Production YAML must contain only required
+  deployment values and intentional overrides such as the TPS reference; do
+  not spell out default Prefill/KV thresholds or other default values.
+- v0.12.15 PIG does not route, mutate requests, inject backend priority, or
+  preserve the removed premium/basic or legacy QoS modes. It exposes truthful
+  current capacity and protection state for Router consumption, but Router
+  policy is outside this repository and release. This source boundary does not
+  alter the exact legacy behavior of the separately verified `0.8.13` fallback.
+- Every enforced protection outcome must be visible and mutually consistent in
+  bounded decision logs, periodic status, PIG metrics, upstream status, and
+  Router-compatible capacity. Agreement is scope-aware: request-scoped
+  protection remains visible but keeps the node open when a canonical smaller
+  request fits, while load/availability protection publishes non-open capacity.
+  A hidden reject, an open signal during current load/availability protection,
+  or a stale lock after recovery is a release-blocking defect.
+- Keep backend adapters, observations, policy, reservation lifecycle, HTTP
+  projection, and observability behind separate interfaces with single
+  responsibilities. Review allocations, parsing, label scans, lock scope, and
+  bounded state on the request/500-ms paths; do not trade correctness for
+  abstraction count or retain dead legacy code.
+- All executable Go tests, race checks, simulations, builds, image work, and
+  benchmarks run only in an isolated f563 workbench. Do not use the retired c21
+  CVM, the old builder, or local Windows execution. Never restart the f563 CVM,
+  SGLang, or HAProxy for PIG work; rebuild or replace only PIG containers.
+- Commit and push every source or plan revision. Build a host-local image only
+  from the exact pushed commit after source gates pass, and upload a registry
+  image only after the complete candidate matrix and three reviews pass.
+
 ## 2. Production Finding
 
 Production SGLang source version `0.0.0.dev1+gc4271c3fe` defines:
@@ -201,6 +271,17 @@ Required focused tests:
   cache hit rate;
 - cold traffic following hot traffic does not bypass the long-input safeguards,
   and idle/low-flow intervals do not self-lock admission;
+- the 500 ms observer cadence does not introduce an implicit one-second hold,
+  and sparse traffic reopens immediately when the current request fits;
+- every enforce decision agrees, with request/load/availability scope preserved,
+  across request response, logs, periodic status, PIG metrics, upstream status,
+  and Router-compatible capacity; shadow decisions remain observable without
+  changing intake;
+- automatic capability initialization is identical at idle and under load,
+  does not learn Prefill/KV thresholds, and revalidates before accepting a new
+  backend epoch;
+- vLLM fixtures cannot satisfy SGLang fields and SGLang fixtures cannot satisfy
+  vLLM fields, including cache, TPS, preemption, and KV families;
 - all backend observer and startup fixtures remain green.
 
 Required f563 gates at the exact executable commit:
@@ -217,8 +298,20 @@ deterministic request-aware and TPS simulations
 hot-path and 4-MiB request benchmarks
 ```
 
-Run source gates in an isolated temporary workbench on f563. Build and smoke one
-host-local candidate image only after the source matrix passes. Validate it
+Run source gates in an isolated temporary workbench on f563. Do not run any Go
+test, race, simulation, build, image, or benchmark gate on local Windows, c21,
+or the retired builder. Record the exact pushed commit, toolchain image digest,
+commands, exit codes, benchmark distributions, and hashes of material logs.
+Executable source evidence is invalidated by the next executable source change.
+
+The tokenizer benchmark must cover representative small bodies, long inputs,
+concurrent requests, and the accepted extreme body. Report parse plus token
+estimate latency separately from total PIG overhead; p100 for the accepted
+extreme input must be below 100 ms in the f563 test environment. A narrow
+microbenchmark is an overhead gate, not a throughput claim.
+
+Build and smoke one host-local candidate image only after the source matrix
+passes. Validate it
 against the existing SGLang with an isolated candidate PIG, then validate
 shadow, default enforce, protection visibility, drain recovery, no low-flow
 lock, runtime/OCI identity, and zero backend restart. Do not restart or rebuild
@@ -236,6 +329,14 @@ an isolated protection event or TPS dip is acceptable, but sustained QoS loss,
 false lock, hidden protection, materially higher preemption, or lower
 SLO-compliant goodput is not.
 
+For each executable candidate, compare cache-hot, cache-cold, mixed short/long,
+64K/256K/512K-class, decode-heavy, burst, cancellation, stale/reset, and
+low-flow recovery windows. Evaluate aggregate completion throughput and
+per-user TPS together; prompt throughput or high cache hit rate alone is not a
+win. Source inspection of the exact f563 SGLang commit and the supported vLLM
+source remains part of the metric contract gate whenever a selected metric or
+aggregation rule changes.
+
 After a production update, observe real traffic for at least 30 minutes and keep
 the same monitors active. If evidence exposes a material defect or a clear
 throughput opportunity, return to red test -> implementation -> isolated
@@ -248,14 +349,18 @@ snapshot.
 The v0.12.14 f563 observation continues as fail-closed evidence while the
 correction is developed. Do not hot-patch the production binary.
 
-Before replacing production PIG, switch the live PIG service to the exact
-previously proven f563 `0.8.13` image and configuration so normal traffic is not
-dependent on the candidate update. First recover and verify that baseline from
-the live/committed deployment history: exact image digest, environment, ports,
-auth/metrics behavior, health checks, and Router-visible semantics. Do not put
-v0.12.x-only variables into the old image or invent an approximate legacy
-configuration. Validate authenticated models/chat/stream and protected metrics,
-then keep it as the immediate rollback target.
+Every production version update must use the verified f563 `0.8.13` deployment
+as the stable traffic-bearing baseline while the new PIG is being replaced.
+Before the first such transition, recover and verify the exact image and
+configuration from live/committed deployment history: image digest,
+environment, ports, TLS/auth, health checks, protected metrics, and
+Router-visible semantics. Do not put v0.12.x-only variables into the old image
+or invent an approximate legacy configuration. Drain only the PIG request path,
+switch only PIG to the verified `0.8.13` configuration, and validate
+authenticated models/chat/stream, metrics authorization, current Router
+capacity, normal traffic, and zero backend restart before touching the new
+candidate. If that baseline cannot carry traffic correctly, stop the update;
+do not use the unverified candidate as the fallback.
 
 The isolated v0.12.15 candidate must use separate name/port/network state and
 must not displace the `0.8.13` traffic path. Only after all candidate gates and
@@ -269,7 +374,45 @@ and live Compose first, preserve the exact pre-change files and hashes, verify
 that no backend/CVM restart occurred, and never equate Compose acceptance or a
 running container with request-path readiness.
 
+The mandatory production order is:
+
+1. snapshot live Compose/hash, exact route state, PIG/backend counters, image
+   identity, and rollback artifacts;
+2. verify, drain to, and validate the exact `0.8.13` PIG configuration as the
+   active traffic path without restarting SGLang, HAProxy, or the CVM;
+3. keep the exact pushed v0.12.15 candidate isolated until all source, image,
+   simulation, observability, shadow, enforce, and three-review gates pass;
+4. promote only that accepted digest by replacing PIG, verify the complete
+   authenticated request path and Router-visible capacity, then restore the
+   exact pre-change route state if it was changed for draining;
+5. observe real traffic continuously for at least 30 minutes, comparing cache,
+   KV, TPS, queue, errors, preemption, per-user TPS, aggregate goodput, GPU use,
+   and all restart counters;
+6. on any release-blocking regression, restore the exact verified `0.8.13`
+   image and configuration first, then begin a new red-test-to-release loop.
+
+Do not build, upload, or debug the next image while production traffic depends
+on a failed candidate. Do not modify Router source or policy as part of this
+PIG release; route changes are limited to the drain/restore operations required
+to make the PIG-only transition safe.
+
 ## 6. Review Record
+
+Contract-document audit on 2026-08-17:
+
+1. requirement coverage pass completed for objective, prediction timing,
+   tokenizer, adaptive initialization, cache/TPS semantics, both backend
+   adapters, configuration, environment, source/image publication, monitoring,
+   and rollback;
+2. algorithm-consistency pass completed; Router visibility was corrected to be
+   scope-aware so a large request-specific rejection does not close capacity
+   for a smaller fitting request;
+3. operational-order pass completed; every production update uses a verified
+   `0.8.13` traffic baseline before the accepted candidate replaces PIG, with
+   PIG-only rollback and at least 30 minutes of live monitoring.
+
+This document audit does not satisfy the three release-candidate review passes
+below. Those remain tied to exact executable source and fresh f563 evidence.
 
 ### Pass 1: metric model and causality
 
@@ -299,9 +442,16 @@ sha256 c65474696392d9223d0e38aebf92dc743d65b318ef8608560994bb58af5e1f36
 exit 1 (expected red)
 ```
 
+Implementation candidate `4f2bcbf` is pushed but has not passed the focused or
+complete f563 green matrix. It is source implementation evidence only, not an
+accepted image or deployment.
+
 ### Pass 2: safety and lifecycle
 
-Status: pending.
+Status: pending. This pass must cover reservation/release/cancel/reset races,
+low-flow and transition recovery, cache observation bounds, current-capacity
+observability, request-path efficiency, removal of dead legacy behavior, and
+SOLID ownership boundaries.
 
 ### Pass 3: exact evidence and release
 
