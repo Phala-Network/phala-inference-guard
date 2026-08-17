@@ -655,16 +655,17 @@ matrix. Router and production changes require a later explicit step.
 - [x] version-neutral config contract test rename completed
 - [x] focused precedence test reproduced red on c21 round 2 and green after the
   request-scope correction on round 3
-- [x] TPS configuration/window/gate vertical slice drafted in source; c21 green
-  evidence remains pending
-- [x] log, metrics, status, and Router projection consistency drafted in source;
-  c21 green evidence remains pending
-- [x] deterministic reference-enabled scenarios and acceptance gates drafted in
-  source; c21 execution remains pending
-- [ ] focused/full/race/vet/build/benchmark matrix green on exact source
-- [ ] three implementation reviews completed and corrections applied; the first
-  static pass removed unsafe recurring low-flow bootstrap and added bounded
-  warming
+- [x] TPS configuration/window/gate vertical slice implemented and reproduced
+  green on c21
+- [x] log, metrics, periodic status, and canonical capacity projection
+  consistency implemented and reproduced green on c21
+- [x] deterministic reference-enabled saturation and representative safety
+  scenarios reproduced green on c21
+- [x] focused/full/race/vet/build/simulation/hot-path matrix green on exact
+  pre-identity source `d71269133eb048afcbe5f03780924b70e40603f9`
+- [x] three implementation reviews completed and corrections applied: bounded
+  warming; QoS-goodput and low-flow evidence corrections; atomic watermark-aware
+  same-poll, backend-waiting, and terminal demand accounting
 - [x] c21 platform state re-queried read-only on 2026-08-15; it is `stopped`
 - [x] c21 platform state re-queried on 2026-08-17 after the owner started it;
   it is `running`, `in_progress=false`, and no CVM restart was performed by this
@@ -674,7 +675,9 @@ matrix. Router and production changes require a later explicit step.
 - [x] WIP source commit `1da2644` pushed to
   `pig-origin/codex/pig-v0.12.13-tps-reference`; it is explicitly unverified and
   is not a release identity
-- [ ] version identity assigned only after all prior source gates pass
+- [x] Pass 3 source matrix permits assigning the v0.12.13 runtime/OCI identity;
+  identity is not assigned yet and will require a fresh complete matrix
+- [ ] version identity assigned and identity-specific complete matrix green
 - [ ] local image, registry upload, Compose, deployment, Router, and live traffic
   remain unperformed
 
@@ -971,3 +974,68 @@ metadata.log            7e9ad205b5a6cd8a450ee350b84da7ba4680b0a91a7799d796978661
 Logs, metrics, and the periodic status line now expose the unobserved sequence
 count. This completes the identified Pass 2 corrections, subject to the final
 race/property/full-matrix reproduction after review pass 3.
+
+### 2026-08-17 round 11: review Pass 3 complete source matrix green
+
+Commit `d71269133eb048afcbe5f03780924b70e40603f9` synchronized the current
+algorithm contract across README, advanced configuration, observability, and
+the internal flow document. A fresh c21 clone verified that exact clean HEAD and
+its upstream, then passed the complete pre-identity source matrix:
+
+```text
+gofmt -l over tracked Go files                              PASS (empty)
+git diff --check                                            PASS
+go test -count=1 ./...                                      PASS
+go test -race -count=1 ./...                                PASS
+go vet ./...                                                PASS
+go build ./cmd/phala-inference-guard                        PASS
+go test ./internal/simulation/requestaware \
+  -run TestTPSReference -count=1 -v                         PASS
+go test ./internal/admission \
+  -run 'TestController.*(HotPath|TPS)' -count=1 -v           PASS
+```
+
+Evidence is under
+`/workspace/evidence/pig-v01213-tps-full-r11-pass3-d712691`. Material SHA-256
+values are:
+
+```text
+build.log              de023d7435af0d14d9958cdafad356fb2afa64df9cc2c501f53b2b9c4bc44eed
+full-tests.log         46ab3f533340a324500185fc411077b07232a7bb011be29467d66a48abe529a6
+hot-path.log           021431d418f675cec9fff9439d1311a3e98d2124053982848893d07db7fa0226
+metadata.log           73fc9c9b71f3038c5f86ebb63e7437fb86c620f2d7e680e6da2930c960e86ae0
+race-tests.log         eabbc3d1e4f7743c87ef33e44024d3ecbf29e66e7df7ba8736d74d49162b72be
+tps-simulations.log    bbf1155c3f0e27cf4c7790a445d9229545e37f11d9f48a247696ecb20b99148c
+vet.log                28659d473fa851406fff918f1c50a39cc858c8ce4bc3b3f3553cb253450a8564
+phala-inference-guard  cc6f440f7554710a7d867bda9a5190da35f5e65985d4b89d6b33a487cdd362a1
+```
+
+Measured non-race Controller hot path on c21 remained allocation-free:
+
+```text
+reservations=256   snapshot p99=406ns admit p99=391ns allocations=0/0
+reservations=4096  snapshot p99=406ns admit p99=390ns allocations=0/0
+TPS enabled        snapshot p99=573ns admit p99=553ns allocations=0/0
+```
+
+These remain Controller microbenchmarks, not HTTP end-to-end latency. In the
+sustained saturation comparison, reference 20 produced 8,906.67 completion
+tokens and 8,892.78 QoS-qualified completion tokens at 21.83 mean active TPS,
+with zero preemptions and maximum running 7. Reference 25 produced 8,907.78 for
+both completion and QoS-qualified completion tokens at 25.86 mean active TPS,
+with zero preemptions and maximum running 6. The disabled baseline produced
+8,901.11 completion tokens but only 567.78 QoS-qualified completion tokens.
+
+The short burst and one-shot representative scenarios are safety evidence, not
+single-node no-retry throughput evidence. They establish no new preemption, no
+KV hard-limit breach, no TPS-induced hard-fit idle rejection relative to the
+disabled baseline, and no idle-with-demand interval longer than one 500-ms
+poll. Router retries, transfer behavior, real workload TPS, and OpenRouter rank
+remain outside deterministic simulation and require a later explicitly
+authorized deployment/traffic stage.
+
+Pass 3 therefore permits assigning runtime `PIG-v0.12.13` and OCI version
+`0.12.13`. It does not permit reusing this matrix as final release evidence:
+after identity changes, focused and complete acceptance must run again from a
+fresh c21 clone of the new exact HEAD. No image, registry upload, Compose,
+deployment, Router change, or live traffic action has occurred.
