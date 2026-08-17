@@ -2,277 +2,94 @@ package prometheus
 
 import (
 	"math"
-	"strconv"
 	"strings"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
 
-func firstGaugeValue(values map[string]float64, metricNames ...string) float64 {
-	for _, metricName := range metricNames {
-		if value, ok := values[metricName]; ok {
-			return value
-		}
-	}
-	return 0
+var indexedAdmissionMetrics = metricNameSet(
+	"process_start_time_seconds",
+	"vllm:cache_config_info",
+	"vllm:kv_cache_usage_perc",
+	"vllm:num_requests_running",
+	"vllm:num_requests_waiting",
+	"vllm:num_preemptions_total",
+	"vllm:generation_tokens_total",
+	"vllm:prompt_tokens_by_source_total",
+	"vllm:request_prefill_time_seconds_count",
+	"vllm:request_prefill_time_seconds_sum",
+	"sglang:max_total_num_tokens",
+	"sglang:page_size",
+	"sglang:num_pages",
+	"sglang:kv_available_tokens",
+	"sglang:kv_evictable_tokens",
+	"sglang:kv_used_tokens",
+	"sglang:token_usage",
+	"sglang:num_running_reqs",
+	"sglang:num_queue_reqs",
+	"sglang:realtime_tokens_total",
+	"sglang:generation_tokens_total",
+	"sglang:gen_throughput",
+	"sglang:num_retracted_requests_total",
+	"sglang:num_retracted_reqs",
+	"sglang:num_paused_reqs",
+)
+
+var vllmAdmissionSignatures = []string{
+	"vllm:cache_config_info",
+	"vllm:kv_cache_usage_perc",
+	"vllm:num_requests_running",
+	"vllm:num_requests_waiting",
+	"vllm:num_preemptions_total",
+	"vllm:generation_tokens_total",
 }
 
-func firstGaugeValueOK(values map[string]float64, metricNames ...string) (float64, bool) {
-	for _, metricName := range metricNames {
-		if value, ok := values[metricName]; ok {
-			return value, true
-		}
-	}
-	return 0, false
+var sglangAdmissionSignatures = []string{
+	"sglang:max_total_num_tokens",
+	"sglang:page_size",
+	"sglang:num_pages",
+	"sglang:kv_available_tokens",
+	"sglang:kv_evictable_tokens",
+	"sglang:kv_used_tokens",
+	"sglang:token_usage",
+	"sglang:num_running_reqs",
+	"sglang:num_queue_reqs",
+	"sglang:realtime_tokens_total",
+	"sglang:generation_tokens_total",
+	"sglang:gen_throughput",
+	"sglang:num_retracted_requests_total",
+	"sglang:num_retracted_reqs",
+	"sglang:num_paused_reqs",
 }
 
 func ParseSample(metricsText string) telemetry.Sample {
-	values := ParseGaugeSetWithAggregation(metricsText, map[string]GaugeAggregation{
-		"vllm:num_requests_running":        GaugeSum,
-		"sglang:num_running_reqs":          GaugeMax,
-		"vllm:num_requests_waiting":        GaugeSum,
-		"sglang:num_queue_reqs":            GaugeMax,
-		"vllm:kv_cache_usage_perc":         GaugeMax,
-		"sglang:token_usage":               GaugeMax,
-		"vllm:num_preemptions_total":       GaugeSum,
-		"sglang:num_retracted_reqs":        GaugeMax,
-		"sglang:num_paused_reqs":           GaugeMax,
-		"vllm:generation_tokens_total":     GaugeSum,
-		"sglang:generation_tokens_total":   GaugeMax,
-		"sglang:gen_throughput":            GaugeMax,
-		"sglang:max_total_num_tokens":      GaugeMax,
-		"sglang:kv_used_tokens":            GaugeMax,
-		"sglang:kv_cache_used_tokens":      GaugeMax,
-		"sglang:used_tokens":               GaugeMax,
-		"sglang:kv_available_tokens":       GaugeMax,
-		"sglang:kv_cache_available_tokens": GaugeMax,
-		"sglang:available_tokens":          GaugeMax,
-		"sglang:kv_evictable_tokens":       GaugeMax,
-		"sglang:kv_cache_evictable_tokens": GaugeMax,
-		"sglang:evictable_tokens":          GaugeMax,
-		"process_start_time_seconds":       GaugeMax,
-	})
-	ttft := ParseFirstHistogram(metricsText,
-		"vllm:time_to_first_token_seconds",
-		"vllm:request_time_to_first_token_seconds",
-		"sglang:time_to_first_token_seconds",
-	)
-	runningValue, runningPresent := firstGaugeValueOK(values,
-		"vllm:num_requests_running",
-		"sglang:num_running_reqs",
-	)
-	waitingValue, waitingPresent := firstGaugeValueOK(values,
-		"vllm:num_requests_waiting",
-		"sglang:num_queue_reqs",
-	)
-	kvValue := firstGaugeValue(values,
-		"vllm:kv_cache_usage_perc",
-		"sglang:token_usage",
-	)
-	preemptionValue, preemptionPresent := values["vllm:num_preemptions_total"]
-	if !preemptionPresent {
-		retracted, hasRetracted := values["sglang:num_retracted_reqs"]
-		paused, hasPaused := values["sglang:num_paused_reqs"]
-		preemptionValue = retracted + paused
-		preemptionPresent = hasRetracted || hasPaused
-	}
-	running, runningValid := exactNonNegativeMetricInt(runningValue, runningPresent)
-	waiting, waitingValid := exactNonNegativeMetricInt(waitingValue, waitingPresent)
-	preemptions, preemptionsValid := exactNonNegativeMetricUint64(preemptionValue, preemptionPresent)
-	generationValue, generationValid := firstGaugeValueOK(values,
-		"vllm:generation_tokens_total",
-		"sglang:generation_tokens_total",
-	)
-	generation, generationValid := exactNonNegativeMetricUint64(generationValue, generationValid)
-	runtimeStartTime, runtimeStartTimeValid := values["process_start_time_seconds"]
-	runtimeStartTimeValid = runtimeStartTimeValid && finitePositive(runtimeStartTime)
-	if !runtimeStartTimeValid {
-		runtimeStartTime = 0
-	}
-	modelName, modelNameValid := parseRequiredUniqueMetricLabel(metricsText, []string{
-		"vllm:num_requests_running",
-		"vllm:num_requests_waiting",
-		"vllm:num_preemptions_total",
-		"vllm:generation_tokens_total",
-	}, "model_name")
-	_, hasVLLMGenerationCounter := values["vllm:generation_tokens_total"]
-	generationTPSValue, generationTPSDirect := values["sglang:gen_throughput"]
-	if hasVLLMGenerationCounter || !generationTPSDirect {
-		generationTPSValue = 0
-		generationTPSDirect = false
-	}
+	index := newMetricIndex(metricsText, indexedAdmissionMetrics)
+	hasVLLM := index.hasAny(vllmAdmissionSignatures...)
+	hasSGLang := index.hasAny(sglangAdmissionSignatures...)
 
-	sample := telemetry.Sample{
-		ModelName:             modelName,
-		ModelNameValid:        modelNameValid,
-		Running:               running,
-		RunningValid:          runningValid,
-		Waiting:               waiting,
-		WaitingValid:          waitingValid,
-		KVCacheUsage:          kvValue,
-		Preemptions:           preemptions,
-		PreemptionsValid:      preemptionsValid,
-		Generation:            generation,
-		GenerationValid:       generationValid,
-		GenerationTPS:         generationTPSValue,
-		GenerationTPSDirect:   generationTPSDirect,
-		RuntimeStartTime:      runtimeStartTime,
-		RuntimeStartTimeValid: runtimeStartTimeValid,
-		TTFT:                  ttft,
+	var sample telemetry.Sample
+	switch {
+	case hasVLLM && hasSGLang:
+		// A direct backend scrape cannot coherently describe two serving
+		// frameworks. Return no admission fields rather than mixing families.
+	case hasVLLM:
+		sample = parseVLLMSample(metricsText, index)
+	case hasSGLang:
+		sample = parseSGLangSample(metricsText, index)
 	}
-	adaptVLLMCapabilityCounters(metricsText, &sample)
-	adaptKVTokenMetrics(metricsText, values, &sample)
+	applyRuntimeEpoch(index, &sample)
 	return sample
 }
 
-func adaptVLLMCapabilityCounters(metricsText string, sample *telemetry.Sample) {
-	if sample == nil || !sample.ModelNameValid || sample.ModelName == "" {
+func applyRuntimeEpoch(index metricIndex, sample *telemetry.Sample) {
+	if sample == nil {
 		return
 	}
-	var localCompute float64
-	var localCacheHit float64
-	var prefillCount float64
-	var prefillSeconds float64
-	var localComputeFound bool
-	var localCacheHitFound bool
-	var prefillCountFound bool
-	var prefillSecondsFound bool
-	for _, rawLine := range strings.Split(metricsText, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		parts := strings.Fields(line)
-		if len(parts) < 2 {
-			continue
-		}
-		metric := strings.SplitN(parts[0], "{", 2)[0]
-		if metric != "vllm:prompt_tokens_by_source_total" &&
-			metric != "vllm:request_prefill_time_seconds_count" &&
-			metric != "vllm:request_prefill_time_seconds_sum" {
-			continue
-		}
-		open := strings.IndexByte(parts[0], '{')
-		close := strings.LastIndexByte(parts[0], '}')
-		if open < 0 || close <= open {
-			continue
-		}
-		labels, ok := parseLabelSet(parts[0][open+1 : close])
-		if !ok || labels["model_name"] != sample.ModelName {
-			continue
-		}
-		value, err := strconv.ParseFloat(parts[1], 64)
-		if err != nil {
-			continue
-		}
-		switch metric {
-		case "vllm:prompt_tokens_by_source_total":
-			switch labels["source"] {
-			case "local_compute":
-				localCompute += value
-				localComputeFound = true
-			case "local_cache_hit":
-				localCacheHit += value
-				localCacheHitFound = true
-			}
-		case "vllm:request_prefill_time_seconds_count":
-			prefillCount += value
-			prefillCountFound = true
-		case "vllm:request_prefill_time_seconds_sum":
-			prefillSeconds += value
-			prefillSecondsFound = true
-		}
+	runtimeStartTime, ok := index.maximum("process_start_time_seconds", nil)
+	if ok && finitePositive(runtimeStartTime) {
+		sample.RuntimeStartTime = runtimeStartTime
+		sample.RuntimeStartTimeValid = true
 	}
-	sample.PromptLocalCompute, sample.PromptLocalComputeOK = exactNonNegativeMetricUint64(localCompute, localComputeFound)
-	sample.PromptLocalCacheHit, sample.PromptLocalCacheHitOK = exactNonNegativeMetricUint64(localCacheHit, localCacheHitFound)
-	sample.PrefillRequests, prefillCountFound = exactNonNegativeMetricUint64(prefillCount, prefillCountFound)
-	sample.PrefillSeconds = prefillSeconds
-	sample.PrefillMetricsOK = prefillCountFound && prefillSecondsFound && finiteNonNegative(prefillSeconds)
-	if !sample.PrefillMetricsOK {
-		sample.PrefillRequests = 0
-		sample.PrefillSeconds = 0
-	}
-}
-
-func adaptKVTokenMetrics(metricsText string, values map[string]float64, sample *telemetry.Sample) {
-	vllmCapacity, vllmCapacityOK := ParseInfoLabelFloat(metricsText, "vllm:cache_config_info", "kv_cache_size_tokens", "kv_cache_size")
-	vllmBlockSize, vllmBlockSizeOK := ParseInfoLabelFloat(metricsText, "vllm:cache_config_info", "block_size")
-	blockSize, blockSizeValid := exactNonNegativeMetricInt(vllmBlockSize, vllmBlockSizeOK)
-	blockSizeValid = blockSizeValid && blockSize > 0
-	vllmUsage, vllmUsageOK := values["vllm:kv_cache_usage_perc"]
-	if vllmCapacityOK || vllmUsageOK {
-		sample.BackendKind = "vllm"
-	}
-	if vllmCapacityOK && finitePositive(vllmCapacity) && vllmUsageOK && finiteNonNegative(vllmUsage) {
-		capacity := int64(math.Round(vllmCapacity))
-		used := clampTokenValue(int64(math.Round(float64(capacity)*vllmUsage)), capacity)
-		sample.KVCapacityTokens = capacity
-		sample.KVBlockSize = blockSize
-		sample.KVBlockSizeValid = blockSizeValid
-		sample.KVUsedTokens = used
-		sample.KVAvailableTokens = capacity - used
-		sample.KVTokenMetricsValid = true
-		return
-	}
-
-	sglangCapacity, sglangCapacityOK := values["sglang:max_total_num_tokens"]
-	_, sglangUsageOK := values["sglang:token_usage"]
-	usedValue, usedOK := firstGaugeValueOK(values,
-		"sglang:kv_used_tokens",
-		"sglang:kv_cache_used_tokens",
-		"sglang:used_tokens",
-	)
-	availableValue, availableOK := firstGaugeValueOK(values,
-		"sglang:kv_available_tokens",
-		"sglang:kv_cache_available_tokens",
-		"sglang:available_tokens",
-	)
-	evictableValue, evictableOK := firstGaugeValueOK(values,
-		"sglang:kv_evictable_tokens",
-		"sglang:kv_cache_evictable_tokens",
-		"sglang:evictable_tokens",
-	)
-	if sglangCapacityOK || sglangUsageOK || usedOK || availableOK || evictableOK {
-		sample.BackendKind = "sglang"
-	}
-	if !sglangCapacityOK || !finitePositive(sglangCapacity) {
-		return
-	}
-	usedOK = usedOK && finiteNonNegative(usedValue)
-	availableOK = availableOK && finiteNonNegative(availableValue)
-	evictableOK = evictableOK && finiteNonNegative(evictableValue)
-	capacity := int64(math.Round(sglangCapacity))
-	available := tokenGaugeValue(availableValue, availableOK, capacity)
-	evictable := tokenGaugeValue(evictableValue, evictableOK, capacity)
-	directUsed := tokenGaugeValue(usedValue, usedOK, capacity)
-	identityValid := availableOK && evictableOK && available+evictable <= capacity
-	identityUsed := capacity - available - evictable
-
-	used := directUsed
-	valid := usedOK
-	if identityValid {
-		capacityMinusAvailable := capacity - available
-		tolerance := int64(math.Max(32, float64(capacity)*0.001))
-		if !usedOK || absInt64(directUsed-capacityMinusAvailable) <= tolerance || directUsed > identityUsed+tolerance {
-			used = identityUsed
-		}
-		valid = true
-	}
-	if !valid {
-		return
-	}
-	sample.KVCapacityTokens = capacity
-	sample.KVUsedTokens = clampTokenValue(used, capacity)
-	if availableOK {
-		sample.KVAvailableTokens = available
-	} else {
-		sample.KVAvailableTokens = capacity - sample.KVUsedTokens
-	}
-	if evictableOK {
-		sample.KVEvictableTokens = evictable
-	}
-	sample.KVCacheUsage = float64(sample.KVUsedTokens) / float64(capacity)
-	sample.KVTokenMetricsValid = true
 }
 
 func clampTokenValue(value, capacity int64) int64 {
@@ -281,20 +98,6 @@ func clampTokenValue(value, capacity int64) int64 {
 	}
 	if value > capacity {
 		return capacity
-	}
-	return value
-}
-
-func tokenGaugeValue(value float64, valid bool, capacity int64) int64 {
-	if !valid {
-		return 0
-	}
-	return clampTokenValue(int64(math.Round(value)), capacity)
-}
-
-func absInt64(value int64) int64 {
-	if value < 0 {
-		return -value
 	}
 	return value
 }
@@ -315,10 +118,26 @@ func exactNonNegativeMetricInt(value float64, present bool) (int, bool) {
 	return int(value), true
 }
 
+func exactNonNegativeMetricInt64(value float64, present bool) (int64, bool) {
+	const maximumExactFloatInteger = float64(1 << 53)
+	if !present || !finiteNonNegative(value) || math.Trunc(value) != value || value > maximumExactFloatInteger {
+		return 0, false
+	}
+	return int64(value), true
+}
+
 func exactNonNegativeMetricUint64(value float64, present bool) (uint64, bool) {
 	const maximumExactFloatInteger = float64(1 << 53)
 	if !present || !finiteNonNegative(value) || math.Trunc(value) != value || value > maximumExactFloatInteger {
 		return 0, false
 	}
 	return uint64(value), true
+}
+
+func metricNameSet(names ...string) map[string]struct{} {
+	values := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		values[strings.TrimSpace(name)] = struct{}{}
+	}
+	return values
 }
