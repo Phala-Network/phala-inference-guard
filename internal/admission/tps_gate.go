@@ -34,7 +34,7 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 		return decision
 	}
 	if state.RawWaiting > 0 || state.PreemptionDelta > 0 {
-		decision.sequenceLimit = state.RawRunning
+		decision.sequenceLimit = current
 		decision.fits = false
 		decision.reason = ReasonTPSReference
 		return decision

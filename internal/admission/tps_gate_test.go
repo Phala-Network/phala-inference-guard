@@ -133,18 +133,19 @@ func TestTPSGateDoesNotUseCurrentRateWithoutCurrentSafeSignal(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		state ProjectedState
+		limit int64
 	}{
-		{name: "no current generation", state: ProjectedState{}},
-		{name: "waiting", state: ProjectedState{GenerationDelta: 30, RawWaiting: 1, ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true}},
-		{name: "preemption", state: ProjectedState{GenerationDelta: 30, PreemptionDelta: 1, ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true}},
-		{name: "invalid interval", state: ProjectedState{GenerationDelta: 30, ObservationInterval: 500 * time.Millisecond}},
+		{name: "no current generation", state: ProjectedState{}, limit: 2},
+		{name: "waiting", state: ProjectedState{GenerationDelta: 30, RawWaiting: 1, ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true}, limit: 3},
+		{name: "preemption", state: ProjectedState{GenerationDelta: 30, PreemptionDelta: 1, ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true}, limit: 2},
+		{name: "invalid interval", state: ProjectedState{GenerationDelta: 30, ObservationInterval: 500 * time.Millisecond}, limit: 2},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := test.state
 			state.RawRunning = 2
 			state.TPS = snapshot
 			decision := (tpsGate{}).evaluate(state)
-			if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != 2 {
+			if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != test.limit {
 				t.Fatalf("unsafe exploration decision=%+v state=%+v", decision, state)
 			}
 		})
@@ -226,7 +227,7 @@ func TestV01215TPSGateFreezesHistoricalHeadroomDuringCurrentPressure(t *testing.
 			state.TPS = snapshot
 			decision := (tpsGate{}).evaluate(state)
 			if decision.fits || decision.reason != ReasonTPSReference ||
-				decision.sequenceLimit != state.RawRunning {
+				decision.sequenceLimit != decision.currentSequences {
 				t.Fatalf("current pressure spent historical headroom: %+v", decision)
 			}
 		})

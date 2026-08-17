@@ -303,7 +303,7 @@ func TestControllerTPSReferenceAloneChangesPreForwardDecision(t *testing.T) {
 		strictDecision.TPSSequenceLimit != 5 || strictDecision.TPSCurrentSequences != 5 || strictDecision.TPSPostAdmitSequences != 6 {
 		t.Fatalf("strict TPS decision=%+v", strictDecision)
 	}
-	if !permissiveDecision.Admitted() || permissiveDecision.TPSSequenceLimit != 7 ||
+	if !permissiveDecision.Admitted() || permissiveDecision.TPSSequenceLimit != 6 ||
 		permissiveDecision.TPSCurrentSequences != 5 || permissiveDecision.TPSPostAdmitSequences != 6 {
 		t.Fatalf("permissive TPS decision=%+v", permissiveDecision)
 	}
@@ -355,15 +355,14 @@ func TestControllerTPSSameSnapshotBurstCannotExceedSequenceLimit(t *testing.T) {
 		))
 	}
 	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	for admitted := int64(1); admitted <= 4; admitted++ {
-		decision := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
-		if !decision.Admitted() || decision.TPSSequenceLimit != 4 || decision.TPSPostAdmitSequences != admitted {
-			t.Fatalf("admission %d=%+v", admitted, decision)
-		}
+	admitted := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
+	if !admitted.Admitted() || admitted.TPSSequenceLimit != 1 || admitted.TPSPostAdmitSequences != 1 {
+		t.Fatalf("idle admission=%+v", admitted)
 	}
 	protected := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
-	if protected.Reason != ReasonTPSReference || protected.TPSCurrentSequences != 4 ||
-		protected.TPSPostAdmitSequences != 5 || protected.ReservationID != 0 {
+	if protected.Reason != ReasonTPSReference || protected.TPSSequenceLimit != 1 ||
+		protected.TPSCurrentSequences != 1 || protected.TPSPostAdmitSequences != 2 ||
+		protected.ReservationID != 0 {
 		t.Fatalf("same-snapshot overflow=%+v", protected)
 	}
 }
