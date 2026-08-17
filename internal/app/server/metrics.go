@@ -119,6 +119,7 @@ func (s *proxyServer) predictiveAdmissionMetricsInput(
 	input.CacheCreditFraction = snapshot.Capacity.State.CacheCreditFraction
 	input.CacheEvidenceTokens = snapshot.Capacity.State.CacheEvidenceTokens
 	input.CacheCreditBudgetTokens = snapshot.Capacity.State.CacheCreditBudgetTokens
+	input.CacheCreditSpentTokens = snapshot.Capacity.State.CacheCreditSpentTokens
 	input.PredictionDuration = snapshot.PredictionDuration
 	applyTPSCapacityMetrics(&input, snapshot.Capacity)
 	if report.HasLastDecision {

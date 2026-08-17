@@ -24,12 +24,15 @@ type reservation struct {
 	firstByteSequence uint64
 	terminalSequence  uint64
 	terminalCause     TerminalCause
+	cacheCreditTokens int64
+	cacheCreditLease  uint64
 }
 
 func (r reservation) contribution() (reservationOverlay, bool) {
 	if r.id == 0 || r.runtimeEpoch == 0 || r.work.TotalKVTokens <= 0 ||
 		r.work.FutureKVTokens < 0 || r.work.Estimate.SelectionInputTokens <= 0 ||
-		r.work.PrefillComputeTokens <= 0 || r.work.PrefillComputeTokens > r.work.Estimate.SelectionInputTokens {
+		r.work.PrefillComputeTokens <= 0 || r.work.PrefillComputeTokens > r.work.Estimate.SelectionInputTokens ||
+		!r.validCacheCredit() {
 		return reservationOverlay{}, false
 	}
 	switch r.phase {
@@ -80,6 +83,17 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 	default:
 		return reservationOverlay{}, false
 	}
+}
+
+func (r reservation) validCacheCredit() bool {
+	expected := r.work.Estimate.SelectionInputTokens - r.work.PrefillComputeTokens
+	if r.cacheCreditTokens != expected || r.cacheCreditTokens < 0 {
+		return false
+	}
+	if r.cacheCreditTokens == 0 {
+		return r.cacheCreditLease == 0
+	}
+	return r.cacheCreditLease > 0
 }
 
 func addOverlay(left, right reservationOverlay) (reservationOverlay, bool) {

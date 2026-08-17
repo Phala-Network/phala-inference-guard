@@ -51,6 +51,7 @@ type AdmissionController struct {
 	sampleSequence      uint64
 	observationSequence uint64
 	lastPublishedSample uint64
+	cacheLeaseSequence  uint64
 	observation         observedState
 	hasObservation      bool
 	closedReason        Reason
@@ -147,6 +148,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	var observationInterval time.Duration
 	var previousRunning int64
 	var cache cachePrefillObservation
+	var newCacheLease bool
 	if runtimeReset {
 		if c.runtimeEpoch == math.MaxUint64 {
 			c.failClosedLocked(ReasonCounterOverflow)
@@ -157,6 +159,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		c.overlay = reservationOverlay{}
 		c.sampleSequence = 0
 		c.lastPublishedSample = 0
+		c.cacheLeaseSequence = 0
 		c.tpsWindow.reset()
 	} else {
 		if c.hasObservation {
@@ -164,7 +167,15 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			preemptionDelta = observation.PreemptionsTotal - c.observation.observation.PreemptionsTotal
 			observationInterval = observation.ObservedAt.Sub(c.observation.observation.ObservedAt)
 			previousRunning = c.observation.observation.Running
-			cache = nextCachePrefillObservation(c.observation, observation)
+			cache, newCacheLease = nextCachePrefillObservation(c.observation, observation)
+			if newCacheLease {
+				if c.cacheLeaseSequence == math.MaxUint64 {
+					c.failClosedLocked(ReasonCounterOverflow)
+					return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
+				}
+				c.cacheLeaseSequence++
+				cache.leaseSequence = c.cacheLeaseSequence
+			}
 		}
 		nextOverlay, ok := c.reconciledOverlayLocked(window.eventSequence)
 		if !ok {
@@ -249,12 +260,20 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonCounterOverflow, estimate, work, state)}
 	}
 	reservationID := c.nextReservationID + 1
+	cacheCreditTokens := work.Estimate.SelectionInputTokens - work.PrefillComputeTokens
+	nextCache, cacheCreditLease, valid := spendCachePrefillCredit(c.observation.cache, cacheCreditTokens)
+	if !valid {
+		c.failClosedLocked(ReasonControllerUnavailable)
+		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonControllerUnavailable, estimate, work, state)}
+	}
 	item := reservation{
-		id:           reservationID,
-		runtimeEpoch: c.runtimeEpoch,
-		work:         work,
-		prefillClass: policy.prefillClass,
-		phase:        reservationReserved,
+		id:                reservationID,
+		runtimeEpoch:      c.runtimeEpoch,
+		work:              work,
+		prefillClass:      policy.prefillClass,
+		phase:             reservationReserved,
+		cacheCreditTokens: cacheCreditTokens,
+		cacheCreditLease:  cacheCreditLease,
 	}
 	contribution, valid := item.contribution()
 	if !valid {
@@ -272,6 +291,7 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 	}
 	item.admittedSequence = sequence
 	c.nextReservationID = reservationID
+	c.observation.cache = nextCache
 	c.overlay = nextOverlay
 	c.reservations[reservationID] = item
 	decision.ControllerSequence = sequence
@@ -398,6 +418,19 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
+	nextCache := c.observation.cache
+	if item.phase == reservationReserved {
+		var cacheValid bool
+			nextCache, cacheValid = refundCachePrefillCredit(
+			c.observation.cache,
+			item.cacheCreditLease,
+			item.cacheCreditTokens,
+		)
+		if !cacheValid {
+			c.failClosedLocked(ReasonControllerUnavailable)
+			return false
+		}
+	}
 	remove := item.phase == reservationReserved ||
 		(item.phase == reservationActiveDecode && item.inputCovered)
 	var next reservation
@@ -419,6 +452,7 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 		return false
 	}
 	c.overlay = nextOverlay
+	c.observation.cache = nextCache
 	if remove {
 		delete(c.reservations, id)
 	} else {

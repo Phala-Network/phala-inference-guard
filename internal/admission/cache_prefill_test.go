@@ -97,10 +97,53 @@ func TestV01215ControllerBoundsCacheCreditByRecentEvidence(t *testing.T) {
 	}
 	snapshot := controller.Snapshot(now.Add(2 * time.Second))
 	if snapshot.State.CacheCreditBudgetTokens != recentCreditTokens ||
+		snapshot.State.CacheCreditSpentTokens != pendingCreditTokens ||
 		snapshot.State.PendingCacheCreditTokens != pendingCreditTokens ||
 		snapshot.State.PendingPrefillInputTokens != int64(admitted)*inputTokens {
 		t.Fatalf("bounded cache-credit state=%+v", snapshot.State)
 	}
+}
+
+func TestV01215ControllerRefundsCacheCreditCancelledBeforeForward(t *testing.T) {
+	now := time.Unix(21_700, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 5_000))
+	publishObservation(t, controller, cacheObservation(capability, now.Add(time.Second), 10_000+16*1024, 5_000+16*1024))
+
+	first := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(16*1024, 16*1024, 256))
+	if !first.Decision.Admitted() || first.Decision.Work.PrefillComputeTokens != 4*1024 ||
+		!first.Handle.Terminate(TerminalCancel) {
+		t.Fatalf("pre-forward cancellation=%+v", first.Decision)
+	}
+	second := controller.Admit(now.Add(time.Second+2*time.Millisecond), testEstimate(16*1024, 16*1024, 256))
+	if !second.Decision.Admitted() || second.Decision.Work.PrefillComputeTokens != 4*1024 {
+		t.Fatalf("pre-forward cancellation did not refund cache credit: %+v", second.Decision)
+	}
+	_ = second.Handle.Terminate(TerminalCancel)
+}
+
+func TestV01215ControllerDoesNotRefundRotatedCacheLeaseWithEqualTimestamp(t *testing.T) {
+	now := time.Unix(21_725, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 5_000))
+	hot := cacheObservation(capability, now.Add(time.Second), 10_000+16*1024, 5_000+16*1024)
+	publishObservation(t, controller, hot)
+
+	first := controller.Admit(now.Add(time.Second), testEstimate(16*1024, 16*1024, 256))
+	if !first.Decision.Admitted() || first.Decision.Work.PrefillComputeTokens != 4*1024 {
+		t.Fatalf("first cache lease admission=%+v", first.Decision)
+	}
+	rotated := cacheObservation(capability, hot.ObservedAt, 10_000+32*1024, 5_000+32*1024)
+	publishObservation(t, controller, rotated)
+	if !first.Handle.Terminate(TerminalCancel) {
+		t.Fatal("old cache lease cancellation failed")
+	}
+
+	second := controller.Admit(now.Add(time.Second+time.Microsecond), testEstimate(16*1024, 16*1024, 256))
+	if !second.Decision.Admitted() || second.Decision.Work.PrefillComputeTokens != 4*1024 {
+		t.Fatalf("old cancellation changed replacement cache lease: %+v", second.Decision)
+	}
+	_ = second.Handle.Terminate(TerminalCancel)
 }
 
 func TestV01215ControllerDoesNotReuseCacheEvidenceAcrossZeroDeltaPolls(t *testing.T) {

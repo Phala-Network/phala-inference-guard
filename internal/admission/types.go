@@ -79,6 +79,7 @@ type ProjectedState struct {
 	CacheCreditFraction       float64
 	CacheEvidenceTokens       uint64
 	CacheCreditBudgetTokens   int64
+	CacheCreditSpentTokens    int64
 	TPS                       TPSSnapshot
 }
 

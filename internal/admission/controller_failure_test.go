@@ -242,4 +242,21 @@ func TestControllerSequenceOverflowFailsClosedWithoutReuse(t *testing.T) {
 			t.Fatalf("observation overflow publication=%+v", publication)
 		}
 	})
+
+	t.Run("cache lease", func(t *testing.T) {
+		initial := cacheObservation(capability, now, 10_000, 5_000)
+		controller := testControllerWithObservation(t, capability, initial)
+		controller.mu.Lock()
+		controller.cacheLeaseSequence = math.MaxUint64
+		controller.mu.Unlock()
+		window, ok := controller.StartSampleWindow()
+		if !ok {
+			t.Fatal("cache lease sample window unavailable")
+		}
+		hot := cacheObservation(capability, now.Add(time.Millisecond), 10_000+4*1024, 5_000+4*1024)
+		publication := controller.PublishObservation(window, hot)
+		if publication.Accepted || publication.Reason != ReasonCounterOverflow {
+			t.Fatalf("cache lease overflow publication=%+v", publication)
+		}
+	})
 }

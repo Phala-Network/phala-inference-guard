@@ -50,6 +50,7 @@ type PredictiveAdmissionInput struct {
 	CacheCreditFraction                    float64
 	CacheEvidenceTokens                    uint64
 	CacheCreditBudgetTokens                int64
+	CacheCreditSpentTokens                 int64
 	FailureClose                           uint64
 	FailureDecide                          uint64
 	FailureForward                         uint64
@@ -185,6 +186,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_cache_credit_fraction %.6f\n", input.CacheCreditFraction)
 	fmt.Fprintf(w, "pig_predictive_cache_evidence_tokens %d\n", input.CacheEvidenceTokens)
 	fmt.Fprintf(w, "pig_predictive_cache_credit_budget_tokens %d\n", input.CacheCreditBudgetTokens)
+	fmt.Fprintf(w, "pig_predictive_cache_credit_spent_tokens %d\n", input.CacheCreditSpentTokens)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_active %d\n", num.BoolAsInt(input.RouterBackpressure.Active))
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_applied %d\n", num.BoolAsInt(input.RouterBackpressure.Applied))
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_state_info{scope=%q,reason=%q,source=%q} 1\n", backpressureScope, backpressureReason, backpressureSource)

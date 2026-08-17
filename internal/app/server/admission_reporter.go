@@ -141,7 +141,7 @@ func (r *admissionReporter) Snapshot() admissionReportSnapshot {
 func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
 	decision := event.Decision
 	return fmt.Sprintf(
-		"predictive_admission event=admission_decision mode=%s enforced=%t action=%s reason=%s scope=%s prefill_class=%s selection_input_tokens=%d prefill_compute_tokens=%d request_cache_credit_tokens=%d cache_observation_valid=%t cache_hit_fraction=%.6f cache_credit_fraction=%.6f cache_evidence_tokens=%d cache_credit_budget_tokens=%d kv_reservation_input_tokens=%d decode_horizon_tokens=%d effective_kv_tokens=%d post_admit_kv_tokens=%d remaining_kv_tokens=%d pending_prefill_input_tokens_before=%d pending_prefill_tokens_before=%d pending_cache_credit_tokens_before=%d pending_prefill_tokens_after=%d running=%d waiting=%d tps_unobserved_sequences=%d tps_reference=%.6f tps_window_ready=%t tps_window_aggregate=%.6f tps_window_mean_active=%.6f tps_sequence_limit=%d tps_current_sequences=%d tps_post_admit_sequences=%d observation_sequence=%d controller_sequence=%d runtime_epoch=%d suppressed=%d observed_at=%s",
+		"predictive_admission event=admission_decision mode=%s enforced=%t action=%s reason=%s scope=%s prefill_class=%s selection_input_tokens=%d prefill_compute_tokens=%d request_cache_credit_tokens=%d cache_observation_valid=%t cache_hit_fraction=%.6f cache_credit_fraction=%.6f cache_evidence_tokens=%d cache_credit_budget_tokens=%d cache_credit_spent_tokens_before=%d kv_reservation_input_tokens=%d decode_horizon_tokens=%d effective_kv_tokens=%d post_admit_kv_tokens=%d remaining_kv_tokens=%d pending_prefill_input_tokens_before=%d pending_prefill_tokens_before=%d pending_cache_credit_tokens_before=%d pending_prefill_tokens_after=%d running=%d waiting=%d tps_unobserved_sequences=%d tps_reference=%.6f tps_window_ready=%t tps_window_aggregate=%.6f tps_window_mean_active=%.6f tps_sequence_limit=%d tps_current_sequences=%d tps_post_admit_sequences=%d observation_sequence=%d controller_sequence=%d runtime_epoch=%d suppressed=%d observed_at=%s",
 		event.Mode,
 		event.Enforced,
 		decision.Action,
@@ -156,6 +156,7 @@ func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
 		decision.State.CacheCreditFraction,
 		decision.State.CacheEvidenceTokens,
 		decision.State.CacheCreditBudgetTokens,
+		decision.State.CacheCreditSpentTokens,
 		decision.Estimate.KVReservationInputTokens,
 		decision.Estimate.DecodeHorizonTokens,
 		decision.State.EffectiveKVTokens,

@@ -60,6 +60,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		CacheHitFraction:          observed.cache.hitFraction,
 		CacheCreditFraction:       observed.cache.creditFraction,
 		CacheEvidenceTokens:       observed.cache.evidenceTokens,
+		CacheCreditSpentTokens:    observed.cache.spentTokens,
 	}
 	state.PendingCacheCreditTokens = state.PendingPrefillInputTokens - state.PendingPrefillTokens
 	state.CacheCreditBudgetTokens = cacheCreditTokenBudget(state)
@@ -92,7 +93,9 @@ func validProjectedState(state ProjectedState) bool {
 		state.CacheCreditFraction <= cachePrefillMaximumHitCredit &&
 		state.CacheCreditFraction <= state.CacheHitFraction &&
 		state.CacheCreditBudgetTokens >= 0 &&
+		state.CacheCreditSpentTokens >= 0 &&
+		state.CacheCreditSpentTokens <= state.CacheCreditBudgetTokens &&
 		(!state.CacheObservationValid || state.CacheEvidenceTokens >= cachePrefillMinimumEvidenceTokens) &&
-		(state.CacheObservationValid || (state.CacheHitFraction == 0 && state.CacheCreditFraction == 0 && state.CacheEvidenceTokens == 0 && state.CacheCreditBudgetTokens == 0)) &&
+		(state.CacheObservationValid || (state.CacheHitFraction == 0 && state.CacheCreditFraction == 0 && state.CacheEvidenceTokens == 0 && state.CacheCreditBudgetTokens == 0 && state.CacheCreditSpentTokens == 0)) &&
 		validTPSSnapshot(state.TPS)
 }
