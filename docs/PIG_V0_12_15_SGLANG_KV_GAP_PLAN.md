@@ -232,14 +232,18 @@ The backend contracts remain independent:
 | SGLang | `sglang:prefill_effective_tokens_total{mode="input|device_hit|host_hit|storage_hit",priority=""}` counters | maximum duplicated TP/PP view per mode; one DP replica |
 | vLLM | `vllm:prefix_cache_queries_total` and `vllm:prefix_cache_hits_total` counters | sum independent `engine` series |
 
-For SGLang, source inspection confirms that `input` is exported as logged input
-minus reprocessed input. The `device_hit`, `host_hit`, and `storage_hit` modes
-are exported from separate tier counters. Their accumulation source still must
-be traced to prove whether reprocessed/retracted tier hits are excluded before
-publication. Until that proof and a focused fixture exist, SGLang cache credit
-is release-blocked and must conservatively fall back to fully cold Prefill. It
-is not acceptable to infer exclusion from the aggregate `cache_hit_rate`
-calculation. Once this contract is proven, the recent hit fraction is:
+For SGLang, exact source commit
+`c4271c3fe1262fc2adbd162c33b25de5255251c5` proves a first-attempt contract for
+all four modes. `Req.reset_for_retract` permanently sets `retracted_stain`.
+`PrefillAdder._update_prefill_budget` always adds raw input/hit tokens, then
+either adds them to the reprocessed counters when `retracted_stain` is true or,
+in the mutually exclusive `elif`, splits and adds first-attempt
+`device_hit`/`host_hit`/`storage_hit` tokens. `metrics_reporter` subtracts the
+reprocessed input/hit totals and forwards the already first-attempt-only tier
+counters. The collector's own documentation declares the same exclusion.
+Therefore reprocessed/retracted tokens do not enter any effective mode; this is
+source-path proof rather than an inference from aggregate `cache_hit_rate`.
+The recent hit fraction is:
 
 ```text
 hits_delta / (input_delta + hits_delta)
@@ -289,6 +293,8 @@ Required focused tests:
 - SGLang reprocessed/retracted input and every cache tier have source-backed
   counter semantics and focused fixtures; an ambiguous tier counter disables
   cache credit rather than over-crediting Prefill;
+- an optional SGLang cache family from a different `dp_rank` falls back cold
+  without invalidating the otherwise coherent primary admission sample;
 - first sample, missing metrics, low evidence, stale observation, counter reset,
   backend epoch change, and invalid ratios produce zero cache credit;
 - a qualified cache observation is carried across zero-delta polls for at most
@@ -357,11 +363,13 @@ approximately 15.1-15.5 ms and p99 33.8-49.7 ms across three runs. The
 classifier benchmark was approximately 16.3-17.0 ms/op with 17 allocations and
 38-42 KiB/op; estimator-only 4-MiB runs remained allocation-free.
 
-These results establish the current source matrix only. They do not accept an
-image or release: the SGLang per-tier reprocessed-hit contract above and the
-three release reviews remain open. No v0.12.15 image may be built until that
-metric blocker is resolved in source/tests, or the SGLang cache-credit feature
-is conservatively disabled with corresponding red/green evidence.
+These results establish the `d708950` source matrix only. They do not accept an
+image or release. Exact SGLang source tracing has now closed the per-tier
+reprocessed-hit question, but review exposed an untested cross-DP cache-family
+identity case. A test-only red revision must prove the current parser accepts
+that mismatch, then the parser must fail that optional family cold and the
+complete exact-commit matrix must be rerun. No v0.12.15 image may be built until
+that red/green evidence and the three release reviews pass.
 
 Build and smoke one host-local candidate image only after the source matrix
 passes. Validate it
@@ -487,20 +495,21 @@ Status: in progress. SGLang source and the f563 live scrape established the
 one-sided KV invariant and selected scheduler-interval decode counter. The live
 SGLang scrape also exposes `prefill_effective_tokens_total` as token-level
 counters with the required input/device/host/storage modes. vLLM upstream source
-established the metric types, per-engine labels, and update sites. The current
-PIG source matrix is green, but SGLang per-tier reprocessed-hit semantics remain
-a release blocker, so this review is not complete.
+established the metric types, per-engine labels, and update sites. Exact SGLang
+source now proves that all effective modes exclude reprocessed requests. The
+current PIG source matrix is green, but the newly identified cross-DP optional
+cache-family case still needs red/green evidence, so this review is not complete.
 
 Exact-version source was resolved to SGLang commit
 `c4271c3fe1262fc2adbd162c33b25de5255251c5`. Its
 `metrics_collector.py` declares and pre-seeds the four effective Prefill counter
-modes; `metrics_reporter.py` publishes effective input as logged input minus
-reprocessed input. That reporter derives aggregate cache hit rate after
-excluding reprocessed input, but directly forwards the three cache-tier
-counters; their accumulation path still must prove that reprocessed tier hits
-are excluded. The f563 scrape confirms only TP0 carries non-zero cumulative
-values while the other TP ranks expose pre-seeded zero views, requiring maximum
-rather than sum aggregation per mode.
+modes. `schedule_batch.py` makes `retracted_stain` persistent;
+`schedule_policy.py` sends reprocessed input/hit tokens to the subtraction
+counters and sends only the mutually exclusive first-attempt branch to the
+three tier counters; `metrics_reporter.py` subtracts reprocessed input/hit and
+forwards those tier counters. The f563 scrape confirms only TP0 carries non-zero
+cumulative values while the other TP ranks expose pre-seeded zero views,
+requiring maximum rather than sum aggregation per mode.
 
 vLLM source commit `5fd7a888386cff800f32de6b5a33d1dd3ca1e397`
 declares `prefix_cache_queries` and `prefix_cache_hits` as per-engine counters
@@ -553,8 +562,8 @@ deterministic JSON  2f29cb429523018c4f68f01fea03179e219b8d0919e32e97140450b6fced
 ```
 
 This green matrix is not image acceptance. Pass 1 remains open until the
-SGLang tier-counter contract is proven or cache credit is disabled for SGLang
-with focused tests.
+cross-DP cache-family fixture produces valid red/green evidence and the new
+exact source revision passes the required f563 matrix.
 
 ### Pass 2: safety and lifecycle
 

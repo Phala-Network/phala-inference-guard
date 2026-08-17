@@ -11,7 +11,7 @@ import (
 
 // Race instrumentation deliberately changes latency by more than an order of
 // magnitude. Correctness tests run in both builds; this native-speed acceptance
-// gate runs only in an ordinary c21 build.
+// gate runs only in the isolated f563 workbench's native-speed build.
 func TestEstimatorMaximumBodyLatencyAndAllocations(t *testing.T) {
 	const maximumBodyBytes = 4 * 1024 * 1024
 	longString := maximumBodyEstimatorFixture(t, maximumBodyBytes)

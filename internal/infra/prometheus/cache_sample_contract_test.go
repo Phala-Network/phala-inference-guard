@@ -1,6 +1,9 @@
 package prometheus
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseSampleUsesSGLangEffectivePrefillCountersWithoutSummingTPRanks(t *testing.T) {
 	metrics := coherentSGLangFixture() + `
@@ -17,6 +20,45 @@ sglang:prefill_effective_tokens_total{engine_type="unified",mode="storage_hit",m
 	sample := ParseSample(metrics)
 	if !sample.CacheTokensValid || sample.CacheQueryTokens != 1_000 || sample.CacheHitTokens != 600 {
 		t.Fatalf("SGLang cache counters=%#v", sample)
+	}
+}
+
+func TestParseSampleUsesSGLangFirstAttemptCountersAfterRetraction(t *testing.T) {
+	metrics := coherentSGLangFixture() + `
+# TYPE sglang:prefill_effective_tokens_total counter
+sglang:realtime_tokens_total{engine_type="unified",mode="prefill_compute",model_name="meta/test-model",tp_rank="0",priority=""} 900
+sglang:realtime_tokens_total{engine_type="unified",mode="prefill_cache",model_name="meta/test-model",tp_rank="0",priority=""} 1100
+sglang:prefill_effective_tokens_total{engine_type="unified",mode="input",model_name="meta/test-model",tp_rank="0",priority=""} 400
+sglang:prefill_effective_tokens_total{engine_type="unified",mode="device_hit",model_name="meta/test-model",tp_rank="0",priority=""} 500
+sglang:prefill_effective_tokens_total{engine_type="unified",mode="host_hit",model_name="meta/test-model",tp_rank="0",priority=""} 75
+sglang:prefill_effective_tokens_total{engine_type="unified",mode="storage_hit",model_name="meta/test-model",tp_rank="0",priority=""} 25
+sglang:num_retracted_requests_total{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 1
+`
+	sample := ParseSample(metrics)
+	if !sample.CacheTokensValid || sample.CacheQueryTokens != 1_000 || sample.CacheHitTokens != 600 ||
+		!sample.PreemptionsValid || sample.Preemptions != 1 {
+		t.Fatalf("SGLang retraction first-attempt counters=%#v", sample)
+	}
+}
+
+func TestParseSampleRejectsSGLangCacheCountersFromDifferentDPReplica(t *testing.T) {
+	metrics := strings.ReplaceAll(
+		coherentSGLangFixture(),
+		`tp_rank="0"`,
+		`dp_rank="0",tp_rank="0"`,
+	) + `
+# TYPE sglang:prefill_effective_tokens_total counter
+sglang:prefill_effective_tokens_total{engine_type="unified",mode="input",model_name="meta/test-model",dp_rank="1",tp_rank="0",priority=""} 400
+sglang:prefill_effective_tokens_total{engine_type="unified",mode="device_hit",model_name="meta/test-model",dp_rank="1",tp_rank="0",priority=""} 500
+sglang:prefill_effective_tokens_total{engine_type="unified",mode="host_hit",model_name="meta/test-model",dp_rank="1",tp_rank="0",priority=""} 75
+sglang:prefill_effective_tokens_total{engine_type="unified",mode="storage_hit",model_name="meta/test-model",dp_rank="1",tp_rank="0",priority=""} 25
+`
+	sample := ParseSample(metrics)
+	if !sample.ModelNameValid || !sample.KVTokenMetricsValid {
+		t.Fatalf("optional cache mismatch invalidated healthy SGLang admission sample: %#v", sample)
+	}
+	if sample.CacheTokensValid || sample.CacheQueryTokens != 0 || sample.CacheHitTokens != 0 {
+		t.Fatalf("cross-DP SGLang cache counters were accepted: %#v", sample)
 	}
 }
 
