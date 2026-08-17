@@ -305,3 +305,92 @@ The live host YAML and control-plane Compose must not be allowed to drift
 silently. If a PIG-only replacement cannot also preserve the desired
 configuration durably, stop and report that operational boundary before
 mutation.
+
+## 8. Execution and review record
+
+### 8.1 Pass 1: metric model and causality
+
+Status: complete for the supported single-unified-scheduler contract.
+
+The vLLM mapping was rechecked against upstream source commit
+`5fd7a888386cff800f32de6b5a33d1dd3ca1e397`. Its generation and preemption
+counters are incremented from iteration stats; running/waiting are per-engine
+gauges; `cache_config_info` explicitly describes per-engine geometry and is not
+multiplied by tensor-parallel rank count.
+
+The SGLang mapping was checked against the live c21 scrape and source version
+`0.0.0.dev1+g7c90840ba` inside `muse-glimmer-r10-candidate`. The review found
+and corrected three assumptions that source-only fixtures had hidden:
+
+1. `num_retracted_requests_total` is constructed by the current source but the
+   Python multiprocess exporter emits no sample or TYPE before its first
+   increment. The live idle scrape therefore contained only the zero-valued
+   legacy gauge. Cold absence is now accepted without converting that gauge
+   into a counter; a non-zero legacy gauge without the real counter invalidates
+   the scrape.
+2. `priority=""` is the running/waiting total. Other priority values are
+   subsets and are never summed or substituted for a missing total. Decode and
+   retraction counters likewise require their unified total before TP/PP
+   duplicate views are deduplicated with maximum.
+3. Every materialized SGLang admission sample must match its actual Prometheus
+   gauge/counter type. A completely unmaterialized multiprocess family remains
+   the only no-TYPE cold-zero case.
+
+The live streaming test at intermediate executable commit `914ecbb` proved
+causality of the generation choice: while one 512-token stream was in flight,
+`sglang:realtime_tokens_total{mode="decode",priority=""}` advanced from 2205
+through 2703 and PIG observed approximately 66-72 output token/s. The existing
+completed non-streaming series remained 2205 for the whole request; only at
+completion did SGLang expose the separate streaming completion series of 512.
+Thus the realtime counter, not `generation_tokens_total` or `gen_throughput`,
+is the valid 500-ms TPS input.
+
+### 8.2 Pass 2: safety, lifecycle, and efficiency
+
+Status: complete; final exact-commit repetition remains part of Pass 3.
+
+- mixed vLLM/SGLang signatures, model/engine/KV geometry drift, wrong metric
+  types, partial dynamic families, missing priority totals, and multiple
+  `dp_rank` values fail closed;
+- TP/PP duplicates never multiply logical KV capacity or logical token work;
+- pure-SWA/PD/multi-DP schemas without the required single full-pool invariant
+  remain unsupported rather than receiving inferred capacity;
+- hybrid SSM/Mamba state slots are not treated as text KV tokens; this version
+  makes no per-Mamba-slot request-size claim;
+- incomplete polls retain the last coherent observation only until its 1.5-s
+  default freshness limit, while coherent recovery has no reject cooldown;
+- Controller and race tests cover atomic reservation, covering-poll
+  reconciliation, completion-before-poll, cancel, reset, and exact-once
+  terminal release;
+- unused SGLang completion/throughput/paused diagnostics were removed from the
+  selected metric index; commit `da8fa998a6f6ebd142f1a09dcef22bd0531dd706`
+  also removed the second full-scrape TTFT histogram parse from both adapters,
+  because TTFT is neither observed by the common Controller nor protected.
+
+Intermediate live enforcement at `914ecbb` admitted two warming streams and
+rejected the third request before forwarding with HTTP 429. The same event was
+visible as `reason=tps_reference`, `scope=load`, one enforced reject, active
+Router backpressure, compatibility running/limit `2/2`, and
+`/v1/upstream-status=1`. After the streams drained, current capacity returned
+to open immediately, backpressure and compatibility limits cleared, and a
+single low-flow request returned HTTP 200. The historical reject remained only
+as audit telemetry. This proves cross-surface protection and no sticky
+low-flow lock for that intermediate executable.
+
+The intermediate c21 matrix at `914ecbb` passed full tests, race, vet, build,
+deterministic simulation (`acceptance="passed"`), TPS causality/safety tests,
+and allocation-free Controller hot paths. Request classification of a 4-MiB
+JSON body measured 33.7-36.0 ms; estimator-only 4-MiB scans measured
+24.5-25.3 ms, and the many-string worst shape measured 37.4-38.1 ms. These are
+source-path measurements, not end-to-end production latency.
+
+Because `da8fa99` changes executable scrape work after that matrix and local
+image, neither the `914ecbb` image nor its live results are final release
+evidence. The exact post-review commit must repeat the source matrix, local
+image identity check, shadow/default-enforce SGLang smoke, cross-surface
+protection, and recovery before publication.
+
+### 8.3 Pass 3: exact evidence and release
+
+Status: pending. No v0.12.14 image has been uploaded and production `f563...`
+has not been changed.
