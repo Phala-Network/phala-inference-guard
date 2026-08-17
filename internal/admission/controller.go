@@ -421,7 +421,7 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 	nextCache := c.observation.cache
 	if item.phase == reservationReserved {
 		var cacheValid bool
-			nextCache, cacheValid = refundCachePrefillCredit(
+		nextCache, cacheValid = refundCachePrefillCredit(
 			c.observation.cache,
 			item.cacheCreditLease,
 			item.cacheCreditTokens,
