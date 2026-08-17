@@ -450,6 +450,56 @@ func TestControllerTPSCoveringSampleDoesNotDoubleCountForwardedReservation(t *te
 	}
 }
 
+func TestControllerTPSTerminalBeforeCoveringSampleRetainsUnobservedDemand(t *testing.T) {
+	now := time.Unix(10_875, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t,
+		capability,
+		20,
+		testObservation(capability, now, 0, 4, 0, 0, 0),
+	)
+	for step := 1; step <= 4; step++ {
+		publishObservation(t, controller, testObservation(
+			capability,
+			now.Add(time.Duration(step)*time.Second),
+			0,
+			4,
+			0,
+			uint64(step*100),
+			0,
+		))
+	}
+
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	forwarded := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate)
+	if !forwarded.Decision.Admitted() || !forwarded.Handle.MarkForwarded() ||
+		!forwarded.Handle.Terminate(TerminalCancel) {
+		t.Fatalf("forwarded terminal lifecycle=%+v", forwarded.Decision)
+	}
+	protected := controller.Admit(now.Add(4*time.Second+2*time.Millisecond), estimate).Decision
+	if protected.Admitted() || protected.Reason != ReasonTPSReference ||
+		protected.State.ResidualDebts != 1 || protected.State.UnobservedSequences != 1 ||
+		protected.TPSCurrentSequences != 5 || protected.TPSPostAdmitSequences != 6 {
+		t.Fatalf("terminal blind window lost demand: %+v", protected)
+	}
+
+	publishObservation(t, controller, testObservation(
+		capability,
+		now.Add(5*time.Second),
+		0,
+		4,
+		0,
+		500,
+		0,
+	))
+	reopened := controller.Admit(now.Add(5*time.Second+time.Millisecond), estimate).Decision
+	if !reopened.Admitted() || reopened.State.ResidualDebts != 0 ||
+		reopened.State.UnobservedSequences != 0 || reopened.TPSPostAdmitSequences != 5 {
+		t.Fatalf("covering sample did not release terminal demand: %+v", reopened)
+	}
+}
+
 func TestControllerRuntimeResetClearsTPSWindow(t *testing.T) {
 	now := time.Unix(11_000, 0)
 	capability := testCapability()
