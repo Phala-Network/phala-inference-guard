@@ -62,6 +62,34 @@ func TestTPSGateUsesRateDerivedBaseAndOneHealthyExploration(t *testing.T) {
 	}
 }
 
+func TestV01215TPSGateKeepsLongWindowCapacityAcrossOneLowCurrentSample(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 50,
+		QualifiedSamples: 60, QualifiedSequenceSeconds: 240,
+		AggregateTPS: 300, MeanActiveTPS: 75,
+	}
+	for unobserved := int64(0); unobserved <= 3; unobserved++ {
+		state := ProjectedState{
+			RawRunning:               3,
+			UnobservedSequences:      unobserved,
+			GenerationDelta:          60,
+			ObservationInterval:      500 * time.Millisecond,
+			ObservationIntervalValid: true,
+			TPS:                      snapshot,
+		}
+		decision := (tpsGate{}).evaluate(state)
+		wantFit := unobserved < 3
+		if decision.fits != wantFit || decision.sequenceLimit != 6 ||
+			decision.currentSequences != 3+unobserved ||
+			decision.postAdmitSequences != 4+unobserved {
+			t.Fatalf("unobserved=%d long-window decision=%+v want fit/limit=%t/6", unobserved, decision, wantFit)
+		}
+		if !wantFit && decision.reason != ReasonTPSReference {
+			t.Fatalf("long-window overflow reason=%s", decision.reason)
+		}
+	}
+}
+
 func TestTPSGateDoesNotExploreWhenBasePlusOneWouldExceedTolerance(t *testing.T) {
 	snapshot := TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 150, MeanActiveTPS: 22}
 	decision := (tpsGate{}).evaluate(ProjectedState{RawRunning: 7, TPS: snapshot})

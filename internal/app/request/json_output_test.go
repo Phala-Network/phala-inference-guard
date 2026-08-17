@@ -146,6 +146,37 @@ func TestV0121ClassifierCoversModelNeutral650KTextWindow(t *testing.T) {
 	}
 }
 
+func TestV01215ClassifierReadsUnknownLengthJSONWithinBound(t *testing.T) {
+	body := []byte(`{"model":"model-agnostic","prompt":"chunked","max_tokens":8}`)
+	classifier := New(Config{
+		MaximumBodyBytes:  int64(len(body)),
+		MaximumConcurrent: 1,
+		OutputTokenFields: []string{"max_tokens"},
+		Estimator:         kvadmission.DefaultEstimatorConfig(),
+	})
+	request := &http.Request{
+		Method:        http.MethodPost,
+		Header:        http.Header{"Content-Type": []string{"application/json"}},
+		Body:          io.NopCloser(bytes.NewReader(body)),
+		ContentLength: -1,
+	}
+
+	classification, protocolError := classifier.ClassifyRequest(request)
+	if protocolError != nil || !classification.Cost.Supported {
+		t.Fatalf("bounded unknown-length JSON was not classified: protocol=%+v cost=%+v", protocolError, classification.Cost)
+	}
+	preserved, err := io.ReadAll(request.Body)
+	if err != nil || !bytes.Equal(preserved, body) || request.ContentLength != -1 {
+		t.Fatalf(
+			"unknown-length body was not preserved: error=%v bytes=%d/%d length=%d",
+			err,
+			len(preserved),
+			len(body),
+			request.ContentLength,
+		)
+	}
+}
+
 func TestV0121ClassifierPreservesUndeclaredOversizeBody(t *testing.T) {
 	const maximum = 32
 	body := []byte(`{"model":"model-agnostic","prompt":"this body is longer than its declared length"}`)

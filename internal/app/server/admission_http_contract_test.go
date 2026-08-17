@@ -56,6 +56,72 @@ func TestAdmissionHTTPInputEstimateChangesPreForwardDecision(t *testing.T) {
 	}
 }
 
+func TestV01215AdmissionHTTPChargesAllDecodeSequencesBeforeForward(t *testing.T) {
+	tests := []struct {
+		name             string
+		body             string
+		decodeSequences  int64
+		minimumInputWork int64
+	}{
+		{
+			name: "chat n",
+			body: `{"model":"model-agnostic","messages":[{"role":"user","content":"hello"}],` +
+				`"n":8,"max_tokens":256}`,
+			decodeSequences: 8,
+		},
+		{
+			name: "best of string prompt batch",
+			body: `{"model":"model-agnostic","prompt":["one","two","three"],` +
+				`"n":2,"best_of":4,"max_tokens":256}`,
+			decodeSequences: 12,
+		},
+		{
+			name: "token id prompt batch",
+			body: `{"model":"model-agnostic","prompt":[[1,2,3],[4,5]],` +
+				`"n":2,"max_tokens":256}`,
+			decodeSequences:  4,
+			minimumInputWork: 5,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var backendCalls atomic.Int64
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				backendCalls.Add(1)
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+			runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+				Mode: "enforce", TPSReference: 50,
+			})
+			srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer secret")
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+
+			srv.ServeHTTP(response, request)
+
+			decision := runtime.Snapshot(clock.Now()).Report.LastDecision
+			if response.Code != http.StatusTooManyRequests || backendCalls.Load() != 0 ||
+				decision.Reason != coreadmission.ReasonTPSReference ||
+				decision.TPSCurrentSequences != 0 ||
+				decision.TPSPostAdmitSequences != test.decodeSequences {
+				t.Fatalf(
+					"multiplicity was not charged before forward: status=%d calls=%d decision=%+v",
+					response.Code,
+					backendCalls.Load(),
+					decision,
+				)
+			}
+			if decision.Work.FutureKVTokens < test.decodeSequences*256 ||
+				decision.Estimate.SelectionInputTokens < test.minimumInputWork {
+				t.Fatalf("multiplicity KV/input work is incomplete: decision=%+v", decision)
+			}
+		})
+	}
+}
+
 func TestAdmissionHTTPProtectsRepeatedShortLexemeOverContextBeforeForward(t *testing.T) {
 	var backendCalls atomic.Int64
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
