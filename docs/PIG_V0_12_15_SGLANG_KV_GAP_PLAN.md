@@ -34,8 +34,11 @@ high.
 
 ### 1.1 Non-negotiable execution contract
 
-The following requirements apply to every v0.12.15 source revision, candidate
-image, and production transition:
+The following list is the authoritative consolidation of the current user
+contract. It applies to every v0.12.15 source revision, candidate image, and
+production transition. Earlier plans, experiments, or evidence that conflict
+with this list are historical only and must not be carried forward after a
+context reset:
 
 - The optimization objective is maximum sustained SLO-compliant completion
   throughput and GPU utilization, not minimum concurrency or a perfect
@@ -64,6 +67,13 @@ image, and production transition:
   its own metric names, `TYPE`, labels, rank/engine aggregation, reset behavior,
   and freshness. A metric from one backend must never be substituted into the
   other backend's contract. No model family receives special behavior.
+- Backend-source review is part of the metric contract, not permission to patch
+  the backend. Pin the exact deployed SGLang source and trace the scheduler
+  update/reset paths for KV, cache tiers, running/waiting, decode TPS, and
+  retraction before using those signals for QoS. Apply the same source-level
+  verification to the supported vLLM metric families and aggregation rules.
+  Modify PIG only; SGLang, vLLM, Router, and HAProxy remain read-only protocol
+  references for this release.
 - Cache awareness must prevent compute over-protection without pretending that
   active cached tokens consume no KV. Evictable cache is excluded from hard KV
   occupancy; a bounded recent hit fraction may reduce only aggregate Prefill
@@ -112,6 +122,18 @@ image, and production transition:
 - Commit and push every source or plan revision. Build a host-local image only
   from the exact pushed commit after source gates pass, and upload a registry
   image only after the complete candidate matrix and three reviews pass.
+- Treat every executable version as a measured iteration. Keep the required
+  monitors active throughout isolated candidate testing, image validation,
+  promotion, and the post-promotion window; compare time-aligned baseline and
+  candidate evidence. A material QoS, correctness, visibility, or goodput
+  regression starts a new red-test-to-release iteration rather than an in-place
+  production patch.
+- Before every production candidate replacement, make the separately verified
+  exact `0.8.13` image and configuration the traffic-bearing PIG baseline. Do
+  not promote directly from a previous v0.12.x runtime, do not mix v0.12.x
+  defaults into `0.8.13`, and do not use an unverified candidate as the service
+  fallback. The candidate may replace only PIG after its complete acceptance;
+  failure restores that same verified `0.8.13` baseline first.
 
 ## 2. Production Finding
 
@@ -349,7 +371,7 @@ token estimate latency separately from total PIG overhead; p99 for the accepted
 extreme input must be below 100 ms in the f563 test environment. A narrow
 microbenchmark is an overhead gate, not a throughput claim.
 
-Current exact-source evidence is tied to pushed commit
+Earlier exact-source performance evidence is tied to pushed commit
 `d7089509e419814572c14f46c14903e649e2993c`, GitHub archive SHA-256
 `5db6b003c4afc8c4f3fd13274908b4277ced4609e5faf05de8b85374814e7416`, and
 `golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`.
@@ -369,10 +391,14 @@ reprocessed-hit question, but review exposed an untested cross-DP cache-family
 identity case. Test-only commit
 `397d234426e881e5006625b970d3d12237bd6f62` proved that the current parser
 accepted a DP1 cache family alongside coherent DP0 admission metrics. The
-first-attempt/retraction fixture passed in the same run. The parser must now fail
-that optional family cold and the complete exact-commit matrix must be rerun.
-No v0.12.15 image may be built until that green evidence and the three release
-reviews pass.
+first-attempt/retraction fixture passed in the same run. Fix commit
+`49de08600feb5a5c043597527b8602baa7254514` now carries the primary admission
+`dp_rank` into the optional cache adapter and falls that cache family cold when
+its `dp_rank` differs, without invalidating coherent KV/TPS admission fields.
+Its GitHub archive SHA-256 is
+`aff29a6691a252fa95e3dae861724b267aa23d35e7ced93c5f7cd30acbf0bbcb` and its
+focused contract-green log SHA-256 is
+`53d0bb81f242a749fb5bd8323f491a67c92dbfd4bc5069d84bd96150e90b1319`.
 
 ```text
 GitHub archive sha256 d1f18692e35e34699cc235901e00733d5bd21a407a8ac951c905aebd11215e0f
@@ -381,6 +407,26 @@ focused red exit 1: cross-DP cache family accepted
 harness error sha256 0ae446f63ec8d1e71531efbc73ffb2ab1d7a47f851634c3967d9c399d27e03fc
 harness error exit 127: `sh -lc` reset Go image PATH; not red evidence
 ```
+
+The exact `49de086` f563 core matrix passed focused tests, focused race, serial
+and default-parallel full tests, full race, vet, build, and two byte-identical
+deterministic simulations:
+
+```text
+focused             a17bd28cd2b445f997d22fab66b5f95e433bf232fa963cc66d420127a55e8bd2
+focused race        67c187fb4d21b484ccf218da1067e11ba03e60970d1c2f913fe74ab00f6baf81
+full serial         5ea517b984449b4ce6f05ebcba019a71e021f45d7e3f33e0a82acd6f8045b807
+full parallel       8f79a3d797c8316293e11e7eed0ad6cad6545b2bb869719de558cd994d94b333
+full race           032f20439a945875d4ca94aa5e18375f1e8bbd9c49384bb38f11644b970e79f1
+vet                 f4e5ca988b9e9fa4fd82883c14bed636e82d12a09e66c12c861c95791707b852
+build               e21fcd21234752a48e2170171fd36a6d68922eba13544edbcc63da3e918f4784
+simulation A/B      2f29cb429523018c4f68f01fea03179e219b8d0919e32e97140450b6fced30e1
+```
+
+The targeted TPS-reference and Controller hot-path/TPS runs, three-repeat
+classifier and estimator latency gates, three-repeat 4-MiB benchmarks, complete
+artifact audit, and all three release-candidate reviews remain pending. No
+v0.12.15 image may be built until the source matrix and reviews are complete.
 
 Build and smoke one host-local candidate image only after the source matrix
 passes. Validate it
@@ -487,15 +533,24 @@ Contract-document audit repeated after requirement consolidation on 2026-08-17:
 1. requirement coverage pass completed for objective, prediction timing,
    approximate token estimation, adaptive initialization, request-aware
    long-input policy, cache/TPS semantics, both backend adapters,
-   Router/admin-facing observability, minimal production configuration,
-   environment, source/image publication, continuous monitoring, and rollback;
-2. algorithm-consistency pass completed; Router visibility was corrected to be
-   scope-aware so a large request-specific rejection does not close capacity
-   for a smaller fitting request;
-3. operational-order pass completed; every production update uses a verified
-   `0.8.13` traffic baseline before the accepted candidate replaces PIG, with
-   PIG-only rollback, explicit control-plane/runtime drift handling, and at
-   least 30 minutes of live monitoring.
+   exact SGLang/vLLM source contracts, Router/admin-facing observability,
+   minimal production configuration, environment, source/image publication,
+   continuous per-version monitoring, and rollback. Conflicting historical
+   requirements such as exact/model-specific tokenizers, learning, TTFT gating,
+   request mutation, PIG routing, or tier/priority injection remain excluded;
+2. algorithm-consistency pass completed. Cache credit is limited to recent
+   aggregate Prefill compute while complete input still drives KV and long-input
+   safety; TPS 50 is a long-window QoS reference rather than an instantaneous
+   hard floor; the 500-ms observer has no hidden one-second hold; and Router
+   visibility remains scope-aware so a large request-specific rejection does
+   not close capacity for a smaller fitting request;
+3. operational-order pass completed. Every executable version is committed and
+   pushed, tested only on f563, monitored as an isolated candidate, and uploaded
+   only after acceptance. Every production update first uses a separately
+   verified exact `0.8.13` configuration as the traffic-bearing PIG baseline,
+   then replaces only PIG with the accepted digest, preserves SGLang/HAProxy/CVM,
+   observes real traffic for at least 30 minutes, and restores `0.8.13` before a
+   new iteration if a release-blocking regression appears.
 
 This document audit does not satisfy the three release-candidate review passes
 below. Those remain tied to exact executable source and fresh f563 evidence.
@@ -508,9 +563,10 @@ SGLang scrape also exposes `prefill_effective_tokens_total` as token-level
 counters with the required input/device/host/storage modes. vLLM upstream source
 established the metric types, per-engine labels, and update sites. Exact SGLang
 source now proves that all effective modes exclude reprocessed requests. The
-`397d234` red run proved that a cross-DP optional cache family was accepted.
-The parser fix and new exact-commit green matrix are pending, so this review is
-not complete.
+`397d234` red run proved that a cross-DP optional cache family was accepted;
+`49de086` fixed the identity binding and passed the core exact-commit f563
+matrix. The remaining TPS/performance repeats, complete evidence audit, and
+causality review are still pending, so this pass is not complete.
 
 Exact-version source was resolved to SGLang commit
 `c4271c3fe1262fc2adbd162c33b25de5255251c5`. Its
@@ -552,7 +608,7 @@ sha256 2b7e62fe8bc545ff5530bcdbe12adc5bc4c70fc0ca3fbaf1abf194016fd24810
 exit 1: body_bytes=4194300 p50=34.280061ms p99=107.131729ms
 ```
 
-Current pushed source `d7089509e419814572c14f46c14903e649e2993c`
+Earlier pushed source `d7089509e419814572c14f46c14903e649e2993c`
 supersedes that performance failure without weakening the gate. It also adds
 the required cache no-delta, expiry, runtime-epoch, and current-sample
 preemption-suppression coverage. Its exact f563 matrix passed with these
@@ -573,9 +629,10 @@ TPS simulations     c5d926c3c4dd6a4bc128b4709312f171e9e47208072b20a77b0c280e4718
 deterministic JSON  2f29cb429523018c4f68f01fea03179e219b8d0919e32e97140450b6fced30e1
 ```
 
-This green matrix is not image acceptance. Pass 1 remains open until the
-cross-DP cache-family fixture turns green and the new exact source revision
-passes the required f563 matrix.
+This historical `d708950` green matrix is not image acceptance. The newer
+`49de086` cross-DP contract fixture is green and its core matrix is recorded in
+Section 4, but Pass 1 remains open until the remaining exact-source gates and
+evidence review complete.
 
 ### Pass 2: safety and lifecycle
 
