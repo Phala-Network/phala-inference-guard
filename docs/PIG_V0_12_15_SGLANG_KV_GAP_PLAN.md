@@ -1086,9 +1086,12 @@ Required new red/green evidence:
 
 ### Corrective review: request-time evidence and workload shifts
 
-Status: implementation correction and follow-up design review recorded on
+Status: implementation corrections and follow-up design review recorded on
 2026-08-18. Pushed source `3fde5351d94d33f8add992ceb13fe26da3d61dbd`
-closes two focused defects but is not a release candidate.
+closed the initial two focused defects. Subsequent pushed source through
+`1f9a53accd837e040f16a6fe9aab730b59125b22` closes the conservative
+multi-prompt shape, between-poll sequence evidence, and known-below-floor
+marginal recovery defects described below, but is not a release candidate.
 
 Red source `0ace26725491b9479e919164d9cd3b6295bcceb8` proved that cache
 credit remained usable after its one-second lifetime until another metrics
@@ -1155,6 +1158,141 @@ replacing the fixed 61-bucket TPS snapshot, or collapsing admission interfaces
 would materially improve end-to-end throughput. The accepted 4-MiB p99 remains
 below the user-approved 100-ms boundary. Keep those items behind benchmark
 evidence instead of expanding v0.12.15.
+
+The required conservative two-prompt regression was implemented and pushed at
+`e2eafc9041920a93123650f7217353125ec64b4d`. Two large non-ASCII prompts retain
+their aggregate hard KV while Context admission uses the maximum individual
+prompt. The focused and admission logs have SHA-256 values
+`3e6b08a337c60306c9d885ad7b0b5292e537b6e92f4dde950630e3dd004dbc1e` and
+`5e743c871dc137ad6147a8cb0018e20d3af1ebd8b0e74d45fdcfba5af2b555f4`.
+
+Focused red source `0d1b8e0` proved that requests forwarded and completed
+between adjacent 500-ms observations could disappear from reliable sequence
+evidence. Pushed implementation `8e8ec0a` retains those forwarded liabilities
+in the existing reconciliation pass. A further red test at `9dba9c6` proved
+that seven sequences producing 150 aggregate TPS could open an eighth even
+though the known projection was 18.75 TPS against a 20 TPS reference. Pushed
+implementation `1f9a53a` prevents that known-below-95%-floor recovery while
+preserving the one-to-two low-flow probe. Exact f563 green log SHA-256 values
+for current source are:
+
+```text
+TPS focused             906822efc7db01bf00be3953db64fdd041420cb9608ac2980fc595ab3963b9c5
+packages/simulations    28a8da05488671cdf3b2a3edb368ea45fd2b30114628106b51b88edc51edbbd0
+admission race          047907090496e012634dc95272166f9790164a0ad7e08e2fde9bfefa4f9a6de7
+detailed TPS/cache sim  ab839b98bfadb95b843d2773eeaa4f7a64c65b2f89940b3ab8b392bebd80d579
+```
+
+The reference-20 saturation result admitted 3/20 arrivals, retained 8906.67
+completion tokens and 8892.78 SLO-completion tokens, held 21.75 mean active
+TPS, reached seven running sequences, and produced zero preemptions. Reference
+25 admitted 2/20, retained 8907.78 completion and SLO-completion tokens, held
+25.20 mean active TPS, reached six running sequences, and produced zero
+preemptions. These focused results do not close the following architecture
+review.
+
+### Corrective review: long-run QoS budget and exact lifecycle exposure
+
+Status: design correction recorded on 2026-08-18 at source
+`1f9a53accd837e040f16a6fe9aab730b59125b22`. Red evidence and implementation
+are pending. This section supersedes any earlier acceptance that treats a
+per-wave 95% TPS projection or a forwarded-request count as proof of the
+long-run QoS objective.
+
+The current implementation still has five release blockers:
+
+1. `rateDerivedSequenceLimit` reduces the 60-second evidence to
+   `aggregate_tps / reference`, and marginal recovery requires the next wave to
+   meet a fixed 95% floor immediately. It cannot spend previously accumulated
+   QoS surplus, so it protects a near-instantaneous threshold rather than the
+   requested long-run average. The healthy `mix-80-20` simulation confirms the
+   cost: completion falls from 1603.42 to 1488.65 (7.2%) and SLO-completion
+   falls from 1525.64 to 1449.76 (5.0%) despite 23.59 mean active TPS, zero
+   waiting, and zero preemptions. Do not relax the existing assertion to hide
+   this loss.
+2. The between-poll correction sums every forwarded Decode liability and then
+   charges that count for the complete observation interval. Sequential short
+   requests are therefore represented as if they were concurrent for 500 ms.
+   This can greatly overstate sequence-seconds, understate per-sequence TPS,
+   and mature the window on false exposure. Retaining requests as evidence was
+   necessary, but count-times-interval is not the final model.
+3. A 256K/512K/650K input class is retained only while Prefill liability is
+   positive. After the first-byte transition, TPS admission sees the same one
+   Decode sequence as a short-context request. The simulator also makes Decode
+   throughput depend only on concurrency, so current long-input green results
+   do not cover context-dependent Decode cost or short-to-long workload shift.
+4. HTTP first body byte approximates Prefill completion for streaming requests
+   but occurs only after complete generation for normal non-streaming
+   responses. Current simulation invokes `MarkFirstByte` at idealized Prefill
+   completion and therefore misses potentially long exclusive/quiescent
+   over-protection in the non-streaming lifecycle.
+5. The lexical estimate and fixed 9/8 or 3/2 margins have not established a
+   cross-tokenizer hard-KV upper bound. A rough estimate is appropriate for
+   Prefill ranking, but the same value cannot be called a model-independent KV
+   safety bound until byte-BPE, SentencePiece, byte-fallback, multilingual,
+   escape-heavy, tool-template, and unsupported multimodal cases pass the
+   required oracle matrix.
+
+The corrective architecture is deliberately limited to existing request and
+backend evidence; it adds no runtime learning, model-name checks, tokenizer
+assets, request rewrite, cache lookup, TTFT gate, fixed one-second hold, or new
+production tuning parameter:
+
+- `SequenceExposureLedger` owns lifecycle-time integration of active Decode
+  liabilities and publishes bounded sequence-seconds to the TPS window. Its
+  hot lifecycle operations and sample read must be O(1), deterministic under
+  an injected monotonic clock, reset with the backend epoch, and reject stale,
+  duplicate, reversed, or overflowing transitions without leaking exposure.
+- `QoSBudgetForecast` derives rolling surplus as
+  `qualified_sequence_tokens - reference * qualified_sequence_seconds`. A
+  request-time forecast may spend only a bounded part of positive surplus on
+  at most one new wave per fresh 500-ms observation. The predicted next-window
+  deficit must use current or conservative window aggregate throughput and the
+  atomic post-admit sequence count. Waiting, preemption, stale/invalid evidence,
+  negative surplus, or an unrepresentative workload shift cannot spend credit.
+- `WorkloadShiftGuard` retains only a coarse request-size risk class through
+  Decode. It may constrain expansion while a newly introduced exclusive or
+  quiescent workload lacks a fresh representative observation, but it must
+  reopen one bounded wave immediately when current evidence fits. It must not
+  convert input tokens into a universal static sequence multiplier.
+- Request estimation exposes separate Prefill-ranking and hard-KV-safety
+  dimensions. The fast lexical value remains the Prefill signal; low-confidence
+  hard capacity uses a conservative body-derived bound or request-scoped
+  protection. Cache credit continues to reduce only Prefill compute and never
+  hard KV.
+
+Required test-first execution order:
+
+1. Add a focused TPS-window red test with many sequential short requests in one
+   500-ms interval. It must fail because current sequence-seconds exceed the
+   timestamp-derived exposure, not because readiness or counters are absent.
+2. Add a focused QoS-budget red test that holds metrics and reservations
+   constant, varies positive/negative rolling surplus, and proves the
+   pre-forward decision changes. Same-snapshot requests must consume the
+   bounded wave atomically; waiting and preemption must still freeze it.
+3. Extend deterministic simulation with bursty healthy mixed traffic and
+   require reference-enabled SLO goodput to retain at least 98% of the
+   reference-disabled candidate, long-run mean active TPS at or above the
+   reference, no additional preemptions, and no more than one observation of
+   idle-with-demand. Saturated reference-20/25 results must not regress.
+4. Add 256K/512K/650K cache-hot and cache-cold short-to-long Decode shifts whose
+   throughput explicitly depends on context class. Compare the current burst,
+   strict freeze, and bounded-shift candidates; accept a control only when it
+   improves sustained SLO goodput without additional preemption or low-flow
+   self-lock.
+5. Add streaming and non-streaming lifecycle simulations. A non-streaming
+   response must not be assumed to expose Prefill completion through HTTP first
+   byte, and any alternative reconciliation must prove ownership, cancellation,
+   timeout, epoch-reset, and exact-once release before implementation.
+6. Complete the cross-tokenizer estimator oracle before treating the lexical
+   margin as hard-capacity evidence. Keep measured, conservative, and
+   unsupported shapes distinct; do not increase every request to a worst-case
+   estimate merely to make the matrix green.
+
+Do not implement all four components speculatively. Prove each red behavior on
+f563, implement the smallest complete vertical slice through HTTP decision and
+reservation lifecycle, rerun focused race and simulations, then record its
+exact source, archive, environment, command, exit status, and log SHA-256 here.
 
 ### Pass 3: exact evidence and release
 
