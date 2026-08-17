@@ -24,14 +24,14 @@ type Cost struct {
 }
 
 type RequestShape struct {
-	PromptBatchSize                  int64
-	PromptStringBytes                int64
-	MaximumPromptStringBytes         int64
-	PromptApproximateTokens          int64
-	MaximumPromptApproximateTokens   int64
-	ExplicitPromptTokens             int64
-	MaximumExplicitPromptTokens      int64
-	DecodeSequences                  int64
+	PromptBatchSize                int64
+	PromptStringBytes              int64
+	MaximumPromptStringBytes       int64
+	PromptApproximateTokens        int64
+	MaximumPromptApproximateTokens int64
+	ExplicitPromptTokens           int64
+	MaximumExplicitPromptTokens    int64
+	DecodeSequences                int64
 }
 
 func DefaultRequestShape() RequestShape {

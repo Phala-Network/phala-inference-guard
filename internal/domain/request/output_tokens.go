@@ -11,17 +11,17 @@ import (
 const maximumJSONFieldScanDepth = 128
 
 type JSONFields struct {
-	OutputTokens                int
-	HasOutputTokens             bool
-	PromptBatchSize             int64
-	PromptStringBytes               int64
-	MaximumPromptStringBytes        int64
-	PromptApproximateTokens         int64
-	MaximumPromptApproximateTokens  int64
-	ExplicitPromptTokens            int64
-	MaximumExplicitPromptTokens     int64
-	DecodeSequences                 int64
-	ShapeSupported                  bool
+	OutputTokens                   int
+	HasOutputTokens                bool
+	PromptBatchSize                int64
+	PromptStringBytes              int64
+	MaximumPromptStringBytes       int64
+	PromptApproximateTokens        int64
+	MaximumPromptApproximateTokens int64
+	ExplicitPromptTokens           int64
+	MaximumExplicitPromptTokens    int64
+	DecodeSequences                int64
+	ShapeSupported                 bool
 }
 
 type promptElementKind uint8
