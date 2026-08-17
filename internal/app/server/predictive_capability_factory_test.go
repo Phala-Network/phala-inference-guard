@@ -99,9 +99,9 @@ func TestV0125AutomaticCapabilityBusyStartupAdmitsAndDrainsFittingRegularRequest
 
 	decision := runtime.Decide(context.Background(), domainpredictive.RequestEstimate{
 		SelectionInputTokens: 8 * 1024, MaximumSequenceInputTokens: 8 * 1024,
-		KVReservationInputTokens: 8 * 1024,
+		KVReservationInputTokens:                8 * 1024,
 		MaximumSequenceKVReservationInputTokens: 8 * 1024,
-		BasePromptCount: 1, DecodeSequences: 1,
+		BasePromptCount:                         1, DecodeSequences: 1,
 	})
 	if decision.Record.State.RawRunning != 1 {
 		t.Fatalf("decision observation running=%d, want coherent busy startup base", decision.Record.State.RawRunning)

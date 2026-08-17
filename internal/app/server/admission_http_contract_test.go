@@ -251,7 +251,7 @@ func TestAdmissionShadowAndEnforceAdmittedLifecyclesAreEquivalent(t *testing.T) 
 		SelectionInputTokens: 8 * 1024, MaximumSequenceInputTokens: 8 * 1024,
 		KVReservationInputTokens: 8 * 1024, DecodeHorizonTokens: 256,
 		MaximumSequenceKVReservationInputTokens: 8 * 1024,
-		BasePromptCount: 1, DecodeSequences: 1,
+		BasePromptCount:                         1, DecodeSequences: 1,
 	}
 	type state struct {
 		decision coreadmission.DecisionRecord

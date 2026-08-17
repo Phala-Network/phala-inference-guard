@@ -101,9 +101,9 @@ type TPSPolicyConfig struct {
 }
 
 type ControllerConfig struct {
-	Capability Capability
+	Capability  Capability
 	WorkProfile predictive.RequestWorkProfile
-	TPS        TPSPolicyConfig
+	TPS         TPSPolicyConfig
 }
 
 type DecisionRecord struct {

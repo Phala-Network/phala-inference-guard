@@ -69,9 +69,9 @@ func newAdmissionRuntimeForTest(
 		t.Fatalf("construct admission test work profile: %v", err)
 	}
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability: admissionCapabilityFromProfile(profile),
+		Capability:  admissionCapabilityFromProfile(profile),
 		WorkProfile: workProfile,
-		TPS:        coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
+		TPS:         coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
 	})
 	if err != nil {
 		t.Fatalf("construct admission test Controller: %v", err)

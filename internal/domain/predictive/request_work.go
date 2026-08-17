@@ -8,13 +8,13 @@ import (
 // RequestEstimate is the complete model-neutral output of request estimation.
 // It contains no backend geometry, runtime state, request identity, or mode.
 type RequestEstimate struct {
-	SelectionInputTokens                     int64
+	SelectionInputTokens                    int64
 	MaximumSequenceInputTokens              int64
 	KVReservationInputTokens                int64
 	MaximumSequenceKVReservationInputTokens int64
-	DecodeHorizonTokens                      int64
-	BasePromptCount                          int64
-	DecodeSequences                          int64
+	DecodeHorizonTokens                     int64
+	BasePromptCount                         int64
+	DecodeSequences                         int64
 }
 
 func (e RequestEstimate) Validate() error {

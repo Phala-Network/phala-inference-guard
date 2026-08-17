@@ -40,7 +40,7 @@ func TestAdmissionBackendObserverPublishesSGLangCountersAndRejectsIdentityDrift(
 		t.Fatalf("construct SGLang observer capability: %v", err)
 	}
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability: admissionCapabilityFromProfile(profile),
+		Capability:  admissionCapabilityFromProfile(profile),
 		WorkProfile: mustPredictiveRequestWorkProfile(t, "sglang"),
 	})
 	if err != nil {

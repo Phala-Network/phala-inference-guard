@@ -98,13 +98,13 @@ func TestPolicyPreservesPhysicalGateReasonPrecedenceOverTPS(t *testing.T) {
 
 func TestV01215ContextGateUsesMaximumSequenceWhileWorkKeepsAggregateInput(t *testing.T) {
 	estimate := predictive.RequestEstimate{
-		SelectionInputTokens:                     6_000,
+		SelectionInputTokens:                    6_000,
 		MaximumSequenceInputTokens:              3_000,
 		KVReservationInputTokens:                7_000,
 		MaximumSequenceKVReservationInputTokens: 3_500,
-		DecodeHorizonTokens:                      256,
-		BasePromptCount:                          2,
-		DecodeSequences:                          2,
+		DecodeHorizonTokens:                     256,
+		BasePromptCount:                         2,
+		DecodeSequences:                         2,
 	}
 	work, err := predictive.BuildRequestWork(estimate, testRequestWorkProfile(), 64)
 	if err != nil {
@@ -149,13 +149,13 @@ func testCapability() Capability {
 func testWork(t *testing.T, selection, reservation, decode int64) predictive.RequestWork {
 	t.Helper()
 	work, err := predictive.BuildRequestWork(predictive.RequestEstimate{
-		SelectionInputTokens:                     selection,
+		SelectionInputTokens:                    selection,
 		MaximumSequenceInputTokens:              selection,
 		KVReservationInputTokens:                reservation,
 		MaximumSequenceKVReservationInputTokens: reservation,
-		DecodeHorizonTokens:                      decode,
-		BasePromptCount:                          1,
-		DecodeSequences:                          1,
+		DecodeHorizonTokens:                     decode,
+		BasePromptCount:                         1,
+		DecodeSequences:                         1,
 	}, testRequestWorkProfile(), testCapability().KVBlockSize)
 	if err != nil {
 		t.Fatal(err)

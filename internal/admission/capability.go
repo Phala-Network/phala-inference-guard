@@ -67,13 +67,13 @@ func (c Capability) Validate() error {
 
 func (c Capability) minimumWork(profile predictive.RequestWorkProfile) (predictive.RequestWork, error) {
 	return predictive.BuildRequestWork(predictive.RequestEstimate{
-		SelectionInputTokens:                     1,
+		SelectionInputTokens:                    1,
 		MaximumSequenceInputTokens:              1,
 		KVReservationInputTokens:                1,
 		MaximumSequenceKVReservationInputTokens: 1,
-		DecodeHorizonTokens:                      c.MinimumDecodeHorizonTokens,
-		BasePromptCount:                          1,
-		DecodeSequences:                          1,
+		DecodeHorizonTokens:                     c.MinimumDecodeHorizonTokens,
+		BasePromptCount:                         1,
+		DecodeSequences:                         1,
 	}, profile, c.KVBlockSize)
 }
 

@@ -41,11 +41,11 @@ func (h ReservationHandle) Terminate(cause TerminalCause) bool {
 type AdmissionController struct {
 	mu sync.Mutex
 
-	capability Capability
+	capability  Capability
 	workProfile predictive.RequestWorkProfile
-	policy     admissionPolicy
-	projector  stateProjector
-	tpsWindow  tpsWindow
+	policy      admissionPolicy
+	projector   stateProjector
+	tpsWindow   tpsWindow
 
 	runtimeEpoch        uint64
 	eventSequence       uint64

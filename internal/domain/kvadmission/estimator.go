@@ -159,13 +159,13 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 	cost.ApproximateInputTokensKnown = true
 	cost.BoundedDecodeTokens = int64(cfg.BlindOutputTokens)
 	cost.Estimate = predictive.RequestEstimate{
-		SelectionInputTokens:                     high,
+		SelectionInputTokens:                    high,
 		MaximumSequenceInputTokens:              high,
 		KVReservationInputTokens:                high,
 		MaximumSequenceKVReservationInputTokens: high,
-		DecodeHorizonTokens:                      cost.BoundedDecodeTokens,
-		BasePromptCount:                          cost.BasePromptCount,
-		DecodeSequences:                          cost.DecodeSequences,
+		DecodeHorizonTokens:                     cost.BoundedDecodeTokens,
+		BasePromptCount:                         cost.BasePromptCount,
+		DecodeSequences:                         cost.DecodeSequences,
 	}
 	if cost.Estimate.Validate() != nil {
 		cost.UnsupportedReason = "request_estimate_overflow"
@@ -208,13 +208,13 @@ func setTextPredictiveEstimate(cost *Cost, maximumSequenceInput int64) bool {
 		}
 	}
 	cost.Estimate = predictive.RequestEstimate{
-		SelectionInputTokens:                     selection,
+		SelectionInputTokens:                    selection,
 		MaximumSequenceInputTokens:              maximumSequenceInput,
 		KVReservationInputTokens:                reservation,
 		MaximumSequenceKVReservationInputTokens: maximumReservation,
-		DecodeHorizonTokens:                      cost.BoundedDecodeTokens,
-		BasePromptCount:                          cost.BasePromptCount,
-		DecodeSequences:                          cost.DecodeSequences,
+		DecodeHorizonTokens:                     cost.BoundedDecodeTokens,
+		BasePromptCount:                         cost.BasePromptCount,
+		DecodeSequences:                         cost.DecodeSequences,
 	}
 	return cost.Estimate.Validate() == nil
 }

@@ -135,7 +135,7 @@ func TestAdmissionReporterCallbackFailureCannotChangeDecision(t *testing.T) {
 		SelectionInputTokens: 1_024, MaximumSequenceInputTokens: 1_024,
 		KVReservationInputTokens: 1_024, DecodeHorizonTokens: 256,
 		MaximumSequenceKVReservationInputTokens: 1_024,
-		BasePromptCount: 1, DecodeSequences: 1,
+		BasePromptCount:                         1, DecodeSequences: 1,
 	})
 	if !decision.Record.Admitted() || decision.Reservation == nil || controller.Snapshot(clock.Now()).State.LiveReservations != 1 {
 		t.Fatalf("reporter callback changed admission: decision=%+v state=%+v", decision, controller.Snapshot(clock.Now()).State)
@@ -151,7 +151,7 @@ func TestAdmissionResponseEOFAndOuterDeferMutateTerminalOnce(t *testing.T) {
 		SelectionInputTokens: 1_024, MaximumSequenceInputTokens: 1_024,
 		KVReservationInputTokens: 1_024, DecodeHorizonTokens: 256,
 		MaximumSequenceKVReservationInputTokens: 1_024,
-		BasePromptCount: 1, DecodeSequences: 1,
+		BasePromptCount:                         1, DecodeSequences: 1,
 	})
 	if decision.Reservation == nil || !decision.Reservation.MarkForwarded() || !decision.Reservation.MarkFirstByte() {
 		t.Fatalf("prepare response lifecycle: %+v", decision)
@@ -401,7 +401,7 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 		Mode: "enforce", Enforced: true, ObservedAt: time.Unix(1, 0),
 		Decision: coreadmission.DecisionRecord{
 			Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonKVCapacity,
-			Scope:    coreadmission.ProtectionLoad,
+			Scope: coreadmission.ProtectionLoad,
 			Estimate: domainpredictive.RequestEstimate{
 				SelectionInputTokens: 1_500, MaximumSequenceInputTokens: 900,
 				KVReservationInputTokens: 1_600, MaximumSequenceKVReservationInputTokens: 1_000,

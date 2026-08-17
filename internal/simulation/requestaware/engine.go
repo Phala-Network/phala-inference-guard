@@ -113,9 +113,9 @@ func runScenarioWithTPSReference(
 	if policyName == PolicyCandidate {
 		capability := simulationAdmissionCapability(profile)
 		controller, controllerErr := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-			Capability: capability,
+			Capability:  capability,
 			WorkProfile: simulationRequestWorkProfile(),
-			TPS:        coreadmission.TPSPolicyConfig{Reference: tpsReference},
+			TPS:         coreadmission.TPSPolicyConfig{Reference: tpsReference},
 		})
 		if controllerErr != nil {
 			return Metrics{}, 0, fmt.Errorf("construct candidate AdmissionController: %w", controllerErr)
@@ -716,13 +716,13 @@ func (r *scenarioRunner) terminateAll(at time.Duration, cause coreadmission.Term
 
 func simulationRequestEstimate(request requestSpec) domainpredictive.RequestEstimate {
 	estimate := domainpredictive.RequestEstimate{
-		SelectionInputTokens:                     request.selectionInput,
+		SelectionInputTokens:                    request.selectionInput,
 		MaximumSequenceInputTokens:              request.selectionInput,
 		KVReservationInputTokens:                request.safetyInput,
 		MaximumSequenceKVReservationInputTokens: request.safetyInput,
-		DecodeHorizonTokens:                      request.decodeHorizon,
-		BasePromptCount:                          1,
-		DecodeSequences:                          1,
+		DecodeHorizonTokens:                     request.decodeHorizon,
+		BasePromptCount:                         1,
+		DecodeSequences:                         1,
 	}
 	if err := estimate.Validate(); err != nil {
 		panic(fmt.Sprintf("simulation request estimate for %q: %v", request.id, err))

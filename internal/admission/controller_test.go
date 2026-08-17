@@ -36,9 +36,9 @@ func TestControllerRetainsCompletionBeforePollDebtUntilCoveringSample(t *testing
 func TestControllerRejectsInvalidTPSPolicyConfiguration(t *testing.T) {
 	for _, reference := range []float64{-1, math.NaN(), math.Inf(1), 1_000_000.001} {
 		if _, err := NewAdmissionController(ControllerConfig{
-			Capability: testCapability(),
+			Capability:  testCapability(),
 			WorkProfile: testRequestWorkProfile(),
-			TPS:        TPSPolicyConfig{Reference: reference},
+			TPS:         TPSPolicyConfig{Reference: reference},
 		}); err == nil {
 			t.Fatalf("invalid TPS reference %v constructed a Controller", reference)
 		}
@@ -558,7 +558,7 @@ func TestControllerRuntimeResetClearsTPSWindow(t *testing.T) {
 func testControllerWithObservation(t *testing.T, capability Capability, observation BackendObservation) *AdmissionController {
 	t.Helper()
 	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability,
+		Capability:  capability,
 		WorkProfile: testRequestWorkProfile(),
 	})
 	if err != nil {
@@ -576,9 +576,9 @@ func testControllerWithTPSObservation(
 ) *AdmissionController {
 	t.Helper()
 	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability,
+		Capability:  capability,
 		WorkProfile: testRequestWorkProfile(),
-		TPS:        TPSPolicyConfig{Reference: reference},
+		TPS:         TPSPolicyConfig{Reference: reference},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -618,13 +618,13 @@ func testObservation(capability Capability, at time.Time, used, running, waiting
 
 func testEstimate(selection, reservation, decode int64) predictive.RequestEstimate {
 	return predictive.RequestEstimate{
-		SelectionInputTokens:                     selection,
+		SelectionInputTokens:                    selection,
 		MaximumSequenceInputTokens:              selection,
 		KVReservationInputTokens:                reservation,
 		MaximumSequenceKVReservationInputTokens: reservation,
-		DecodeHorizonTokens:                      decode,
-		BasePromptCount:                          1,
-		DecodeSequences:                          1,
+		DecodeHorizonTokens:                     decode,
+		BasePromptCount:                         1,
+		DecodeSequences:                         1,
 	}
 }
 
