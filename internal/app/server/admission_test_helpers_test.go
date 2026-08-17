@@ -16,6 +16,7 @@ const testAdmissionFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 type admissionRuntimeTestConfig struct {
 	Mode         string
+	BackendKind  string
 	KVCapacity   int64
 	MaxModelLen  int64
 	KVHardRatio  float64
@@ -35,6 +36,9 @@ func newAdmissionRuntimeForTest(
 	t.Helper()
 	if config.Mode == "" {
 		config.Mode = "enforce"
+	}
+	if config.BackendKind == "" {
+		config.BackendKind = "vllm"
 	}
 	if config.KVCapacity == 0 {
 		config.KVCapacity = 1_000_000
@@ -85,6 +89,7 @@ func newAdmissionRuntimeForTest(
 		newAdmissionReporter(time.Hour, nil),
 		profile,
 		"test",
+		config.BackendKind,
 		config.Mode,
 		clock.Now,
 	)

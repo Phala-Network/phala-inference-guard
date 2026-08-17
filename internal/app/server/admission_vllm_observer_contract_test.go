@@ -47,8 +47,8 @@ func TestAdmissionVLLMObserverTransientFailureStalesThenRecoversAndDriftCloses(t
 	}
 	defer controller.Close()
 	clock := &manualTestClock{now: time.Unix(200, 0)}
-	observer, err := newAdmissionVLLMObserver(admissionVLLMObserverConfig{
-		MetricsURL: metrics.URL, CapabilityFingerprint: fingerprint,
+	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
+		BackendKind: "vllm", MetricsURL: metrics.URL, CapabilityFingerprint: fingerprint,
 		MaxModelLenTokens: profile.MaxModelLenTokens, KVCapacityTokens: profile.KVCapacityTokens,
 		KVBlockSize: profile.KVBlockSize, PollInterval: 20 * time.Millisecond,
 		MaximumAge: 60 * time.Millisecond, RequestTimeout: 100 * time.Millisecond,
@@ -151,8 +151,8 @@ func TestAdmissionVLLMObserverRevalidatesMetadataBeforeCounterResetRecovery(t *t
 	}
 	defer controller.Close()
 	clock := &manualTestClock{now: time.Unix(300, 0)}
-	observer, err := newAdmissionVLLMObserver(admissionVLLMObserverConfig{
-		MetricsURL: upstream.URL + "/metrics", UpstreamURL: upstream.URL,
+	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
+		BackendKind: "vllm", MetricsURL: upstream.URL + "/metrics", UpstreamURL: upstream.URL,
 		ModelName: modelName, RevalidateMetadata: true,
 		CapabilityFingerprint: fingerprint, MaxModelLenTokens: profile.MaxModelLenTokens,
 		KVCapacityTokens: profile.KVCapacityTokens, KVBlockSize: profile.KVBlockSize,

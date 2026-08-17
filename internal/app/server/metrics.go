@@ -294,7 +294,7 @@ func (s *proxyServer) backendMetricsInput(
 		availableKV = 0
 	}
 	status := runtimebackend.Runtime{
-		Name: "upstream", BackendKind: "vllm", KVCapacityTokens: observation.KVCapacityTokens,
+		Name: "upstream", BackendKind: snapshot.BackendKind, KVCapacityTokens: observation.KVCapacityTokens,
 		KVUsedTokens: observation.UsedKVTokens, KVAvailableTokens: availableKV,
 		KVTokenMetricsValid: fresh, Running: nonnegativeInt(observation.Running),
 		Waiting: nonnegativeInt(observation.Waiting), GenerationTPS: aggregateTPS,

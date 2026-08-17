@@ -30,7 +30,7 @@ type predictiveCapabilityInitialization struct {
 
 func initializePredictiveCapability(
 	config predictiveCapabilityInitializationConfig,
-	startup predictiveVLLMStartup,
+	startup predictiveBackendStartup,
 ) (predictiveCapabilityInitialization, error) {
 	if startup.modelName == "" || startup.ModelIdentitySHA256 == "" || startup.CapacityTokens <= 0 || startup.BlockSize <= 0 {
 		return predictiveCapabilityInitialization{}, fmt.Errorf("predictive capability startup state is invalid")

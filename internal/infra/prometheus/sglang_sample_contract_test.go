@@ -5,21 +5,22 @@ import "testing"
 func TestParseSampleUsesCoherentSGLangAdmissionMetrics(t *testing.T) {
 	metrics := `
 # TYPE sglang:num_retracted_requests_total counter
-sglang:max_total_num_tokens{model_name="meta/test-model",tp_rank="0",priority=""} 1000000
-sglang:page_size{model_name="meta/test-model",tp_rank="0",priority=""} 16
-sglang:num_pages{model_name="meta/test-model",tp_rank="0",priority=""} 62500
-sglang:kv_available_tokens{model_name="meta/test-model",tp_rank="0",priority=""} 600000
-sglang:kv_evictable_tokens{model_name="meta/test-model",tp_rank="0",priority=""} 100000
-sglang:kv_used_tokens{model_name="meta/test-model",tp_rank="0",priority=""} 250000
-sglang:num_running_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 3
-sglang:num_running_reqs{model_name="meta/test-model",tp_rank="0",priority="10"} 2
-sglang:num_running_reqs{model_name="meta/test-model",tp_rank="0",priority="20"} 1
-sglang:num_queue_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 2
-sglang:num_queue_reqs{model_name="meta/test-model",tp_rank="0",priority="10"} 1
-sglang:num_queue_reqs{model_name="meta/test-model",tp_rank="0",priority="20"} 1
-sglang:realtime_tokens_total{mode="prefill_compute",model_name="meta/test-model",tp_rank="0",priority=""} 500
-sglang:realtime_tokens_total{mode="prefill_cache",model_name="meta/test-model",tp_rank="0",priority=""} 700
-sglang:realtime_tokens_total{mode="decode",model_name="meta/test-model",tp_rank="0",priority=""} 25
+# TYPE sglang:realtime_tokens_total counter
+sglang:max_total_num_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 1000000
+sglang:page_size{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 16
+sglang:num_pages{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 62500
+sglang:kv_available_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 600000
+sglang:kv_evictable_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 100000
+sglang:kv_used_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 300000
+sglang:num_running_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 3
+sglang:num_running_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority="10"} 2
+sglang:num_running_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority="20"} 1
+sglang:num_queue_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 2
+sglang:num_queue_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority="10"} 1
+sglang:num_queue_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority="20"} 1
+sglang:realtime_tokens_total{engine_type="unified",mode="prefill_compute",model_name="meta/test-model",tp_rank="0",priority=""} 500
+sglang:realtime_tokens_total{engine_type="unified",mode="prefill_cache",model_name="meta/test-model",tp_rank="0",priority=""} 700
+sglang:realtime_tokens_total{engine_type="unified",mode="decode",model_name="meta/test-model",tp_rank="0",priority=""} 25
 sglang:generation_tokens_total{is_streaming="false",model_name="meta/test-model",priority=""} 10
 process_start_time_seconds 1234
 `
@@ -44,16 +45,44 @@ process_start_time_seconds 1234
 	}
 }
 
-func TestParseSampleUsesOnlyMonotonicSGLangRetractionCounter(t *testing.T) {
+func TestParseSampleDeduplicatesMonotonicSGLangRetractionCounterAcrossTPRanks(t *testing.T) {
 	metrics := coherentSGLangFixture() + `
 sglang:num_retracted_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 7
 sglang:num_paused_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 5
-sglang:num_retracted_requests_total{model_name="meta/test-model",tp_rank="0",priority=""} 2
-sglang:num_retracted_requests_total{model_name="meta/test-model",tp_rank="0",priority="batch"} 1
+sglang:num_retracted_requests_total{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 2
+sglang:num_retracted_requests_total{engine_type="unified",model_name="meta/test-model",tp_rank="1",priority=""} 2
 `
 	sample := ParseSample(metrics)
-	if !sample.PreemptionsValid || sample.Preemptions != 3 {
-		t.Fatalf("SGLang preemption must use summed retraction counter only: %#v", sample)
+	if !sample.PreemptionsValid || sample.Preemptions != 2 {
+		t.Fatalf("SGLang preemption must deduplicate TP-rank retraction counters: %#v", sample)
+	}
+}
+
+func TestParseSampleRequiresRealtimeDecodeCounterType(t *testing.T) {
+	metrics := coherentSGLangFixtureWithoutCounterDeclarations()
+	sample := ParseSample(metrics)
+	if sample.GenerationValid || sample.Generation != 0 {
+		t.Fatalf("untyped SGLang realtime gauge fabricated a generation counter: %#v", sample)
+	}
+}
+
+func TestParseSampleRejectsMultipleSGLangDPReplicas(t *testing.T) {
+	metrics := coherentSGLangFixture() + `
+sglang:num_running_reqs{engine_type="unified",model_name="meta/test-model",dp_rank="1",tp_rank="0",priority=""} 1
+`
+	sample := ParseSample(metrics)
+	if sample.ModelNameValid {
+		t.Fatalf("multi-DP SGLang topology was accepted as one admission capacity: %#v", sample)
+	}
+}
+
+func TestParseSampleRejectsIncoherentSGLangAbsoluteKVAccounting(t *testing.T) {
+	metrics := coherentSGLangFixture() + `
+sglang:kv_used_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="1",priority=""} 49999
+`
+	sample := ParseSample(metrics)
+	if sample.KVTokenMetricsValid {
+		t.Fatalf("incoherent SGLang absolute KV gauges were accepted: %#v", sample)
 	}
 }
 
@@ -95,19 +124,24 @@ vllm:generation_tokens_total{model_name="meta/test-model",engine="0"} 0
 }
 
 func coherentSGLangFixture() string {
-	return "# TYPE sglang:num_retracted_requests_total counter\n" + coherentSGLangFixtureWithoutRetractionDeclaration()
+	return "# TYPE sglang:num_retracted_requests_total counter\n# TYPE sglang:realtime_tokens_total counter\n" +
+		coherentSGLangFixtureWithoutCounterDeclarations()
 }
 
 func coherentSGLangFixtureWithoutRetractionDeclaration() string {
+	return "# TYPE sglang:realtime_tokens_total counter\n" + coherentSGLangFixtureWithoutCounterDeclarations()
+}
+
+func coherentSGLangFixtureWithoutCounterDeclarations() string {
 	return `
-sglang:max_total_num_tokens{model_name="meta/test-model",tp_rank="0",priority=""} 1000000
-sglang:page_size{model_name="meta/test-model",tp_rank="0",priority=""} 16
-sglang:num_pages{model_name="meta/test-model",tp_rank="0",priority=""} 62500
-sglang:kv_available_tokens{model_name="meta/test-model",tp_rank="0",priority=""} 900000
-sglang:kv_evictable_tokens{model_name="meta/test-model",tp_rank="0",priority=""} 50000
-sglang:kv_used_tokens{model_name="meta/test-model",tp_rank="0",priority=""} 50000
-sglang:num_running_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 0
-sglang:num_queue_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 0
-sglang:realtime_tokens_total{mode="decode",model_name="meta/test-model",tp_rank="0",priority=""} 100
+sglang:max_total_num_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 1000000
+sglang:page_size{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 16
+sglang:num_pages{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 62500
+sglang:kv_available_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 900000
+sglang:kv_evictable_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 50000
+sglang:kv_used_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 50000
+sglang:num_running_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 0
+sglang:num_queue_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 0
+sglang:realtime_tokens_total{engine_type="unified",mode="decode",model_name="meta/test-model",tp_rank="0",priority=""} 100
 `
 }

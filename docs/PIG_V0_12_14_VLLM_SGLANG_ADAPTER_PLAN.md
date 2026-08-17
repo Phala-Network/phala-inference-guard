@@ -78,14 +78,14 @@ Python source inside `muse-glimmer-r10-candidate`.
 | --- | --- | --- |
 | model identity | core admission families' `model_name` | exactly one non-empty value |
 | KV capacity | `sglang:max_total_num_tokens` | logical token slots; never multiply TP ranks |
-| KV page/block | `sglang:page_size` plus `sglang:num_pages` | positive integers and `page_size * num_pages == capacity` |
+| KV page/block | `sglang:page_size` plus `sglang:num_pages` | positive integers and `num_pages == floor(capacity / page_size)` |
 | KV free | `sglang:kv_available_tokens` | free full-pool slots |
 | KV evictable | `sglang:kv_evictable_tokens` | radix-cached slots reclaimable for a new request |
 | KV active | `sglang:kv_used_tokens` | active locked slots; consistency check only |
 | running | `sglang:num_running_reqs` | maximum series because the empty-priority series is the total and priority series are subsets |
 | waiting | `sglang:num_queue_reqs` | same total-versus-priority rule as running |
-| generation | `sglang:realtime_tokens_total{mode="decode"}` | sum monotonic accepted decode-token work across scheduler replicas |
-| preemption | `sglang:num_retracted_requests_total` | sum monotonic KV-pressure retractions |
+| generation | `sglang:realtime_tokens_total{mode="decode"}` | monotonic counter; take the maximum across duplicate TP/PP rank series for the one supported logical scheduler |
+| preemption | `sglang:num_retracted_requests_total` | monotonic KV-pressure counter; take the maximum across duplicate TP/PP rank series |
 | runtime epoch | `process_start_time_seconds` when available | positive value; counter rollback still detects reset |
 
 `sglang:num_retracted_requests_total` may have no sample before the first
@@ -99,10 +99,19 @@ The common SGLang used-KV value is:
 capacity - available - evictable
 ```
 
-This counts active plus protected/session-held non-reclaimable slots while
-excluding radix cache that SGLang can evict for a newly admitted request.
-`kv_used_tokens` must not exceed that value; it is not substituted for it
-because it intentionally excludes the protected/session-held gap.
+This counts every non-reclaimable full-pool slot while excluding radix cache
+that SGLang can evict for a newly admitted request. The inspected SGLang source
+assigns `kv_used_tokens` from this same expression, so the direct gauge must
+equal the derived value. A mismatch means the scrape is incoherent and fails
+closed; it is not treated as an active-only approximation.
+
+The first SGLang adapter supports exactly one logical `engine_type="unified"`
+scheduler. Duplicate TP/PP rank series are rank-level views of that scheduler
+and are deduplicated rather than summed. Multiple distinct `dp_rank` values are
+rejected: summing their KV would violate the per-replica fit invariant, while
+taking only one would understate aggregate running and generation state. DP and
+PD require an explicit per-replica capability/admission design in a later
+version rather than an inferred aggregation rule.
 
 `sglang:token_usage`, `full_token_usage`, `swa_token_usage`, and
 `mamba_usage` remain diagnostics. They are rounded, may refer to multiple pool
@@ -160,8 +169,10 @@ Controller remains closed to framework-specific changes.
 - non-zero retraction counter and reset;
 - legacy retraction gauge/paused gauges cannot satisfy preemption validity;
 - KV identity with free, evictable, active, and protected gap;
-- invalid page geometry, negative/NaN/fractional values, duplicate model
-  identities, mixed frameworks, missing required metrics, and counter overflow;
+- invalid page geometry, inconsistent absolute KV gauges,
+  negative/NaN/fractional values, duplicate model identities, mixed frameworks,
+  multiple DP replicas, non-unified engines, missing required metrics, wrong
+  counter types, and counter overflow;
 - unchanged vLLM fixtures and mixed-engine aggregation.
 
 ### 5.2 Startup and observer tests
@@ -254,4 +265,3 @@ The live host YAML and control-plane Compose must not be allowed to drift
 silently. If a PIG-only replacement cannot also preserve the desired
 configuration durably, stop and report that operational boundary before
 mutation.
-

@@ -21,7 +21,7 @@ func TestPredictiveStartupAcceptsCoherentSGLangSample(t *testing.T) {
 		Preemptions: 3, PreemptionsValid: true,
 		Generation: 100, GenerationValid: true,
 	}
-	startup, err := predictiveVLLMStartupFromSample(sample, time.Unix(100, 0))
+	startup, err := predictiveBackendStartupFromSample(sample, time.Unix(100, 0))
 	if err != nil {
 		t.Fatalf("coherent SGLang startup rejected: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestPredictiveStartupAcceptsCoherentSGLangSample(t *testing.T) {
 	}
 }
 
-func TestPredictiveVLLMStartupProbeRejectsAmbiguousModelIdentityWithinBound(t *testing.T) {
+func TestPredictiveBackendStartupProbeRejectsAmbiguousModelIdentityWithinBound(t *testing.T) {
 	metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprint(w, `
 vllm:cache_config_info{block_size="4",kv_cache_size_tokens="1000000"} 1
@@ -44,7 +44,7 @@ vllm:generation_tokens_total{model_name="vendor/model-a",engine="0"} 0
 	}))
 	defer metrics.Close()
 	started := time.Now()
-	_, err := probePredictiveVLLMStartup(predictiveVLLMStartupProbeConfig{
+	_, err := probePredictiveBackendStartup(predictiveBackendStartupProbeConfig{
 		MetricsURL: metrics.URL, StartupTimeout: time.Second,
 		RequestTimeout: 250 * time.Millisecond, RetryInterval: 10 * time.Millisecond,
 	})
@@ -56,7 +56,7 @@ vllm:generation_tokens_total{model_name="vendor/model-a",engine="0"} 0
 	}
 }
 
-func TestPredictiveVLLMStartupProbeRetainsSemanticErrorAcrossLaterFetchTimeout(t *testing.T) {
+func TestPredictiveBackendStartupProbeRetainsSemanticErrorAcrossLaterFetchTimeout(t *testing.T) {
 	var requests atomic.Int64
 	metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		if requests.Add(1) == 1 {
@@ -74,7 +74,7 @@ vllm:generation_tokens_total{model_name="vendor/model-a",engine="0"} 0
 	}))
 	defer metrics.Close()
 
-	_, err := probePredictiveVLLMStartup(predictiveVLLMStartupProbeConfig{
+	_, err := probePredictiveBackendStartup(predictiveBackendStartupProbeConfig{
 		MetricsURL: metrics.URL, StartupTimeout: 200 * time.Millisecond,
 		RequestTimeout: 50 * time.Millisecond, RetryInterval: time.Millisecond,
 	})

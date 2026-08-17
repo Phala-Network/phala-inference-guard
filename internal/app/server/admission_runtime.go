@@ -44,6 +44,7 @@ type serverDependencies struct {
 }
 
 type admissionTelemetrySnapshot struct {
+	BackendKind        string
 	CapabilityProfile  runtimepredictive.BackendCapabilityProfile
 	CapabilityReason   string
 	Capacity           coreadmission.CapacitySnapshot
@@ -55,6 +56,7 @@ type admissionRuntime struct {
 	controller       *coreadmission.AdmissionController
 	reporter         *admissionReporter
 	observer         admissionObserver
+	backendKind      string
 	profile          runtimepredictive.BackendCapabilityProfile
 	capabilityReason string
 	mode             string
@@ -69,11 +71,13 @@ func newAdmissionRuntime(
 	reporter *admissionReporter,
 	profile runtimepredictive.BackendCapabilityProfile,
 	capabilityReason string,
+	backendKind string,
 	mode string,
 	now func() time.Time,
 ) (*admissionRuntime, error) {
 	if controller == nil || reporter == nil || profile.Validate() != nil ||
 		(capabilityReason != "metadata" && capabilityReason != "explicit_override" && capabilityReason != "test") ||
+		(backendKind != "vllm" && backendKind != "sglang") ||
 		(mode != "enforce" && mode != "shadow") {
 		return nil, fmt.Errorf("admission runtime configuration is invalid")
 	}
@@ -83,6 +87,7 @@ func newAdmissionRuntime(
 	return &admissionRuntime{
 		controller:       controller,
 		reporter:         reporter,
+		backendKind:      backendKind,
 		profile:          profile,
 		capabilityReason: capabilityReason,
 		mode:             mode,
@@ -127,6 +132,7 @@ func (r *admissionRuntime) Snapshot(now time.Time) admissionTelemetrySnapshot {
 		return admissionTelemetrySnapshot{}
 	}
 	return admissionTelemetrySnapshot{
+		BackendKind:        r.backendKind,
 		CapabilityProfile:  r.profile,
 		CapabilityReason:   r.capabilityReason,
 		Capacity:           r.controller.Snapshot(now),

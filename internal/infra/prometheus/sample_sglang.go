@@ -3,6 +3,7 @@ package prometheus
 import "github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 
 const sglangRetractionCounter = "sglang:num_retracted_requests_total"
+const sglangRealtimeTokenCounter = "sglang:realtime_tokens_total"
 
 var sglangModelIdentityMetrics = []string{
 	"sglang:max_total_num_tokens",
@@ -19,14 +20,21 @@ var sglangModelIdentityMetrics = []string{
 func parseSGLangSample(metricsText string, index metricIndex) telemetry.Sample {
 	runningValue, runningPresent := index.maximum("sglang:num_running_reqs", nil)
 	waitingValue, waitingPresent := index.maximum("sglang:num_queue_reqs", nil)
-	generationValue, generationPresent := index.sum("sglang:realtime_tokens_total", func(labels map[string]string) bool {
+	generationValue, generationPresent := index.maximum(sglangRealtimeTokenCounter, func(labels map[string]string) bool {
 		return labels["mode"] == "decode"
 	})
 	preemptions, preemptionsValid := parseSGLangRetractions(index)
 	modelName, modelNameValid := index.requiredUniqueLabel(sglangModelIdentityMetrics, "model_name")
+	engineType, engineTypeValid := index.requiredUniqueLabel(sglangModelIdentityMetrics, "engine_type")
+	_, singleDPReplica := index.requiredUniqueOptionalLabel(sglangModelIdentityMetrics, "dp_rank")
+	modelNameValid = modelNameValid && engineTypeValid && engineType == "unified" && singleDPReplica
 	running, runningValid := exactNonNegativeMetricInt(runningValue, runningPresent)
 	waiting, waitingValid := exactNonNegativeMetricInt(waitingValue, waitingPresent)
 	generation, generationValid := exactNonNegativeMetricUint64(generationValue, generationPresent)
+	generationValid = generationValid && index.declaredType(sglangRealtimeTokenCounter, "counter")
+	if !generationValid {
+		generation = 0
+	}
 
 	sample := telemetry.Sample{
 		BackendKind:      "sglang",
@@ -50,7 +58,7 @@ func parseSGLangRetractions(index metricIndex) (uint64, bool) {
 	if !index.declaredType(sglangRetractionCounter, "counter") {
 		return 0, false
 	}
-	value, present := index.sum(sglangRetractionCounter, nil)
+	value, present := index.maximum(sglangRetractionCounter, nil)
 	if !present {
 		// A labeled prometheus_client counter has no sample until labels() is
 		// first called. The registered TYPE declaration makes absence an exact
@@ -77,7 +85,7 @@ func adaptSGLangKV(index metricIndex, sample *telemetry.Sample) {
 		return
 	}
 	used := capacity - available - evictable
-	if directUsed > used {
+	if directUsed != used {
 		return
 	}
 
@@ -88,7 +96,7 @@ func adaptSGLangKV(index metricIndex, sample *telemetry.Sample) {
 	geometryPresent := pagePresent || pageCountPresent
 	maximumInt64 := int64(^uint64(0) >> 1)
 	geometryValid := pageValid && pageSize > 0 && pageCountValid && pageCount > 0 &&
-		pageCount <= maximumInt64/int64(pageSize) && pageCount*int64(pageSize) == capacity
+		pageCount <= maximumInt64/int64(pageSize) && pageCount == capacity/int64(pageSize)
 	if geometryPresent && !geometryValid {
 		return
 	}

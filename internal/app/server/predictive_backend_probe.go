@@ -13,14 +13,15 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
 
-type predictiveVLLMStartupProbeConfig struct {
+type predictiveBackendStartupProbeConfig struct {
 	MetricsURL     string
 	StartupTimeout time.Duration
 	RequestTimeout time.Duration
 	RetryInterval  time.Duration
 }
 
-type predictiveVLLMStartup struct {
+type predictiveBackendStartup struct {
+	BackendKind         string
 	modelName           string
 	ModelIdentitySHA256 string
 	CapacityTokens      int64
@@ -39,9 +40,10 @@ type predictiveVLLMStartup struct {
 	ObservedAt          time.Time
 }
 
-func probePredictiveVLLMStartup(config predictiveVLLMStartupProbeConfig) (predictiveVLLMStartup, error) {
-	if strings.TrimSpace(config.MetricsURL) == "" || config.StartupTimeout <= 0 || config.RequestTimeout <= 0 || config.RequestTimeout > config.StartupTimeout || config.RetryInterval <= 0 {
-		return predictiveVLLMStartup{}, fmt.Errorf("predictive vLLM startup probe configuration is invalid")
+func probePredictiveBackendStartup(config predictiveBackendStartupProbeConfig) (predictiveBackendStartup, error) {
+	if strings.TrimSpace(config.MetricsURL) == "" || config.StartupTimeout <= 0 || config.RequestTimeout <= 0 ||
+		config.RequestTimeout > config.StartupTimeout || config.RetryInterval <= 0 {
+		return predictiveBackendStartup{}, fmt.Errorf("predictive backend startup probe configuration is invalid")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), config.StartupTimeout)
 	defer cancel()
@@ -55,7 +57,7 @@ func probePredictiveVLLMStartup(config predictiveVLLMStartupProbeConfig) (predic
 	for {
 		sample, fetchErr := prometheus.FetchSampleContext(ctx, client, config.MetricsURL)
 		if fetchErr == nil {
-			startup, validateErr := predictiveVLLMStartupFromSample(sample, time.Now())
+			startup, validateErr := predictiveBackendStartupFromSample(sample, time.Now())
 			if validateErr == nil {
 				return startup, nil
 			}
@@ -72,43 +74,46 @@ func probePredictiveVLLMStartup(config predictiveVLLMStartupProbeConfig) (predic
 				default:
 				}
 			}
-			return predictiveVLLMStartup{}, predictiveVLLMStartupProbeError(ctx.Err(), lastValidationErr, lastFetchErr)
+			return predictiveBackendStartup{}, predictiveBackendStartupProbeError(ctx.Err(), lastValidationErr, lastFetchErr)
 		case <-timer.C:
 		}
 	}
 }
 
-func predictiveVLLMStartupProbeError(contextErr, validationErr, fetchErr error) error {
+func predictiveBackendStartupProbeError(contextErr, validationErr, fetchErr error) error {
 	if validationErr != nil && fetchErr != nil {
-		return fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: last validation error: %v; last fetch error: %w", validationErr, fetchErr)
+		return fmt.Errorf("predictive backend startup probe did not obtain coherent metrics: last validation error: %v; last fetch error: %w", validationErr, fetchErr)
 	}
 	if validationErr != nil {
-		return fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: %w", validationErr)
+		return fmt.Errorf("predictive backend startup probe did not obtain coherent metrics: %w", validationErr)
 	}
 	if fetchErr != nil {
-		return fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: %w", fetchErr)
+		return fmt.Errorf("predictive backend startup probe did not obtain coherent metrics: %w", fetchErr)
 	}
-	return fmt.Errorf("predictive vLLM startup probe did not obtain coherent metrics: %w", contextErr)
+	return fmt.Errorf("predictive backend startup probe did not obtain coherent metrics: %w", contextErr)
 }
 
-func predictiveVLLMStartupFromSample(sample telemetry.Sample, observedAt time.Time) (predictiveVLLMStartup, error) {
+func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time.Time) (predictiveBackendStartup, error) {
 	maximumInt := int(^uint(0) >> 1)
-	if sample.BackendKind != "vllm" {
-		return predictiveVLLMStartup{}, fmt.Errorf("predictive startup metrics backend is not vLLM")
+	if sample.BackendKind != "vllm" && sample.BackendKind != "sglang" {
+		return predictiveBackendStartup{}, fmt.Errorf("predictive startup metrics backend is unsupported or ambiguous")
 	}
 	if !sample.ModelNameValid || strings.TrimSpace(sample.ModelName) == "" {
-		return predictiveVLLMStartup{}, fmt.Errorf("predictive startup model identity is missing or ambiguous")
+		return predictiveBackendStartup{}, fmt.Errorf("predictive startup model identity is missing or ambiguous")
 	}
-	if !sample.KVTokenMetricsValid || sample.KVCapacityTokens <= 0 || sample.KVUsedTokens < 0 || sample.KVUsedTokens > sample.KVCapacityTokens || !sample.KVBlockSizeValid || sample.KVBlockSize <= 0 {
-		return predictiveVLLMStartup{}, fmt.Errorf("predictive startup KV capacity or block size is invalid")
+	if !sample.KVTokenMetricsValid || sample.KVCapacityTokens <= 0 || sample.KVUsedTokens < 0 ||
+		sample.KVUsedTokens > sample.KVCapacityTokens || !sample.KVBlockSizeValid || sample.KVBlockSize <= 0 {
+		return predictiveBackendStartup{}, fmt.Errorf("predictive startup KV capacity or block size is invalid")
 	}
-	if !sample.RunningValid || !sample.WaitingValid || !sample.PreemptionsValid || !sample.GenerationValid || sample.Running < 0 || sample.Waiting < 0 || sample.Running > maximumInt-sample.Waiting {
-		return predictiveVLLMStartup{}, fmt.Errorf("predictive startup request or generation counters are invalid")
+	if !sample.RunningValid || !sample.WaitingValid || !sample.PreemptionsValid || !sample.GenerationValid ||
+		sample.Running < 0 || sample.Waiting < 0 || sample.Running > maximumInt-sample.Waiting {
+		return predictiveBackendStartup{}, fmt.Errorf("predictive startup request or generation counters are invalid")
 	}
 	if observedAt.IsZero() {
-		return predictiveVLLMStartup{}, fmt.Errorf("predictive startup observation time is invalid")
+		return predictiveBackendStartup{}, fmt.Errorf("predictive startup observation time is invalid")
 	}
-	return predictiveVLLMStartup{
+	return predictiveBackendStartup{
+		BackendKind:         sample.BackendKind,
 		modelName:           sample.ModelName,
 		ModelIdentitySHA256: predictiveModelIdentitySHA256(sample.ModelName),
 		CapacityTokens:      sample.KVCapacityTokens,

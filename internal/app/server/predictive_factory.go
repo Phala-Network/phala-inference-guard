@@ -10,11 +10,11 @@ import (
 )
 
 func newDefaultAdmissionService(cfg config) (admissionService, error) {
-	metricsURL, err := predictiveVLLMMetricsURL(cfg)
+	metricsURL, err := predictiveBackendMetricsURL(cfg)
 	if err != nil {
 		return nil, err
 	}
-	startup, err := probePredictiveVLLMStartup(predictiveVLLMStartupProbeConfig{
+	startup, err := probePredictiveBackendStartup(predictiveBackendStartupProbeConfig{
 		MetricsURL:     metricsURL,
 		StartupTimeout: cfg.PredictiveStartupProbeTimeout,
 		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
@@ -40,7 +40,8 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	}
 	profile := initialization.Profile
 	log.Printf(
-		"predictive_capability event=profile_initialized schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
+		"predictive_capability event=profile_initialized backend_kind=%s schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
+		startup.BackendKind,
 		profile.SchemaVersion,
 		profile.Source,
 		initialization.Reason,
@@ -101,6 +102,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		newAdmissionReporter(defaultAdmissionDecisionLogInterval, logAdmissionDecision),
 		profile,
 		initialization.Reason,
+		startup.BackendKind,
 		cfg.PredictiveAdmissionMode,
 		nil,
 	)
@@ -108,7 +110,8 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		controller.Close()
 		return nil, err
 	}
-	observer, err := newAdmissionVLLMObserver(admissionVLLMObserverConfig{
+	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
+		BackendKind:          startup.BackendKind,
 		MetricsURL:            metricsURL,
 		UpstreamURL:           cfg.Upstream,
 		ModelName:             startup.modelName,
@@ -124,16 +127,16 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	})
 	if err != nil {
 		_ = runtime.Close()
-		return nil, fmt.Errorf("construct admission vLLM observer: %w", err)
+		return nil, fmt.Errorf("construct admission backend observer: %w", err)
 	}
 	runtime.observer = observer
 	return runtime, nil
 }
 
-func predictiveVLLMMetricsURL(cfg config) (string, error) {
+func predictiveBackendMetricsURL(cfg config) (string, error) {
 	metricsURL := strings.TrimSpace(cfg.PredictiveMetricsURL)
 	if metricsURL == "" {
-		return "", fmt.Errorf("predictive vLLM metrics URL is empty")
+		return "", fmt.Errorf("predictive backend metrics URL is empty")
 	}
 	return metricsURL, nil
 }

@@ -380,8 +380,9 @@ func assertV0125CapabilityProfile(
 	}
 }
 
-func v0125CapabilityStartup(capacity int64) predictiveVLLMStartup {
-	return predictiveVLLMStartup{
+func v0125CapabilityStartup(capacity int64) predictiveBackendStartup {
+	return predictiveBackendStartup{
+		BackendKind: "vllm",
 		modelName: "vendor/capability-model", ModelIdentitySHA256: predictiveModelIdentitySHA256("vendor/capability-model"),
 		CapacityTokens: capacity, BlockSize: 64, CapabilityMetricsOK: true,
 		ObservedAt: time.Unix(1, 0),

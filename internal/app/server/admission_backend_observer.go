@@ -14,24 +14,26 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
 
-type admissionVLLMObserverConfig struct {
+type admissionBackendObserverConfig struct {
+	BackendKind           string
 	MetricsURL            string
 	UpstreamURL           string
 	ModelName             string
 	RevalidateMetadata    bool
 	CapabilityFingerprint string
-	MaxModelLenTokens     int64
-	KVCapacityTokens      int64
-	KVBlockSize           int64
-	PollInterval          time.Duration
-	MaximumAge            time.Duration
-	RequestTimeout        time.Duration
-	Controller            *coreadmission.AdmissionController
-	Now                   func() time.Time
+	MaxModelLenTokens    int64
+	KVCapacityTokens     int64
+	KVBlockSize          int64
+	PollInterval         time.Duration
+	MaximumAge           time.Duration
+	RequestTimeout       time.Duration
+	Controller           *coreadmission.AdmissionController
+	Now                  func() time.Time
 }
 
-type admissionVLLMObserver struct {
+type admissionBackendObserver struct {
 	pollMu                sync.Mutex
+	backendKind           string
 	metricsURL            string
 	capabilityFingerprint string
 	maxModelLenTokens     int64
@@ -60,25 +62,26 @@ const (
 	admissionSampleCapabilityDrift
 )
 
-func newAdmissionVLLMObserver(config admissionVLLMObserverConfig) (*admissionVLLMObserver, error) {
+func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admissionBackendObserver, error) {
 	parsed, err := url.Parse(config.MetricsURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
 		parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, fmt.Errorf("admission vLLM metrics URL is invalid")
+		return nil, fmt.Errorf("admission backend metrics URL is invalid")
 	}
+	backendKind := strings.TrimSpace(config.BackendKind)
 	fingerprint := strings.ToLower(strings.TrimSpace(config.CapabilityFingerprint))
-	if !validPredictiveModelIdentitySHA256(fingerprint) || config.MaxModelLenTokens <= 0 ||
-		config.KVCapacityTokens <= 0 || config.KVBlockSize <= 0 ||
-		config.PollInterval <= 0 || config.MaximumAge < config.PollInterval ||
-		config.RequestTimeout <= 0 || config.Controller == nil {
-		return nil, fmt.Errorf("admission vLLM observer configuration is invalid")
+	if (backendKind != "vllm" && backendKind != "sglang") ||
+		!validPredictiveModelIdentitySHA256(fingerprint) || config.MaxModelLenTokens <= 0 ||
+		config.KVCapacityTokens <= 0 || config.KVBlockSize <= 0 || config.PollInterval <= 0 ||
+		config.MaximumAge < config.PollInterval || config.RequestTimeout <= 0 || config.Controller == nil {
+		return nil, fmt.Errorf("admission backend observer configuration is invalid")
 	}
 	if config.RevalidateMetadata {
 		if strings.TrimSpace(config.ModelName) == "" {
-			return nil, fmt.Errorf("admission vLLM observer metadata identity is invalid")
+			return nil, fmt.Errorf("admission backend observer metadata identity is invalid")
 		}
 		if _, err := predictiveUpstreamEndpoint(config.UpstreamURL, "/v1/models"); err != nil {
-			return nil, fmt.Errorf("admission vLLM observer metadata endpoint is invalid")
+			return nil, fmt.Errorf("admission backend observer metadata endpoint is invalid")
 		}
 	}
 	now := config.Now
@@ -87,7 +90,8 @@ func newAdmissionVLLMObserver(config admissionVLLMObserverConfig) (*admissionVLL
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
-	observer := &admissionVLLMObserver{
+	observer := &admissionBackendObserver{
+		backendKind:           backendKind,
 		metricsURL:            config.MetricsURL,
 		capabilityFingerprint: fingerprint,
 		maxModelLenTokens:     config.MaxModelLenTokens,
@@ -111,7 +115,7 @@ func newAdmissionVLLMObserver(config admissionVLLMObserverConfig) (*admissionVLL
 	return observer, nil
 }
 
-func (o *admissionVLLMObserver) loop(ctx context.Context) {
+func (o *admissionBackendObserver) loop(ctx context.Context) {
 	defer close(o.done)
 	o.poll(ctx)
 	ticker := time.NewTicker(o.pollInterval)
@@ -126,7 +130,7 @@ func (o *admissionVLLMObserver) loop(ctx context.Context) {
 	}
 }
 
-func (o *admissionVLLMObserver) poll(ctx context.Context) {
+func (o *admissionBackendObserver) poll(ctx context.Context) {
 	if o == nil || o.controller == nil || o.client == nil {
 		return
 	}
@@ -164,7 +168,7 @@ func (o *admissionVLLMObserver) poll(ctx context.Context) {
 	}
 }
 
-func (o *admissionVLLMObserver) requiresMetadataRevalidation(
+func (o *admissionBackendObserver) requiresMetadataRevalidation(
 	observation coreadmission.BackendObservation,
 ) bool {
 	if o == nil || !o.revalidateMetadata || o.controller == nil {
@@ -180,25 +184,24 @@ func (o *admissionVLLMObserver) requiresMetadataRevalidation(
 			observation.RuntimeStartTime != current.Observation.RuntimeStartTime)
 }
 
-func (o *admissionVLLMObserver) observation(
+func (o *admissionBackendObserver) observation(
 	sample telemetry.Sample,
 	observedAt time.Time,
 ) (coreadmission.BackendObservation, admissionSampleDisposition) {
 	maximumInt := int(^uint(0) >> 1)
 	if sample.BackendKind == "" || !sample.ModelNameValid || !sample.KVTokenMetricsValid || !sample.KVBlockSizeValid ||
-		!sample.RunningValid || !sample.WaitingValid || !sample.PreemptionsValid ||
-		!sample.GenerationValid || sample.KVCapacityTokens <= 0 || sample.KVBlockSize <= 0 ||
-		sample.KVUsedTokens < 0 || sample.KVUsedTokens > sample.KVCapacityTokens ||
-		sample.Running < 0 || sample.Waiting < 0 || sample.Running > maximumInt-sample.Waiting ||
-		observedAt.IsZero() {
+		!sample.RunningValid || !sample.WaitingValid || !sample.PreemptionsValid || !sample.GenerationValid ||
+		sample.KVCapacityTokens <= 0 || sample.KVBlockSize <= 0 || sample.KVUsedTokens < 0 ||
+		sample.KVUsedTokens > sample.KVCapacityTokens || sample.Running < 0 || sample.Waiting < 0 ||
+		sample.Running > maximumInt-sample.Waiting || observedAt.IsZero() {
 		return coreadmission.BackendObservation{}, admissionSampleTransient
 	}
 	fingerprint := predictiveModelIdentitySHA256(sample.ModelName)
 	disposition := admissionSampleUsable
-	if sample.BackendKind != "vllm" || fingerprint != o.capabilityFingerprint ||
+	if sample.BackendKind != o.backendKind || fingerprint != o.capabilityFingerprint ||
 		sample.KVCapacityTokens != o.kvCapacityTokens || int64(sample.KVBlockSize) != o.kvBlockSize {
 		disposition = admissionSampleCapabilityDrift
-		if sample.BackendKind != "vllm" {
+		if sample.BackendKind != o.backendKind {
 			fingerprint = "capability-drift"
 		}
 	}
@@ -218,7 +221,7 @@ func (o *admissionVLLMObserver) observation(
 	}, disposition
 }
 
-func (o *admissionVLLMObserver) Close() error {
+func (o *admissionBackendObserver) Close() error {
 	if o == nil {
 		return nil
 	}
