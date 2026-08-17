@@ -106,3 +106,18 @@ func TestTPSGateAlwaysAllowsOneIdleProbeAfterWindowIsReady(t *testing.T) {
 		t.Fatalf("idle probe decision=%+v", decision)
 	}
 }
+
+func TestTPSGateCountsBackendWaitingTowardFutureDemand(t *testing.T) {
+	decision := (tpsGate{}).evaluate(ProjectedState{
+		RawRunning: 4,
+		RawWaiting: 1,
+		TPS: TPSSnapshot{
+			Enabled: true, Ready: true, Reference: 20, AggregateTPS: 100, MeanActiveTPS: 25,
+		},
+	})
+	if decision.fits || decision.reason != ReasonTPSReference ||
+		decision.sequenceLimit != 5 || decision.currentSequences != 5 ||
+		decision.postAdmitSequences != 6 {
+		t.Fatalf("waiting demand was not protected: %+v", decision)
+	}
+}

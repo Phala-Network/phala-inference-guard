@@ -368,6 +368,41 @@ func TestControllerTPSSameSnapshotBurstCannotExceedSequenceLimit(t *testing.T) {
 	}
 }
 
+func TestControllerTPSReservationAboveNonzeroRawCannotOvershootLimit(t *testing.T) {
+	now := time.Unix(10_500, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t,
+		capability,
+		20,
+		testObservation(capability, now, 0, 4, 0, 0, 0),
+	)
+	for step := 1; step <= 4; step++ {
+		publishObservation(t, controller, testObservation(
+			capability,
+			now.Add(time.Duration(step)*time.Second),
+			0,
+			4,
+			0,
+			uint64(step*100),
+			0,
+		))
+	}
+
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	first := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate)
+	if !first.Decision.Admitted() || first.Decision.TPSSequenceLimit != 5 ||
+		first.Decision.TPSCurrentSequences != 4 || first.Decision.TPSPostAdmitSequences != 5 {
+		t.Fatalf("first same-poll admission=%+v", first.Decision)
+	}
+	second := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
+	if second.Admitted() || second.Reason != ReasonTPSReference ||
+		second.TPSSequenceLimit != 5 || second.TPSCurrentSequences != 5 ||
+		second.TPSPostAdmitSequences != 6 || second.ReservationID != 0 {
+		t.Fatalf("second same-poll decision overshot learned limit: %+v", second)
+	}
+}
+
 func TestControllerRuntimeResetClearsTPSWindow(t *testing.T) {
 	now := time.Unix(11_000, 0)
 	capability := testCapability()
