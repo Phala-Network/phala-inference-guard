@@ -191,14 +191,14 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		c.overlay = nextOverlay
 		c.lastPublishedSample = window.id
 		if c.hasObservation && c.tpsWindow.enabled() && !c.tpsWindow.observe(tpsSample{
-			start:                     c.observation.observation.ObservedAt,
-			end:                       observation.ObservedAt,
-			maximumInterval:           observation.MaximumAge,
-			generatedTokens:           generationDelta,
-			previousRunning:           c.observation.observation.Running,
-			running:                   observation.Running,
-			previousLocalActiveDecode: c.observation.localActiveDecode,
-			localActiveDecode:         c.overlay.localActiveDecode,
+			start:                        c.observation.observation.ObservedAt,
+			end:                          observation.ObservedAt,
+			maximumInterval:              observation.MaximumAge,
+			generatedTokens:              generationDelta,
+			previousRunning:              c.observation.observation.Running,
+			running:                      observation.Running,
+			previousLocalActiveDecode:    c.observation.localActiveDecode,
+			localActiveDecode:            c.overlay.localActiveDecode,
 			forwardedSequenceLiabilities: forwardedSequenceLiabilities,
 		}) {
 			c.failClosedLocked(ReasonCounterOverflow)
