@@ -62,9 +62,9 @@ func ParseSample(metricsText string) telemetry.Sample {
 		// A direct backend scrape cannot coherently describe two serving
 		// frameworks. Return no admission fields rather than mixing families.
 	case hasVLLM:
-		sample = parseVLLMSample(metricsText, index)
+		sample = parseVLLMSample(index)
 	case hasSGLang:
-		sample = parseSGLangSample(metricsText, index)
+		sample = parseSGLangSample(index)
 	}
 	applyRuntimeEpoch(index, &sample)
 	return sample

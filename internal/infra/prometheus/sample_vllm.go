@@ -13,7 +13,7 @@ var vllmModelIdentityMetrics = []string{
 	"vllm:generation_tokens_total",
 }
 
-func parseVLLMSample(metricsText string, index metricIndex) telemetry.Sample {
+func parseVLLMSample(index metricIndex) telemetry.Sample {
 	runningValue, runningPresent := index.sum("vllm:num_requests_running", nil)
 	waitingValue, waitingPresent := index.sum("vllm:num_requests_waiting", nil)
 	preemptionValue, preemptionPresent := index.sum("vllm:num_preemptions_total", nil)
@@ -38,10 +38,6 @@ func parseVLLMSample(metricsText string, index metricIndex) telemetry.Sample {
 		PreemptionsValid: preemptionsValid,
 		Generation:       generation,
 		GenerationValid:  generationValid,
-		TTFT: ParseFirstHistogram(metricsText,
-			"vllm:time_to_first_token_seconds",
-			"vllm:request_time_to_first_token_seconds",
-		),
 	}
 	adaptVLLMKV(index, usage, usagePresent, &sample)
 	return sample

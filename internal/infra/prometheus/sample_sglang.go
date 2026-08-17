@@ -24,7 +24,7 @@ var sglangAdmissionIdentityMetrics = []string{
 	"sglang:num_retracted_requests_total",
 }
 
-func parseSGLangSample(metricsText string, index metricIndex) telemetry.Sample {
+func parseSGLangSample(index metricIndex) telemetry.Sample {
 	totalPriority := func(labels map[string]string) bool {
 		return labels["priority"] == ""
 	}
@@ -80,7 +80,6 @@ func parseSGLangSample(metricsText string, index metricIndex) telemetry.Sample {
 		PreemptionsValid: preemptionsValid,
 		Generation:       generation,
 		GenerationValid:  generationValid,
-		TTFT:             ParseFirstHistogram(metricsText, "sglang:time_to_first_token_seconds"),
 	}
 	adaptSGLangKV(index, &sample)
 	return sample

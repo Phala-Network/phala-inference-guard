@@ -184,7 +184,9 @@ vLLM prompt-source and prefill-duration counters and SGLang diagnostic
 throughput/completion/paused metrics are not parsed: they have no consumer in
 prediction, reservation, or admission. The legacy SGLang retraction gauge is
 indexed only to invalidate a non-zero scrape when the real monotonic counter is
-unavailable. This version does not imply a hidden prefill-learning path.
+unavailable. TTFT histograms are likewise not reparsed by either adapter because
+TTFT is not a current QoS gate and the common observer does not consume them.
+This version does not imply a hidden TTFT or Prefill-learning path.
 
 This keeps framework detection and parsing open for extension while the
 Controller remains closed to framework-specific changes.
