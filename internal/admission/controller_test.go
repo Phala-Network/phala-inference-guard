@@ -221,12 +221,12 @@ func TestControllerManySmallPrefillsRecoverImmediately(t *testing.T) {
 	assertAggregateMatchesSlow(t, controller)
 }
 
-func TestControllerLargeProtectionDoesNotReserveOrBlockFollowingSmallRequest(t *testing.T) {
+func TestControllerLargeBudgetProtectionDoesNotReserveOrBlockFollowingSmallRequest(t *testing.T) {
 	now := time.Unix(6_500, 0)
 	capability := testCapability()
 	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 1_000, 20, 0, 1, 0))
 	large := controller.Admit(now.Add(time.Millisecond), testEstimate(96*1024, 144*1024, 256))
-	if large.Decision.Reason != ReasonPrefillContention || large.Decision.Scope != ProtectionRequest ||
+	if large.Decision.Reason != ReasonPrefillBudget || large.Decision.Scope != ProtectionRequest ||
 		large.Decision.ReservationID != 0 || large.Handle.MarkForwarded() {
 		t.Fatalf("large protection=%+v", large)
 	}

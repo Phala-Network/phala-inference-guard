@@ -6,14 +6,14 @@ import (
 	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
-func TestPolicyKeepsMinimumRequestOpenAfterContended96KProtection(t *testing.T) {
+func TestPolicyKeepsMinimumRequestOpenAfterContended96KBudgetProtection(t *testing.T) {
 	policy := testPolicy(t)
 	state := ProjectedState{ObservedKVTokens: 1_000_000, EffectiveKVTokens: 1_000_000, RawRunning: 20}
 
 	large := policy.evaluate(state, testWork(t, 96*1024, 144*1024, 256))
-	if large.action != ActionProtect || large.reason != ReasonPrefillContention ||
+	if large.action != ActionProtect || large.reason != ReasonPrefillBudget ||
 		large.scope != ProtectionRequest || large.prefillClass != PrefillWeighted {
-		t.Fatalf("96K contention decision=%+v", large)
+		t.Fatalf("96K contended-budget decision=%+v", large)
 	}
 
 	small := policy.evaluate(state, testWork(t, 1024, 1536, 256))

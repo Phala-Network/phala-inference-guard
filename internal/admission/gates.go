@@ -121,7 +121,8 @@ func (g prefillGate) evaluate(state ProjectedState, work predictive.RequestWork)
 	contended := state.LocalActiveDecode > 0 || state.RawRunning > 0 ||
 		state.RawWaiting > 0 || state.PreemptionDelta > 0
 	if contended {
-		if class != PrefillRegular {
+		if class == PrefillExclusive || class == PrefillQuiescent ||
+			(class == PrefillWeighted && (state.RawWaiting > 0 || state.PreemptionDelta > 0)) {
 			return gateDecision{reason: ReasonPrefillContention}, class, postPending
 		}
 		if postPending > g.contendedBudgetTokens {
