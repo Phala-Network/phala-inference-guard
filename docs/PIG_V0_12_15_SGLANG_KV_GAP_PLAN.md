@@ -806,9 +806,9 @@ earlier targeted acceptance that conflicts with it. Current source commit
 The review found three release blockers:
 
 1. `RequestEstimate`, reservation overlays, and TPS projection account every
-   HTTP request as one Decode sequence. `n`, `best_of`, and batched completion
-   prompts can therefore under-reserve future KV and post-admit TPS demand until
-   a later backend observation arrives.
+   HTTP request as one Decode sequence. `n` and batched completion prompts can
+   therefore under-reserve future KV and post-admit TPS demand until a later
+   backend observation arrives.
 2. Once the TPS window is ready and the current interval is valid,
    `tpsGate.evaluate` replaces the 60-second rate-derived sequence limit with the
    last 500 ms running/current-rate result. This makes the long window mostly a
@@ -859,6 +859,81 @@ long-window limit of six was replaced by the current count of three; and valid
 unknown-length JSON returned `unknown_body_length`. All packages compiled and
 dependencies resolved, so this is valid red evidence. No service container,
 Compose file, backend, route, or production request was changed.
+
+### Corrective review: backend request semantics and low-flow exploration
+
+Status: design correction recorded on 2026-08-18 after exact-source review.
+This section supersedes the earlier assumption that `best_of` is a scheduler
+sequence multiplier. Source after `9e66cc3` remains dirty and unvalidated; no
+result in this section is green evidence.
+
+The exact f563 SGLang commit
+`c4271c3fe1262fc2adbd162c33b25de5255251c5` establishes the following request
+contract:
+
+- completion `best_of` is present in the request schema but
+  `OpenAIServingCompletions._build_sampling_params` does not forward it to the
+  scheduler; it creates no additional request or Decode sequence;
+- `GenerateReqInput` expands a base batch to `batch_size * n` distinct request
+  IDs and the scheduler therefore exposes those children as independent
+  running/waiting sequences;
+- before expanding `n > 1`, `TokenizerManager._handle_batch_request` sends one
+  `max_new_tokens=0` request per base prompt and waits for it to complete so the
+  common prefix is cached. SGLang Prefill/input KV is therefore charged once
+  per base prompt while Decode horizon and TPS demand are charged once per
+  child sequence.
+
+The supported vLLM source commit
+`5fd7a888386cff800f32de6b5a33d1dd3ca1e397` likewise has no `best_of` field in
+its completion request schema. `ParentRequest` expands `n` into child engine
+requests with `n=1`, so running/waiting and future Decode demand must count all
+children. Unlike SGLang, this source does not prove an explicit pre-cache pass;
+the implementation must not invent a shared-Prefill guarantee for vLLM. This
+backend difference must be isolated behind a capability or adapter contract if
+it becomes material to Prefill accounting; it must not be guessed from model
+identity or cache-hit rate.
+
+The corrected normalized request-shape contract is:
+
+```text
+base_prompt_count = one for chat/responses, completion prompt batch size otherwise
+decode_sequences = base_prompt_count * n
+best_of = no admission multiplicity for the supported backend contracts
+unique_input_work = aggregate input of the base prompts
+future_decode_work = per-sequence bounded Decode horizon * decode_sequences
+context_fit = maximum one-base-prompt input + one Decode horizon
+```
+
+This requires a separate maximum-per-prompt context estimate. Reusing aggregate
+batch input for context fit is conservative but can reject a valid prompt batch
+whose individual prompts fit, reducing throughput without protecting the
+backend. Aggregate base-prompt input continues to drive Prefill contention and
+unique input KV reservation.
+
+The TPS review also found a low-flow self-lock in the current exploration
+formula. With one healthy sequence at 60 TPS and a 50 TPS reference, testing a
+second sequence as `60 / 2` assumes aggregate throughput cannot grow and blocks
+the only observation that could establish higher capacity. The corrected rule
+keeps the 60-second capacity as the primary mature limit, but a coherent current
+sample with no waiting/preemption and mean active TPS at least 105% of the
+reference may open exactly one additional sequence wave. Atomic reservations
+consume that wave until the next 500-ms poll. The next observation either keeps
+or closes the added capacity; no cooldown or learned rate is introduced.
+
+Before the next executable commit, focused tests must prove:
+
+- `prompt_batch * n` is charged through HTTP decision, KV, TPS, lifecycle,
+  logs, and metrics, while `best_of` does not fabricate scheduler demand;
+- a batch can pass context fit when every base prompt fits even if aggregate
+  input exceeds one model context, while aggregate Prefill/KV work is retained;
+- single-sequence marginal block accounting does not regress when multi-sequence
+  future KV is added;
+- a healthy one-sequence low-flow state can probe a second sequence, the same
+  poll cannot spend that probe twice, and waiting/preemption still freezes it;
+- after one metrics poll, every active multi-sequence reservation remains fully
+  represented by pending/local demand even when the backend has materialized
+  only part of the children. Any later attempt at partial observation credit
+  requires an explicit union-accounting proof rather than a boolean shortcut.
 
 ### Pass 3: exact evidence and release
 
