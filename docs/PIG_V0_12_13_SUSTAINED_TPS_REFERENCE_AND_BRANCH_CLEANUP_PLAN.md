@@ -657,11 +657,51 @@ matrix. Router and production changes require a later explicit step.
   static pass removed unsafe recurring low-flow bootstrap and added bounded
   warming
 - [x] c21 platform state re-queried read-only on 2026-08-15; it is `stopped`
-- [ ] c21 executable gates resumed after the owner makes the workbench running;
-  no CVM start/restart was performed by this source change
+- [x] c21 platform state re-queried on 2026-08-17 after the owner started it;
+  it is `running`, `in_progress=false`, and no CVM restart was performed by this
+  source change
+- [x] c21 executable gates resumed; round 1 stopped correctly at the formatting
+  gate before focused tests
 - [x] WIP source commit `1da2644` pushed to
   `pig-origin/codex/pig-v0.12.13-tps-reference`; it is explicitly unverified and
   is not a release identity
 - [ ] version identity assigned only after all prior source gates pass
 - [ ] local image, registry upload, Compose, deployment, Router, and live traffic
   remain unperformed
+
+## 16. c21 execution record
+
+### 2026-08-17 round 1: exact WIP source formatting gate
+
+Environment and provenance:
+
+- CVM: `c21b7281-2c25-4453-8a68-f39ec42d03b4`,
+  `dstack-nvidia-dev-0.5.9`, `h200.small`;
+- workbench: `golang:1.24-bookworm`, Go `1.24.13`, Git `2.39.5`, Linux
+  `6.9.0-dstack x86_64`;
+- isolated c21 repository:
+  `/workspace/src/phala-inference-guard-v01213-tps`;
+- exact source: `ca33096b806ff0b3dced580d000e09e2a5e3715f`, with upstream resolving to
+  the same commit;
+- evidence directory:
+  `/workspace/evidence/pig-v01213-tps-focused-r1-ca33096`.
+
+The ordered bootstrap runner cloned the exact branch, verified clean source and
+HEAD, recorded metadata, then ran `gofmt -l` before any executable focused test.
+It exited `20` because five files were not formatted:
+
+```text
+internal/admission/controller.go
+internal/admission/projector.go
+internal/admission/tps_gate.go
+internal/admission/types.go
+internal/app/server/admission_projection_contract_test.go
+```
+
+No focused test ran in this round, so it supplies formatting-failure evidence,
+not Linux test evidence. c21 `gofmt` produced a mechanical 23-line alignment
+change in each direction; the audit patch SHA-256 is
+`ca2ddd712a0a87132d04d546b5f28ce25292b3ed63949fe23115b5d1a0cecdba`.
+The same change was applied to the isolated local branch with no semantic code
+change. It must be committed, pushed, pulled onto c21, and all gates restarted
+from formatting before this round can advance.

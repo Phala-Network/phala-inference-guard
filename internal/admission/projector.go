@@ -3,11 +3,11 @@ package admission
 import "time"
 
 type observedState struct {
-	observation     BackendObservation
-	sequence        uint64
-	generationDelta uint64
-	preemptionDelta uint64
-	interval        time.Duration
+	observation       BackendObservation
+	sequence          uint64
+	generationDelta   uint64
+	preemptionDelta   uint64
+	interval          time.Duration
 	previousRunning   int64
 	localActiveDecode int64
 }

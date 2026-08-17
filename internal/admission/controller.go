@@ -189,12 +189,12 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 
 	c.observationSequence++
 	c.observation = observedState{
-		observation:     observation,
-		sequence:        c.observationSequence,
-		generationDelta: generationDelta,
-		preemptionDelta: preemptionDelta,
-		interval:        observationInterval,
-		previousRunning: previousRunning,
+		observation:       observation,
+		sequence:          c.observationSequence,
+		generationDelta:   generationDelta,
+		preemptionDelta:   preemptionDelta,
+		interval:          observationInterval,
+		previousRunning:   previousRunning,
 		localActiveDecode: c.overlay.localActiveDecode,
 	}
 	c.hasObservation = true

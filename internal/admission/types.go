@@ -74,15 +74,15 @@ type ProjectedState struct {
 }
 
 type TPSSnapshot struct {
-	Enabled                    bool
-	Ready                      bool
-	Reference                  float64
-	QualifiedSamples           uint64
-	QualifiedTokens            float64
-	QualifiedActiveSeconds     float64
-	QualifiedSequenceSeconds   float64
-	AggregateTPS               float64
-	MeanActiveTPS              float64
+	Enabled                  bool
+	Ready                    bool
+	Reference                float64
+	QualifiedSamples         uint64
+	QualifiedTokens          float64
+	QualifiedActiveSeconds   float64
+	QualifiedSequenceSeconds float64
+	AggregateTPS             float64
+	MeanActiveTPS            float64
 }
 
 type TPSPolicyConfig struct {

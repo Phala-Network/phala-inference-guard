@@ -168,7 +168,7 @@ func TestAdmissionUpstreamStatusUsesCurrentProtectionScope(t *testing.T) {
 func TestStatusLogReportsCurrentTPSCapacityReasonWithoutARequestDecision(t *testing.T) {
 	now := time.Now()
 	capacity := coreadmission.CapacitySnapshot{
-		IntakeOpen: true,
+		IntakeOpen:     true,
 		HasObservation: true,
 		MinimumDecision: coreadmission.DecisionRecord{
 			Action: coreadmission.ActionProtect,

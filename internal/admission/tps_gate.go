@@ -10,8 +10,8 @@ const (
 
 type tpsGateDecision struct {
 	gateDecision
-	sequenceLimit       int64
-	currentSequences    int64
+	sequenceLimit      int64
+	currentSequences   int64
 	postAdmitSequences int64
 }
 
