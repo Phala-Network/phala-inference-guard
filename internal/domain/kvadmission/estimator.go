@@ -56,6 +56,8 @@ func estimateJSON(
 	if shape.PromptBatchSize <= 0 || shape.DecodeSequences <= 0 || shape.ExplicitPromptTokens < 0 ||
 		shape.MaximumExplicitPromptTokens < 0 ||
 		shape.MaximumExplicitPromptTokens > shape.ExplicitPromptTokens ||
+		shape.PromptApproximateTokens < 0 || shape.MaximumPromptApproximateTokens < 0 ||
+		shape.MaximumPromptApproximateTokens > shape.PromptApproximateTokens ||
 		shape.PromptStringBytes < 0 || shape.MaximumPromptStringBytes < 0 ||
 		shape.MaximumPromptStringBytes > shape.PromptStringBytes {
 		cost.UnsupportedReason = "invalid_request_shape"
@@ -124,7 +126,7 @@ func estimateJSON(
 	cost.EstimatedInputLow = low
 	cost.EstimatedInputHigh = high
 	cost.BoundedDecodeTokens = int64(decode)
-	maximumSequenceInput, valid := maximumSequenceInputTokens(cost, shape, cfg)
+	maximumSequenceInput, valid := maximumSequenceInputTokens(cost, shape)
 	if !valid || !setTextPredictiveEstimate(&cost, maximumSequenceInput) {
 		cost.UnsupportedReason = "request_estimate_overflow"
 		return cost
@@ -204,7 +206,6 @@ func setTextPredictiveEstimate(cost *Cost, maximumSequenceInput int64) bool {
 func maximumSequenceInputTokens(
 	cost Cost,
 	shape RequestShape,
-	cfg EstimatorConfig,
 ) (int64, bool) {
 	selection, known := cost.ApproximateInputTokenHint()
 	if !known || selection <= 0 {
@@ -216,42 +217,32 @@ func maximumSequenceInputTokens(
 	if shape.PromptBatchSize <= 1 {
 		return selection, true
 	}
-	if shape.PromptStringBytes > int64(cost.TextBytes) {
+	promptAggregate, ok := addRequestShapeTokens(
+		shape.PromptApproximateTokens,
+		shape.ExplicitPromptTokens,
+	)
+	if !ok || promptAggregate > selection {
 		return 0, false
 	}
-	sharedStringBytes := int64(cost.TextBytes) - shape.PromptStringBytes
-	if sharedStringBytes > math.MaxInt64-shape.MaximumPromptStringBytes {
-		return 0, false
-	}
-	sequenceStringBytes := sharedStringBytes + shape.MaximumPromptStringBytes
-	if sequenceStringBytes > int64(math.MaxInt) {
-		return 0, false
-	}
-	textHigh := int64(ceilDiv(int(sequenceStringBytes), cfg.MinBytesPerToken))
-	toolHigh := int64(ceilDiv(cost.ToolSchemaBytes, cfg.ToolMinBytesPerToken))
-	templateHigh := int64(cost.MessageCount * cfg.TemplateTokensPerMessageHigh)
-	modalityHigh := int64(cost.ModalityCount * cfg.ModalityTokensHigh)
-	maximum := textHigh
-	for _, component := range []int64{
-		toolHigh,
-		templateHigh,
-		modalityHigh,
+	promptMaximum, ok := addRequestShapeTokens(
+		shape.MaximumPromptApproximateTokens,
 		shape.MaximumExplicitPromptTokens,
-	} {
-		if component < 0 || maximum > math.MaxInt64-component {
-			return 0, false
-		}
-		maximum += component
+	)
+	if !ok || promptMaximum > promptAggregate {
+		return 0, false
 	}
+	maximum := selection - promptAggregate + promptMaximum
 	if maximum < 1 {
 		maximum = 1
 	}
-	// SelectionInputTokens is the aggregate point estimate. A member of the
-	// base-prompt batch cannot exceed that aggregate under the same estimator.
-	if maximum > selection {
-		maximum = selection
-	}
 	return maximum, true
+}
+
+func addRequestShapeTokens(left, right int64) (int64, bool) {
+	if left < 0 || right < 0 || left > math.MaxInt64-right {
+		return 0, false
+	}
+	return left + right, true
 }
 
 func fixedMarginTokens(tokens, numerator, denominator int64) (int64, bool) {

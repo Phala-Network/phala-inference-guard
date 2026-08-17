@@ -4,6 +4,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/lexical"
 )
 
 const maximumJSONFieldScanDepth = 128
@@ -12,12 +14,14 @@ type JSONFields struct {
 	OutputTokens                int
 	HasOutputTokens             bool
 	PromptBatchSize             int64
-	PromptStringBytes           int64
-	MaximumPromptStringBytes    int64
-	ExplicitPromptTokens        int64
-	MaximumExplicitPromptTokens int64
-	DecodeSequences             int64
-	ShapeSupported              bool
+	PromptStringBytes               int64
+	MaximumPromptStringBytes        int64
+	PromptApproximateTokens         int64
+	MaximumPromptApproximateTokens  int64
+	ExplicitPromptTokens            int64
+	MaximumExplicitPromptTokens     int64
+	DecodeSequences                 int64
+	ShapeSupported                  bool
 }
 
 type promptElementKind uint8
@@ -30,12 +34,14 @@ const (
 )
 
 type promptValueShape struct {
-	batchSize             int64
-	stringBytes           int64
-	maximumStringBytes    int64
-	explicitTokens        int64
-	maximumExplicitTokens int64
-	supported             bool
+	batchSize                int64
+	stringBytes              int64
+	maximumStringBytes       int64
+	approximateTokens        int64
+	maximumApproximateTokens int64
+	explicitTokens           int64
+	maximumExplicitTokens    int64
+	supported                bool
 }
 
 type jsonStringSpan struct {
@@ -106,6 +112,8 @@ func (p *jsonFieldParser) parseRootObject(fields []string) (JSONFields, bool) {
 			result.PromptBatchSize = promptShape.batchSize
 			result.PromptStringBytes = promptShape.stringBytes
 			result.MaximumPromptStringBytes = promptShape.maximumStringBytes
+			result.PromptApproximateTokens = promptShape.approximateTokens
+			result.MaximumPromptApproximateTokens = promptShape.maximumApproximateTokens
 			result.ExplicitPromptTokens = promptShape.explicitTokens
 			result.MaximumExplicitPromptTokens = promptShape.maximumExplicitTokens
 			result.ShapeSupported = result.ShapeSupported && promptShape.supported
@@ -237,9 +245,12 @@ func (p *jsonFieldParser) parsePromptValue() (promptValueShape, bool) {
 	if p.body[p.index] == '"' {
 		value, ok := p.parseString()
 		length := int64(len(value.raw))
+		approximateTokens, approximateKnown := lexical.EstimateJSONStringTokens(value.raw)
 		return promptValueShape{
-			batchSize: 1, stringBytes: length, maximumStringBytes: length, supported: ok,
-		}, ok
+			batchSize: 1, stringBytes: length, maximumStringBytes: length,
+			approximateTokens: approximateTokens, maximumApproximateTokens: approximateTokens,
+			supported: ok && approximateKnown,
+		}, ok && approximateKnown
 	}
 	if p.body[p.index] != '[' {
 		return promptValueShape{batchSize: 1}, p.parseValue()
@@ -257,22 +268,27 @@ func (p *jsonFieldParser) parsePromptValue() (promptValueShape, bool) {
 	var expected promptElementKind
 	var elements int64
 	for {
-		kind, explicitTokens, stringBytes, ok := p.parsePromptElement()
+		kind, explicitTokens, stringBytes, approximateTokens, ok := p.parsePromptElement()
 		if !ok {
 			return promptValueShape{}, false
 		}
 		if elements == math.MaxInt64 || shape.explicitTokens > math.MaxInt64-explicitTokens ||
-			shape.stringBytes > math.MaxInt64-stringBytes {
+			shape.stringBytes > math.MaxInt64-stringBytes ||
+			shape.approximateTokens > math.MaxInt64-approximateTokens {
 			return promptValueShape{}, false
 		}
 		elements++
 		shape.explicitTokens += explicitTokens
 		shape.stringBytes += stringBytes
+		shape.approximateTokens += approximateTokens
 		if explicitTokens > shape.maximumExplicitTokens {
 			shape.maximumExplicitTokens = explicitTokens
 		}
 		if stringBytes > shape.maximumStringBytes {
 			shape.maximumStringBytes = stringBytes
+		}
+		if approximateTokens > shape.maximumApproximateTokens {
+			shape.maximumApproximateTokens = approximateTokens
 		}
 		if expected == promptElementUnsupported {
 			expected = kind
@@ -307,30 +323,31 @@ func (p *jsonFieldParser) parsePromptValue() (promptValueShape, bool) {
 	}
 }
 
-func (p *jsonFieldParser) parsePromptElement() (promptElementKind, int64, int64, bool) {
+func (p *jsonFieldParser) parsePromptElement() (promptElementKind, int64, int64, int64, bool) {
 	p.skipSpace()
 	if p.index >= len(p.body) {
-		return promptElementUnsupported, 0, 0, false
+		return promptElementUnsupported, 0, 0, 0, false
 	}
 	switch p.body[p.index] {
 	case '"':
 		value, ok := p.parseString()
-		return promptElementString, 0, int64(len(value.raw)), ok
+		approximateTokens, known := lexical.EstimateJSONStringTokens(value.raw)
+		return promptElementString, 0, int64(len(value.raw)), approximateTokens, ok && known
 	case '[':
 		tokens, supported, ok := p.parsePromptTokenArray()
 		if !supported {
-			return promptElementUnsupported, tokens, 0, ok
+			return promptElementUnsupported, tokens, 0, 0, ok
 		}
-		return promptElementTokenArray, tokens, 0, ok
+		return promptElementTokenArray, tokens, 0, 0, ok
 	default:
 		start := p.index
 		if !p.parseValue() {
-			return promptElementUnsupported, 0, 0, false
+			return promptElementUnsupported, 0, 0, 0, false
 		}
 		if _, valid := parseNonnegativeDecimal(p.body[start:p.index]); valid {
-			return promptElementToken, 1, 0, true
+			return promptElementToken, 1, 0, 0, true
 		}
-		return promptElementUnsupported, 0, 0, true
+		return promptElementUnsupported, 0, 0, 0, true
 	}
 }
 
