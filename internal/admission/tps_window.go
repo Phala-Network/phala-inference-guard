@@ -28,8 +28,10 @@ type tpsBucket struct {
 	valid           bool
 	tokens          float64
 	activeSeconds   float64
-	sequenceSeconds float64
 	samples         uint64
+	sequenceTokens  float64
+	sequenceSeconds float64
+	sequenceSamples uint64
 }
 
 type tpsWindow struct {
@@ -79,14 +81,12 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		sample.previousLocalActiveDecode,
 		sample.localActiveDecode,
 	)
+	sequenceCountReliable := activeSequences > 0
 	knownDecode := sample.previousLocalActiveDecode > 0 || sample.localActiveDecode > 0
 	if sample.generatedTokens == 0 && !knownDecode {
 		return true
 	}
-	if activeSequences == 0 && sample.generatedTokens > 0 {
-		activeSequences = 1
-	}
-	if activeSequences <= 0 {
+	if activeSequences <= 0 && sample.generatedTokens == 0 {
 		return true
 	}
 
@@ -111,13 +111,28 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		segmentSeconds := segmentEnd.Sub(cursor).Seconds()
 		fraction := segmentSeconds / intervalSeconds
 		tokens := float64(sample.generatedTokens) * fraction
-		sequenceSeconds := segmentSeconds * float64(activeSequences)
 		isLast := segmentEnd.Equal(sample.end)
 		samples := uint64(0)
 		if isLast {
 			samples = 1
 		}
-		if !w.add(second, tokens, segmentSeconds, sequenceSeconds, samples) {
+		sequenceTokens := float64(0)
+		sequenceSeconds := float64(0)
+		sequenceSamples := uint64(0)
+		if sequenceCountReliable {
+			sequenceTokens = tokens
+			sequenceSeconds = segmentSeconds * float64(activeSequences)
+			sequenceSamples = samples
+		}
+		if !w.add(
+			second,
+			tokens,
+			segmentSeconds,
+			samples,
+			sequenceTokens,
+			sequenceSeconds,
+			sequenceSamples,
+		) {
 			return false
 		}
 		cursor = segmentEnd
@@ -140,9 +155,14 @@ func (w *tpsWindow) snapshot(now time.Time) TPSSnapshot {
 		if math.MaxUint64-snapshot.QualifiedSamples < bucket.samples {
 			return TPSSnapshot{Reference: w.reference, Enabled: true}
 		}
+		if math.MaxUint64-snapshot.QualifiedSequenceSamples < bucket.sequenceSamples {
+			return TPSSnapshot{Reference: w.reference, Enabled: true}
+		}
 		snapshot.QualifiedSamples += bucket.samples
 		snapshot.QualifiedTokens += bucket.tokens
 		snapshot.QualifiedActiveSeconds += bucket.activeSeconds
+		snapshot.QualifiedSequenceSamples += bucket.sequenceSamples
+		snapshot.QualifiedSequenceTokens += bucket.sequenceTokens
 		snapshot.QualifiedSequenceSeconds += bucket.sequenceSeconds
 	}
 	if !validTPSSnapshot(snapshot) {
@@ -152,12 +172,12 @@ func (w *tpsWindow) snapshot(now time.Time) TPSSnapshot {
 		snapshot.AggregateTPS = snapshot.QualifiedTokens / snapshot.QualifiedActiveSeconds
 	}
 	if snapshot.QualifiedSequenceSeconds > 0 {
-		snapshot.MeanActiveTPS = snapshot.QualifiedTokens / snapshot.QualifiedSequenceSeconds
+		snapshot.MeanActiveTPS = snapshot.QualifiedSequenceTokens / snapshot.QualifiedSequenceSeconds
 	}
 	if !finiteNonnegative(snapshot.AggregateTPS) || !finiteNonnegative(snapshot.MeanActiveTPS) {
 		return TPSSnapshot{Reference: w.reference, Enabled: true}
 	}
-	snapshot.Ready = snapshot.QualifiedSamples >= tpsWindowMinimumQualifiedSamples &&
+	snapshot.Ready = snapshot.QualifiedSequenceSamples >= tpsWindowMinimumQualifiedSamples &&
 		snapshot.QualifiedSequenceSeconds >= tpsWindowMinimumQualifiedSeqSeconds
 	return snapshot
 }
@@ -174,11 +194,13 @@ func (w *tpsWindow) add(
 	second int64,
 	tokens float64,
 	activeSeconds float64,
-	sequenceSeconds float64,
 	samples uint64,
+	sequenceTokens float64,
+	sequenceSeconds float64,
+	sequenceSamples uint64,
 ) bool {
 	if !finiteNonnegative(tokens) || !finiteNonnegative(activeSeconds) ||
-		!finiteNonnegative(sequenceSeconds) {
+		!finiteNonnegative(sequenceTokens) || !finiteNonnegative(sequenceSeconds) {
 		return false
 	}
 	index := second % tpsWindowBucketCount
@@ -195,16 +217,23 @@ func (w *tpsWindow) add(
 	if math.MaxUint64-bucket.samples < samples {
 		return false
 	}
+	if math.MaxUint64-bucket.sequenceSamples < sequenceSamples {
+		return false
+	}
 	nextTokens := bucket.tokens + tokens
 	nextActive := bucket.activeSeconds + activeSeconds
+	nextSequenceTokens := bucket.sequenceTokens + sequenceTokens
 	nextSequence := bucket.sequenceSeconds + sequenceSeconds
-	if !finiteNonnegative(nextTokens) || !finiteNonnegative(nextActive) || !finiteNonnegative(nextSequence) {
+	if !finiteNonnegative(nextTokens) || !finiteNonnegative(nextActive) ||
+		!finiteNonnegative(nextSequenceTokens) || !finiteNonnegative(nextSequence) {
 		return false
 	}
 	bucket.tokens = nextTokens
 	bucket.activeSeconds = nextActive
-	bucket.sequenceSeconds = nextSequence
 	bucket.samples += samples
+	bucket.sequenceTokens = nextSequenceTokens
+	bucket.sequenceSeconds = nextSequence
+	bucket.sequenceSamples += sequenceSamples
 	return true
 }
 
@@ -225,6 +254,7 @@ func validTPSSnapshot(snapshot TPSSnapshot) bool {
 	return finiteNonnegative(snapshot.Reference) &&
 		finiteNonnegative(snapshot.QualifiedTokens) &&
 		finiteNonnegative(snapshot.QualifiedActiveSeconds) &&
+		finiteNonnegative(snapshot.QualifiedSequenceTokens) &&
 		finiteNonnegative(snapshot.QualifiedSequenceSeconds) &&
 		finiteNonnegative(snapshot.AggregateTPS) && finiteNonnegative(snapshot.MeanActiveTPS)
 }

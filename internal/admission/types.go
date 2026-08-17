@@ -91,6 +91,8 @@ type TPSSnapshot struct {
 	QualifiedSamples         uint64
 	QualifiedTokens          float64
 	QualifiedActiveSeconds   float64
+	QualifiedSequenceSamples uint64
+	QualifiedSequenceTokens  float64
 	QualifiedSequenceSeconds float64
 	AggregateTPS             float64
 	MeanActiveTPS            float64
