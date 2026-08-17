@@ -53,6 +53,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		GenerationDelta:           observed.generationDelta,
 		PreemptionDelta:           observed.preemptionDelta,
 		ObservationInterval:       observed.interval,
+		ObservationIntervalValid:  observed.interval > 0 && observed.interval <= observed.observation.MaximumAge,
 		CacheObservationValid:     observed.cache.valid,
 		CacheHitFraction:          observed.cache.hitFraction,
 		CacheCreditFraction:       observed.cache.creditFraction,
@@ -79,6 +80,7 @@ func validProjectedState(state ProjectedState) bool {
 		state.UnobservedSequences <= demandCapacity && state.LiveReservations >= 0 &&
 		state.ResidualDebts >= 0 && state.RawRunning >= 0 && state.RawWaiting >= 0 &&
 		state.PreviousRawRunning >= 0 && state.ObservationInterval >= 0 &&
+		(!state.ObservationIntervalValid || state.ObservationInterval > 0) &&
 		finiteNonnegative(state.CacheHitFraction) && state.CacheHitFraction <= 1 &&
 		finiteNonnegative(state.CacheCreditFraction) &&
 		state.CacheCreditFraction <= cachePrefillMaximumHitCredit &&

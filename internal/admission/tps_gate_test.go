@@ -77,11 +77,12 @@ func TestTPSGateSpendsLongWindowHeadroomForOneBoundedObservationWave(t *testing.
 	}
 	for unobserved := int64(0); unobserved <= 4; unobserved++ {
 		state := ProjectedState{
-			RawRunning:          2,
-			UnobservedSequences: unobserved,
-			GenerationDelta:     30,
-			ObservationInterval: 500 * time.Millisecond,
-			TPS:                 snapshot,
+			RawRunning:               2,
+			UnobservedSequences:      unobserved,
+			GenerationDelta:          30,
+			ObservationInterval:      500 * time.Millisecond,
+			ObservationIntervalValid: true,
+			TPS:                      snapshot,
 		}
 		decision := (tpsGate{}).evaluate(state)
 		wantFit := unobserved < 4
@@ -105,9 +106,9 @@ func TestTPSGateDoesNotSpendHeadroomWithoutCurrentSafeSignal(t *testing.T) {
 		state ProjectedState
 	}{
 		{name: "no current generation", state: ProjectedState{}},
-		{name: "waiting", state: ProjectedState{GenerationDelta: 30, RawWaiting: 1, ObservationInterval: 500 * time.Millisecond}},
-		{name: "preemption", state: ProjectedState{GenerationDelta: 30, PreemptionDelta: 1, ObservationInterval: 500 * time.Millisecond}},
-		{name: "invalid interval", state: ProjectedState{GenerationDelta: 30}},
+		{name: "waiting", state: ProjectedState{GenerationDelta: 30, RawWaiting: 1, ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true}},
+		{name: "preemption", state: ProjectedState{GenerationDelta: 30, PreemptionDelta: 1, ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true}},
+		{name: "invalid interval", state: ProjectedState{GenerationDelta: 30, ObservationInterval: 500 * time.Millisecond}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := test.state

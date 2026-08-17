@@ -71,6 +71,7 @@ type ProjectedState struct {
 	GenerationDelta           uint64
 	PreemptionDelta           uint64
 	ObservationInterval       time.Duration
+	ObservationIntervalValid  bool
 	CacheObservationValid     bool
 	CacheHitFraction          float64
 	CacheCreditFraction       float64
