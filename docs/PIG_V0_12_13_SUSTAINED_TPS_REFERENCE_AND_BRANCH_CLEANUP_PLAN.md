@@ -645,7 +645,8 @@ matrix. Router and production changes require a later explicit step.
 - [x] obsolete documents deleted and current README links repaired
 - [x] unreachable semantic observer deleted
 - [x] version-neutral config contract test rename completed
-- [ ] focused red tests added and reproduced on c21
+- [x] focused precedence test reproduced red on c21 round 2 and green after the
+  request-scope correction on round 3
 - [x] TPS configuration/window/gate vertical slice drafted in source; c21 green
   evidence remains pending
 - [x] log, metrics, status, and Router projection consistency drafted in source;
@@ -746,4 +747,35 @@ focused-config.log     f311a7ffcbd3392c2f65d0c08c752471e4a0afedae41607177f0278a6
 focused-server.log     c53ca36ba2b0cb181e1eea66e83082d91a5134bb5a0725029623de9b3604a339
 focused-metrics.log    7f94a28d4460d5e6e95d8c672fd27aacef8074b8e7873b786500ae120fdcfa78
 focused-simulation.log a715423f087cb15864ec36449c030164bf0c6d7e5022f44045c369e2b0ebee12
+```
+
+### 2026-08-17 round 3: focused matrix green
+
+The request-scope correction and round 2 record were committed and pushed as
+`2bbc29767a3645bc734a126e6f875cf29d027f82`. A third fresh c21 clone verified
+that exact clean HEAD and upstream, then passed the ordered formatting and
+focused gates:
+
+```text
+gofmt -l over tracked Go files                    PASS (empty)
+git diff --check                                  PASS
+go test ./internal/admission                      PASS (0.054s)
+go test ./internal/config/pigconfig               PASS (0.003s)
+go test ./internal/app/server                     PASS (1.448s)
+go test ./internal/observability/metrics          PASS (0.003s)
+go test ./internal/simulation/requestaware        PASS (0.194s)
+```
+
+This closes the focused Linux gate only. Full tests, race, vet, build,
+deterministic named simulations, measured hot-path latency, implementation
+reviews, and release identity remain pending. Evidence is under
+`/workspace/evidence/pig-v01213-tps-focused-r3-2bbc297`; SHA-256:
+
+```text
+focused-admission.log  b86a56c85dcc483e603afde314b560b760baf1eff639be709615797b591d1fa0
+focused-config.log     f311a7ffcbd3392c2f65d0c08c752471e4a0afedae41607177f0278a6b295d8a
+focused-server.log     c53ca36ba2b0cb181e1eea66e83082d91a5134bb5a0725029623de9b3604a339
+focused-metrics.log    7f94a28d4460d5e6e95d8c672fd27aacef8074b8e7873b786500ae120fdcfa78
+focused-simulation.log 5c9ac3656da68c9c57fcad6bb0b03429c3371d9a849c2131e56e28358cd59351
+metadata.log           6ef7a1e0bef2a8a85a7f53d16eaa96201d6ebd7f5737589e81eabdf6e1e7caa1
 ```
