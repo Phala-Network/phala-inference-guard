@@ -1,8 +1,9 @@
 # PIG v0.12.13 Sustained TPS Reference and Branch Cleanup Plan
 
-Status: v0.12.13 source identity assigned after the Pass 3 source gate;
-identity-specific c21 acceptance is pending. No accepted image, deployment, or
-production evidence exists yet.
+Status: exact release source `e2604495fdd5c61ed4699772dd0ac99bad16b386`
+has the v0.12.13 identity and passed identity-specific focused and complete c21
+acceptance. No accepted image, registry upload, deployment, or production
+evidence exists yet.
 
 Authoritative baseline: branch `codex/pig-v0.11.0-request-aware`, commit
 `53cb1d5abef55096c2a13dfa0193c257e64bd397`, whose executable v0.12.12 tag is
@@ -680,7 +681,8 @@ matrix. Router and production changes require a later explicit step.
 - [x] Pass 3 source matrix permits assigning the v0.12.13 runtime/OCI identity;
   identity is not assigned yet and will require a fresh complete matrix
 - [x] version identity assigned as runtime `PIG-v0.12.13` and OCI `0.12.13`
-- [ ] identity-specific focused and complete c21 matrices green
+- [x] identity-specific focused and complete c21 matrices green for exact
+  release source `e2604495fdd5c61ed4699772dd0ac99bad16b386`
 - [ ] local image, registry upload, Compose, deployment, Router, and live traffic
   remain unperformed
 
@@ -1042,3 +1044,65 @@ Pass 3 therefore permits assigning runtime `PIG-v0.12.13` and OCI version
 after identity changes, focused and complete acceptance must run again from a
 fresh c21 clone of the new exact HEAD. No image, registry upload, Compose,
 deployment, Router change, or live traffic action has occurred.
+
+### 2026-08-17 round 12: identity-specific focused matrix green
+
+Commit `e2604495fdd5c61ed4699772dd0ac99bad16b386` assigned runtime
+`PIG-v0.12.13` and OCI version `0.12.13`. A fresh c21 clone verified that exact
+clean HEAD and upstream, an empty `gofmt -l` result, and an empty
+`git diff --check` result. Admission, configuration, server, metrics, and
+request-aware simulation focused packages all passed. Evidence directory:
+
+```text
+/workspace/evidence/pig-v01213-tps-focused-r12-identity-e260449
+```
+
+Material SHA-256 values:
+
+```text
+focused-admission.log   546286e86c05b4a5659de197970c1896490b6ee1b41fec583a63678a27499353
+focused-config.log      f311a7ffcbd3392c2f65d0c08c752471e4a0afedae41607177f0278a6b295d8a
+focused-server.log      26b7c74dcb24ec87ac1588454ca435df60d86dd71073b7ac4bfa897eb7325874
+focused-metrics.log     7f94a28d4460d5e6e95d8c672fd27aacef8074b8e7873b786500ae120fdcfa78
+focused-simulation.log  c264d02a20fa98ad8b41f45d605a82e9324e4421cb6f3a08f4a408eff8110b82
+metadata.log            576a47376cf9521e5f5f6bbab2fc73aac1da0743837c807ae37763ba130f8e2e
+```
+
+### 2026-08-17 round 13: identity-specific complete matrix green
+
+A separate fresh c21 clone of the same exact release source passed formatting,
+diff, full tests, race, vet, build, verbose named TPS simulations, and the
+Controller hot-path/TPS matrix. Evidence directory:
+
+```text
+/workspace/evidence/pig-v01213-tps-full-r13-identity-full-e260449
+```
+
+Material SHA-256 values:
+
+```text
+build.log              0affff1af8daee4cb2a2883c0018834502222ab2beb8c211ae8171a36b7dcfbf
+full-tests.log         e4136563119bcc5a01e20e991f7294b3124ab7fa063535fc18d07bd06beb2821
+hot-path.log           163496e9e55f89eb23ea86ca3394929017e01da4d724a86ec91e8dd11d02c6ff
+metadata.log           cd1466ae2f96c2a134b50246e702f70fd86d86acbf06859f3a05c05bd9935a03
+race-tests.log         375de4434e81a5419dc8dc4a4bec0c99113437b33d1faa501def7f199fbcc082
+tps-simulations.log    3afdf51c9c486eef16cd6ecf6ca35ff5fd1146d3e9bc90a4cb7a50c8390ad717
+vet.log                28659d473fa851406fff918f1c50a39cc858c8ce4bc3b3f3553cb253450a8564
+phala-inference-guard  9775e14b6911244aa38dceb54837636b1eaa956e3ce713761e245fece1756be1
+```
+
+The identity-specific non-race hot path remained allocation-free:
+
+```text
+reservations=256   snapshot p99=406ns admit p99=391ns allocations=0/0
+reservations=4096  snapshot p99=407ns admit p99=390ns allocations=0/0
+TPS enabled        snapshot p99=573ns admit p99=550ns allocations=0/0
+```
+
+The saturation and representative safety results reproduced the Pass 3 values,
+including zero candidate preemptions, reference-20 mean active TPS 21.83,
+reference-25 mean active TPS 25.86, and no TPS-induced hard-fit idle regression.
+This establishes exact source acceptance for `e260449`; it permits a builder-
+local deployable image build and image-specific acceptance, but it does not by
+itself establish registry, Compose, deployment, Router, live-traffic, or
+production readiness.
