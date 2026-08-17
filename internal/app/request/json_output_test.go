@@ -66,6 +66,31 @@ func TestClassifierRecyclesBodyBufferOnlyAfterIdempotentClose(t *testing.T) {
 	classifier.releaseBodyBuffer(reused)
 }
 
+func TestV01215ClassifierIdleBodyRetentionIsBounded(t *testing.T) {
+	const (
+		maximumBodyBytes       = int64(4 * 1024 * 1024)
+		maximumConcurrent      = 64
+		maximumRetainedPayload = int64(32 * 1024 * 1024)
+	)
+	classifier := New(Config{
+		MaximumBodyBytes:  maximumBodyBytes,
+		MaximumConcurrent: maximumConcurrent,
+	})
+
+	retainedPayload := int64(cap(classifier.bodyPool)) * maximumBodyBytes
+	if retainedPayload > maximumRetainedPayload {
+		t.Fatalf(
+			"idle body pool can retain %d bytes across %d buffers, want at most %d bytes",
+			retainedPayload,
+			cap(classifier.bodyPool),
+			maximumRetainedPayload,
+		)
+	}
+	if cap(classifier.tokens) != maximumConcurrent {
+		t.Fatalf("scanner concurrency=%d want %d", cap(classifier.tokens), maximumConcurrent)
+	}
+}
+
 func TestV0121UnsupportedContentTypePrecedesJSONSyntaxClassification(t *testing.T) {
 	const body = `not-json-but-owned-by-the-upstream`
 	classifier := New(Config{
