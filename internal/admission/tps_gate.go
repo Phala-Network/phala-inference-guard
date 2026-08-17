@@ -38,6 +38,11 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 		if decision.sequenceLimit < tpsWarmingSequenceLimit {
 			decision.sequenceLimit = tpsWarmingSequenceLimit
 		}
+		if snapshot.QualifiedSamples == 0 && snapshot.QualifiedSequenceSeconds == 0 &&
+			state.RawRunning == tpsWarmingSequenceLimit && state.RawWaiting == 0 &&
+			state.PreemptionDelta == 0 {
+			decision.sequenceLimit = tpsWarmingSequenceLimit + 1
+		}
 		if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
 			decision.sequenceLimit = currentRateLimit
 		}

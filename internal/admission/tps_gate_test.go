@@ -13,7 +13,7 @@ func TestTPSGateDisabledDoesNotChangeAdmissionOrRunSequenceProjection(t *testing
 	}
 }
 
-func TestTPSGateWarmingAllowsTwoSequencesButNotAnUnboundedBurst(t *testing.T) {
+func TestTPSGateWarmingAllowsBoundedColdStartsButNotAnUnboundedBurst(t *testing.T) {
 	snapshot := TPSSnapshot{Enabled: true, Reference: 20}
 	for _, test := range []struct {
 		state   ProjectedState
@@ -25,6 +25,9 @@ func TestTPSGateWarmingAllowsTwoSequencesButNotAnUnboundedBurst(t *testing.T) {
 		{state: ProjectedState{}, fits: true, current: 0, post: 1, limit: 2},
 		{state: ProjectedState{PendingPrefillSequences: 1}, fits: true, current: 1, post: 2, limit: 2},
 		{state: ProjectedState{PendingPrefillSequences: 2}, fits: false, current: 2, post: 3, limit: 2},
+		{state: ProjectedState{RawRunning: 2}, fits: true, current: 2, post: 3, limit: 3},
+		{state: ProjectedState{RawRunning: 2, UnobservedSequences: 1}, fits: false, current: 3, post: 4, limit: 3},
+		{state: ProjectedState{RawRunning: 2, RawWaiting: 1}, fits: false, current: 3, post: 4, limit: 2},
 		{state: ProjectedState{RawRunning: 100}, fits: false, current: 100, post: 101, limit: 100},
 	} {
 		state := test.state
