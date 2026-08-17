@@ -239,6 +239,68 @@ func TestCacheAwareWeightedRequestCanUseContendedPrefillBudget(t *testing.T) {
 	}
 }
 
+func TestCacheWeightedHotToColdShiftKeepsLongRunQoSBounded(t *testing.T) {
+	const reference = 25.0
+	scenario := scenarioSpec{
+		name: "cache-weighted-hot-to-cold", category: "cache-transition", duration: 180 * time.Second,
+		initialKVTokens: 100_000, backgroundRunning: 4,
+		capacityTokens: 4 * 1024 * 1024, maxModelLen: 256 * 1024,
+		maximumNoWait: 12, aggregateTPSCap: 12 * simulationUncontendedTPS,
+		cacheMetrics: true,
+		requests: []requestSpec{
+			{
+				id: "cache-warm-a", at: 600 * time.Millisecond,
+				selectionInput: 60 * 1024, estimatedPrefill: 60 * 1024,
+				safetyInput: 60 * 1024, decodeHorizon: 256,
+				actualInput: 60 * 1024, cacheHitTokens: 60 * 1024, actualOutput: 1,
+			},
+			{
+				id: "cache-warm-b", at: 700 * time.Millisecond,
+				selectionInput: 60 * 1024, estimatedPrefill: 60 * 1024,
+				safetyInput: 60 * 1024, decodeHorizon: 256,
+				actualInput: 60 * 1024, cacheHitTokens: 60 * 1024, actualOutput: 1,
+			},
+			{
+				id: "cache-warm-c", at: 800 * time.Millisecond,
+				selectionInput: 60 * 1024, estimatedPrefill: 60 * 1024,
+				safetyInput: 60 * 1024, decodeHorizon: 256,
+				actualInput: 60 * 1024, cacheHitTokens: 60 * 1024, actualOutput: 1,
+			},
+			{
+				id: "cache-shift-cold-weighted", at: 1100 * time.Millisecond,
+				selectionInput: 199 * 1024, estimatedPrefill: 199 * 1024,
+				safetyInput: 199 * 1024, decodeHorizon: 256,
+				actualInput: 199 * 1024, cacheHitTokens: 0, actualOutput: 64,
+			},
+		},
+	}
+	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
+	if err != nil {
+		t.Fatalf("construct cache-shift scenario capability: %v", err)
+	}
+	cold := scenario
+	cold.cacheMetrics = false
+	baseline, _, err := runScenarioWithTPSReference(cold, PolicyCandidate, profile, reference)
+	if err != nil {
+		t.Fatalf("run cache-shift cold baseline: %v", err)
+	}
+	candidate, _, err := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, reference)
+	if err != nil {
+		t.Fatalf("run cache-shift candidate: %v", err)
+	}
+	t.Logf("cache-weighted hot-to-cold baseline=%+v candidate=%+v", baseline, candidate)
+	if baseline.Admitted != 3 || candidate.Admitted != 4 {
+		t.Fatalf("cache-shift admissions baseline/candidate=%d/%d want 3/4", baseline.Admitted, candidate.Admitted)
+	}
+	if candidate.Preemptions != 0 || candidate.MeanActiveTPS+simulationFloatTolerance < reference {
+		t.Fatalf("cache-shift candidate violated long-run QoS: %+v", candidate)
+	}
+	if candidate.SLOCompletionTokens+simulationFloatTolerance < 0.90*baseline.SLOCompletionTokens {
+		t.Fatalf("cache-shift SLO goodput %.3f regressed baseline %.3f by more than 10%%",
+			candidate.SLOCompletionTokens, baseline.SLOCompletionTokens)
+	}
+}
+
 func TestTPSReferenceCandidatesPreserveSaturatedThroughputAndBoundLongRunMean(t *testing.T) {
 	scenario := newTPSReferenceSaturationScenario()
 	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
