@@ -409,10 +409,10 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 			},
 			Work: domainpredictive.RequestWork{
 				PrefillInputTokens: 1_500, PrefillComputeTokens: 1_200,
-				FirstBytePendingPrefillInputTokens: 600,
+				FirstBytePendingPrefillInputTokens:   600,
 				FirstBytePendingPrefillComputeTokens: 500,
-				FirstBytePendingPrefillSequences: 3,
-				InputKVTokens: 1_600, FirstByteCoverableInputKVTokens: 400,
+				FirstBytePendingPrefillSequences:     3,
+				InputKVTokens:                        1_600, FirstByteCoverableInputKVTokens: 400,
 				FirstBytePendingInputKVTokens: 1_200, FutureKVTokens: 800,
 			},
 			State: coreadmission.ProjectedState{

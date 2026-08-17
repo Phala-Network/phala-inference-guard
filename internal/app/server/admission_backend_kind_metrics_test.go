@@ -26,14 +26,14 @@ func TestV01215AdmissionMetricsExposeFirstByteWorkLiabilities(t *testing.T) {
 	input := observabilitymetrics.PredictiveAdmissionInput{}
 	applyAdmissionDecisionMetrics(&input, coreadmission.DecisionRecord{
 		Work: domainpredictive.RequestWork{
-			PrefillInputTokens: 800,
-			FirstBytePendingPrefillInputTokens: 300,
+			PrefillInputTokens:                   800,
+			FirstBytePendingPrefillInputTokens:   300,
 			FirstBytePendingPrefillComputeTokens: 200,
-			FirstBytePendingPrefillSequences: 3,
-			InputKVTokens: 1_600,
-			FirstByteCoverableInputKVTokens: 400,
-			FirstBytePendingInputKVTokens: 1_200,
-			FutureKVTokens: 2_000,
+			FirstBytePendingPrefillSequences:     3,
+			InputKVTokens:                        1_600,
+			FirstByteCoverableInputKVTokens:      400,
+			FirstBytePendingInputKVTokens:        1_200,
+			FutureKVTokens:                       2_000,
 		},
 	})
 	if input.AdmissionFirstBytePendingPrefillInput != 300 ||
