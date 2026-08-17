@@ -2,10 +2,12 @@ package admission
 
 import (
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
@@ -42,6 +44,37 @@ func TestControllerRejectsInvalidTPSPolicyConfiguration(t *testing.T) {
 		}); err == nil {
 			t.Fatalf("invalid TPS reference %v constructed a Controller", reference)
 		}
+	}
+}
+
+func TestV01215ConservativePromptBatchFitsPerSequenceContext(t *testing.T) {
+	now := time.Unix(1_500, 0)
+	prompt := strings.Repeat("中", 250_000)
+	body := []byte(`{"model":"model-agnostic","prompt":["` + prompt + `","` + prompt + `"],"max_tokens":256}`)
+	cost := kvadmission.EstimateJSON(body, 256, true, kvadmission.DefaultEstimatorConfig())
+	estimate, known := cost.PredictiveEstimate()
+	if !known || estimate.InputEstimateConfidence != predictive.InputEstimateConfidenceConservative ||
+		estimate.BasePromptCount != 2 || estimate.DecodeSequences != 2 ||
+		estimate.SelectionInputTokens <= estimate.MaximumSequenceInputTokens ||
+		estimate.KVReservationInputTokens <= estimate.MaximumSequenceKVReservationInputTokens {
+		t.Fatalf("conservative prompt batch estimate=%+v/%t cost=%+v", estimate, known, cost)
+	}
+
+	capability := testCapability()
+	if estimate.KVReservationInputTokens <= capability.MaxModelLenTokens ||
+		estimate.MaximumSequenceKVReservationInputTokens > capability.MaximumInputTokens {
+		t.Fatalf("fixture does not separate aggregate and per-sequence context: estimate=%+v capability=%+v", estimate, capability)
+	}
+	controller := testControllerWithObservation(
+		t,
+		capability,
+		testObservation(capability, now, 0, 0, 0, 1, 0),
+	)
+	result := controller.Admit(now.Add(time.Millisecond), estimate)
+	if !result.Decision.Admitted() ||
+		result.Decision.Work.InputKVTokens < estimate.KVReservationInputTokens ||
+		result.Decision.PostAdmitKVTokens != result.Decision.Work.TotalKVTokens {
+		t.Fatalf("valid conservative prompt batch was not admitted with full aggregate KV: %+v", result.Decision)
 	}
 }
 

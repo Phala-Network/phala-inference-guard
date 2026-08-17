@@ -1084,6 +1084,78 @@ Required new red/green evidence:
 - invalid/overflow fixtures reach their intended branch rather than failing on
   unrelated zero-valued shape fields.
 
+### Corrective review: request-time evidence and workload shifts
+
+Status: implementation correction and follow-up design review recorded on
+2026-08-18. Pushed source `3fde5351d94d33f8add992ceb13fe26da3d61dbd`
+closes two focused defects but is not a release candidate.
+
+Red source `0ace26725491b9479e919164d9cd3b6295bcceb8` proved that cache
+credit remained usable after its one-second lifetime until another metrics
+publication, and that a ready healthy TPS window refilled an idle backend with
+only one request even though the warming path allowed a bounded two-request
+wave. The focused red log SHA-256 was
+`506edfa2ee7ef9011b47042b09868d566e7c5bfa6645251a211cec5d83dea66b`.
+
+The correction projects an empty cache observation at request time when its age
+is greater than one second while retaining the Controller-owned lease ledger
+for cancellation and old-lease isolation. Age exactly equal to one second
+remains valid. Mature idle refill is now
+`min(rate_derived_sequence_limit, warming_sequence_limit)`; it never raises a
+weak rate-derived limit from one to two. Same-snapshot reservations consume the
+two-request wave atomically.
+
+The exact f563 green run used the pinned Go 1.24 container and passed the three
+focused regressions, the affected admission/server/metrics packages, and the
+admission race suite. The log SHA-256 values were:
+
+```text
+cache/idle focused  11336c00cf158b2b03f92aa5b1ec2464ed2fe8fbc87b5c958da152dfea17df3e
+affected packages   6dac2d48a9d848e3ebf4e33ff0fdb7d3c0e69b8b1304efb6da953bbb097230cf
+admission race      6deb44c9611f655bc95f2606cb56c7873f5132a2dc4b4148aa8e7d79d68ebe46
+```
+
+Architecture review then found two remaining throughput/QoS questions that
+must not be hidden by the focused green result:
+
+1. A single 512K-plus request is isolated while it is in Prefill, but after its
+   first response byte it contributes the same one Decode sequence as a short
+   request. A mature TPS window learned from short contexts can therefore open
+   a large same-snapshot wave before it contains representative long-context
+   Decode evidence. Do not add a model-specific token weight, a universal
+   `input / 64K` multiplier, or a fixed one-second hold. First add a deterministic
+   workload-shift simulation. The candidate control is at most one additional
+   admission wave per fresh 500-ms observation while an exclusive/quiescent
+   Decode reservation remains active and its workload has not demonstrated
+   stable capacity. Waiting or preemption still freezes immediately; small
+   requests must reopen without a cooldown when current state fits. Accept this
+   candidate only if it improves sustained SLO-compliant goodput over both the
+   current burst and a strict freeze across cache-hot, cache-cold, 256K, 512K,
+   low-flow, and mixed short/long scenarios.
+2. KV geometry is genuinely initialized from the backend, but automatic
+   Prefill bounds still select portable fixed 64K/256K/512K values and clip only
+   part of the profile by maximum input and block size. KV capacity does not
+   measure Prefill compute throughput, so deriving thresholds from a KV ratio
+   would create false adaptation. Inspect source-backed immutable scheduler
+   metadata for each backend, such as an exposed batched/chunked Prefill token
+   budget, before changing this profile. If neither supported backend exposes a
+   coherent startup value, retain and label the portable fallback honestly
+   rather than claiming performance adaptation; production still omits the
+   default values.
+
+Before implementing either candidate, add the still-missing conservative
+multi-prompt regression with two non-ASCII prompts. It must prove that aggregate
+hard KV retains both prompts, the maximum per-sequence estimate retains only the
+largest prompt plus shared structure, and Context admission can pass when every
+prompt fits even though aggregate work exceeds one context. This closes an
+estimator-distribution proof without adding another request-body scan.
+
+The review found no evidence that merging the two bounded O(n) JSON scans,
+replacing the fixed 61-bucket TPS snapshot, or collapsing admission interfaces
+would materially improve end-to-end throughput. The accepted 4-MiB p99 remains
+below the user-approved 100-ms boundary. Keep those items behind benchmark
+evidence instead of expanding v0.12.15.
+
 ### Pass 3: exact evidence and release
 
 Status: pending. No v0.12.15 image has been built or uploaded, production still
