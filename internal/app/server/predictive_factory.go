@@ -111,7 +111,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		return nil, err
 	}
 	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
-		BackendKind:          startup.BackendKind,
+		BackendKind:           startup.BackendKind,
 		MetricsURL:            metricsURL,
 		UpstreamURL:           cfg.Upstream,
 		ModelName:             startup.modelName,

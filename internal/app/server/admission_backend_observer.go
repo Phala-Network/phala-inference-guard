@@ -21,14 +21,14 @@ type admissionBackendObserverConfig struct {
 	ModelName             string
 	RevalidateMetadata    bool
 	CapabilityFingerprint string
-	MaxModelLenTokens    int64
-	KVCapacityTokens     int64
-	KVBlockSize          int64
-	PollInterval         time.Duration
-	MaximumAge           time.Duration
-	RequestTimeout       time.Duration
-	Controller           *coreadmission.AdmissionController
-	Now                  func() time.Time
+	MaxModelLenTokens     int64
+	KVCapacityTokens      int64
+	KVBlockSize           int64
+	PollInterval          time.Duration
+	MaximumAge            time.Duration
+	RequestTimeout        time.Duration
+	Controller            *coreadmission.AdmissionController
+	Now                   func() time.Time
 }
 
 type admissionBackendObserver struct {
