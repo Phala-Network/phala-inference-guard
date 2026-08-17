@@ -1,6 +1,7 @@
 package request
 
 import (
+	"math"
 	"strconv"
 	"strings"
 )
@@ -8,8 +9,33 @@ import (
 const maximumJSONFieldScanDepth = 128
 
 type JSONFields struct {
-	OutputTokens    int
-	HasOutputTokens bool
+	OutputTokens                int
+	HasOutputTokens             bool
+	PromptBatchSize             int64
+	PromptStringBytes           int64
+	MaximumPromptStringBytes    int64
+	ExplicitPromptTokens        int64
+	MaximumExplicitPromptTokens int64
+	DecodeSequences             int64
+	ShapeSupported              bool
+}
+
+type promptElementKind uint8
+
+const (
+	promptElementUnsupported promptElementKind = iota
+	promptElementString
+	promptElementToken
+	promptElementTokenArray
+)
+
+type promptValueShape struct {
+	batchSize             int64
+	stringBytes           int64
+	maximumStringBytes    int64
+	explicitTokens        int64
+	maximumExplicitTokens int64
+	supported             bool
 }
 
 type jsonStringSpan struct {
@@ -36,7 +62,8 @@ func ParseJSONFields(body []byte, fields []string) (JSONFields, bool) {
 }
 
 func (p *jsonFieldParser) parseRootObject(fields []string) (JSONFields, bool) {
-	result := JSONFields{}
+	result := JSONFields{PromptBatchSize: 1, DecodeSequences: 1, ShapeSupported: true}
+	decodeCandidates := int64(1)
 	if !p.enter('{') {
 		return result, false
 	}
@@ -56,7 +83,14 @@ func (p *jsonFieldParser) parseRootObject(fields []string) (JSONFields, bool) {
 		}
 		p.skipSpace()
 		valueStart := p.index
-		if !p.parseValue() {
+		var promptShape promptValueShape
+		isPrompt := jsonStringSpanEquals(key, "prompt")
+		if isPrompt {
+			promptShape, ok = p.parsePromptValue()
+		} else {
+			ok = p.parseValue()
+		}
+		if !ok {
 			return JSONFields{}, false
 		}
 		value := p.body[valueStart:p.index]
@@ -68,11 +102,27 @@ func (p *jsonFieldParser) parseRootObject(fields []string) (JSONFields, bool) {
 				result.HasOutputTokens = true
 			}
 		}
+		if isPrompt {
+			result.PromptBatchSize = promptShape.batchSize
+			result.PromptStringBytes = promptShape.stringBytes
+			result.MaximumPromptStringBytes = promptShape.maximumStringBytes
+			result.ExplicitPromptTokens = promptShape.explicitTokens
+			result.MaximumExplicitPromptTokens = promptShape.maximumExplicitTokens
+			result.ShapeSupported = result.ShapeSupported && promptShape.supported
+		}
+		if jsonStringSpanEquals(key, "n") {
+			candidate, valid := parseJSONOutputTokens(value)
+			if !valid || candidate <= 0 {
+				result.ShapeSupported = false
+			} else if int64(candidate) > decodeCandidates {
+				decodeCandidates = int64(candidate)
+			}
+		}
 
 		p.skipSpace()
 		switch {
 		case p.consume('}'):
-			return result, true
+			return finalizeJSONFields(result, decodeCandidates), true
 		case p.consume(','):
 			p.skipSpace()
 			if p.index >= len(p.body) || p.body[p.index] == '}' {
@@ -82,6 +132,17 @@ func (p *jsonFieldParser) parseRootObject(fields []string) (JSONFields, bool) {
 			return JSONFields{}, false
 		}
 	}
+}
+
+func finalizeJSONFields(result JSONFields, decodeCandidates int64) JSONFields {
+	if !result.ShapeSupported || result.PromptBatchSize <= 0 || decodeCandidates <= 0 ||
+		result.PromptBatchSize > math.MaxInt64/decodeCandidates {
+		result.ShapeSupported = false
+		result.DecodeSequences = 0
+		return result
+	}
+	result.DecodeSequences = result.PromptBatchSize * decodeCandidates
+	return result
 }
 
 func (p *jsonFieldParser) parseValue() bool {
@@ -164,6 +225,149 @@ func (p *jsonFieldParser) parseArray() bool {
 			}
 		default:
 			return false
+		}
+	}
+}
+
+func (p *jsonFieldParser) parsePromptValue() (promptValueShape, bool) {
+	p.skipSpace()
+	if p.index >= len(p.body) {
+		return promptValueShape{}, false
+	}
+	if p.body[p.index] == '"' {
+		value, ok := p.parseString()
+		length := int64(len(value.raw))
+		return promptValueShape{
+			batchSize: 1, stringBytes: length, maximumStringBytes: length, supported: ok,
+		}, ok
+	}
+	if p.body[p.index] != '[' {
+		return promptValueShape{batchSize: 1}, p.parseValue()
+	}
+	if !p.enter('[') {
+		return promptValueShape{}, false
+	}
+	defer p.leave()
+	p.skipSpace()
+	if p.consume(']') {
+		return promptValueShape{batchSize: 1}, true
+	}
+
+	shape := promptValueShape{supported: true}
+	var expected promptElementKind
+	var elements int64
+	for {
+		kind, explicitTokens, stringBytes, ok := p.parsePromptElement()
+		if !ok {
+			return promptValueShape{}, false
+		}
+		if elements == math.MaxInt64 || shape.explicitTokens > math.MaxInt64-explicitTokens ||
+			shape.stringBytes > math.MaxInt64-stringBytes {
+			return promptValueShape{}, false
+		}
+		elements++
+		shape.explicitTokens += explicitTokens
+		shape.stringBytes += stringBytes
+		if explicitTokens > shape.maximumExplicitTokens {
+			shape.maximumExplicitTokens = explicitTokens
+		}
+		if stringBytes > shape.maximumStringBytes {
+			shape.maximumStringBytes = stringBytes
+		}
+		if expected == promptElementUnsupported {
+			expected = kind
+		} else if kind != expected {
+			shape.supported = false
+		}
+		if kind == promptElementUnsupported {
+			shape.supported = false
+		}
+		p.skipSpace()
+		switch {
+		case p.consume(']'):
+			switch expected {
+			case promptElementString, promptElementTokenArray:
+				shape.batchSize = elements
+			case promptElementToken:
+				shape.batchSize = 1
+				shape.maximumExplicitTokens = shape.explicitTokens
+			default:
+				shape.batchSize = 1
+				shape.supported = false
+			}
+			return shape, true
+		case p.consume(','):
+			p.skipSpace()
+			if p.index >= len(p.body) || p.body[p.index] == ']' {
+				return promptValueShape{}, false
+			}
+		default:
+			return promptValueShape{}, false
+		}
+	}
+}
+
+func (p *jsonFieldParser) parsePromptElement() (promptElementKind, int64, int64, bool) {
+	p.skipSpace()
+	if p.index >= len(p.body) {
+		return promptElementUnsupported, 0, 0, false
+	}
+	switch p.body[p.index] {
+	case '"':
+		value, ok := p.parseString()
+		return promptElementString, 0, int64(len(value.raw)), ok
+	case '[':
+		tokens, supported, ok := p.parsePromptTokenArray()
+		if !supported {
+			return promptElementUnsupported, tokens, 0, ok
+		}
+		return promptElementTokenArray, tokens, 0, ok
+	default:
+		start := p.index
+		if !p.parseValue() {
+			return promptElementUnsupported, 0, 0, false
+		}
+		if _, valid := parseNonnegativeDecimal(p.body[start:p.index]); valid {
+			return promptElementToken, 1, 0, true
+		}
+		return promptElementUnsupported, 0, 0, true
+	}
+}
+
+func (p *jsonFieldParser) parsePromptTokenArray() (int64, bool, bool) {
+	if !p.enter('[') {
+		return 0, false, false
+	}
+	defer p.leave()
+	p.skipSpace()
+	if p.consume(']') {
+		return 0, true, true
+	}
+	tokens := int64(0)
+	supported := true
+	for {
+		start := p.index
+		if !p.parseValue() {
+			return 0, false, false
+		}
+		if _, valid := parseNonnegativeDecimal(p.body[start:p.index]); !valid {
+			supported = false
+		} else if tokens == math.MaxInt64 {
+			return 0, false, false
+		} else {
+			tokens++
+		}
+		p.skipSpace()
+		switch {
+		case p.consume(']'):
+			return tokens, supported, true
+		case p.consume(','):
+			p.skipSpace()
+			if p.index >= len(p.body) || p.body[p.index] == ']' {
+				return 0, false, false
+			}
+		default:
+			return 0, false, false
 		}
 	}
 }

@@ -70,10 +70,10 @@ func TestV01215AdmissionHTTPChargesAllDecodeSequencesBeforeForward(t *testing.T)
 			decodeSequences: 8,
 		},
 		{
-			name: "best of string prompt batch",
+			name: "string prompt batch ignores best of",
 			body: `{"model":"model-agnostic","prompt":["one","two","three"],` +
 				`"n":2,"best_of":4,"max_tokens":256}`,
-			decodeSequences: 12,
+			decodeSequences: 6,
 		},
 		{
 			name: "token id prompt batch",
@@ -248,7 +248,9 @@ func TestAdmissionHTTPShadowProtectedRequestForwardsWithoutHypotheticalReservati
 
 func TestAdmissionShadowAndEnforceAdmittedLifecyclesAreEquivalent(t *testing.T) {
 	estimate := domainpredictive.RequestEstimate{
-		SelectionInputTokens: 8 * 1024, KVReservationInputTokens: 8 * 1024, DecodeHorizonTokens: 256,
+		SelectionInputTokens: 8 * 1024, MaximumSequenceInputTokens: 8 * 1024,
+		KVReservationInputTokens: 8 * 1024, DecodeHorizonTokens: 256,
+		DecodeSequences: 1,
 	}
 	type state struct {
 		decision coreadmission.DecisionRecord

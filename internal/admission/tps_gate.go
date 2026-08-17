@@ -18,6 +18,10 @@ type tpsGateDecision struct {
 type tpsGate struct{}
 
 func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
+	return (tpsGate{}).evaluateAdditional(state, 1)
+}
+
+func (tpsGate) evaluateAdditional(state ProjectedState, additionalSequences int64) tpsGateDecision {
 	decision := tpsGateDecision{
 		gateDecision: gateDecision{fits: true, reason: ReasonOpen},
 	}
@@ -25,7 +29,7 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 	if !snapshot.Enabled {
 		return decision
 	}
-	current, postAdmit, valid := projectedTPSSequences(state)
+	current, postAdmit, valid := projectedTPSSequences(state, additionalSequences)
 	decision.currentSequences = current
 	decision.postAdmitSequences = postAdmit
 	if !valid || !validTPSSnapshot(snapshot) || snapshot.Reference <= 0 {
@@ -62,14 +66,8 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 	decision.sequenceLimit = rateDerivedSequenceLimit(snapshot)
 	if state.RawRunning == 0 && state.GenerationDelta == 0 {
 		decision.sequenceLimit = 1
-	} else if state.ObservationIntervalValid {
-		decision.sequenceLimit = current
-		if decision.sequenceLimit < 1 {
-			decision.sequenceLimit = 1
-		}
-		if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
-			decision.sequenceLimit = currentRateLimit
-		}
+	} else if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
+		decision.sequenceLimit = currentRateLimit
 	}
 	if current == 0 || postAdmit <= decision.sequenceLimit {
 		return decision
@@ -81,8 +79,8 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 
 // tpsQualifiedCurrentRateSequenceLimit lets a healthy current observation
 // recover one sequence beyond the running count when the long window still
-// reflects earlier contention. It spends no historical surplus and
-// reservations consume the single-step limit atomically until the next poll.
+// reflects earlier contention. A current sample never lowers healthy
+// long-window capacity; waiting and preemption are handled before this path.
 func tpsQualifiedCurrentRateSequenceLimit(state ProjectedState, snapshot TPSSnapshot) int64 {
 	if state.RawRunning <= 0 || state.RawWaiting > 0 || state.PreemptionDelta > 0 ||
 		state.GenerationDelta == 0 || !state.ObservationIntervalValid ||
@@ -95,22 +93,21 @@ func tpsQualifiedCurrentRateSequenceLimit(state ProjectedState, snapshot TPSSnap
 		return 0
 	}
 	currentMeanActiveTPS := currentAggregateTPS / float64(state.RawRunning)
-	limit := rateDerivedSequenceLimit(TPSSnapshot{
-		Reference:     snapshot.Reference,
-		AggregateTPS:  currentAggregateTPS,
-		MeanActiveTPS: currentMeanActiveTPS,
-	})
+	if !finiteNonnegative(currentMeanActiveTPS) ||
+		currentMeanActiveTPS < snapshot.Reference*tpsHealthyHeadroomRatio {
+		return 0
+	}
 	waveLimit, ok := addNonnegativeInt64(state.RawRunning, 1)
 	if !ok {
 		return 0
 	}
-	if limit > waveLimit {
-		limit = waveLimit
-	}
-	return limit
+	return waveLimit
 }
 
-func projectedTPSSequences(state ProjectedState) (current, postAdmit int64, valid bool) {
+func projectedTPSSequences(state ProjectedState, additionalSequences int64) (current, postAdmit int64, valid bool) {
+	if additionalSequences <= 0 {
+		return math.MaxInt64, math.MaxInt64, false
+	}
 	tracked, ok := addNonnegativeInt64(state.PendingPrefillSequences, state.LocalActiveDecode)
 	if !ok {
 		return math.MaxInt64, math.MaxInt64, false
@@ -126,7 +123,7 @@ func projectedTPSSequences(state ProjectedState) (current, postAdmit int64, vali
 	if tracked > current {
 		current = tracked
 	}
-	postAdmit, ok = addNonnegativeInt64(current, 1)
+	postAdmit, ok = addNonnegativeInt64(current, additionalSequences)
 	if !ok {
 		return current, math.MaxInt64, false
 	}

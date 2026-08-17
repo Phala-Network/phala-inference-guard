@@ -17,8 +17,23 @@ type Cost struct {
 	EstimatedInputHigh          int64
 	ApproximateInputTokens      int64
 	ApproximateInputTokensKnown bool
+	ExplicitPromptTokens        int64
 	BoundedDecodeTokens         int64
+	DecodeSequences             int64
 	Estimate                    predictive.RequestEstimate
+}
+
+type RequestShape struct {
+	PromptBatchSize             int64
+	PromptStringBytes           int64
+	MaximumPromptStringBytes    int64
+	ExplicitPromptTokens        int64
+	MaximumExplicitPromptTokens int64
+	DecodeSequences             int64
+}
+
+func DefaultRequestShape() RequestShape {
+	return RequestShape{PromptBatchSize: 1, DecodeSequences: 1}
 }
 
 // PredictiveEstimate returns the one complete estimator output accepted by the

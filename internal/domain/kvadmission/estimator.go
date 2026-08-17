@@ -15,23 +15,50 @@ const (
 )
 
 func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig) Cost {
-	return estimateJSON(body, maxOutputTokens, hasMaxOutputTokens, cfg, true)
+	return estimateJSON(body, maxOutputTokens, hasMaxOutputTokens, DefaultRequestShape(), cfg, true)
 }
 
 // EstimateValidatedJSON avoids repeating strict JSON validation when the
 // caller has already validated the complete body without modifying it.
 func EstimateValidatedJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig) Cost {
-	return estimateJSON(body, maxOutputTokens, hasMaxOutputTokens, cfg, false)
+	return estimateJSON(body, maxOutputTokens, hasMaxOutputTokens, DefaultRequestShape(), cfg, false)
 }
 
-func estimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig, validate bool) Cost {
+func EstimateValidatedJSONWithShape(
+	body []byte,
+	maxOutputTokens int,
+	hasMaxOutputTokens bool,
+	shape RequestShape,
+	cfg EstimatorConfig,
+) Cost {
+	return estimateJSON(body, maxOutputTokens, hasMaxOutputTokens, shape, cfg, false)
+}
+
+func estimateJSON(
+	body []byte,
+	maxOutputTokens int,
+	hasMaxOutputTokens bool,
+	shape RequestShape,
+	cfg EstimatorConfig,
+	validate bool,
+) Cost {
 	cost := Cost{
-		BodyBytes:          len(body),
-		MaxOutputTokens:    maxOutputTokens,
-		HasMaxOutputTokens: hasMaxOutputTokens,
+		BodyBytes:            len(body),
+		MaxOutputTokens:      maxOutputTokens,
+		HasMaxOutputTokens:   hasMaxOutputTokens,
+		DecodeSequences:      shape.DecodeSequences,
+		ExplicitPromptTokens: shape.ExplicitPromptTokens,
 	}
 	if err := validateEstimatorConfig(cfg); err != nil {
 		cost.UnsupportedReason = "invalid_estimator_config"
+		return cost
+	}
+	if shape.PromptBatchSize <= 0 || shape.DecodeSequences <= 0 || shape.ExplicitPromptTokens < 0 ||
+		shape.MaximumExplicitPromptTokens < 0 ||
+		shape.MaximumExplicitPromptTokens > shape.ExplicitPromptTokens ||
+		shape.PromptStringBytes < 0 || shape.MaximumPromptStringBytes < 0 ||
+		shape.MaximumPromptStringBytes > shape.PromptStringBytes {
+		cost.UnsupportedReason = "invalid_request_shape"
 		return cost
 	}
 	if len(body) == 0 {
@@ -54,6 +81,13 @@ func estimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 	cost.ModalityCount = features.ModalityCount
 	cost.ApproximateInputTokens = features.ApproximateInputTokens
 	cost.ApproximateInputTokensKnown = features.ApproximateInputTokensKnown && features.ApproximateInputTokens > 0
+	if shape.ExplicitPromptTokens > 0 {
+		if !addApproximateInputTokens(&cost.ApproximateInputTokens, shape.ExplicitPromptTokens) {
+			cost.UnsupportedReason = "request_estimate_overflow"
+			return cost
+		}
+		cost.ApproximateInputTokensKnown = true
+	}
 
 	textLow := ceilDiv(cost.TextBytes, cfg.MaxBytesPerToken)
 	textHigh := ceilDiv(cost.TextBytes, cfg.MinBytesPerToken)
@@ -66,6 +100,12 @@ func estimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 
 	low := int64(textLow + toolLow + templateLow + modalityLow)
 	high := int64(textHigh + toolHigh + templateHigh + modalityHigh)
+	if low > math.MaxInt64-shape.ExplicitPromptTokens || high > math.MaxInt64-shape.ExplicitPromptTokens {
+		cost.UnsupportedReason = "request_estimate_overflow"
+		return cost
+	}
+	low += shape.ExplicitPromptTokens
+	high += shape.ExplicitPromptTokens
 	wholeBodyHigh := int64(ceilDiv(len(body), cfg.MinBytesPerToken) + templateHigh + modalityHigh)
 	if high < wholeBodyHigh {
 		high = wholeBodyHigh
@@ -84,7 +124,8 @@ func estimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 	cost.EstimatedInputLow = low
 	cost.EstimatedInputHigh = high
 	cost.BoundedDecodeTokens = int64(decode)
-	if !setTextPredictiveEstimate(&cost) {
+	maximumSequenceInput, valid := maximumSequenceInputTokens(cost, shape, cfg)
+	if !valid || !setTextPredictiveEstimate(&cost, maximumSequenceInput) {
 		cost.UnsupportedReason = "request_estimate_overflow"
 		return cost
 	}
@@ -96,6 +137,12 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 	valueBytes := len(bytes.TrimSpace(body))
 	low := int64(ceilDiv(valueBytes, cfg.MaxBytesPerToken))
 	high := int64(ceilDiv(valueBytes, cfg.MinBytesPerToken))
+	if low > math.MaxInt64-cost.ExplicitPromptTokens || high > math.MaxInt64-cost.ExplicitPromptTokens {
+		cost.UnsupportedReason = "request_estimate_overflow"
+		return cost
+	}
+	low += cost.ExplicitPromptTokens
+	high += cost.ExplicitPromptTokens
 	if low < 1 {
 		low = 1
 	}
@@ -109,9 +156,11 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 	cost.ApproximateInputTokensKnown = true
 	cost.BoundedDecodeTokens = int64(cfg.BlindOutputTokens)
 	cost.Estimate = predictive.RequestEstimate{
-		SelectionInputTokens:     high,
-		KVReservationInputTokens: high,
-		DecodeHorizonTokens:      cost.BoundedDecodeTokens,
+		SelectionInputTokens:       high,
+		MaximumSequenceInputTokens: high,
+		KVReservationInputTokens:   high,
+		DecodeHorizonTokens:        cost.BoundedDecodeTokens,
+		DecodeSequences:            cost.DecodeSequences,
 	}
 	if cost.Estimate.Validate() != nil {
 		cost.UnsupportedReason = "request_estimate_overflow"
@@ -121,8 +170,9 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 	return cost
 }
 
-func setTextPredictiveEstimate(cost *Cost) bool {
-	if cost == nil || cost.EstimatedInputHigh <= 0 || cost.BoundedDecodeTokens < 0 {
+func setTextPredictiveEstimate(cost *Cost, maximumSequenceInput int64) bool {
+	if cost == nil || cost.EstimatedInputHigh <= 0 || maximumSequenceInput <= 0 ||
+		cost.BoundedDecodeTokens < 0 {
 		return false
 	}
 	selection, known := cost.ApproximateInputTokenHint()
@@ -142,11 +192,66 @@ func setTextPredictiveEstimate(cost *Cost) bool {
 		}
 	}
 	cost.Estimate = predictive.RequestEstimate{
-		SelectionInputTokens:     selection,
-		KVReservationInputTokens: reservation,
-		DecodeHorizonTokens:      cost.BoundedDecodeTokens,
+		SelectionInputTokens:       selection,
+		MaximumSequenceInputTokens: maximumSequenceInput,
+		KVReservationInputTokens:   reservation,
+		DecodeHorizonTokens:        cost.BoundedDecodeTokens,
+		DecodeSequences:            cost.DecodeSequences,
 	}
 	return cost.Estimate.Validate() == nil
+}
+
+func maximumSequenceInputTokens(
+	cost Cost,
+	shape RequestShape,
+	cfg EstimatorConfig,
+) (int64, bool) {
+	selection, known := cost.ApproximateInputTokenHint()
+	if !known || selection <= 0 {
+		selection = cost.EstimatedInputHigh
+	}
+	if selection <= 0 {
+		return 0, false
+	}
+	if shape.PromptBatchSize <= 1 {
+		return selection, true
+	}
+	if shape.PromptStringBytes > int64(cost.TextBytes) {
+		return 0, false
+	}
+	sharedStringBytes := int64(cost.TextBytes) - shape.PromptStringBytes
+	if sharedStringBytes > math.MaxInt64-shape.MaximumPromptStringBytes {
+		return 0, false
+	}
+	sequenceStringBytes := sharedStringBytes + shape.MaximumPromptStringBytes
+	if sequenceStringBytes > int64(math.MaxInt) {
+		return 0, false
+	}
+	textHigh := int64(ceilDiv(int(sequenceStringBytes), cfg.MinBytesPerToken))
+	toolHigh := int64(ceilDiv(cost.ToolSchemaBytes, cfg.ToolMinBytesPerToken))
+	templateHigh := int64(cost.MessageCount * cfg.TemplateTokensPerMessageHigh)
+	modalityHigh := int64(cost.ModalityCount * cfg.ModalityTokensHigh)
+	maximum := textHigh
+	for _, component := range []int64{
+		toolHigh,
+		templateHigh,
+		modalityHigh,
+		shape.MaximumExplicitPromptTokens,
+	} {
+		if component < 0 || maximum > math.MaxInt64-component {
+			return 0, false
+		}
+		maximum += component
+	}
+	if maximum < 1 {
+		maximum = 1
+	}
+	// SelectionInputTokens is the aggregate point estimate. A member of the
+	// base-prompt batch cannot exceed that aggregate under the same estimator.
+	if maximum > selection {
+		maximum = selection
+	}
+	return maximum, true
 }
 
 func fixedMarginTokens(tokens, numerator, denominator int64) (int64, bool) {

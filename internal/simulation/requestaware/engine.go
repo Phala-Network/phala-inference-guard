@@ -715,9 +715,11 @@ func (r *scenarioRunner) terminateAll(at time.Duration, cause coreadmission.Term
 
 func simulationRequestEstimate(request requestSpec) domainpredictive.RequestEstimate {
 	estimate := domainpredictive.RequestEstimate{
-		SelectionInputTokens:     request.selectionInput,
-		KVReservationInputTokens: request.safetyInput,
-		DecodeHorizonTokens:      request.decodeHorizon,
+		SelectionInputTokens:       request.selectionInput,
+		MaximumSequenceInputTokens: request.selectionInput,
+		KVReservationInputTokens:   request.safetyInput,
+		DecodeHorizonTokens:        request.decodeHorizon,
+		DecodeSequences:            1,
 	}
 	if err := estimate.Validate(); err != nil {
 		panic(fmt.Sprintf("simulation request estimate for %q: %v", request.id, err))

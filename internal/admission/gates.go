@@ -17,9 +17,9 @@ type contextGate struct {
 }
 
 func (g contextGate) evaluate(work predictive.RequestWork) gateDecision {
-	if work.Estimate.SelectionInputTokens <= 0 ||
-		work.Estimate.SelectionInputTokens > g.maximumInputTokens ||
-		work.Estimate.DecodeHorizonTokens > g.maxModelLenTokens-work.Estimate.SelectionInputTokens {
+	if work.Estimate.MaximumSequenceInputTokens <= 0 ||
+		work.Estimate.MaximumSequenceInputTokens > g.maximumInputTokens ||
+		work.Estimate.DecodeHorizonTokens > g.maxModelLenTokens-work.Estimate.MaximumSequenceInputTokens {
 		return gateDecision{reason: ReasonInputLimit}
 	}
 	return gateDecision{fits: true, reason: ReasonOpen}

@@ -177,6 +177,27 @@ func TestV01215ClassifierReadsUnknownLengthJSONWithinBound(t *testing.T) {
 	}
 }
 
+func TestV01215ClassifierSeparatesBatchAggregateFromMaximumSequence(t *testing.T) {
+	prompt := strings.Repeat("word ", 3_000)
+	body := []byte(`{"model":"model-agnostic","prompt":["` + prompt + `","` + prompt + `"],"n":2,"max_tokens":256}`)
+	classifier := New(Config{
+		MaximumBodyBytes:  int64(len(body)),
+		MaximumConcurrent: 1,
+		OutputTokenFields: []string{"max_tokens"},
+		Estimator:         kvadmission.DefaultEstimatorConfig(),
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/completions", bytes.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+
+	classification, protocolError := classifier.ClassifyRequest(request)
+	estimate, known := classification.Cost.PredictiveEstimate()
+	if protocolError != nil || !known || estimate.DecodeSequences != 4 ||
+		estimate.MaximumSequenceInputTokens <= 0 ||
+		estimate.MaximumSequenceInputTokens >= estimate.SelectionInputTokens {
+		t.Fatalf("batch estimate did not separate aggregate and per-sequence input: protocol=%+v cost=%+v estimate=%+v/%t", protocolError, classification.Cost, estimate, known)
+	}
+}
+
 func TestV0121ClassifierPreservesUndeclaredOversizeBody(t *testing.T) {
 	const maximum = 32
 	body := []byte(`{"model":"model-agnostic","prompt":"this body is longer than its declared length"}`)

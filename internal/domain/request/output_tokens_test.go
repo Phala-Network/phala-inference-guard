@@ -20,6 +20,42 @@ func TestParseJSONFieldsExtractsOutputTokens(t *testing.T) {
 	}
 }
 
+func TestV01215ParseJSONFieldsDerivesDecodeMultiplicityAndExplicitPromptTokens(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           string
+		batch          int64
+		stringBytes    int64
+		maximumString  int64
+		explicitTokens int64
+		maximumTokens  int64
+		sequences      int64
+		supported      bool
+	}{
+		{name: "chat n", body: `{"messages":[],"n":8}`, batch: 1, sequences: 8, supported: true},
+		{name: "string batch ignores best of", body: `{"prompt":["a","b","c"],"n":2,"best_of":4}`, batch: 3, stringBytes: 3, maximumString: 1, sequences: 6, supported: true},
+		{name: "flat token ids", body: `{"prompt":[1,2,3],"n":2}`, batch: 1, explicitTokens: 3, maximumTokens: 3, sequences: 2, supported: true},
+		{name: "token id batch", body: `{"prompt":[[1,2,3],[4,5]],"n":2}`, batch: 2, explicitTokens: 5, maximumTokens: 3, sequences: 4, supported: true},
+		{name: "escaped multiplicity key", body: `{"prompt":"x","\u006e":3}`, batch: 1, stringBytes: 1, maximumString: 1, sequences: 3, supported: true},
+		{name: "mixed prompt", body: `{"prompt":["a",2]}`, batch: 1, sequences: 0, supported: false},
+		{name: "empty prompt batch", body: `{"prompt":[]}`, batch: 1, sequences: 0, supported: false},
+		{name: "zero n", body: `{"prompt":"x","n":0}`, batch: 1, sequences: 0, supported: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := ParseJSONFields([]byte(test.body), nil)
+			if !ok || got.PromptBatchSize != test.batch ||
+				got.PromptStringBytes != test.stringBytes ||
+				got.MaximumPromptStringBytes != test.maximumString ||
+				got.ExplicitPromptTokens != test.explicitTokens ||
+				got.MaximumExplicitPromptTokens != test.maximumTokens ||
+				got.DecodeSequences != test.sequences || got.ShapeSupported != test.supported {
+				t.Fatalf("ParseJSONFields(%s)=%+v/%t", test.body, got, ok)
+			}
+		})
+	}
+}
+
 func TestV0121ParseJSONFieldsUsesLargestRecognizedOutputLimit(t *testing.T) {
 	fields := []string{"max_tokens", "max_completion_tokens", "max_output_tokens"}
 	for _, body := range [][]byte{

@@ -45,10 +45,8 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 	if r == nil || c.cfg.MaximumBodyBytes <= 0 {
 		return classification, nil
 	}
-	if r.Body == nil || r.ContentLength < 0 || r.ContentLength > c.cfg.MaximumBodyBytes {
-		if r.ContentLength < 0 {
-			unsupported.UnsupportedReason = "unknown_body_length"
-		} else if r.ContentLength > c.cfg.MaximumBodyBytes {
+	if r.Body == nil || r.ContentLength > c.cfg.MaximumBodyBytes {
+		if r.ContentLength > c.cfg.MaximumBodyBytes {
 			unsupported.UnsupportedReason = "body_too_large"
 		}
 		classification.Cost = unsupported
@@ -104,13 +102,25 @@ func (c *Classifier) classifyBufferedJSON(body []byte) (kvadmission.Cost, *Proto
 		if !json.Valid(body) {
 			return kvadmission.Cost{UnsupportedReason: "invalid_json"}, &ProtocolError{Reason: "invalid_json"}
 		}
-		cost := kvadmission.EstimateValidatedJSON(body, 0, false, c.cfg.Estimator)
-		if cost.Supported {
-			return cost, nil
-		}
 		return kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}, nil
 	}
-	cost := kvadmission.EstimateValidatedJSON(body, fields.OutputTokens, fields.HasOutputTokens, c.cfg.Estimator)
+	if !fields.ShapeSupported {
+		return kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}, nil
+	}
+	cost := kvadmission.EstimateValidatedJSONWithShape(
+		body,
+		fields.OutputTokens,
+		fields.HasOutputTokens,
+		kvadmission.RequestShape{
+			PromptBatchSize:             fields.PromptBatchSize,
+			PromptStringBytes:           fields.PromptStringBytes,
+			MaximumPromptStringBytes:    fields.MaximumPromptStringBytes,
+			ExplicitPromptTokens:        fields.ExplicitPromptTokens,
+			MaximumExplicitPromptTokens: fields.MaximumExplicitPromptTokens,
+			DecodeSequences:             fields.DecodeSequences,
+		},
+		c.cfg.Estimator,
+	)
 	return cost, nil
 }
 

@@ -73,7 +73,7 @@ func (p admissionPolicy) evaluate(state ProjectedState, work predictive.RequestW
 func (p admissionPolicy) evaluateCandidate(state ProjectedState, work predictive.RequestWork) policyDecision {
 	kv, postAdmit := p.kvGate.evaluate(state, work)
 	prefill, class, postPending := p.prefillGate.evaluate(state, work)
-	tps := p.tpsGate.evaluate(state)
+	tps := p.tpsGate.evaluateAdditional(state, work.Estimate.DecodeSequences)
 	decision := policyDecision{
 		action:                    ActionProtect,
 		reason:                    ReasonInvalidRequest,

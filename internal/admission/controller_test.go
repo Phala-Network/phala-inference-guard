@@ -613,9 +613,11 @@ func testObservation(capability Capability, at time.Time, used, running, waiting
 
 func testEstimate(selection, reservation, decode int64) predictive.RequestEstimate {
 	return predictive.RequestEstimate{
-		SelectionInputTokens:     selection,
-		KVReservationInputTokens: reservation,
-		DecodeHorizonTokens:      decode,
+		SelectionInputTokens:       selection,
+		MaximumSequenceInputTokens: selection,
+		KVReservationInputTokens:   reservation,
+		DecodeHorizonTokens:        decode,
+		DecodeSequences:            1,
 	}
 }
 

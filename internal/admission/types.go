@@ -65,6 +65,7 @@ type ProjectedState struct {
 	PendingQuiescentSequences int64
 	LocalActiveDecode         int64
 	UnobservedSequences       int64
+	SequenceLiabilities       int64
 	LiveReservations          int64
 	ResidualDebts             int64
 	RawRunning                int64

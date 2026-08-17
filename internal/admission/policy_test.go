@@ -96,6 +96,24 @@ func TestPolicyPreservesPhysicalGateReasonPrecedenceOverTPS(t *testing.T) {
 	}
 }
 
+func TestV01215ContextGateUsesMaximumSequenceWhileWorkKeepsAggregateInput(t *testing.T) {
+	estimate := predictive.RequestEstimate{
+		SelectionInputTokens:       6_000,
+		MaximumSequenceInputTokens: 3_000,
+		KVReservationInputTokens:   7_000,
+		DecodeHorizonTokens:        256,
+		DecodeSequences:            2,
+	}
+	work, err := predictive.BuildRequestWork(estimate, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := (contextGate{maximumInputTokens: 3_840, maxModelLenTokens: 4_096}).evaluate(work)
+	if !decision.fits || work.PrefillComputeTokens != 6_000 || work.InputKVTokens < 7_000 {
+		t.Fatalf("batch context/work contract decision=%+v work=%+v", decision, work)
+	}
+}
+
 func testPolicy(t *testing.T) admissionPolicy {
 	t.Helper()
 	capability := testCapability()
@@ -129,9 +147,11 @@ func testCapability() Capability {
 func testWork(t *testing.T, selection, reservation, decode int64) predictive.RequestWork {
 	t.Helper()
 	work, err := predictive.BuildRequestWork(predictive.RequestEstimate{
-		SelectionInputTokens:     selection,
-		KVReservationInputTokens: reservation,
-		DecodeHorizonTokens:      decode,
+		SelectionInputTokens:       selection,
+		MaximumSequenceInputTokens: selection,
+		KVReservationInputTokens:   reservation,
+		DecodeHorizonTokens:        decode,
+		DecodeSequences:            1,
 	}, testCapability().KVBlockSize)
 	if err != nil {
 		t.Fatal(err)

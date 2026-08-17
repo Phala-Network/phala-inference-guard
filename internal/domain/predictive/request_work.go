@@ -8,18 +8,28 @@ import (
 // RequestEstimate is the complete model-neutral output of request estimation.
 // It contains no backend geometry, runtime state, request identity, or mode.
 type RequestEstimate struct {
-	SelectionInputTokens     int64
-	KVReservationInputTokens int64
-	DecodeHorizonTokens      int64
+	SelectionInputTokens       int64
+	MaximumSequenceInputTokens int64
+	KVReservationInputTokens   int64
+	DecodeHorizonTokens        int64
+	DecodeSequences            int64
 }
 
 func (e RequestEstimate) Validate() error {
-	if e.SelectionInputTokens <= 0 || e.KVReservationInputTokens <= 0 ||
-		e.KVReservationInputTokens < e.SelectionInputTokens || e.DecodeHorizonTokens < 0 {
+	if e.SelectionInputTokens <= 0 || e.MaximumSequenceInputTokens <= 0 ||
+		e.MaximumSequenceInputTokens > e.SelectionInputTokens || e.KVReservationInputTokens <= 0 ||
+		e.KVReservationInputTokens < e.SelectionInputTokens || e.DecodeHorizonTokens < 0 || e.DecodeSequences <= 0 {
 		return fmt.Errorf("request estimate is invalid")
 	}
-	if e.KVReservationInputTokens > math.MaxInt64-e.DecodeHorizonTokens {
-		return fmt.Errorf("request estimate context overflows")
+	if e.MaximumSequenceInputTokens > math.MaxInt64-e.DecodeHorizonTokens {
+		return fmt.Errorf("request estimate per-sequence context overflows")
+	}
+	if e.DecodeHorizonTokens > 0 && e.DecodeSequences > math.MaxInt64/e.DecodeHorizonTokens {
+		return fmt.Errorf("request estimate Decode demand overflows")
+	}
+	aggregateDecode := e.DecodeHorizonTokens * e.DecodeSequences
+	if e.KVReservationInputTokens > math.MaxInt64-aggregateDecode {
+		return fmt.Errorf("request estimate aggregate KV overflows")
 	}
 	return nil
 }
@@ -46,19 +56,36 @@ func BuildRequestWork(estimate RequestEstimate, blockSize int64) (RequestWork, e
 	if !ok {
 		return RequestWork{}, fmt.Errorf("request work input KV is invalid")
 	}
-	totalKV, ok := requestWorkRoundUp(
-		estimate.KVReservationInputTokens+estimate.DecodeHorizonTokens,
-		blockSize,
-	)
-	if !ok || totalKV < inputKV {
+	futureKV := int64(0)
+	if estimate.DecodeHorizonTokens > 0 {
+		firstTotal, valid := requestWorkRoundUp(
+			estimate.KVReservationInputTokens+estimate.DecodeHorizonTokens,
+			blockSize,
+		)
+		if !valid || firstTotal < inputKV {
+			return RequestWork{}, fmt.Errorf("request work future KV is invalid")
+		}
+		futureKV = firstTotal - inputKV
+		if estimate.DecodeSequences > 1 {
+			additionalFuture, valid := requestWorkRoundUp(estimate.DecodeHorizonTokens, blockSize)
+			additionalSequences := estimate.DecodeSequences - 1
+			if !valid || additionalSequences > math.MaxInt64/additionalFuture ||
+				futureKV > math.MaxInt64-additionalSequences*additionalFuture {
+				return RequestWork{}, fmt.Errorf("request work future KV is invalid")
+			}
+			futureKV += additionalSequences * additionalFuture
+		}
+	}
+	if inputKV > math.MaxInt64-futureKV {
 		return RequestWork{}, fmt.Errorf("request work total KV is invalid")
 	}
+	totalKV := inputKV + futureKV
 	return RequestWork{
 		Estimate:             estimate,
 		PrefillComputeTokens: estimate.SelectionInputTokens,
 		InputKVTokens:        inputKV,
 		TotalKVTokens:        totalKV,
-		FutureKVTokens:       totalKV - inputKV,
+		FutureKVTokens:       futureKV,
 	}, nil
 }
 

@@ -65,6 +65,8 @@ type PredictiveAdmissionInput struct {
 	AdmissionReason                        string
 	AdmissionPressureSource                string
 	AdmissionSelectionInputTokens          int64
+	AdmissionMaximumSequenceInputTokens    int64
+	AdmissionDecodeSequences               int64
 	AdmissionReservedTokens                int64
 	AdmissionAllowanceTokens               int64
 	AdmissionEffectiveKV                   int64
@@ -202,6 +204,8 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_info{action=%q,reason=%q,pressure_source=%q,prefill_class=%q} 1\n", admissionAction, admissionReason, admissionPressureSource, admissionPrefillClass)
 	fmt.Fprintf(w, "pig_predictive_request_aware_pressure %.6f\n", 0.0)
 	fmt.Fprintf(w, "pig_predictive_request_aware_selection_input_tokens %d\n", input.AdmissionSelectionInputTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_maximum_sequence_input_tokens %d\n", input.AdmissionMaximumSequenceInputTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_decode_sequences %d\n", input.AdmissionDecodeSequences)
 	fmt.Fprintf(w, "pig_predictive_request_aware_reserved_tokens %d\n", input.AdmissionReservedTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_allowance_tokens %d\n", input.AdmissionAllowanceTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_effective_kv_tokens %d\n", input.AdmissionEffectiveKV)
