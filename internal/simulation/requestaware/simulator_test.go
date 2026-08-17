@@ -249,6 +249,34 @@ func TestTPSReferenceWarmingIsBoundedAndStopsExpansionAfterBelowReferenceEvidenc
 	t.Logf("bounded warming metrics=%+v", metrics)
 }
 
+func TestTPSReferencePrePollBurstUsesOneBoundedColdProbe(t *testing.T) {
+	var scenario scenarioSpec
+	found := false
+	for _, candidate := range simulationScenarios(SimulationSeed) {
+		if candidate.name == "pre-poll-burst" {
+			scenario = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("pre-poll-burst scenario is missing")
+	}
+	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
+	if err != nil {
+		t.Fatalf("construct pre-poll capability: %v", err)
+	}
+	metrics, _, err := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, 20)
+	if err != nil {
+		t.Fatalf("run pre-poll TPS reference: %v", err)
+	}
+	if metrics.Admitted != 1 || metrics.MaximumRunning != scenario.backgroundRunning+1 ||
+		metrics.Preemptions != 0 {
+		t.Fatalf("bounded cold probe metrics=%+v", metrics)
+	}
+	t.Logf("bounded cold probe metrics=%+v", metrics)
+}
+
 func TestTPSReferenceSafetyAcrossRepresentativePressureScenarios(t *testing.T) {
 	selected := map[string]bool{
 		"mix-80-20":                        true,
