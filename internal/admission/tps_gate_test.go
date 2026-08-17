@@ -226,7 +226,7 @@ func TestV01215TPSGateFreezesHistoricalHeadroomDuringCurrentPressure(t *testing.
 			state.TPS = snapshot
 			decision := (tpsGate{}).evaluate(state)
 			if decision.fits || decision.reason != ReasonTPSReference ||
-				decision.sequenceLimit != decision.currentSequences {
+				decision.sequenceLimit != state.RawRunning {
 				t.Fatalf("current pressure spent historical headroom: %+v", decision)
 			}
 		})

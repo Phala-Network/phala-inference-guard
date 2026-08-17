@@ -33,6 +33,12 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 		decision.reason = ReasonResourceExhausted
 		return decision
 	}
+	if state.RawWaiting > 0 || state.PreemptionDelta > 0 {
+		decision.sequenceLimit = state.RawRunning
+		decision.fits = false
+		decision.reason = ReasonTPSReference
+		return decision
+	}
 	if !snapshot.Ready {
 		decision.sequenceLimit = state.RawRunning
 		if decision.sequenceLimit < tpsWarmingSequenceLimit {
@@ -54,8 +60,16 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 		return decision
 	}
 	decision.sequenceLimit = rateDerivedSequenceLimit(snapshot)
-	if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
-		decision.sequenceLimit = currentRateLimit
+	if state.RawRunning == 0 && state.GenerationDelta == 0 {
+		decision.sequenceLimit = 1
+	} else if state.ObservationIntervalValid {
+		decision.sequenceLimit = current
+		if decision.sequenceLimit < 1 {
+			decision.sequenceLimit = 1
+		}
+		if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
+			decision.sequenceLimit = currentRateLimit
+		}
 	}
 	if current == 0 || postAdmit <= decision.sequenceLimit {
 		return decision
