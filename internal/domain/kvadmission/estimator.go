@@ -325,14 +325,14 @@ func maximumSequenceEstimatedInputHigh(
 	templateHigh := cost.MessageCount * cfg.TemplateTokensPerMessageHigh
 	modalityHigh := cost.ModalityCount * cfg.ModalityTokensHigh
 	high := int64(textHigh + toolHigh + templateHigh + modalityHigh)
-	wholeBodyHigh := int64(ceilDiv(maximumBodyBytes, cfg.MinBytesPerToken) + templateHigh + modalityHigh)
-	if high < wholeBodyHigh {
-		high = wholeBodyHigh
-	}
 	if high > math.MaxInt64-shape.MaximumExplicitPromptTokens {
 		return 0, false
 	}
 	high += shape.MaximumExplicitPromptTokens
+	wholeBodyHigh := int64(ceilDiv(maximumBodyBytes, cfg.MinBytesPerToken) + templateHigh + modalityHigh)
+	if high < wholeBodyHigh {
+		high = wholeBodyHigh
+	}
 	if high < 1 {
 		high = 1
 	}

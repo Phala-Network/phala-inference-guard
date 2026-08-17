@@ -5,6 +5,8 @@ import (
 	"math"
 	"strings"
 	"testing"
+
+	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 type approximateInputTokenHintProvider interface {
@@ -417,6 +419,29 @@ func TestV01215RoutineASCIIRetainsNarrowLexicalReservation(t *testing.T) {
 	if !valid || cost.Estimate.InputEstimateConfidence != InputEstimateLexical ||
 		cost.Estimate.KVReservationInputTokens != want {
 		t.Fatalf("routine ASCII reservation=%d want %d cost=%+v", cost.Estimate.KVReservationInputTokens, want, cost)
+	}
+}
+
+func TestV01215TokenIDPromptBatchDoesNotDoubleChargeExplicitTokens(t *testing.T) {
+	body := []byte(`{"model":"model-agnostic","prompt":[[1,2,3],[4,5]],"n":2,"max_tokens":256}`)
+	cost := EstimateValidatedJSONWithShape(
+		body,
+		256,
+		true,
+		RequestShape{
+			PromptBatchSize:            2,
+			ExplicitPromptTokens:       5,
+			MaximumExplicitPromptTokens: 3,
+			DecodeSequences:            4,
+		},
+		DefaultEstimatorConfig(),
+	)
+	estimate, known := cost.PredictiveEstimate()
+	if !cost.Supported || !known || estimate.BasePromptCount != 2 || estimate.DecodeSequences != 4 ||
+		estimate.SelectionInputTokens < 5 ||
+		estimate.MaximumSequenceKVReservationInputTokens > estimate.KVReservationInputTokens ||
+		estimate.InputEstimateConfidence == predictive.InputEstimateConfidenceUnknown {
+		t.Fatalf("token-id prompt batch estimate=%+v/%t cost=%+v", estimate, known, cost)
 	}
 }
 
