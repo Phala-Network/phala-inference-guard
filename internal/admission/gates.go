@@ -100,7 +100,7 @@ func cacheCreditTokenBudget(state ProjectedState) int64 {
 }
 
 func (g prefillGate) evaluate(state ProjectedState, work predictive.RequestWork) (gateDecision, PrefillClass, int64) {
-	class := g.classify(work.Estimate.SelectionInputTokens)
+	class := g.classify(work.PrefillInputTokens)
 	if work.PrefillInputTokens <= 0 || work.PrefillComputeTokens <= 0 ||
 		work.PrefillComputeTokens > work.PrefillInputTokens {
 		return gateDecision{reason: ReasonInvalidRequest}, class, 0

@@ -127,7 +127,7 @@ func admissionCapabilityFromProfile(profile runtimepredictive.BackendCapabilityP
 func mustPredictiveRequestWorkProfile(
 	t testing.TB,
 	backendKind string,
-) domainpredictive.RequestWorkProfile {
+) domainpredictive.BackendExecutionProfile {
 	t.Helper()
 	profile, err := predictiveRequestWorkProfile(backendKind)
 	if err != nil {

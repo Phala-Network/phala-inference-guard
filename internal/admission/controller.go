@@ -42,7 +42,7 @@ type AdmissionController struct {
 	mu sync.Mutex
 
 	capability  Capability
-	workProfile predictive.RequestWorkProfile
+	workProfile predictive.BackendExecutionProfile
 	policy      admissionPolicy
 	projector   stateProjector
 	tpsWindow   tpsWindow
@@ -437,7 +437,9 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 		}
 	}
 	remove := item.phase == reservationReserved ||
-		(item.phase == reservationActiveDecode && item.inputCovered)
+		(item.phase == reservationActiveDecode && item.inputCovered &&
+			item.work.FirstBytePendingInputKVTokens == 0 &&
+			item.work.FirstBytePendingPrefillSequences == 0)
 	var next reservation
 	var newContribution reservationOverlay
 	newValid := true

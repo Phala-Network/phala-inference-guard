@@ -742,9 +742,11 @@ func simulationRequestWork(request requestSpec) domainpredictive.RequestWork {
 	return work
 }
 
-func simulationRequestWorkProfile() domainpredictive.RequestWorkProfile {
-	return domainpredictive.RequestWorkProfile{
-		InputAccounting: domainpredictive.InputAccountingBasePrompts,
+func simulationRequestWorkProfile() domainpredictive.BackendExecutionProfile {
+	return domainpredictive.BackendExecutionProfile{
+		PrefillExecution:  domainpredictive.PrefillExecutionIndependentSequences,
+		InputKVSharing:    domainpredictive.InputKVSharingIndependentSequences,
+		FirstByteCoverage: domainpredictive.FirstByteCoverageOneSequence,
 	}
 }
 

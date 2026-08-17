@@ -15,6 +15,10 @@ func (p admissionPolicy) withObservedPrefillCost(
 	work predictive.RequestWork,
 ) predictive.RequestWork {
 	work.PrefillComputeTokens = p.prefillGate.computeTokens(state, work.PrefillInputTokens)
+	work.FirstBytePendingPrefillComputeTokens = work.PrefillComputeTokens
+	if work.FirstBytePendingPrefillComputeTokens > work.FirstBytePendingPrefillInputTokens {
+		work.FirstBytePendingPrefillComputeTokens = work.FirstBytePendingPrefillInputTokens
+	}
 	return work
 }
 
@@ -32,7 +36,7 @@ type policyDecision struct {
 
 func newAdmissionPolicy(
 	capability Capability,
-	workProfile predictive.RequestWorkProfile,
+	workProfile predictive.BackendExecutionProfile,
 ) (admissionPolicy, error) {
 	minimumWork, err := capability.minimumWork(workProfile)
 	if err != nil {

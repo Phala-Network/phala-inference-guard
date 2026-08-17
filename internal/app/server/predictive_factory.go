@@ -45,9 +45,11 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		return nil, err
 	}
 	log.Printf(
-		"predictive_capability event=profile_initialized backend_kind=%s input_accounting=%s schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
+		"predictive_capability event=profile_initialized backend_kind=%s prefill_execution=%s input_kv_sharing=%s first_byte_coverage=%s schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
 		startup.BackendKind,
-		workProfile.InputAccounting,
+		workProfile.PrefillExecution,
+		workProfile.InputKVSharing,
+		workProfile.FirstByteCoverage,
 		profile.SchemaVersion,
 		profile.Source,
 		initialization.Reason,
@@ -146,15 +148,19 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	return runtime, nil
 }
 
-func predictiveRequestWorkProfile(backendKind string) (domainpredictive.RequestWorkProfile, error) {
-	profile := domainpredictive.RequestWorkProfile{}
+func predictiveRequestWorkProfile(backendKind string) (domainpredictive.BackendExecutionProfile, error) {
+	profile := domainpredictive.BackendExecutionProfile{}
 	switch backendKind {
 	case "sglang":
-		profile.InputAccounting = domainpredictive.InputAccountingBasePrompts
+		profile.PrefillExecution = domainpredictive.PrefillExecutionPageAlignedPrecache
+		profile.InputKVSharing = domainpredictive.InputKVSharingPageAlignedPrefix
+		profile.FirstByteCoverage = domainpredictive.FirstByteCoveragePageAlignedSinglePrompt
 	case "vllm":
-		profile.InputAccounting = domainpredictive.InputAccountingDecodeSequences
+		profile.PrefillExecution = domainpredictive.PrefillExecutionIndependentSequences
+		profile.InputKVSharing = domainpredictive.InputKVSharingIndependentSequences
+		profile.FirstByteCoverage = domainpredictive.FirstByteCoverageOneSequence
 	default:
-		return domainpredictive.RequestWorkProfile{}, fmt.Errorf("predictive backend kind is invalid")
+		return domainpredictive.BackendExecutionProfile{}, fmt.Errorf("predictive backend kind is invalid")
 	}
 	return profile, nil
 }

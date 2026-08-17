@@ -29,10 +29,7 @@ type reservation struct {
 }
 
 func (r reservation) contribution() (reservationOverlay, bool) {
-	if r.id == 0 || r.runtimeEpoch == 0 || r.work.TotalKVTokens <= 0 ||
-		r.work.FutureKVTokens < 0 || r.work.Estimate.SelectionInputTokens <= 0 ||
-		r.work.PrefillInputTokens <= 0 || r.work.PrefillComputeTokens <= 0 ||
-		r.work.PrefillComputeTokens > r.work.PrefillInputTokens ||
+	if r.id == 0 || r.runtimeEpoch == 0 || r.work.Validate() != nil ||
 		!r.validCacheCredit() {
 		return reservationOverlay{}, false
 	}
@@ -64,13 +61,35 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 		decodeSequences := r.work.Estimate.DecodeSequences
 		kvTokens := r.work.TotalKVTokens
 		if r.inputCovered {
-			kvTokens = r.work.FutureKVTokens
+			var ok bool
+			kvTokens, ok = addNonnegativeInt64(
+				r.work.FirstBytePendingInputKVTokens,
+				r.work.FutureKVTokens,
+			)
+			if !ok {
+				return reservationOverlay{}, false
+			}
 		}
+		activeDecode := decodeSequences - r.work.FirstBytePendingPrefillSequences
 		contribution := reservationOverlay{
-			kvTokens:            kvTokens,
-			localActiveDecode:   decodeSequences,
-			sequenceLiabilities: decodeSequences,
-			liveReservations:    1,
+			kvTokens:                  kvTokens,
+			pendingPrefillInputTokens: r.work.FirstBytePendingPrefillInputTokens,
+			pendingPrefillTokens:      r.work.FirstBytePendingPrefillComputeTokens,
+			pendingPrefillSequences:   r.work.FirstBytePendingPrefillSequences,
+			localActiveDecode:         activeDecode,
+			sequenceLiabilities:       decodeSequences,
+			liveReservations:          1,
+		}
+		if r.work.FirstBytePendingPrefillSequences > 0 {
+			switch r.prefillClass {
+			case PrefillRegular, PrefillWeighted:
+			case PrefillExclusive:
+				contribution.pendingExclusiveSequences = 1
+			case PrefillQuiescent:
+				contribution.pendingQuiescentSequences = 1
+			default:
+				return reservationOverlay{}, false
+			}
 		}
 		if !r.sequenceCovered {
 			contribution.unobservedSequences = decodeSequences
@@ -78,8 +97,19 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 		return contribution, true
 	case reservationResidualDebt:
 		decodeSequences := r.work.Estimate.DecodeSequences
+		kvTokens := r.work.TotalKVTokens
+		if r.inputCovered {
+			var ok bool
+			kvTokens, ok = addNonnegativeInt64(
+				r.work.FirstBytePendingInputKVTokens,
+				r.work.FutureKVTokens,
+			)
+			if !ok {
+				return reservationOverlay{}, false
+			}
+		}
 		contribution := reservationOverlay{
-			kvTokens:            r.work.TotalKVTokens,
+			kvTokens:            kvTokens,
 			sequenceLiabilities: decodeSequences,
 			residualDebts:       1,
 		}

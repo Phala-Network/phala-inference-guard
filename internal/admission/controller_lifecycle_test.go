@@ -147,7 +147,8 @@ func TestV01215ControllerReservesAndReleasesMultiSequenceDemandAtomically(t *tes
 		t.Fatal("multi-sequence lifecycle did not enter Decode")
 	}
 	decode := controller.Snapshot(now.Add(4 * time.Millisecond)).State
-	if decode.PendingPrefillSequences != 0 || decode.LocalActiveDecode != 4 ||
+	if decode.PendingPrefillSequences != 3 || decode.PendingPrefillTokens == 0 ||
+		decode.LocalActiveDecode != 1 ||
 		decode.UnobservedSequences != 0 || decode.SequenceLiabilities != 4 {
 		t.Fatalf("multi-sequence Decode state=%+v", decode)
 	}
@@ -172,8 +173,10 @@ func TestV01215VLLMFirstByteRetainsOtherChildPrefillAndInputKV(t *testing.T) {
 	capability := testCapability()
 	controller, err := NewAdmissionController(ControllerConfig{
 		Capability: capability,
-		WorkProfile: predictive.RequestWorkProfile{
-			InputAccounting: predictive.InputAccountingDecodeSequences,
+		WorkProfile: predictive.BackendExecutionProfile{
+			PrefillExecution:  predictive.PrefillExecutionIndependentSequences,
+			InputKVSharing:    predictive.InputKVSharingIndependentSequences,
+			FirstByteCoverage: predictive.FirstByteCoverageOneSequence,
 		},
 	})
 	if err != nil {

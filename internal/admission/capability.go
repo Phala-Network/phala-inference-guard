@@ -57,15 +57,17 @@ func (c Capability) Validate() error {
 	if c.KVHardLimitTokens/c.KVBlockSize > int64(math.MaxInt) {
 		return fmt.Errorf("admission capability reservation bound is invalid")
 	}
-	if _, err := c.minimumWork(predictive.RequestWorkProfile{
-		InputAccounting: predictive.InputAccountingBasePrompts,
+	if _, err := c.minimumWork(predictive.BackendExecutionProfile{
+		PrefillExecution:  predictive.PrefillExecutionIndependentSequences,
+		InputKVSharing:    predictive.InputKVSharingIndependentSequences,
+		FirstByteCoverage: predictive.FirstByteCoverageOneSequence,
 	}); err != nil {
 		return fmt.Errorf("admission capability minimum request is invalid: %w", err)
 	}
 	return nil
 }
 
-func (c Capability) minimumWork(profile predictive.RequestWorkProfile) (predictive.RequestWork, error) {
+func (c Capability) minimumWork(profile predictive.BackendExecutionProfile) (predictive.RequestWork, error) {
 	return predictive.BuildRequestWork(predictive.RequestEstimate{
 		SelectionInputTokens:                    1,
 		MaximumSequenceInputTokens:              1,

@@ -84,10 +84,10 @@ func TestV01215SGLangApproximateUpperBoundRetainsPossibleChildTailPages(t *testi
 
 	aligned := build(t, 64)
 	unaligned := build(t, 63)
-	if aligned.TotalKVTokens != 256 {
+	if aligned.PrefillInputTokens != 190 || aligned.TotalKVTokens != 256 {
 		t.Fatalf("approximate block-boundary upper bound lost a possible child tail: %+v", aligned)
 	}
-	if unaligned.TotalKVTokens != 256 {
+	if unaligned.PrefillInputTokens != 189 || unaligned.TotalKVTokens != 256 {
 		t.Fatalf("unaligned child tail was not retained: %+v", unaligned)
 	}
 }
@@ -106,8 +106,8 @@ func TestV01215BuildRequestWorkChargesEveryDecodeSequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if work.InputKVTokens != 192 || work.FutureKVTokens != 256+3*320 ||
-		work.TotalKVTokens != 192+256+3*320 || work.Estimate != estimate {
+	if work.InputKVTokens != 384 || work.FutureKVTokens != 4*320 ||
+		work.TotalKVTokens != 384+4*320 || work.Estimate != estimate {
 		t.Fatalf("multi-sequence request work=%+v", work)
 	}
 }
@@ -162,13 +162,15 @@ func TestV01215BuildRequestWorkProfilesBackendInputFanout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	independent, err := BuildRequestWork(estimate, RequestWorkProfile{
-		InputAccounting: InputAccountingDecodeSequences,
+	independent, err := BuildRequestWork(estimate, BackendExecutionProfile{
+		PrefillExecution:  PrefillExecutionIndependentSequences,
+		InputKVSharing:    InputKVSharingIndependentSequences,
+		FirstByteCoverage: FirstByteCoverageOneSequence,
 	}, 64)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if shared.PrefillInputTokens != 100 || shared.InputKVTokens != 128 ||
+	if shared.PrefillInputTokens != 226 || shared.InputKVTokens != 192 ||
 		independent.PrefillInputTokens != 200 || independent.InputKVTokens != 256 {
 		t.Fatalf("input fanout shared=%+v independent=%+v", shared, independent)
 	}
@@ -178,7 +180,7 @@ func TestBuildRequestWorkRejectsInvalidAndOverflowingInputs(t *testing.T) {
 	tests := []struct {
 		name      string
 		estimate  RequestEstimate
-		profile   RequestWorkProfile
+		profile   BackendExecutionProfile
 		blockSize int64
 		want      string
 	}{
@@ -244,7 +246,7 @@ func TestBuildRequestWorkRejectsInvalidAndOverflowingInputs(t *testing.T) {
 				KVReservationInputTokens: 1, MaximumSequenceKVReservationInputTokens: 1,
 				BasePromptCount: 1, DecodeSequences: 1,
 			},
-			blockSize: 64, want: "work profile is invalid",
+			blockSize: 64, want: "backend execution profile is invalid",
 		},
 	}
 	for _, test := range tests {
@@ -277,6 +279,10 @@ func TestV01215RequestEstimateRejectsImpossibleAggregateMaximumPairs(t *testing.
 	}
 }
 
-func basePromptWorkProfile() RequestWorkProfile {
-	return RequestWorkProfile{InputAccounting: InputAccountingBasePrompts}
+func basePromptWorkProfile() BackendExecutionProfile {
+	return BackendExecutionProfile{
+		PrefillExecution:  PrefillExecutionPageAlignedPrecache,
+		InputKVSharing:    InputKVSharingPageAlignedPrefix,
+		FirstByteCoverage: FirstByteCoveragePageAlignedSinglePrompt,
+	}
 }

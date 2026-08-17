@@ -253,8 +253,10 @@ func TestV01215PrefillClassUsesBackendExpandedWork(t *testing.T) {
 	capability := testCapability()
 	controller, err := NewAdmissionController(ControllerConfig{
 		Capability: capability,
-		WorkProfile: predictive.RequestWorkProfile{
-			InputAccounting: predictive.InputAccountingDecodeSequences,
+		WorkProfile: predictive.BackendExecutionProfile{
+			PrefillExecution:  predictive.PrefillExecutionIndependentSequences,
+			InputKVSharing:    predictive.InputKVSharingIndependentSequences,
+			FirstByteCoverage: predictive.FirstByteCoverageOneSequence,
 		},
 	})
 	if err != nil {
@@ -651,9 +653,11 @@ func testEstimate(selection, reservation, decode int64) predictive.RequestEstima
 	}
 }
 
-func testRequestWorkProfile() predictive.RequestWorkProfile {
-	return predictive.RequestWorkProfile{
-		InputAccounting: predictive.InputAccountingBasePrompts,
+func testRequestWorkProfile() predictive.BackendExecutionProfile {
+	return predictive.BackendExecutionProfile{
+		PrefillExecution:  predictive.PrefillExecutionIndependentSequences,
+		InputKVSharing:    predictive.InputKVSharingIndependentSequences,
+		FirstByteCoverage: predictive.FirstByteCoverageOneSequence,
 	}
 }
 

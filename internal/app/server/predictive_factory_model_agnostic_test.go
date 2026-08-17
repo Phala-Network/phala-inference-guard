@@ -16,14 +16,22 @@ import (
 func TestV01215PredictiveRequestWorkProfileIsBackendProtocolSpecific(t *testing.T) {
 	tests := []struct {
 		backend string
-		want    domainpredictive.InputAccounting
+		want    domainpredictive.BackendExecutionProfile
 	}{
-		{backend: "sglang", want: domainpredictive.InputAccountingBasePrompts},
-		{backend: "vllm", want: domainpredictive.InputAccountingDecodeSequences},
+		{backend: "sglang", want: domainpredictive.BackendExecutionProfile{
+			PrefillExecution:  domainpredictive.PrefillExecutionPageAlignedPrecache,
+			InputKVSharing:    domainpredictive.InputKVSharingPageAlignedPrefix,
+			FirstByteCoverage: domainpredictive.FirstByteCoveragePageAlignedSinglePrompt,
+		}},
+		{backend: "vllm", want: domainpredictive.BackendExecutionProfile{
+			PrefillExecution:  domainpredictive.PrefillExecutionIndependentSequences,
+			InputKVSharing:    domainpredictive.InputKVSharingIndependentSequences,
+			FirstByteCoverage: domainpredictive.FirstByteCoverageOneSequence,
+		}},
 	}
 	for _, test := range tests {
 		profile, err := predictiveRequestWorkProfile(test.backend)
-		if err != nil || profile.InputAccounting != test.want {
+		if err != nil || profile != test.want {
 			t.Fatalf("backend=%s profile=%+v error=%v", test.backend, profile, err)
 		}
 	}

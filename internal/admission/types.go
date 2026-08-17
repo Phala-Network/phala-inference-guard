@@ -102,7 +102,7 @@ type TPSPolicyConfig struct {
 
 type ControllerConfig struct {
 	Capability  Capability
-	WorkProfile predictive.RequestWorkProfile
+	WorkProfile predictive.BackendExecutionProfile
 	TPS         TPSPolicyConfig
 }
 
