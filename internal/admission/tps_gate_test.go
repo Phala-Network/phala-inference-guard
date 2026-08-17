@@ -322,6 +322,26 @@ func TestV01215TPSGateUsesCurrentMeanForOneMarginalHealthyWave(t *testing.T) {
 	}
 }
 
+func TestV01215TPSGateDoesNotOpenKnownBelowFloorMarginalWave(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
+		AggregateTPS: 150, MeanActiveTPS: 150.0 / 7,
+	}
+	decision := (tpsGate{}).evaluate(ProjectedState{
+		RawRunning:               7,
+		GenerationDelta:          75,
+		ObservationInterval:      500 * time.Millisecond,
+		ObservationIntervalValid: true,
+		TPS:                      snapshot,
+	})
+	if decision.fits || decision.reason != ReasonTPSReference ||
+		decision.sequenceLimit != 7 || decision.currentSequences != 7 ||
+		decision.postAdmitSequences != 8 {
+		t.Fatalf("known below-floor marginal wave was admitted: %+v", decision)
+	}
+}
+
 func TestV01215TPSGateAllowsBoundedIdleRefillWithoutCurrentGeneration(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 20,
