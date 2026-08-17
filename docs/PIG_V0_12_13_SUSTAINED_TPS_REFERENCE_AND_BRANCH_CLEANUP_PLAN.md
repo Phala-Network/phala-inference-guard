@@ -1271,6 +1271,8 @@ Evidence is under:
 Material SHA-256 values:
 
 ```text
+registry-manifest-version.json  8261f8c487f0aea47c50366a452cdacd2292937c09c5ea6beee4e0d775fcf97d
+registry-manifest-revision.json e8f662ca31039443fde995306f6fcc83248450bfaf5bac7e5562eaca8681d1ea
 registry-pull.log            ac75ac0e691c486d005fbfc04db1d3d91d5c489e6a643fe9be2799eb2ef05480
 image-inspect.json           f23b1c34fb16718c9b34a233d59236c18343ebaa58f9f5cb102eb181b3104784
 distroless-base-inspect.json 96a82dc7419bd7e28d1d1f20756b4992c7dcf7923b10a3786d9c81f61cad86c2
