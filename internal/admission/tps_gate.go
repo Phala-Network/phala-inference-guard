@@ -39,6 +39,9 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 		if decision.sequenceLimit < tpsWarmingSequenceLimit {
 			decision.sequenceLimit = tpsWarmingSequenceLimit
 		}
+		if headroomLimit := tpsHeadroomSequenceLimit(state, snapshot); headroomLimit > decision.sequenceLimit {
+			decision.sequenceLimit = headroomLimit
+		}
 		if postAdmit <= decision.sequenceLimit {
 			return decision
 		}

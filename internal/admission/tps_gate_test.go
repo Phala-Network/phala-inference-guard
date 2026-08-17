@@ -94,6 +94,30 @@ func TestTPSGateSpendsLongWindowHeadroomForOneBoundedObservationWave(t *testing.
 	}
 }
 
+func TestTPSGateSpendsQualifiedHeadroomBeforeWindowMatures(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Reference: 20,
+		QualifiedSamples: 1, QualifiedTokens: 30,
+		QualifiedActiveSeconds: 0.5, QualifiedSequenceSeconds: 1,
+		AggregateTPS: 60, MeanActiveTPS: 30,
+	}
+	state := ProjectedState{
+		RawRunning: 2, GenerationDelta: 30,
+		ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true,
+		TPS: snapshot,
+	}
+	fit := (tpsGate{}).evaluate(state)
+	if !fit.fits || fit.sequenceLimit != 3 || fit.postAdmitSequences != 3 {
+		t.Fatalf("qualified warming headroom fit=%+v", fit)
+	}
+	state.UnobservedSequences = 1
+	protected := (tpsGate{}).evaluate(state)
+	if protected.fits || protected.reason != ReasonTPSReference ||
+		protected.sequenceLimit != 3 || protected.postAdmitSequences != 4 {
+		t.Fatalf("qualified warming headroom protection=%+v", protected)
+	}
+}
+
 func TestTPSGateDoesNotSpendHeadroomWithoutCurrentSafeSignal(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 20,
