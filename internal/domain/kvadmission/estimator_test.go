@@ -429,10 +429,10 @@ func TestV01215TokenIDPromptBatchDoesNotDoubleChargeExplicitTokens(t *testing.T)
 		256,
 		true,
 		RequestShape{
-			PromptBatchSize:            2,
-			ExplicitPromptTokens:       5,
+			PromptBatchSize:             2,
+			ExplicitPromptTokens:        5,
 			MaximumExplicitPromptTokens: 3,
-			DecodeSequences:            4,
+			DecodeSequences:             4,
 		},
 		DefaultEstimatorConfig(),
 	)
