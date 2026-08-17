@@ -190,6 +190,55 @@ func newCacheTransitionScenario(name string, burstHits []int64) scenarioSpec {
 	}
 }
 
+func TestCacheAwareWeightedRequestCanUseContendedPrefillBudget(t *testing.T) {
+	scenario := scenarioSpec{
+		name: "cache-weighted-contended", category: "cache-transition", duration: 12 * time.Second,
+		initialKVTokens: 100_000, backgroundRunning: 4,
+		capacityTokens: 4 * 1024 * 1024, maxModelLen: 256 * 1024,
+		maximumNoWait: 12, aggregateTPSCap: 12 * simulationUncontendedTPS,
+		cacheMetrics: true,
+		requests: []requestSpec{
+			{
+				id: "cache-warm-regular", at: 100 * time.Millisecond,
+				selectionInput: 60 * 1024, estimatedPrefill: 60 * 1024,
+				safetyInput: 60 * 1024, decodeHorizon: 256,
+				actualInput: 60 * 1024, cacheHitTokens: 60 * 1024, actualOutput: 1,
+			},
+			{
+				id: "cache-hot-weighted", at: 600 * time.Millisecond,
+				selectionInput: 80 * 1024, estimatedPrefill: 80 * 1024,
+				safetyInput: 80 * 1024, decodeHorizon: 256,
+				actualInput: 80 * 1024, cacheHitTokens: 80 * 1024, actualOutput: 64,
+			},
+		},
+	}
+	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
+	if err != nil {
+		t.Fatalf("construct cache-weighted scenario capability: %v", err)
+	}
+	cold := scenario
+	cold.cacheMetrics = false
+	baseline, _, err := runScenario(cold, PolicyCandidate, profile)
+	if err != nil {
+		t.Fatalf("run cold cache-weighted baseline: %v", err)
+	}
+	candidate, _, err := runScenario(scenario, PolicyCandidate, profile)
+	if err != nil {
+		t.Fatalf("run cache-aware weighted candidate: %v", err)
+	}
+	t.Logf("cache-weighted contended baseline=%+v candidate=%+v", baseline, candidate)
+	if baseline.Admitted != 1 || candidate.Admitted != 2 {
+		t.Fatalf("cache-weighted admissions baseline/candidate=%d/%d want 1/2", baseline.Admitted, candidate.Admitted)
+	}
+	if candidate.Preemptions != 0 || candidate.TPSFloorViolationSeconds != 0 ||
+		candidate.MeanActiveTPS+simulationFloatTolerance < simulationTPSFloor {
+		t.Fatalf("cache-weighted candidate violated QoS: %+v", candidate)
+	}
+	if candidate.SLOCompletionTokens <= baseline.SLOCompletionTokens {
+		t.Fatalf("cache-weighted candidate did not improve SLO goodput: baseline=%+v candidate=%+v", baseline, candidate)
+	}
+}
+
 func TestTPSReferenceCandidatesPreserveSaturatedThroughputAndBoundLongRunMean(t *testing.T) {
 	scenario := newTPSReferenceSaturationScenario()
 	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
