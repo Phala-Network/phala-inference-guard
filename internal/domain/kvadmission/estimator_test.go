@@ -395,6 +395,56 @@ func TestApproximateInputTokenHintModelNeutralShapeCorpus(t *testing.T) {
 	}
 }
 
+func TestV01215RiskyLexicalShapesUseConservativeHardReservation(t *testing.T) {
+	for _, fixture := range []struct {
+		name string
+		body string
+	}{
+		{name: "non-ascii", body: `{"prompt":"中文输入 日本語 한국어 العربية"}`},
+		{name: "escape-heavy", body: `{"prompt":"line\nquote\"slash\\tab\tunicode\u4e2d"}`},
+		{name: "dense-entropy", body: `{"prompt":"A9+/zQ7=f0-kL2+xV8/mN4pR1sT6wY3A9+/zQ7=f0-kL2+xV8/mN4pR1sT6wY3"}`},
+		{name: "tool-schema", body: `{"messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}}]}`},
+	} {
+		t.Run(fixture.name, func(t *testing.T) {
+			cost := EstimateJSON([]byte(fixture.body), 64, true, DefaultEstimatorConfig())
+			if !cost.Supported {
+				t.Fatalf("risk fixture unsupported: %+v", cost)
+			}
+			conservative, valid := fixedMarginTokens(cost.Estimate.SelectionInputTokens, 3, 2)
+			if !valid {
+				t.Fatalf("risk fixture margin overflow: %+v", cost)
+			}
+			if cost.EstimatedInputHigh > conservative {
+				conservative = cost.EstimatedInputHigh
+			}
+			if cost.Estimate.KVReservationInputTokens < conservative {
+				t.Fatalf("risk fixture hard reservation=%d want at least %d cost=%+v", cost.Estimate.KVReservationInputTokens, conservative, cost)
+			}
+		})
+	}
+}
+
+func TestV01215RoutineASCIIRetainsNarrowLexicalReservation(t *testing.T) {
+	cost := EstimateJSON(
+		[]byte(`{"messages":[{"role":"user","content":"Explain why a quiet lake reflects the evening sky."}]}`),
+		64,
+		true,
+		DefaultEstimatorConfig(),
+	)
+	if !cost.Supported {
+		t.Fatalf("routine ASCII fixture unsupported: %+v", cost)
+	}
+	want, valid := fixedMarginTokensForSequences(
+		cost.Estimate.SelectionInputTokens,
+		cost.BasePromptCount,
+		fixedKVReservationMarginNumerator,
+		fixedKVReservationMarginDenominator,
+	)
+	if !valid || cost.Estimate.KVReservationInputTokens != want {
+		t.Fatalf("routine ASCII reservation=%d want %d cost=%+v", cost.Estimate.KVReservationInputTokens, want, cost)
+	}
+}
+
 func TestApproximateInputTokenHintMaximumBodyFixtureIsDeterministic(t *testing.T) {
 	const maximumBodyBytes = 4 * 1024 * 1024
 	prefix := `{"messages":[{"role":"user","content":"`

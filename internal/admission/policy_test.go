@@ -116,6 +116,23 @@ func TestV01215ContextGateUsesMaximumSequenceWhileWorkKeepsAggregateInput(t *tes
 	}
 }
 
+func TestV01215ContextGateUsesHardPerSequenceInputEstimate(t *testing.T) {
+	decision := (contextGate{maximumInputTokens: 150, maxModelLenTokens: 256}).evaluate(
+		predictive.RequestWork{Estimate: predictive.RequestEstimate{
+			SelectionInputTokens:                    100,
+			MaximumSequenceInputTokens:              100,
+			KVReservationInputTokens:                200,
+			MaximumSequenceKVReservationInputTokens: 200,
+			DecodeHorizonTokens:                     16,
+			BasePromptCount:                         1,
+			DecodeSequences:                         1,
+		}},
+	)
+	if decision.fits || decision.reason != ReasonInputLimit {
+		t.Fatalf("low-confidence hard input estimate bypassed Context gate: %+v", decision)
+	}
+}
+
 func testPolicy(t *testing.T) admissionPolicy {
 	t.Helper()
 	capability := testCapability()
