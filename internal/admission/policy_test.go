@@ -92,7 +92,7 @@ func TestPolicyPreservesPhysicalGateReasonPrecedenceOverTPS(t *testing.T) {
 	}
 	decision := policy.evaluate(state, testWork(t, 900_000, 900_000, 256))
 	if decision.reason != ReasonInputLimit || decision.scope != ProtectionRequest {
-		t.Fatalf("TPS obscured Context reason: %+v", decision)
+		t.Fatalf("TPS changed request-intrinsic Context protection: %+v", decision)
 	}
 }
 

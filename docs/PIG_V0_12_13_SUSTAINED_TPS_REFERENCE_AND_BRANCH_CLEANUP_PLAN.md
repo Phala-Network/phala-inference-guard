@@ -705,3 +705,45 @@ change in each direction; the audit patch SHA-256 is
 The same change was applied to the isolated local branch with no semantic code
 change. It must be committed, pushed, pulled onto c21, and all gates restarted
 from formatting before this round can advance.
+
+### 2026-08-17 round 2: focused test exposed request/load scope coupling
+
+The formatting correction and round 1 record were committed and pushed as
+`eef3c051aa7393fbb524631d8b355c43ad001a3e`. A fresh c21 clone verified that
+exact clean HEAD, passed `gofmt -l` and `git diff --check`, then ran all five
+focused package commands. Results:
+
+```text
+go test ./internal/admission                    FAIL
+go test ./internal/config/pigconfig             PASS
+go test ./internal/app/server                   PASS
+go test ./internal/observability/metrics        PASS
+go test ./internal/simulation/requestaware      PASS
+```
+
+The admission failure was
+`TestPolicyPreservesPhysicalGateReasonPrecedenceOverTPS`. The returned reason
+remained the correct request-intrinsic `input_limit`, but its scope became
+`load` because `admissionPolicy.evaluate` re-evaluated the minimum request
+through every later gate; the unrelated TPS gate then protected that minimum.
+This coupled an individual invalid/oversized request to current node capacity
+and could make request telemetry imply a global closure.
+
+Correction: return `request` scope immediately for `input_limit` and
+`invalid_request`. Other candidate-dependent gates retain the existing minimum
+request comparison, while current node TPS capacity remains independently
+represented by the Controller's canonical minimum projection. The gate order,
+physical safety decisions, TPS decision, and reservation path are unchanged.
+The correction and clearer test failure message are pending commit and c21
+round 3.
+
+Round 2 evidence is under
+`/workspace/evidence/pig-v01213-tps-focused-r2-eef3c05`. Relevant SHA-256:
+
+```text
+focused-admission.log  6bb3769a34b826fafb993c869937ac1703cc854cfed798fbb24cb688f8620fa1
+focused-config.log     f311a7ffcbd3392c2f65d0c08c752471e4a0afedae41607177f0278a6b295d8a
+focused-server.log     c53ca36ba2b0cb181e1eea66e83082d91a5134bb5a0725029623de9b3604a339
+focused-metrics.log    7f94a28d4460d5e6e95d8c672fd27aacef8074b8e7873b786500ae120fdcfa78
+focused-simulation.log a715423f087cb15864ec36449c030164bf0c6d7e5022f44045c369e2b0ebee12
+```

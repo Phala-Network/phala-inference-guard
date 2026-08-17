@@ -49,6 +49,10 @@ func (p admissionPolicy) evaluate(state ProjectedState, work predictive.RequestW
 	if decision.action == ActionAdmit {
 		return decision
 	}
+	if decision.reason == ReasonInputLimit || decision.reason == ReasonInvalidRequest {
+		decision.scope = ProtectionRequest
+		return decision
+	}
 	minimum := p.evaluateCandidate(state, p.minimumWork)
 	if minimum.action == ActionAdmit {
 		decision.scope = ProtectionRequest
