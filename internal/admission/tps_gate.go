@@ -94,9 +94,11 @@ func tpsQualifiedCurrentRateSequenceLimit(state ProjectedState, snapshot TPSSnap
 	if !finiteNonnegative(currentAggregateTPS) || currentAggregateTPS <= 0 {
 		return 0
 	}
+	currentMeanActiveTPS := currentAggregateTPS / float64(state.RawRunning)
 	limit := rateDerivedSequenceLimit(TPSSnapshot{
-		Reference:    snapshot.Reference,
-		AggregateTPS: currentAggregateTPS,
+		Reference:     snapshot.Reference,
+		AggregateTPS:  currentAggregateTPS,
+		MeanActiveTPS: currentMeanActiveTPS,
 	})
 	waveLimit, ok := addNonnegativeInt64(state.RawRunning, 1)
 	if !ok {
