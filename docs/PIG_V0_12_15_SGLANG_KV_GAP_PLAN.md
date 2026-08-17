@@ -122,6 +122,11 @@ context reset:
 - Commit and push every source or plan revision. Build a host-local image only
   from the exact pushed commit after source gates pass, and upload a registry
   image only after the complete candidate matrix and three reviews pass.
+- If GitHub authentication or repository permission blocks a required push,
+  start the GitHub device-authorization flow and give the user its verification
+  URL/code for approval, then resume the same push after authorization. Do not
+  bypass the required push, expose credentials, move executable tests to local
+  Windows or the retired builder, or treat an unpushed commit as image input.
 - Treat every executable version as a measured iteration. Keep the required
   monitors active throughout isolated candidate testing, image validation,
   promotion, and the post-promotion window; compare time-aligned baseline and
@@ -535,7 +540,8 @@ Contract-document audit repeated after requirement consolidation on 2026-08-17:
    long-input policy, cache/TPS semantics, both backend adapters,
    exact SGLang/vLLM source contracts, Router/admin-facing observability,
    minimal production configuration, environment, source/image publication,
-   continuous per-version monitoring, and rollback. Conflicting historical
+   GitHub authorization recovery, continuous per-version monitoring, and
+   rollback. Conflicting historical
    requirements such as exact/model-specific tokenizers, learning, TTFT gating,
    request mutation, PIG routing, or tier/priority injection remain excluded;
 2. algorithm-consistency pass completed. Cache credit is limited to recent
