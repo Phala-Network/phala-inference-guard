@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
@@ -15,7 +16,27 @@ import (
 
 type preservingReadCloser struct {
 	io.Reader
-	io.Closer
+	original io.Closer
+	buffer   *bytes.Buffer
+	owner    *Classifier
+	once     sync.Once
+	err      error
+}
+
+func (r *preservingReadCloser) Close() error {
+	if r == nil {
+		return nil
+	}
+	r.once.Do(func() {
+		if r.original != nil {
+			r.err = r.original.Close()
+		}
+		if r.owner != nil && r.buffer != nil {
+			r.owner.releaseBodyBuffer(r.buffer)
+			r.buffer = nil
+		}
+	})
+	return r.err
 }
 
 func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *ProtocolError) {
@@ -48,24 +69,25 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 	originalBody := r.Body
 	originalLength := r.ContentLength
 	readStarted := time.Now()
-	body, err := readBoundedRequestBody(originalBody, originalLength, c.cfg.MaximumBodyBytes)
+	buffer, err := c.readBoundedRequestBody(originalBody, originalLength, c.cfg.MaximumBodyBytes)
+	body := buffer.Bytes()
 	classification.Timing.BodyRead = time.Since(readStarted)
 	classification.Timing.BodyReadMeasured = true
 	if err != nil {
-		r.Body = preservingReadCloser{Reader: io.MultiReader(bytes.NewReader(body), originalBody), Closer: originalBody}
+		r.Body = c.preserveBody(io.MultiReader(bytes.NewReader(body), originalBody), originalBody, buffer)
 		r.ContentLength = originalLength
 		unsupported.UnsupportedReason = "body_read_failed"
 		classification.Cost = unsupported
 		return classification, nil
 	}
 	if int64(len(body)) > c.cfg.MaximumBodyBytes {
-		r.Body = preservingReadCloser{Reader: io.MultiReader(bytes.NewReader(body), originalBody), Closer: originalBody}
+		r.Body = c.preserveBody(io.MultiReader(bytes.NewReader(body), originalBody), originalBody, buffer)
 		r.ContentLength = originalLength
 		unsupported.UnsupportedReason = "body_too_large"
 		classification.Cost = unsupported
 		return classification, nil
 	}
-	r.Body = preservingReadCloser{Reader: bytes.NewReader(body), Closer: originalBody}
+	r.Body = c.preserveBody(bytes.NewReader(body), originalBody, buffer)
 	r.ContentLength = originalLength
 
 	estimatorStarted := time.Now()
@@ -82,26 +104,64 @@ func (c *Classifier) classifyBufferedJSON(body []byte) (kvadmission.Cost, *Proto
 		if !json.Valid(body) {
 			return kvadmission.Cost{UnsupportedReason: "invalid_json"}, &ProtocolError{Reason: "invalid_json"}
 		}
-		cost := kvadmission.EstimateJSON(body, 0, false, c.cfg.Estimator)
+		cost := kvadmission.EstimateValidatedJSON(body, 0, false, c.cfg.Estimator)
 		if cost.Supported {
 			return cost, nil
 		}
 		return kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}, nil
 	}
-	cost := kvadmission.EstimateJSON(body, fields.OutputTokens, fields.HasOutputTokens, c.cfg.Estimator)
+	cost := kvadmission.EstimateValidatedJSON(body, fields.OutputTokens, fields.HasOutputTokens, c.cfg.Estimator)
 	return cost, nil
 }
 
-func readBoundedRequestBody(body io.Reader, contentLength, maximum int64) ([]byte, error) {
+func (c *Classifier) readBoundedRequestBody(body io.Reader, contentLength, maximum int64) (*bytes.Buffer, error) {
 	limit := maximum + 1
 	capacity := contentLength + bytes.MinRead
 	if capacity > limit+bytes.MinRead {
 		capacity = limit + bytes.MinRead
 	}
-	var buffer bytes.Buffer
-	buffer.Grow(int(capacity))
+	buffer := c.acquireBodyBuffer(int(capacity))
 	_, err := buffer.ReadFrom(io.LimitReader(body, limit))
-	return buffer.Bytes(), err
+	return buffer, err
+}
+
+func (c *Classifier) acquireBodyBuffer(capacity int) *bytes.Buffer {
+	if c == nil || c.bodyPool == nil {
+		buffer := &bytes.Buffer{}
+		buffer.Grow(capacity)
+		return buffer
+	}
+	var buffer *bytes.Buffer
+	select {
+	case buffer = <-c.bodyPool:
+	default:
+	}
+	if buffer == nil {
+		buffer = &bytes.Buffer{}
+	}
+	buffer.Reset()
+	buffer.Grow(capacity)
+	return buffer
+}
+
+func (c *Classifier) releaseBodyBuffer(buffer *bytes.Buffer) {
+	if c == nil || c.bodyPool == nil || buffer == nil {
+		return
+	}
+	buffer.Reset()
+	select {
+	case c.bodyPool <- buffer:
+	default:
+	}
+}
+
+func (c *Classifier) preserveBody(reader io.Reader, original io.Closer, buffer *bytes.Buffer) io.ReadCloser {
+	return &preservingReadCloser{
+		Reader:   reader,
+		original: original,
+		buffer:   buffer,
+		owner:    c,
+	}
 }
 
 func requestContentTypeJSON(value string) bool {

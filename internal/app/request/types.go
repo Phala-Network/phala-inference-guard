@@ -1,6 +1,7 @@
 package request
 
 import (
+	"bytes"
 	"sync/atomic"
 	"time"
 
@@ -19,6 +20,7 @@ type Config struct {
 type Classifier struct {
 	cfg      Config
 	tokens   chan struct{}
+	bodyPool chan *bytes.Buffer
 	inflight atomic.Int64
 	rejected atomic.Uint64
 }

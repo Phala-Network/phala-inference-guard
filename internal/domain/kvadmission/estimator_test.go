@@ -39,6 +39,16 @@ func TestEstimateJSONBoundsDecodeByRequestedMaximum(t *testing.T) {
 	}
 }
 
+func TestEstimateValidatedJSONMatchesStrictEstimate(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"user","content":"hello world"}],"max_tokens":64}`)
+	cfg := DefaultEstimatorConfig()
+	strict := EstimateJSON(body, 64, true, cfg)
+	validated := EstimateValidatedJSON(body, 64, true, cfg)
+	if strict != validated || !validated.Supported {
+		t.Fatalf("validated estimate=%+v want strict=%+v", validated, strict)
+	}
+}
+
 func TestEstimateJSONBuildsIndependentKVReservationEstimate(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"` + strings.Repeat("word ", 64*1024) + `"}]}`)
 	cost := EstimateJSON(body, 0, false, DefaultEstimatorConfig())

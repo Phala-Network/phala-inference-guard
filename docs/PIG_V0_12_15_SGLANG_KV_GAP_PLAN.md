@@ -50,7 +50,7 @@ image, and production transition:
   or a network call. Unsupported, truncated, or oversized bodies use the
   documented conservative fallback. The complete estimated input, not a
   cache-discounted value, drives context fit, KV reservation, and long-input
-  class. The hot path must be benchmarked, and even the accepted extreme body
+  class. The hot path must be benchmarked, and the accepted extreme body's p99
   must remain below 100 ms on f563.
 - Model context, KV capacity/block geometry, KV hard limit, and Prefill class
   thresholds are initialized automatically from one coherent upstream
@@ -241,10 +241,10 @@ the backend adapters, observation policy, and admission policy separately
 testable.
 
 A positive preemption/retraction delta in the current observation suppresses
-all cache credit for that observation. It is evidence that recent cache reuse
-did not prevent harmful scheduler pressure, so admission must use fully cold
-Prefill cost until a later qualified cache-counter delta establishes a new
-observation. This suppression is sample-scoped and creates no cooldown.
+all cache credit for that decision sample. It is evidence that recent cache
+reuse did not prevent harmful scheduler pressure, so admission uses fully cold
+Prefill cost. A later coherent no-preemption poll may resume a still-fresh
+bounded cache observation; this suppression creates no cooldown.
 
 The initial implementation must remain intentionally small: one previous
 counter snapshot plus one bounded recent observation, no learned state, no
@@ -315,7 +315,7 @@ Executable source evidence is invalidated by the next executable source change.
 
 The tokenizer benchmark must cover representative small bodies, long inputs,
 concurrent requests, and the accepted extreme body. Report parse plus token
-estimate latency separately from total PIG overhead; p100 for the accepted
+estimate latency separately from total PIG overhead; p99 for the accepted
 extreme input must be below 100 ms in the f563 test environment. A narrow
 microbenchmark is an overhead gate, not a throughput claim.
 

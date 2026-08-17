@@ -15,6 +15,16 @@ const (
 )
 
 func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig) Cost {
+	return estimateJSON(body, maxOutputTokens, hasMaxOutputTokens, cfg, true)
+}
+
+// EstimateValidatedJSON avoids repeating strict JSON validation when the
+// caller has already validated the complete body without modifying it.
+func EstimateValidatedJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig) Cost {
+	return estimateJSON(body, maxOutputTokens, hasMaxOutputTokens, cfg, false)
+}
+
+func estimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig, validate bool) Cost {
 	cost := Cost{
 		BodyBytes:          len(body),
 		MaxOutputTokens:    maxOutputTokens,
@@ -28,7 +38,7 @@ func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg
 		cost.UnsupportedReason = "empty_body"
 		return cost
 	}
-	if !json.Valid(body) {
+	if validate && !json.Valid(body) {
 		cost.UnsupportedReason = "invalid_json"
 		return cost
 	}

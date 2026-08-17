@@ -11,6 +11,61 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 )
 
+type closeTrackingBody struct {
+	*bytes.Reader
+	closes int
+}
+
+func (b *closeTrackingBody) Close() error {
+	b.closes++
+	return nil
+}
+
+func TestClassifierRecyclesBodyBufferOnlyAfterIdempotentClose(t *testing.T) {
+	body := []byte(`{"prompt":"hello","max_tokens":8}`)
+	original := &closeTrackingBody{Reader: bytes.NewReader(body)}
+	classifier := New(Config{
+		MaximumBodyBytes:  int64(len(body)),
+		MaximumConcurrent: 1,
+		OutputTokenFields: []string{"max_tokens"},
+		Estimator:         kvadmission.DefaultEstimatorConfig(),
+	})
+	request := &http.Request{
+		Method:        http.MethodPost,
+		Header:        http.Header{"Content-Type": []string{"application/json"}},
+		Body:          original,
+		ContentLength: int64(len(body)),
+	}
+
+	classification, protocolError := classifier.ClassifyRequest(request)
+	if protocolError != nil || !classification.Cost.Supported {
+		t.Fatalf("classification failed: protocol=%+v cost=%+v", protocolError, classification.Cost)
+	}
+	preserved, ok := request.Body.(*preservingReadCloser)
+	if !ok || preserved.buffer == nil || len(classifier.bodyPool) != 0 {
+		t.Fatalf("body buffer was recycled before request close: body=%T pool=%d", request.Body, len(classifier.bodyPool))
+	}
+	wantBuffer := preserved.buffer
+	forwarded, err := io.ReadAll(request.Body)
+	if err != nil || !bytes.Equal(forwarded, body) {
+		t.Fatalf("forwarded body=%q error=%v", forwarded, err)
+	}
+	if err := request.Body.Close(); err != nil {
+		t.Fatalf("close preserved body: %v", err)
+	}
+	if err := request.Body.Close(); err != nil {
+		t.Fatalf("close preserved body twice: %v", err)
+	}
+	if original.closes != 1 || len(classifier.bodyPool) != 1 {
+		t.Fatalf("close count/pool=%d/%d want 1/1", original.closes, len(classifier.bodyPool))
+	}
+	reused := classifier.acquireBodyBuffer(len(body))
+	if reused != wantBuffer {
+		t.Fatal("closed request buffer was not reused")
+	}
+	classifier.releaseBodyBuffer(reused)
+}
+
 func TestV0121UnsupportedContentTypePrecedesJSONSyntaxClassification(t *testing.T) {
 	const body = `not-json-but-owned-by-the-upstream`
 	classifier := New(Config{

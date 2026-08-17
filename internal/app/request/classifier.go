@@ -1,7 +1,14 @@
 package request
 
+import "bytes"
+
 func New(cfg Config) *Classifier {
 	classifier := &Classifier{cfg: cfg}
+	retainedBuffers := cfg.MaximumConcurrent
+	if retainedBuffers < 1 {
+		retainedBuffers = 1
+	}
+	classifier.bodyPool = make(chan *bytes.Buffer, retainedBuffers)
 	if cfg.MaximumConcurrent > 0 {
 		classifier.tokens = make(chan struct{}, cfg.MaximumConcurrent)
 	}
