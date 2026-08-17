@@ -1193,10 +1193,11 @@ review.
 
 ### Corrective review: long-run QoS budget and exact lifecycle exposure
 
-Status: design correction recorded on 2026-08-18 at source
-`1f9a53accd837e040f16a6fe9aab730b59125b22`. Red evidence and implementation
-are pending. This section supersedes any earlier acceptance that treats a
-per-wave 95% TPS projection or a forwarded-request count as proof of the
+Status: design correction recorded on 2026-08-18 and revised after the exact
+source review at `291066dd65a4f217ef5cb4e0e5fae52eb8baa304`. The first focused
+red behavior is proven; implementation remains pending. This section
+supersedes any earlier acceptance that treats a per-wave 95% TPS projection,
+a forwarded-request count, or HTTP first body byte alone as proof of the
 long-run QoS objective.
 
 The current implementation still has five release blockers:
@@ -1238,11 +1239,17 @@ backend evidence; it adds no runtime learning, model-name checks, tokenizer
 assets, request rewrite, cache lookup, TTFT gate, fixed one-second hold, or new
 production tuning parameter:
 
-- `SequenceExposureLedger` owns lifecycle-time integration of active Decode
-  liabilities and publishes bounded sequence-seconds to the TPS window. Its
-  hot lifecycle operations and sample read must be O(1), deterministic under
-  an injected monotonic clock, reset with the backend epoch, and reject stale,
-  duplicate, reversed, or overflowing transitions without leaking exposure.
+- `SequenceExposureLedger` owns two lifecycle-time integrals. Forwarded
+  liability exposure covers every Decode sequence from forward commit through
+  terminal release and is the conservative local sequence-seconds upper bound.
+  Response-active exposure covers only the sequences evidenced after the first
+  response body byte and qualifies a known Decode stall. The TPS window merges
+  these local bounds with backend endpoint evidence using a documented union
+  rule; it never sums overlapping evidence or substitutes response-active time
+  for non-streaming Decode. Hot lifecycle operations and sample reads must be
+  O(1), deterministic under an injected monotonic clock, reset with the backend
+  epoch, and reject stale, duplicate, reversed, or overflowing transitions
+  without leaking exposure.
 - `QoSBudgetForecast` derives rolling surplus as
   `qualified_sequence_tokens - reference * qualified_sequence_seconds`. A
   request-time forecast may spend only a bounded part of positive surplus on
@@ -1266,24 +1273,29 @@ Required test-first execution order:
 1. Add a focused TPS-window red test with many sequential short requests in one
    500-ms interval. It must fail because current sequence-seconds exceed the
    timestamp-derived exposure, not because readiness or counters are absent.
-2. Add a focused QoS-budget red test that holds metrics and reservations
+2. Prove the lifecycle evidence contract before adding a QoS budget. Cover
+   sequential and concurrent short requests, forward without first byte,
+   first byte followed by success/error/cancel/disconnect/timeout, duplicate or
+   reversed transitions, failed polls, runtime reset, streaming and
+   non-streaming responses, and a sample window opened before intervening
+   lifecycle events. Pure Prefill must not become a TTFT gate; non-streaming
+   first body byte must not be labeled Prefill completion or exact Decode
+   start. The published union must neither lose between-poll completions nor
+   double count backend and local exposure.
+3. Add a focused QoS-budget red test that holds metrics and reservations
    constant, varies positive/negative rolling surplus, and proves the
    pre-forward decision changes. Same-snapshot requests must consume the
    bounded wave atomically; waiting and preemption must still freeze it.
-3. Extend deterministic simulation with bursty healthy mixed traffic and
+4. Extend deterministic simulation with bursty healthy mixed traffic and
    require reference-enabled SLO goodput to retain at least 98% of the
    reference-disabled candidate, long-run mean active TPS at or above the
    reference, no additional preemptions, and no more than one observation of
    idle-with-demand. Saturated reference-20/25 results must not regress.
-4. Add 256K/512K/650K cache-hot and cache-cold short-to-long Decode shifts whose
+5. Add 256K/512K/650K cache-hot and cache-cold short-to-long Decode shifts whose
    throughput explicitly depends on context class. Compare the current burst,
    strict freeze, and bounded-shift candidates; accept a control only when it
    improves sustained SLO goodput without additional preemption or low-flow
    self-lock.
-5. Add streaming and non-streaming lifecycle simulations. A non-streaming
-   response must not be assumed to expose Prefill completion through HTTP first
-   byte, and any alternative reconciliation must prove ownership, cancellation,
-   timeout, epoch-reset, and exact-once release before implementation.
 6. Complete the cross-tokenizer estimator oracle before treating the lexical
    margin as hard-capacity evidence. Keep measured, conservative, and
    unsupported shapes distinct; do not increase every request to a worst-case
@@ -1293,6 +1305,17 @@ Do not implement all four components speculatively. Prove each red behavior on
 f563, implement the smallest complete vertical slice through HTTP decision and
 reservation lifecycle, rerun focused race and simulations, then record its
 exact source, archive, environment, command, exit status, and log SHA-256 here.
+
+The first focused red source is
+`291066dd65a4f217ef5cb4e0e5fae52eb8baa304`. Its GitHub archive SHA-256 is
+`8b8462e8de8edd5641b8026ea107049e8d0fa028c7bc6ca5bf0ab3d7d422a6be`.
+The isolated f563 Go 1.24 run failed only the intended behavior: 100 sequential
+short liabilities producing 50 tokens over 500 ms were charged as 50
+sequence-seconds instead of the supplied 0.5 sequence-seconds, reducing
+mean-active TPS from the expected 100 to 1. The focused red log SHA-256 is
+`57b0ea62dde592db50b98ada586e47977dfe4e1475cae391c26be0221493c113`.
+This proves the count-times-interval defect only; it does not prove a ledger,
+the local/backend union, non-streaming handling, or long-run QoS behavior.
 
 ### Pass 3: exact evidence and release
 
