@@ -93,6 +93,21 @@ retraction. Zero is valid only when the Prometheus type declaration proves the
 counter is registered. Its legacy gauge and `num_paused_reqs` must never feed
 the common preemption counter.
 
+`sglang:realtime_tokens_total{mode="decode"}` follows the same cold-start rule:
+SGLang creates its labeled sample only on the first non-zero increment. A
+registered counter with no decode sample is exact zero and must allow startup;
+the model identity is established by always-present admission gauges rather
+than by requiring prior decode traffic.
+
+SGLang also does not materialize the labeled running, waiting, or absolute KV
+gauges until its first scheduler report (idle reporting may take 30 seconds),
+while PIG's default startup probe is 10 seconds. If and only if the static
+model/KV geometry is coherent and the missing dynamic families are explicitly
+declared with the expected Prometheus gauge types, their all-missing cold state
+is interpreted as idle: running/waiting/used/evictable are zero and available
+equals capacity. A partial dynamic family remains invalid. This avoids restart
+loops without turning an incomplete scrape into a mixed observation.
+
 The common SGLang used-KV value is:
 
 ```text
@@ -171,6 +186,9 @@ Controller remains closed to framework-specific changes.
 - exact live-shaped SGLang idle fixture;
 - running/waiting total plus priority subsets, proving max rather than sum;
 - mixed streaming/completion counters do not affect the realtime decode source;
+- registered-but-zero cold decode counter does not self-lock startup;
+- registered cold dynamic gauges initialize an idle backend before SGLang's
+  first 30-second report, while a partial family remains unusable;
 - registered-but-zero retraction counter;
 - non-zero retraction counter and reset;
 - legacy retraction gauge/paused gauges cannot satisfy preemption validity;

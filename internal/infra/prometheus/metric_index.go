@@ -200,19 +200,19 @@ func (i metricIndex) requiredUniqueLabel(metricNames []string, labelName string)
 	return value, value != ""
 }
 
-func (i metricIndex) requiredUniqueOptionalLabel(metricNames []string, labelName string) (string, bool) {
+func (i metricIndex) uniqueLabelAcrossPresent(metricNames []string, labelName string, allowEmpty bool) (string, bool) {
 	value := ""
 	found := false
 	for _, metricName := range metricNames {
 		samples := i.samples[metricName]
-		if len(samples) == 0 {
-			return "", false
-		}
 		for _, sample := range samples {
 			if !sample.labelsValid {
 				return "", false
 			}
 			candidate := sample.labels[labelName]
+			if !allowEmpty && candidate == "" {
+				return "", false
+			}
 			if found && candidate != value {
 				return "", false
 			}

@@ -5,7 +5,13 @@ import "github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetr
 const sglangRetractionCounter = "sglang:num_retracted_requests_total"
 const sglangRealtimeTokenCounter = "sglang:realtime_tokens_total"
 
-var sglangModelIdentityMetrics = []string{
+var sglangStaticIdentityMetrics = []string{
+	"sglang:max_total_num_tokens",
+	"sglang:page_size",
+	"sglang:num_pages",
+}
+
+var sglangAdmissionIdentityMetrics = []string{
 	"sglang:max_total_num_tokens",
 	"sglang:page_size",
 	"sglang:num_pages",
@@ -15,6 +21,7 @@ var sglangModelIdentityMetrics = []string{
 	"sglang:num_running_reqs",
 	"sglang:num_queue_reqs",
 	"sglang:realtime_tokens_total",
+	"sglang:num_retracted_requests_total",
 }
 
 func parseSGLangSample(metricsText string, index metricIndex) telemetry.Sample {
@@ -24,16 +31,26 @@ func parseSGLangSample(metricsText string, index metricIndex) telemetry.Sample {
 		return labels["mode"] == "decode"
 	})
 	preemptions, preemptionsValid := parseSGLangRetractions(index)
-	modelName, modelNameValid := index.requiredUniqueLabel(sglangModelIdentityMetrics, "model_name")
-	engineType, engineTypeValid := index.requiredUniqueLabel(sglangModelIdentityMetrics, "engine_type")
-	_, singleDPReplica := index.requiredUniqueOptionalLabel(sglangModelIdentityMetrics, "dp_rank")
-	modelNameValid = modelNameValid && engineTypeValid && engineType == "unified" && singleDPReplica
+	modelName, staticModelValid := index.requiredUniqueLabel(sglangStaticIdentityMetrics, "model_name")
+	observedModel, allModelsValid := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "model_name", false)
+	engineType, staticEngineValid := index.requiredUniqueLabel(sglangStaticIdentityMetrics, "engine_type")
+	observedEngine, allEnginesValid := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "engine_type", false)
+	_, singleDPReplica := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "dp_rank", true)
+	modelNameValid := staticModelValid && allModelsValid && modelName == observedModel &&
+		staticEngineValid && allEnginesValid && engineType == "unified" && engineType == observedEngine &&
+		singleDPReplica
 	running, runningValid := exactNonNegativeMetricInt(runningValue, runningPresent)
 	waiting, waitingValid := exactNonNegativeMetricInt(waitingValue, waitingPresent)
-	generation, generationValid := exactNonNegativeMetricUint64(generationValue, generationPresent)
-	generationValid = generationValid && index.declaredType(sglangRealtimeTokenCounter, "counter")
-	if !generationValid {
-		generation = 0
+	if !runningPresent && index.declaredType("sglang:num_running_reqs", "gauge") {
+		runningValid = true
+	}
+	if !waitingPresent && index.declaredType("sglang:num_queue_reqs", "gauge") {
+		waitingValid = true
+	}
+	generation := uint64(0)
+	generationValid := index.declaredType(sglangRealtimeTokenCounter, "counter")
+	if generationPresent {
+		generation, generationValid = exactNonNegativeMetricUint64(generationValue, generationValid)
 	}
 
 	sample := telemetry.Sample{
@@ -80,6 +97,16 @@ func adaptSGLangKV(index metricIndex, sample *telemetry.Sample) {
 	available, availableValid := exactNonNegativeMetricInt64(availableValue, availablePresent)
 	evictable, evictableValid := exactNonNegativeMetricInt64(evictableValue, evictablePresent)
 	directUsed, directUsedValid := exactNonNegativeMetricInt64(directUsedValue, directUsedPresent)
+	registeredColdKV := !availablePresent && !evictablePresent && !directUsedPresent &&
+		index.declaredType("sglang:kv_available_tokens", "gauge") &&
+		index.declaredType("sglang:kv_evictable_tokens", "gauge") &&
+		index.declaredType("sglang:kv_used_tokens", "gauge")
+	if registeredColdKV && capacityValid {
+		available = capacity
+		availableValid = true
+		evictableValid = true
+		directUsedValid = true
+	}
 	if !capacityValid || capacity <= 0 || !availableValid || !evictableValid || !directUsedValid ||
 		available > capacity || evictable > capacity-available {
 		return
@@ -94,9 +121,8 @@ func adaptSGLangKV(index metricIndex, sample *telemetry.Sample) {
 	pageSize, pageValid := exactNonNegativeMetricInt(pageValue, pagePresent)
 	pageCount, pageCountValid := exactNonNegativeMetricInt64(pageCountValue, pageCountPresent)
 	geometryPresent := pagePresent || pageCountPresent
-	maximumInt64 := int64(^uint64(0) >> 1)
 	geometryValid := pageValid && pageSize > 0 && pageCountValid && pageCount > 0 &&
-		pageCount <= maximumInt64/int64(pageSize) && pageCount == capacity/int64(pageSize)
+		pageCount == capacity/int64(pageSize)
 	if geometryPresent && !geometryValid {
 		return
 	}

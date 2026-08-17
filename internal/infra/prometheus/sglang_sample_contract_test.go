@@ -1,6 +1,9 @@
 package prometheus
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestParseSampleUsesCoherentSGLangAdmissionMetrics(t *testing.T) {
 	metrics := `
@@ -63,6 +66,41 @@ func TestParseSampleRequiresRealtimeDecodeCounterType(t *testing.T) {
 	sample := ParseSample(metrics)
 	if sample.GenerationValid || sample.Generation != 0 {
 		t.Fatalf("untyped SGLang realtime gauge fabricated a generation counter: %#v", sample)
+	}
+}
+
+func TestParseSampleTreatsRegisteredColdSGLangDecodeCounterAsZero(t *testing.T) {
+	metrics := coherentSGLangFixtureWithoutCounterDeclarations() +
+		"# TYPE sglang:realtime_tokens_total counter\n"
+	metrics = strings.ReplaceAll(metrics,
+		"sglang:realtime_tokens_total{engine_type=\"unified\",mode=\"decode\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 100\n",
+		"")
+	sample := ParseSample(metrics)
+	if !sample.ModelNameValid || !sample.GenerationValid || sample.Generation != 0 {
+		t.Fatalf("registered cold SGLang decode counter was not exact zero: %#v", sample)
+	}
+}
+
+func TestParseSampleAcceptsRegisteredColdSGLangDynamicMetricsAsIdle(t *testing.T) {
+	metrics := `
+# TYPE sglang:kv_available_tokens gauge
+# TYPE sglang:kv_evictable_tokens gauge
+# TYPE sglang:kv_used_tokens gauge
+# TYPE sglang:num_running_reqs gauge
+# TYPE sglang:num_queue_reqs gauge
+# TYPE sglang:realtime_tokens_total counter
+# TYPE sglang:num_retracted_requests_total counter
+sglang:max_total_num_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 1000000
+sglang:page_size{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 16
+sglang:num_pages{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 62500
+`
+	sample := ParseSample(metrics)
+	if !sample.ModelNameValid || !sample.KVTokenMetricsValid || !sample.KVBlockSizeValid ||
+		!sample.RunningValid || !sample.WaitingValid || !sample.GenerationValid || !sample.PreemptionsValid ||
+		sample.KVCapacityTokens != 1_000_000 || sample.KVAvailableTokens != 1_000_000 ||
+		sample.KVUsedTokens != 0 || sample.Running != 0 || sample.Waiting != 0 || sample.Generation != 0 ||
+		sample.Preemptions != 0 {
+		t.Fatalf("registered cold SGLang metrics did not produce coherent idle state: %#v", sample)
 	}
 }
 
