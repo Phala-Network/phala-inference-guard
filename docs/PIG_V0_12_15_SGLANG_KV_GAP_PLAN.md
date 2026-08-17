@@ -366,10 +366,21 @@ classifier benchmark was approximately 16.3-17.0 ms/op with 17 allocations and
 These results establish the `d708950` source matrix only. They do not accept an
 image or release. Exact SGLang source tracing has now closed the per-tier
 reprocessed-hit question, but review exposed an untested cross-DP cache-family
-identity case. A test-only red revision must prove the current parser accepts
-that mismatch, then the parser must fail that optional family cold and the
-complete exact-commit matrix must be rerun. No v0.12.15 image may be built until
-that red/green evidence and the three release reviews pass.
+identity case. Test-only commit
+`397d234426e881e5006625b970d3d12237bd6f62` proved that the current parser
+accepted a DP1 cache family alongside coherent DP0 admission metrics. The
+first-attempt/retraction fixture passed in the same run. The parser must now fail
+that optional family cold and the complete exact-commit matrix must be rerun.
+No v0.12.15 image may be built until that green evidence and the three release
+reviews pass.
+
+```text
+GitHub archive sha256 d1f18692e35e34699cc235901e00733d5bd21a407a8ac951c905aebd11215e0f
+focused red log sha256 0b253350d19eeb154e919e9f62df2223d3114b203b9ac070a64b192308f4756c
+focused red exit 1: cross-DP cache family accepted
+harness error sha256 0ae446f63ec8d1e71531efbc73ffb2ab1d7a47f851634c3967d9c399d27e03fc
+harness error exit 127: `sh -lc` reset Go image PATH; not red evidence
+```
 
 Build and smoke one host-local candidate image only after the source matrix
 passes. Validate it
@@ -497,8 +508,9 @@ SGLang scrape also exposes `prefill_effective_tokens_total` as token-level
 counters with the required input/device/host/storage modes. vLLM upstream source
 established the metric types, per-engine labels, and update sites. Exact SGLang
 source now proves that all effective modes exclude reprocessed requests. The
-current PIG source matrix is green, but the newly identified cross-DP optional
-cache-family case still needs red/green evidence, so this review is not complete.
+`397d234` red run proved that a cross-DP optional cache family was accepted.
+The parser fix and new exact-commit green matrix are pending, so this review is
+not complete.
 
 Exact-version source was resolved to SGLang commit
 `c4271c3fe1262fc2adbd162c33b25de5255251c5`. Its
@@ -562,8 +574,8 @@ deterministic JSON  2f29cb429523018c4f68f01fea03179e219b8d0919e32e97140450b6fced
 ```
 
 This green matrix is not image acceptance. Pass 1 remains open until the
-cross-DP cache-family fixture produces valid red/green evidence and the new
-exact source revision passes the required f563 matrix.
+cross-DP cache-family fixture turns green and the new exact source revision
+passes the required f563 matrix.
 
 ### Pass 2: safety and lifecycle
 

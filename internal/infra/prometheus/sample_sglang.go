@@ -38,7 +38,7 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 	observedModel, allModelsValid := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "model_name", false)
 	engineType, staticEngineValid := index.requiredUniqueLabel(sglangStaticIdentityMetrics, "engine_type")
 	observedEngine, allEnginesValid := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "engine_type", false)
-	_, singleDPReplica := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "dp_rank", true)
+	admissionDPRank, singleDPReplica := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "dp_rank", true)
 	modelNameValid := staticModelValid && allModelsValid && modelName == observedModel &&
 		staticEngineValid && allEnginesValid && engineType == "unified" && engineType == observedEngine &&
 		singleDPReplica
@@ -82,11 +82,11 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 		GenerationValid:  generationValid,
 	}
 	adaptSGLangKV(index, &sample)
-	adaptSGLangCache(index, modelName, &sample)
+	adaptSGLangCache(index, modelName, admissionDPRank, &sample)
 	return sample
 }
 
-func adaptSGLangCache(index metricIndex, modelName string, sample *telemetry.Sample) {
+func adaptSGLangCache(index metricIndex, modelName, admissionDPRank string, sample *telemetry.Sample) {
 	const metricName = "sglang:prefill_effective_tokens_total"
 	if sample == nil || modelName == "" || !index.declaredType(metricName, "counter") ||
 		!index.hasSamples(metricName) {
@@ -107,6 +107,9 @@ func adaptSGLangCache(index metricIndex, modelName string, sample *telemetry.Sam
 			return
 		}
 		candidateDP := item.labels["dp_rank"]
+		if candidateDP != admissionDPRank {
+			return
+		}
 		if dpRankSet && candidateDP != dpRank {
 			return
 		}
