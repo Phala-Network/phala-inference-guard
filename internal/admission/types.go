@@ -133,6 +133,9 @@ type BackendObservation struct {
 	Waiting               int64
 	GenerationTokensTotal uint64
 	PreemptionsTotal      uint64
+	CacheQueryTokensTotal uint64
+	CacheHitTokensTotal   uint64
+	CacheCountersValid    bool
 	RuntimeStartTime      float64
 }
 

@@ -37,6 +37,9 @@ type Sample struct {
 	GenerationValid       bool
 	GenerationTPS         float64
 	GenerationTPSDirect   bool
+	CacheQueryTokens      uint64
+	CacheHitTokens        uint64
+	CacheTokensValid      bool
 	RuntimeStartTime      float64
 	RuntimeStartTimeValid bool
 	TTFT                  HistogramSample

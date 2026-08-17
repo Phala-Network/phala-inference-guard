@@ -28,10 +28,11 @@ func (e RequestEstimate) Validate() error {
 // is derived from one RequestEstimate and the Controller's immutable block
 // size; clients never provide pre-rounded KV values.
 type RequestWork struct {
-	Estimate       RequestEstimate
-	InputKVTokens  int64
-	TotalKVTokens  int64
-	FutureKVTokens int64
+	Estimate             RequestEstimate
+	PrefillComputeTokens int64
+	InputKVTokens        int64
+	TotalKVTokens        int64
+	FutureKVTokens       int64
 }
 
 func BuildRequestWork(estimate RequestEstimate, blockSize int64) (RequestWork, error) {
@@ -53,10 +54,11 @@ func BuildRequestWork(estimate RequestEstimate, blockSize int64) (RequestWork, e
 		return RequestWork{}, fmt.Errorf("request work total KV is invalid")
 	}
 	return RequestWork{
-		Estimate:       estimate,
-		InputKVTokens:  inputKV,
-		TotalKVTokens:  totalKV,
-		FutureKVTokens: totalKV - inputKV,
+		Estimate:             estimate,
+		PrefillComputeTokens: estimate.SelectionInputTokens,
+		InputKVTokens:        inputKV,
+		TotalKVTokens:        totalKV,
+		FutureKVTokens:       totalKV - inputKV,
 	}, nil
 }
 
