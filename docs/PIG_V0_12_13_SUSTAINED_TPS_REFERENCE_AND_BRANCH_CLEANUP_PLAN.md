@@ -779,3 +779,74 @@ focused-metrics.log    7f94a28d4460d5e6e95d8c672fd27aacef8074b8e7873b786500ae120
 focused-simulation.log 5c9ac3656da68c9c57fcad6bb0b03429c3371d9a849c2131e56e28358cd59351
 metadata.log           6ef7a1e0bef2a8a85a7f53d16eaa96201d6ebd7f5737589e81eabdf6e1e7caa1
 ```
+
+### 2026-08-17 round 4: complete source matrix green
+
+The round 3 record was a documentation-only commit, producing exact clean HEAD
+`8e3be675bcdb65fe80ff9ffdee3bfe449cb2a37f`. A fresh c21 clone then passed:
+
+```text
+go test -count=1 ./...                                      PASS
+go test -race -count=1 ./...                                PASS
+go vet ./...                                                PASS
+go build -o <evidence>/phala-inference-guard \
+  ./cmd/phala-inference-guard                                PASS
+go test ./internal/simulation/requestaware \
+  -run TestTPSReference -count=1 -v                          PASS
+go test ./internal/admission \
+  -run 'TestController.*(HotPath|TPS)' -count=1 -v           PASS
+```
+
+Measured non-race hot path on c21:
+
+```text
+reservations=256   snapshot p99=447ns admit p99=449ns allocations=0/0
+reservations=4096  snapshot p99=393ns admit p99=380ns allocations=0/0
+TPS enabled        snapshot p99=596ns admit p99=601ns allocations=0/0
+```
+
+These are Controller microbenchmarks, not end-to-end serving latency. They prove
+the admission hot path is bounded and well below the 100-microsecond source
+gate; they do not prove production TPS or OpenRouter rank. Evidence directory:
+`/workspace/evidence/pig-v01213-tps-full-r4-8e3be67`. SHA-256:
+
+```text
+full-tests.log          d2b82236e47d686d4bf113d8d81d6c9479c0e4f8dfdfebb5ccfa27f5ba8ba1ad
+race-tests.log          ce1df6935e6625949e4470b583fc44adfdbeab82391c7cfa275a3f636a04cab8
+vet.log                 28659d473fa851406fff918f1c50a39cc858c8ce4bc3b3f3553cb253450a8564
+build.log               e72be7dbb4cb6c7da1a0fab91c2f9dade6738e620ab884172197fc24b7805a5e
+tps-simulations.log     f51e0b8f37e3a336d39baf9d42701c6f275f929d33a3109819452832c73746a1
+hot-path.log            320f5fe996cdbd5bbc8b6505f8cf83ec4527072df0f967dcbc2d1573c7a68329
+phala-inference-guard   bf8b1b48870718b08881fab35bc4ff6e28cd0775334ed0e35e7a4ec4fc31400f
+```
+
+### 2026-08-17 implementation review pass 1: model, causality, and evidence quality
+
+Production-path result: the positive reference is consumed before forwarding;
+the Controller lock owns observation update, window snapshot, post-admit gate,
+and reservation; raw vLLM running is used only as a conservative sequence proxy.
+No disconnected learner, retrospective TPS reject, or unbounded state was found.
+
+Review correction 1: the saturation test compared raw completion tokens but did
+not independently assert QoS-qualified goodput, and its verbose output did not
+show baseline/candidate metrics. Add an explicit non-regression assertion for
+`SLOCompletionTokens` and emit both metric records.
+
+Review correction 2: simulation self-lock accounting only started an
+idle-with-demand interval for request/size protection. TPS is a load protection,
+so the check could miss the exact low-flow self-lock it is meant to detect.
+Count every hard-fitting rejection when the simulated node has neither
+background nor active work.
+
+Review correction 3: positive-reference simulations covered saturation and
+bounded warming but not the representative pressure matrix listed in this
+plan. Add one table-driven safety run over mixed traffic, same-poll bursts,
+transient/sustained waiting, near-KV load, preemption, stale recovery,
+cancellation, completion-before-poll, and representative regular, weighted,
+exclusive, 512K, and 650K Prefill classes. These are test/evidence corrections;
+the production algorithm is unchanged unless c21 exposes a failure.
+
+Because these corrections change executable test code and simulation
+accounting after round 4, round 4 is retained as prior green evidence but is not
+the final release gate. Commit and push the corrections, reproduce them on c21,
+then rerun the applicable complete matrix.

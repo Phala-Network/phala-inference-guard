@@ -273,7 +273,7 @@ func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
 		} else {
 			r.metrics.SizeProtects++
 		}
-		if hardFit && !hardProtect && r.spec.backgroundRunning == 0 && len(r.active) == 0 {
+		if hardFit && r.spec.backgroundRunning == 0 && len(r.active) == 0 {
 			r.metrics.HardFitIdleRejects++
 			if !r.idleDemandActive {
 				r.idleDemandStarted = at

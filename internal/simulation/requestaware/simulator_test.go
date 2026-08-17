@@ -148,11 +148,15 @@ func TestTPSReferenceCandidatesPreserveSaturatedThroughputAndBoundLongRunMean(t 
 			if runErr != nil {
 				t.Fatalf("run reference %.1f: %v", test.reference, runErr)
 			}
+			t.Logf("reference=%.1f baseline=%+v candidate=%+v", test.reference, baseline, candidate)
 			if candidate.MeanActiveTPS+simulationFloatTolerance < test.reference {
 				t.Fatalf("reference %.1f mean active TPS=%.3f below long-run target: %+v", test.reference, candidate.MeanActiveTPS, candidate)
 			}
 			if candidate.CompletionTokens+simulationFloatTolerance < 0.99*baseline.CompletionTokens {
 				t.Fatalf("reference %.1f completion tokens %.3f regress saturated baseline %.3f", test.reference, candidate.CompletionTokens, baseline.CompletionTokens)
+			}
+			if candidate.SLOCompletionTokens+simulationFloatTolerance < baseline.SLOCompletionTokens {
+				t.Fatalf("reference %.1f QoS-qualified tokens %.3f regress baseline %.3f", test.reference, candidate.SLOCompletionTokens, baseline.SLOCompletionTokens)
 			}
 			if candidate.MaximumRunning > test.maximumRunning || candidate.Preemptions != 0 || candidate.MaximumIdleWithDemandSeconds > simulationPollInterval.Seconds() {
 				t.Fatalf("reference %.1f candidate=%+v", test.reference, candidate)
@@ -200,6 +204,71 @@ func TestTPSReferenceWarmingIsBoundedAndStopsExpansionAfterBelowReferenceEvidenc
 		metrics.MaximumRunning != 2 || metrics.Preemptions != 0 {
 		t.Fatalf("bounded warming/reference brake metrics=%+v", metrics)
 	}
+	t.Logf("bounded warming metrics=%+v", metrics)
+}
+
+func TestTPSReferenceSafetyAcrossRepresentativePressureScenarios(t *testing.T) {
+	selected := map[string]bool{
+		"mix-80-20":                        true,
+		"pre-poll-burst":                   true,
+		"transient-waiting":                true,
+		"sustained-waiting":                true,
+		"kv-high":                          true,
+		"preemption":                       true,
+		"stale-recovery":                   true,
+		"cancel":                           true,
+		"completion-before-next-poll":      true,
+		"prefill-regular-multimodal-burst": true,
+		"prefill-weighted-budget":          true,
+		"prefill-live-exclusive-upper-690k-estimate-285k": true,
+		"prefill-quiescent-boundary-busy-512k":            true,
+		"prefill-quiescent-idle-650k":                     true,
+		"prefill-quiescent-cancel-recovery":               true,
+	}
+	for _, scenario := range simulationScenarios(SimulationSeed) {
+		if !selected[scenario.name] {
+			continue
+		}
+		delete(selected, scenario.name)
+		t.Run(scenario.name, func(t *testing.T) {
+			profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
+			if err != nil {
+				t.Fatalf("construct capability: %v", err)
+			}
+			baseline, _, err := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, 0)
+			if err != nil {
+				t.Fatalf("run reference-disabled baseline: %v", err)
+			}
+			candidate, _, err := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, 20)
+			if err != nil {
+				t.Fatalf("run reference-enabled candidate: %v", err)
+			}
+			t.Logf("baseline=%+v candidate=%+v", baseline, candidate)
+			if candidate.PeakKVTokens > profile.KVHardLimitTokens {
+				t.Fatalf("KV hard limit exceeded: peak=%d hard=%d", candidate.PeakKVTokens, profile.KVHardLimitTokens)
+			}
+			if candidate.Preemptions > baseline.Preemptions {
+				t.Fatalf("new preemptions: baseline=%d candidate=%d", baseline.Preemptions, candidate.Preemptions)
+			}
+			if candidate.HardFitIdleRejects > 0 ||
+				candidate.MaximumIdleWithDemandSeconds > simulationPollInterval.Seconds()+simulationDurationEpsilon {
+				t.Fatalf("idle/self-lock protection: %+v", candidate)
+			}
+			if candidate.MaximumRunning > scenarioMaximumNoWait(scenario) {
+				t.Fatalf("scheduler running bound exceeded: running=%d bound=%d", candidate.MaximumRunning, scenarioMaximumNoWait(scenario))
+			}
+		})
+	}
+	if len(selected) != 0 {
+		t.Fatalf("representative TPS scenarios missing: %v", selected)
+	}
+}
+
+func scenarioMaximumNoWait(scenario scenarioSpec) int {
+	if scenario.maximumNoWait > 0 {
+		return scenario.maximumNoWait
+	}
+	return simulationMaximumNoWait
 }
 
 func TestDeterministicRequestAwareGoodputSuiteIsPolicyOrderIndependent(t *testing.T) {
