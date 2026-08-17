@@ -84,6 +84,14 @@ func TestAdmissionBackendObserverPublishesSGLangCountersAndRejectsIdentityDrift(
 
 func writeAdmissionSGLangMetrics(w http.ResponseWriter, modelName string, generation, retractions uint64) {
 	_, _ = fmt.Fprintf(w, `
+# TYPE sglang:max_total_num_tokens gauge
+# TYPE sglang:page_size gauge
+# TYPE sglang:num_pages gauge
+# TYPE sglang:kv_available_tokens gauge
+# TYPE sglang:kv_evictable_tokens gauge
+# TYPE sglang:kv_used_tokens gauge
+# TYPE sglang:num_running_reqs gauge
+# TYPE sglang:num_queue_reqs gauge
 # TYPE sglang:realtime_tokens_total counter
 # TYPE sglang:num_retracted_requests_total counter
 sglang:max_total_num_tokens{engine_type="unified",model_name=%q,tp_rank="0",pp_rank="0",priority=""} 1000000
