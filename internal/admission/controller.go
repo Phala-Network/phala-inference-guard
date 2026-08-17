@@ -477,7 +477,12 @@ func (c *AdmissionController) stateLocked(now time.Time) (ProjectedState, Reason
 		return ProjectedState{}, ReasonObservationMissing, false
 	}
 	observation := c.observation.observation
-	state, ok := c.projector.project(c.observation, c.overlay)
+	projectedObservation := c.observation
+	if projectedObservation.cache.valid &&
+		!cachePrefillObservationActiveAt(projectedObservation.cache, now) {
+		projectedObservation.cache = cachePrefillObservation{}
+	}
+	state, ok := c.projector.project(projectedObservation, c.overlay)
 	if !ok {
 		return ProjectedState{}, ReasonControllerUnavailable, false
 	}

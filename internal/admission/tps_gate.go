@@ -65,7 +65,9 @@ func (tpsGate) evaluateAdditional(state ProjectedState, additionalSequences int6
 	}
 	decision.sequenceLimit = rateDerivedSequenceLimit(snapshot)
 	if state.RawRunning == 0 && state.GenerationDelta == 0 {
-		decision.sequenceLimit = 1
+		if decision.sequenceLimit > tpsWarmingSequenceLimit {
+			decision.sequenceLimit = tpsWarmingSequenceLimit
+		}
 	} else if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
 		decision.sequenceLimit = currentRateLimit
 	}

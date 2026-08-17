@@ -79,6 +79,13 @@ func validCachePrefillObservation(value cachePrefillObservation) bool {
 		value.creditFraction <= value.hitFraction && value.spentTokens >= 0 && value.spentTokens <= budget
 }
 
+func cachePrefillObservationActiveAt(value cachePrefillObservation, now time.Time) bool {
+	if !value.valid || now.IsZero() || now.Before(value.observedAt) {
+		return false
+	}
+	return now.Sub(value.observedAt) <= cachePrefillObservationLifetime
+}
+
 func cachePrefillCreditTokenBudget(evidenceTokens uint64, creditFraction float64) int64 {
 	if evidenceTokens == 0 || !finiteNonnegative(creditFraction) || creditFraction <= 0 ||
 		creditFraction > cachePrefillMaximumHitCredit {
