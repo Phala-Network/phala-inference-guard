@@ -375,7 +375,7 @@ func TestV01215RiskyLexicalShapesUseConservativeHardReservation(t *testing.T) {
 	}{
 		{name: "non-ascii", body: `{"prompt":"中文输入 日本語 한국어 العربية"}`},
 		{name: "escape-heavy", body: `{"prompt":"line\nquote\"slash\\tab\tunicode\u4e2d"}`},
-		{name: "dense-entropy", body: `{"prompt":"` + strings.Repeat("A9+/zQ7=f0-kL2+xV8/mN4pR1sT6wY3", 8) + `"}`},
+		{name: "dense-entropy", body: `{"prompt":"` + strings.Repeat("A9+/zQ7=f0-kL2+xV8/mN4pR1sT6wY3", 16) + `"}`},
 		{name: "tool-schema", body: `{"messages":[{"role":"user","content":"lookup"}],"tools":[{"type":"function","function":{"name":"lookup","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}}]}`},
 	} {
 		t.Run(fixture.name, func(t *testing.T) {
