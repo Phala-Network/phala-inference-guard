@@ -432,6 +432,7 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 	}
 	for _, required := range []string{
 		"action=protect", "reason=kv_capacity", "scope=load", "enforced=true",
+		"input_estimate_confidence=unknown",
 		"maximum_sequence_input_tokens=900",
 		"base_prompt_count=2", "prefill_input_tokens=1500", "prefill_compute_tokens=1200",
 		"first_byte_pending_prefill_input_tokens=600",

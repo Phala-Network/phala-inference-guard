@@ -237,6 +237,7 @@ func TestWritePredictiveAdmissionNormalizesInvalidModeAndNilHistograms(t *testin
 		"pig_predictive_admission_enabled 0",
 		`pig_predictive_router_backpressure_state_info{scope="none",reason="none",source="unknown"} 1`,
 		`pig_predictive_request_aware_last_decision_info{action="unknown",reason="unknown",pressure_source="none",prefill_class="unknown"} 1`,
+		`pig_predictive_request_aware_input_estimate_confidence_info{confidence="unknown"} 1`,
 		"pig_predictive_admission_prediction_duration_seconds_count 0",
 		"pig_predictive_admission_estimator_duration_seconds_count 0",
 	} {
