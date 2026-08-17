@@ -47,13 +47,7 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 		if !r.sequenceCovered {
 			contribution.unobservedSequences = decodeSequences
 		}
-		switch r.prefillClass {
-		case PrefillRegular, PrefillWeighted:
-		case PrefillExclusive:
-			contribution.pendingExclusiveSequences = 1
-		case PrefillQuiescent:
-			contribution.pendingQuiescentSequences = 1
-		default:
+		if !applyPendingPrefillClass(&contribution, r.prefillClass) {
 			return reservationOverlay{}, false
 		}
 		return contribution, true
@@ -80,16 +74,8 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 			sequenceLiabilities:       decodeSequences,
 			liveReservations:          1,
 		}
-		if r.work.FirstBytePendingPrefillSequences > 0 {
-			switch r.prefillClass {
-			case PrefillRegular, PrefillWeighted:
-			case PrefillExclusive:
-				contribution.pendingExclusiveSequences = 1
-			case PrefillQuiescent:
-				contribution.pendingQuiescentSequences = 1
-			default:
-				return reservationOverlay{}, false
-			}
+		if !applyPendingPrefillClass(&contribution, r.prefillClass) {
+			return reservationOverlay{}, false
 		}
 		if !r.sequenceCovered {
 			contribution.unobservedSequences = decodeSequences
@@ -113,6 +99,21 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 			sequenceLiabilities: decodeSequences,
 			residualDebts:       1,
 		}
+		if r.terminalCause != TerminalSuccess {
+			if r.firstByteSequence > 0 {
+				contribution.pendingPrefillInputTokens = r.work.FirstBytePendingPrefillInputTokens
+				contribution.pendingPrefillTokens = r.work.FirstBytePendingPrefillComputeTokens
+				contribution.pendingPrefillSequences = r.work.FirstBytePendingPrefillSequences
+				contribution.localActiveDecode = decodeSequences - r.work.FirstBytePendingPrefillSequences
+			} else {
+				contribution.pendingPrefillInputTokens = r.work.PrefillInputTokens
+				contribution.pendingPrefillTokens = r.work.PrefillComputeTokens
+				contribution.pendingPrefillSequences = decodeSequences
+			}
+			if !applyPendingPrefillClass(&contribution, r.prefillClass) {
+				return reservationOverlay{}, false
+			}
+		}
 		if !r.sequenceCovered && r.terminalCause != TerminalSuccess {
 			contribution.unobservedSequences = decodeSequences
 		}
@@ -120,6 +121,25 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 	default:
 		return reservationOverlay{}, false
 	}
+}
+
+func applyPendingPrefillClass(contribution *reservationOverlay, class PrefillClass) bool {
+	if contribution == nil || contribution.pendingPrefillSequences < 0 {
+		return false
+	}
+	if contribution.pendingPrefillSequences == 0 {
+		return true
+	}
+	switch class {
+	case PrefillRegular, PrefillWeighted:
+	case PrefillExclusive:
+		contribution.pendingExclusiveSequences = 1
+	case PrefillQuiescent:
+		contribution.pendingQuiescentSequences = 1
+	default:
+		return false
+	}
+	return true
 }
 
 func (r reservation) validCacheCredit() bool {

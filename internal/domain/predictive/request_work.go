@@ -281,7 +281,11 @@ func requestWorkPrefill(
 		return total, pendingAfterFirstByte, true
 	case PrefillExecutionPageAlignedPrecache:
 		if fanout == 1 {
-			return estimate.SelectionInputTokens, 0, true
+			total = estimate.SelectionInputTokens
+			if estimate.DecodeSequences > 1 {
+				return total, total - 1, true
+			}
+			return total, 0, true
 		}
 		tailCapacity, valid := requestWorkMultiply(estimate.BasePromptCount, blockSize-1)
 		if !valid {
