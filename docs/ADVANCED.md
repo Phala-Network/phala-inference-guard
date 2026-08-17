@@ -1,9 +1,9 @@
 # PIG Advanced Configuration
 
-This document describes the current development source contract. No new
-`0.12.x` release identity or accepted image is implied. The loader exposes
-bounded overrides for controlled tests, but parser capability does not define
-what belongs in production Compose.
+This document describes the `PIG-v0.12.13` source contract. The assigned source
+identity does not by itself imply an accepted registry image or production
+deployment. The loader exposes bounded overrides for controlled tests, but
+parser capability does not define what belongs in production Compose.
 
 ## Production contract
 

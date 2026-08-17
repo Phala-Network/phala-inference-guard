@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-func TestReleaseVersionIsAssignedV01212(t *testing.T) {
+func TestReleaseVersionIsAssignedV01213(t *testing.T) {
 	t.Parallel()
 
-	if version != "PIG-v0.12.12" {
-		t.Fatalf("runtime version = %q, want the assigned PIG-v0.12.12 identity", version)
+	if version != "PIG-v0.12.13" {
+		t.Fatalf("runtime version = %q, want the assigned PIG-v0.12.13 identity", version)
 	}
 }
 

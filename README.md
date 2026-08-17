@@ -6,6 +6,9 @@ call, combines that estimate with one Controller-owned coherent vLLM observation
 and every live reservation, and decides whether the post-admit state can
 preserve service quality.
 
+Current source identity: `PIG-v0.12.13`. This identifies the tested source line;
+it does not by itself imply an accepted registry image or production deployment.
+
 The objective is QoS-constrained throughput, not a fixed request-count limit.
 Small requests can still fit while a larger request is protected under the same
 backend pressure.

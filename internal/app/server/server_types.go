@@ -12,9 +12,10 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.12 replaces the rejected v0.12.11 estimator candidate. Historical
-// v0.12.10 and v0.12.11 artifacts remain diagnostic-only evidence.
-const version = "PIG-v0.12.12"
+// v0.12.13 adds the optional sustained-TPS reference gate to the accepted
+// v0.12.12 Context/KV/Prefill architecture. Historical rejected candidates
+// remain diagnostic-only evidence.
+const version = "PIG-v0.12.13"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 

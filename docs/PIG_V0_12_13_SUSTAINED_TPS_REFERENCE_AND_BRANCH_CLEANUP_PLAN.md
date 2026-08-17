@@ -1,14 +1,16 @@
 # PIG v0.12.13 Sustained TPS Reference and Branch Cleanup Plan
 
-Status: active design and implementation plan; no v0.12.13 release identity,
-image, deployment, or production evidence exists yet.
+Status: v0.12.13 source identity assigned after the Pass 3 source gate;
+identity-specific c21 acceptance is pending. No accepted image, deployment, or
+production evidence exists yet.
 
 Authoritative baseline: branch `codex/pig-v0.11.0-request-aware`, commit
 `53cb1d5abef55096c2a13dfa0193c257e64bd397`, whose executable v0.12.12 tag is
 `bc9513117c36f1021896e17825289c94945b79e5`.
 
-Target source line: v0.12.13. The patch number is not assigned to runtime or
-OCI identity until the exact source passes the complete acceptance matrix.
+Target source line: v0.12.13. Runtime `PIG-v0.12.13` and OCI version `0.12.13`
+were assigned only after the exact pre-identity source passed the complete
+acceptance matrix. The identity-specific source must now repeat that matrix.
 
 ## 1. Goal
 
@@ -677,7 +679,8 @@ matrix. Router and production changes require a later explicit step.
   is not a release identity
 - [x] Pass 3 source matrix permits assigning the v0.12.13 runtime/OCI identity;
   identity is not assigned yet and will require a fresh complete matrix
-- [ ] version identity assigned and identity-specific complete matrix green
+- [x] version identity assigned as runtime `PIG-v0.12.13` and OCI `0.12.13`
+- [ ] identity-specific focused and complete c21 matrices green
 - [ ] local image, registry upload, Compose, deployment, Router, and live traffic
   remain unperformed
 
