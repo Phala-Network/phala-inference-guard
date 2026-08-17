@@ -207,3 +207,63 @@ func TestTPSGateCountsBackendWaitingTowardFutureDemand(t *testing.T) {
 		t.Fatalf("waiting demand was not protected: %+v", decision)
 	}
 }
+
+func TestV01215TPSGateFreezesHistoricalHeadroomDuringCurrentPressure(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
+		AggregateTPS: 240, MeanActiveTPS: 24,
+	}
+	for _, test := range []struct {
+		name  string
+		state ProjectedState
+	}{
+		{name: "waiting", state: ProjectedState{RawRunning: 5, RawWaiting: 1}},
+		{name: "preemption", state: ProjectedState{RawRunning: 5, PreemptionDelta: 1}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := test.state
+			state.TPS = snapshot
+			decision := (tpsGate{}).evaluate(state)
+			if decision.fits || decision.reason != ReasonTPSReference ||
+				decision.sequenceLimit != decision.currentSequences {
+				t.Fatalf("current pressure spent historical headroom: %+v", decision)
+			}
+		})
+	}
+}
+
+func TestV01215TPSGateLimitsEachQualifiedPollToOneCurrentRateWave(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
+		AggregateTPS: 240, MeanActiveTPS: 24,
+	}
+	for unobserved := int64(0); unobserved <= 1; unobserved++ {
+		state := ProjectedState{
+			RawRunning: 5, UnobservedSequences: unobserved,
+			GenerationDelta: 70, ObservationInterval: 500 * time.Millisecond,
+			ObservationIntervalValid: true, TPS: snapshot,
+		}
+		decision := (tpsGate{}).evaluate(state)
+		wantFit := unobserved == 0
+		if decision.fits != wantFit || decision.sequenceLimit != 6 ||
+			decision.currentSequences != 5+unobserved {
+			t.Fatalf("unobserved=%d repeated current-rate wave: %+v", unobserved, decision)
+		}
+	}
+}
+
+func TestV01215TPSGateAllowsOnlyOneIdleProbeWithoutCurrentGeneration(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
+		AggregateTPS: 240, MeanActiveTPS: 24,
+	}
+	first := (tpsGate{}).evaluate(ProjectedState{TPS: snapshot})
+	second := (tpsGate{}).evaluate(ProjectedState{PendingPrefillSequences: 1, TPS: snapshot})
+	if !first.fits || first.sequenceLimit != 1 || second.fits ||
+		second.reason != ReasonTPSReference || second.sequenceLimit != 1 {
+		t.Fatalf("idle probe first=%+v second=%+v", first, second)
+	}
+}
