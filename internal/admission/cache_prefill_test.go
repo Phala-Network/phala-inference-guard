@@ -103,6 +103,50 @@ func TestV01215ControllerBoundsCacheCreditByRecentEvidence(t *testing.T) {
 	}
 }
 
+func TestV01215ControllerDoesNotReuseCacheEvidenceAcrossZeroDeltaPolls(t *testing.T) {
+	now := time.Unix(21_625, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 5_000))
+	publishObservation(t, controller, cacheObservation(capability, now.Add(time.Second), 10_000+32*1024, 5_000+32*1024))
+
+	const inputTokens = int64(16 * 1024)
+	handles := make([]ReservationHandle, 0, 2)
+	for index := 0; index < 2; index++ {
+		result := controller.Admit(
+			now.Add(time.Second+time.Duration(index+1)*time.Millisecond),
+			testEstimate(inputTokens, inputTokens, 256),
+		)
+		if !result.Decision.Admitted() || result.Decision.Work.PrefillComputeTokens != 4*1024 ||
+			!result.Handle.MarkForwarded() || !result.Handle.MarkFirstByte() {
+			t.Fatalf("cache-credit admission %d=%+v", index, result.Decision)
+		}
+		handles = append(handles, result.Handle)
+	}
+
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("start zero-delta sample window")
+	}
+	covered := cacheObservation(capability, now.Add(1500*time.Millisecond), 10_000+32*1024, 5_000+32*1024)
+	covered.UsedKVTokens = 2 * inputTokens
+	covered.Running = 2
+	if publication := controller.PublishObservation(window, covered); !publication.Accepted {
+		t.Fatalf("publish zero-delta covering sample=%+v", publication)
+	}
+
+	third := controller.Admit(
+		now.Add(1500*time.Millisecond+time.Microsecond),
+		testEstimate(inputTokens, inputTokens, 256),
+	)
+	if !third.Decision.Admitted() || third.Decision.Work.PrefillComputeTokens != inputTokens {
+		t.Fatalf("zero-delta poll reused exhausted cache evidence: %+v", third.Decision)
+	}
+	_ = third.Handle.Terminate(TerminalCancel)
+	for _, handle := range handles {
+		_ = handle.Terminate(TerminalSuccess)
+	}
+}
+
 func TestV01215ControllerColdTransitionStopsNewCreditWithoutInvalidatingPendingWork(t *testing.T) {
 	now := time.Unix(21_750, 0)
 	capability := testCapability()
