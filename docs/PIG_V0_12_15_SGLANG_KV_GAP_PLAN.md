@@ -1019,6 +1019,15 @@ The review found four additional release blockers:
    accepted aggregate. Inconsistent aggregate/maximum pairs must fail before
    work construction.
 
+A third review of the red design found a fifth blocker: the current tokenizer
+produces conservative approximate token upper bounds, not exact token counts or
+an exact KV-block phase. An estimate equal to the SGLang page size therefore
+does not prove that the real request is page aligned; the real count may be one
+token lower. The initial implementation must reserve the possible extra child
+tail page at every approximate boundary. A page-alignment discount is allowed
+only if a future estimator supplies explicit, validated exact-block-position
+evidence; backend kind or an approximate integer is not such evidence.
+
 The corrected minimal work contract is:
 
 ```text
@@ -1051,8 +1060,9 @@ Required new red/green evidence:
 
 - an approximate input upper bound at a different block phase cannot reduce
   future Decode reservation below one complete per-sequence horizon;
-- page-aligned and unaligned SGLang prompts with `n > 1` retain every child-tail
-  block through first-byte and the next metrics publication;
+- SGLang prompts with `n > 1` retain every possible child-tail block through
+  first-byte and the next metrics publication, including when the approximate
+  upper bound happens to equal a page boundary;
 - one vLLM child producing the first response byte cannot cover the other
   children's input or Prefill liability;
 - aggregate input or KV above `maximum * base_prompt_count` is rejected with

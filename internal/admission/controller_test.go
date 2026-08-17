@@ -248,6 +248,29 @@ func TestControllerUnknownWaitingStillAdmitsFittingMinimumRequest(t *testing.T) 
 	}
 }
 
+func TestV01215PrefillClassUsesBackendExpandedWork(t *testing.T) {
+	now := time.Unix(6_875, 0)
+	capability := testCapability()
+	controller, err := NewAdmissionController(ControllerConfig{
+		Capability: capability,
+		WorkProfile: predictive.RequestWorkProfile{
+			InputAccounting: predictive.InputAccountingDecodeSequences,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishObservation(t, controller, testObservation(capability, now, 0, 0, 0, 1, 0))
+	estimate := testEstimate(40*1024, 40*1024, 256)
+	estimate.DecodeSequences = 2
+
+	decision := controller.Admit(now.Add(time.Millisecond), estimate).Decision
+	if !decision.Admitted() || decision.Work.PrefillInputTokens != 80*1024 ||
+		decision.PrefillClass != PrefillWeighted {
+		t.Fatalf("backend-expanded Prefill was classified from stale selection tokens: %+v", decision)
+	}
+}
+
 func TestControllerStaleObservationReopensOnFreshSample(t *testing.T) {
 	now := time.Unix(7_000, 0)
 	capability := testCapability()

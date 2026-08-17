@@ -3,6 +3,8 @@ package admission
 import (
 	"testing"
 	"time"
+
+	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 func TestControllerInFlightSampleCannotEraseLaterTerminalDebt(t *testing.T) {
@@ -162,5 +164,48 @@ func TestV01215ControllerReservesAndReleasesMultiSequenceDemandAtomically(t *tes
 	if released.SequenceLiabilities != 0 || released.ResidualDebts != 0 ||
 		released.ReservationKVTokens != 0 {
 		t.Fatalf("multi-sequence release state=%+v", released)
+	}
+}
+
+func TestV01215VLLMFirstByteRetainsOtherChildPrefillAndInputKV(t *testing.T) {
+	now := time.Unix(13_500, 0)
+	capability := testCapability()
+	controller, err := NewAdmissionController(ControllerConfig{
+		Capability: capability,
+		WorkProfile: predictive.RequestWorkProfile{
+			InputAccounting: predictive.InputAccountingDecodeSequences,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishObservation(t, controller, testObservation(capability, now, 0, 0, 0, 1, 0))
+	estimate := testEstimate(63, 63, 1)
+	estimate.DecodeSequences = 2
+
+	result := controller.Admit(now.Add(time.Millisecond), estimate)
+	if !result.Decision.Admitted() || !result.Handle.MarkForwarded() ||
+		!result.Handle.MarkFirstByte() {
+		t.Fatalf("vLLM parallel lifecycle=%+v", result.Decision)
+	}
+	firstByte := controller.Snapshot(now.Add(2 * time.Millisecond)).State
+	if firstByte.PendingPrefillSequences == 0 || firstByte.PendingPrefillTokens == 0 ||
+		firstByte.ReservationKVTokens != result.Decision.Work.TotalKVTokens {
+		t.Fatalf("first byte released other vLLM child work: state=%+v work=%+v", firstByte, result.Decision.Work)
+	}
+
+	publishObservation(t, controller, testObservation(
+		capability,
+		now.Add(3*time.Millisecond),
+		capability.KVBlockSize,
+		1,
+		0,
+		2,
+		0,
+	))
+	covered := controller.Snapshot(now.Add(4 * time.Millisecond)).State
+	if covered.PendingPrefillSequences == 0 || covered.PendingPrefillTokens == 0 ||
+		covered.ReservationKVTokens <= result.Decision.Work.FutureKVTokens {
+		t.Fatalf("one materialized child covered all vLLM liabilities: state=%+v work=%+v", covered, result.Decision.Work)
 	}
 }
