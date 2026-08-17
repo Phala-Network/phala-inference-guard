@@ -1,13 +1,14 @@
 # Phala Inference Guard
 
 Phala Inference Guard (PIG) is a single-upstream predictive-admission proxy for
-OpenAI-compatible vLLM services. It estimates request size before an upstream
-call, combines that estimate with one Controller-owned coherent vLLM observation
-and every live reservation, and decides whether the post-admit state can
-preserve service quality.
+OpenAI-compatible vLLM and SGLang services. It estimates request size before an
+upstream call, combines that estimate with one Controller-owned coherent backend
+observation and every live reservation, and decides whether the post-admit state
+can preserve service quality.
 
-Current accepted source identity: `PIG-v0.12.13`. The Linux/amd64 registry image
-is published by digest as
+Current candidate source identity: `PIG-v0.12.14`. It is not an accepted or
+published image until the vLLM/SGLang adapter plan passes every release gate.
+The last accepted Linux/amd64 image remains `PIG-v0.12.13`, published by digest as
 `ghcr.io/phala-network/phala-inference-guard@sha256:3e714440e683ee2efdc1b7634e427f762b839faaf65a38723d14f8980f0ddd74`.
 Source and image acceptance do not by themselves imply a production deployment.
 
@@ -37,7 +38,7 @@ does not create a cooldown or delayed capacity lock.
 ```text
 bounded read-only JSON scan
   -> model-agnostic lexical input and output-horizon estimate
-  -> Controller-owned vLLM KV, running, waiting and preemption observation
+  -> Controller-owned backend KV, running, waiting and preemption observation
   -> positive reservation overlay and post-admit Context/KV/Prefill/TPS gates
   -> same-snapshot canonical probe for request versus load scope
   -> atomic enforce decision and reservation
@@ -100,7 +101,7 @@ and the projected base-plus-one TPS remain within five percent of the
 reference. It is a long-run operating target, not a promise that every request
 or every 500-ms interval stays above the value.
 
-The pre-forward sequence counter includes vLLM running and waiting plus
+The pre-forward sequence counter includes backend running and waiting plus
 watermark-bounded local reservations that may not yet be visible in metrics.
 The next covering poll absorbs those local contributions, preventing both a
 same-poll overshoot and a persistent double count.
@@ -164,15 +165,14 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image acceptance
-run on the dedicated c21 Linux workbench. Exact executable source `e260449` has
-the `PIG-v0.12.13` identity, passed the identity-specific source matrix, and is
-published under both `0.12.13` and immutable source tag
-`0.12.13-e2604495fdd5` at the accepted digest above. No Compose, deployment,
-Router, or live-traffic action is implied. Completed and superseded plans remain
-available from Git history instead of competing with the current contract. The
-active plan records the cleanup, sustained-TPS design, evidence, and release
-boundary:
+run on the dedicated c21 Linux workbench. Exact executable source `e260449` is
+the last accepted `PIG-v0.12.13` source and remains published under both
+`0.12.13` and immutable source tag `0.12.13-e2604495fdd5` at the accepted digest
+above. The `PIG-v0.12.14` candidate remains unpublished until the active adapter
+plan records complete source and live SGLang acceptance. No Compose, deployment,
+Router, or live-traffic action is implied by source identity alone.
 
 - [v0.12.13 sustained TPS reference and branch cleanup](docs/PIG_V0_12_13_SUSTAINED_TPS_REFERENCE_AND_BRANCH_CLEANUP_PLAN.md)
+- [v0.12.14 vLLM and SGLang backend adapters](docs/PIG_V0_12_14_VLLM_SGLANG_ADAPTER_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

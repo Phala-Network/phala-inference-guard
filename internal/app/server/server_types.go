@@ -12,10 +12,9 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.13 adds the optional sustained-TPS reference gate to the accepted
-// v0.12.12 Context/KV/Prefill architecture. Historical rejected candidates
-// remain diagnostic-only evidence.
-const version = "PIG-v0.12.13"
+// v0.12.14 keeps the v0.12.13 admission contract while isolating vLLM and
+// SGLang metric semantics behind framework-specific backend adapters.
+const version = "PIG-v0.12.14"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 

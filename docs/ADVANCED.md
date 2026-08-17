@@ -1,7 +1,7 @@
 # PIG Advanced Configuration
 
-This document describes the `PIG-v0.12.13` source contract. The assigned source
-identity does not by itself imply an accepted registry image or production
+This document describes the `PIG-v0.12.14` candidate source contract. The assigned
+source identity does not by itself imply an accepted registry image or production
 deployment. The loader exposes bounded overrides for controlled tests, but
 parser capability does not define what belongs in production Compose.
 
@@ -78,7 +78,7 @@ The sequence projection counts backend running and waiting plus only those
 local reservations newer than the latest observation watermark. The next
 covering poll absorbs that extra contribution. This prevents a concurrent
 same-poll burst from bypassing a learned limit while avoiding a permanent
-double count after vLLM exposes the request.
+double count after the backend exposes the request.
 
 Before the window has four qualified samples and eight qualified
 sequence-seconds, TPS warming admits at most two total sequences. If PIG starts
@@ -101,9 +101,11 @@ production knob.
 
 ## Startup-derived capability
 
-The startup probe requires one coherent vLLM metric identity and exact values
-for KV capacity, KV block size, used KV, running, waiting, generation tokens,
-and preemptions. PIG then performs at most one bounded read-only `/v1/models`
+The startup probe auto-detects exactly one coherent vLLM or SGLang metric
+identity and requires framework-correct KV capacity, block/page size, used KV,
+running, waiting, monotonic generation, and monotonic preemption signals. It
+never combines metric families from different frameworks. PIG then performs at
+most one bounded read-only `/v1/models`
 request. Automatic initialization succeeds only when the response contains
 exactly one model, its ID matches the metric identity, and `max_model_len` is
 positive. Missing, ambiguous, or inconsistent metadata fails startup; there is
@@ -132,7 +134,7 @@ PIG sends no completion, warmup, cache query, or performance probe during
 initialization. Backend busy/idle state does not change the profile. KV and
 Prefill parameters are frozen for the Controller lifetime and are never
 learned. Ordinary observation polls do not repeat metadata I/O. When monotonic
-counters indicate a vLLM runtime reset, an automatically initialized profile
+counters indicate a backend runtime reset, an automatically initialized profile
 performs one bounded `/v1/models` revalidation before publishing the reset
 sample; failure leaves the old observation to age stale, and a changed
 `max_model_len` closes capability availability.
