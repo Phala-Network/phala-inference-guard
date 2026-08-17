@@ -122,7 +122,7 @@ func testPolicy(t *testing.T) admissionPolicy {
 	if err := capability.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	policy, err := newAdmissionPolicy(capability)
+	policy, err := newAdmissionPolicy(capability, testRequestWorkProfile())
 	if err != nil {
 		t.Fatal(err)
 	}
