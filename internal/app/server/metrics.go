@@ -203,8 +203,16 @@ func projectedDecodeSequences(state coreadmission.ProjectedState) int {
 	if !ok {
 		return int(^uint(0) >> 1)
 	}
-	if state.RawRunning > tracked {
-		tracked = state.RawRunning
+	rawDemand, ok := addNonnegativeForMetrics(state.RawRunning, state.RawWaiting)
+	if !ok {
+		return int(^uint(0) >> 1)
+	}
+	rawDemand, ok = addNonnegativeForMetrics(rawDemand, state.UnobservedSequences)
+	if !ok {
+		return int(^uint(0) >> 1)
+	}
+	if rawDemand > tracked {
+		tracked = rawDemand
 	}
 	return nonnegativeInt(tracked)
 }
@@ -220,6 +228,7 @@ func applyTPSCapacityMetrics(input *metrics.PredictiveAdmissionInput, capacity c
 	input.TPSWindowQualifiedSequenceSeconds = snapshot.QualifiedSequenceSeconds
 	input.TPSWindowAggregate = snapshot.AggregateTPS
 	input.TPSWindowMeanActive = snapshot.MeanActiveTPS
+	input.TPSUnobservedSequences = capacity.State.UnobservedSequences
 	input.TPSSequenceLimit = capacity.MinimumDecision.TPSSequenceLimit
 	input.TPSCurrentSequences = capacity.MinimumDecision.TPSCurrentSequences
 	input.TPSPostAdmitSequences = capacity.MinimumDecision.TPSPostAdmitSequences

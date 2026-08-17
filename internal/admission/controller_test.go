@@ -395,11 +395,58 @@ func TestControllerTPSReservationAboveNonzeroRawCannotOvershootLimit(t *testing.
 		first.Decision.TPSCurrentSequences != 4 || first.Decision.TPSPostAdmitSequences != 5 {
 		t.Fatalf("first same-poll admission=%+v", first.Decision)
 	}
+	if !first.Handle.MarkForwarded() {
+		t.Fatal("first same-poll reservation did not reach the forwarded phase")
+	}
 	second := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
 	if second.Admitted() || second.Reason != ReasonTPSReference ||
 		second.TPSSequenceLimit != 5 || second.TPSCurrentSequences != 5 ||
-		second.TPSPostAdmitSequences != 6 || second.ReservationID != 0 {
+		second.TPSPostAdmitSequences != 6 || second.State.UnobservedSequences != 1 ||
+		second.ReservationID != 0 {
 		t.Fatalf("second same-poll decision overshot learned limit: %+v", second)
+	}
+}
+
+func TestControllerTPSCoveringSampleDoesNotDoubleCountForwardedReservation(t *testing.T) {
+	now := time.Unix(10_750, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t,
+		capability,
+		20,
+		testObservation(capability, now, 0, 4, 0, 0, 0),
+	)
+	for step := 1; step <= 4; step++ {
+		publishObservation(t, controller, testObservation(
+			capability,
+			now.Add(time.Duration(step)*time.Second),
+			0,
+			4,
+			0,
+			uint64(step*120),
+			0,
+		))
+	}
+
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	first := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate)
+	if !first.Decision.Admitted() || !first.Handle.MarkForwarded() {
+		t.Fatalf("forwarded reservation=%+v", first.Decision)
+	}
+	publishObservation(t, controller, testObservation(
+		capability,
+		now.Add(5*time.Second),
+		0,
+		5,
+		0,
+		600,
+		0,
+	))
+	second := controller.Admit(now.Add(5*time.Second+time.Millisecond), estimate).Decision
+	if !second.Admitted() || second.TPSSequenceLimit != 6 ||
+		second.TPSCurrentSequences != 5 || second.TPSPostAdmitSequences != 6 ||
+		second.State.UnobservedSequences != 0 {
+		t.Fatalf("covering sample double-counted forwarded reservation: %+v", second)
 	}
 }
 

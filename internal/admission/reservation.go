@@ -18,6 +18,7 @@ type reservation struct {
 	prefillClass      PrefillClass
 	phase             reservationPhase
 	inputCovered      bool
+	sequenceCovered   bool
 	admittedSequence  uint64
 	forwardedSequence uint64
 	firstByteSequence uint64
@@ -38,6 +39,9 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 			pendingPrefillSequences: 1,
 			liveReservations:        1,
 		}
+		if !r.sequenceCovered {
+			contribution.unobservedSequences = 1
+		}
 		switch r.prefillClass {
 		case PrefillRegular, PrefillWeighted:
 		case PrefillExclusive:
@@ -53,11 +57,15 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 		if r.inputCovered {
 			kvTokens = r.work.FutureKVTokens
 		}
-		return reservationOverlay{
+		contribution := reservationOverlay{
 			kvTokens:          kvTokens,
 			localActiveDecode: 1,
 			liveReservations:  1,
-		}, true
+		}
+		if !r.sequenceCovered {
+			contribution.unobservedSequences = 1
+		}
+		return contribution, true
 	case reservationResidualDebt:
 		return reservationOverlay{
 			kvTokens:      r.work.TotalKVTokens,
@@ -89,6 +97,9 @@ func addOverlay(left, right reservationOverlay) (reservationOverlay, bool) {
 	if result.localActiveDecode, ok = addNonnegativeInt64(left.localActiveDecode, right.localActiveDecode); !ok {
 		return reservationOverlay{}, false
 	}
+	if result.unobservedSequences, ok = addNonnegativeInt64(left.unobservedSequences, right.unobservedSequences); !ok {
+		return reservationOverlay{}, false
+	}
 	if result.liveReservations, ok = addNonnegativeInt64(left.liveReservations, right.liveReservations); !ok {
 		return reservationOverlay{}, false
 	}
@@ -105,6 +116,7 @@ func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) 
 		left.pendingExclusiveSequences < right.pendingExclusiveSequences ||
 		left.pendingQuiescentSequences < right.pendingQuiescentSequences ||
 		left.localActiveDecode < right.localActiveDecode ||
+		left.unobservedSequences < right.unobservedSequences ||
 		left.liveReservations < right.liveReservations ||
 		left.residualDebts < right.residualDebts {
 		return reservationOverlay{}, false
@@ -116,6 +128,7 @@ func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) 
 		pendingExclusiveSequences: left.pendingExclusiveSequences - right.pendingExclusiveSequences,
 		pendingQuiescentSequences: left.pendingQuiescentSequences - right.pendingQuiescentSequences,
 		localActiveDecode:         left.localActiveDecode - right.localActiveDecode,
+		unobservedSequences:       left.unobservedSequences - right.unobservedSequences,
 		liveReservations:          left.liveReservations - right.liveReservations,
 		residualDebts:             left.residualDebts - right.residualDebts,
 	}
@@ -136,5 +149,6 @@ func (o reservationOverlay) valid() bool {
 		o.pendingQuiescentSequences >= 0 &&
 		o.pendingExclusiveSequences <= o.pendingPrefillSequences &&
 		o.pendingQuiescentSequences <= o.pendingPrefillSequences &&
-		o.localActiveDecode >= 0 && o.liveReservations >= 0 && o.residualDebts >= 0
+		o.localActiveDecode >= 0 && o.unobservedSequences >= 0 &&
+		o.unobservedSequences <= o.liveReservations && o.liveReservations >= 0 && o.residualDebts >= 0
 }

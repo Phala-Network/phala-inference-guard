@@ -80,6 +80,7 @@ type PredictiveAdmissionInput struct {
 	TPSWindowQualifiedSequenceSeconds      float64
 	TPSWindowAggregate                     float64
 	TPSWindowMeanActive                    float64
+	TPSUnobservedSequences                 int64
 	TPSSequenceLimit                       int64
 	TPSCurrentSequences                    int64
 	TPSPostAdmitSequences                  int64
@@ -213,6 +214,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_tps_window_qualified_sequence_seconds %.6f\n", input.TPSWindowQualifiedSequenceSeconds)
 	fmt.Fprintf(w, "pig_predictive_tps_window_aggregate %.6f\n", input.TPSWindowAggregate)
 	fmt.Fprintf(w, "pig_predictive_tps_window_mean_active %.6f\n", input.TPSWindowMeanActive)
+	fmt.Fprintf(w, "pig_predictive_tps_unobserved_sequences %d\n", input.TPSUnobservedSequences)
 	fmt.Fprintf(w, "pig_predictive_tps_sequence_limit %d\n", input.TPSSequenceLimit)
 	fmt.Fprintf(w, "pig_predictive_tps_current_sequences %d\n", input.TPSCurrentSequences)
 	fmt.Fprintf(w, "pig_predictive_tps_post_admit_sequences %d\n", input.TPSPostAdmitSequences)

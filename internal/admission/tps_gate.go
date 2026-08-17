@@ -59,7 +59,14 @@ func projectedTPSSequences(state ProjectedState) (current, postAdmit int64, vali
 	if !ok {
 		return math.MaxInt64, math.MaxInt64, false
 	}
-	current = state.RawRunning
+	rawDemand, ok := addNonnegativeInt64(state.RawRunning, state.RawWaiting)
+	if !ok {
+		return math.MaxInt64, math.MaxInt64, false
+	}
+	current, ok = addNonnegativeInt64(rawDemand, state.UnobservedSequences)
+	if !ok {
+		return math.MaxInt64, math.MaxInt64, false
+	}
 	if tracked > current {
 		current = tracked
 	}

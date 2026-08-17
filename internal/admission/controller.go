@@ -506,22 +506,22 @@ func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reserva
 		if !oldValid {
 			return reservationOverlay{}, false
 		}
-		switch {
-		case item.phase == reservationActiveDecode && !item.inputCovered && item.firstByteSequence <= watermark:
-			next := item
-			next.inputCovered = true
+		next, remove, changed := reconcileReservation(item, watermark)
+		if remove {
+			var ok bool
+			nextOverlay, ok = subtractOverlay(nextOverlay, oldContribution)
+			if !ok {
+				return reservationOverlay{}, false
+			}
+			continue
+		}
+		if changed {
 			newContribution, newValid := next.contribution()
 			if !newValid {
 				return reservationOverlay{}, false
 			}
 			var ok bool
 			nextOverlay, ok = replaceOverlay(nextOverlay, oldContribution, newContribution)
-			if !ok {
-				return reservationOverlay{}, false
-			}
-		case item.phase == reservationResidualDebt && item.terminalSequence <= watermark:
-			var ok bool
-			nextOverlay, ok = subtractOverlay(nextOverlay, oldContribution)
 			if !ok {
 				return reservationOverlay{}, false
 			}
@@ -532,14 +532,33 @@ func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reserva
 
 func (c *AdmissionController) applyReconciliationLocked(watermark uint64) {
 	for id, item := range c.reservations {
-		switch {
-		case item.phase == reservationActiveDecode && !item.inputCovered && item.firstByteSequence <= watermark:
-			item.inputCovered = true
-			c.reservations[id] = item
-		case item.phase == reservationResidualDebt && item.terminalSequence <= watermark:
+		next, remove, changed := reconcileReservation(item, watermark)
+		if remove {
 			delete(c.reservations, id)
+			continue
+		}
+		if changed {
+			c.reservations[id] = next
 		}
 	}
+}
+
+func reconcileReservation(item reservation, watermark uint64) (reservation, bool, bool) {
+	if item.phase == reservationResidualDebt && item.terminalSequence > 0 &&
+		item.terminalSequence <= watermark {
+		return reservation{}, true, true
+	}
+	next := item
+	if item.phase == reservationForwardedPrefill && !item.sequenceCovered &&
+		item.forwardedSequence > 0 && item.forwardedSequence <= watermark {
+		next.sequenceCovered = true
+	}
+	if item.phase == reservationActiveDecode && item.firstByteSequence > 0 &&
+		item.firstByteSequence <= watermark {
+		next.sequenceCovered = true
+		next.inputCovered = true
+	}
+	return next, false, next != item
 }
 
 func (c *AdmissionController) slowOverlayLocked() (reservationOverlay, bool) {

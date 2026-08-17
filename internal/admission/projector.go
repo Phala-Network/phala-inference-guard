@@ -19,6 +19,7 @@ type reservationOverlay struct {
 	pendingExclusiveSequences int64
 	pendingQuiescentSequences int64
 	localActiveDecode         int64
+	unobservedSequences       int64
 	liveReservations          int64
 	residualDebts             int64
 }
@@ -39,6 +40,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		PendingExclusiveSequences: overlay.pendingExclusiveSequences,
 		PendingQuiescentSequences: overlay.pendingQuiescentSequences,
 		LocalActiveDecode:         overlay.localActiveDecode,
+		UnobservedSequences:       overlay.unobservedSequences,
 		LiveReservations:          overlay.liveReservations,
 		ResidualDebts:             overlay.residualDebts,
 		RawRunning:                observed.observation.Running,
@@ -61,7 +63,8 @@ func validProjectedState(state ProjectedState) bool {
 		state.PendingExclusiveSequences >= 0 && state.PendingQuiescentSequences >= 0 &&
 		state.PendingExclusiveSequences <= state.PendingPrefillSequences &&
 		state.PendingQuiescentSequences <= state.PendingPrefillSequences &&
-		state.LocalActiveDecode >= 0 && state.LiveReservations >= 0 &&
+		state.LocalActiveDecode >= 0 && state.UnobservedSequences >= 0 &&
+		state.UnobservedSequences <= state.LiveReservations && state.LiveReservations >= 0 &&
 		state.ResidualDebts >= 0 && state.RawRunning >= 0 && state.RawWaiting >= 0 &&
 		state.PreviousRawRunning >= 0 && state.ObservationInterval >= 0 &&
 		validTPSSnapshot(state.TPS)
