@@ -396,6 +396,45 @@ func TestControllerTPSSameSnapshotBurstCannotExceedSequenceLimit(t *testing.T) {
 	}
 }
 
+func TestV01215ControllerMatureTPSIdleRefillUsesBoundedWave(t *testing.T) {
+	now := time.Unix(10_250, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(t, capability, 20, testObservation(capability, now, 0, 4, 0, 0, 0))
+	for step := 1; step <= 4; step++ {
+		running := int64(4)
+		if step == 4 {
+			running = 0
+		}
+		publishObservation(t, controller, testObservation(
+			capability,
+			now.Add(time.Duration(step)*time.Second),
+			0,
+			running,
+			0,
+			uint64(step*80),
+			0,
+		))
+	}
+	idleAt := now.Add(4500 * time.Millisecond)
+	publishObservation(t, controller, testObservation(capability, idleAt, 0, 0, 0, 320, 0))
+
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	for admitted := int64(1); admitted <= tpsWarmingSequenceLimit; admitted++ {
+		decision := controller.Admit(idleAt.Add(time.Millisecond), estimate).Decision
+		if !decision.Admitted() || decision.TPSSequenceLimit != tpsWarmingSequenceLimit ||
+			decision.TPSCurrentSequences != admitted-1 || decision.TPSPostAdmitSequences != admitted {
+			t.Fatalf("bounded idle refill %d=%+v", admitted, decision)
+		}
+	}
+	protected := controller.Admit(idleAt.Add(time.Millisecond), estimate).Decision
+	if protected.Admitted() || protected.Reason != ReasonTPSReference ||
+		protected.TPSSequenceLimit != tpsWarmingSequenceLimit ||
+		protected.TPSCurrentSequences != tpsWarmingSequenceLimit ||
+		protected.TPSPostAdmitSequences != tpsWarmingSequenceLimit+1 {
+		t.Fatalf("bounded idle refill overflow=%+v", protected)
+	}
+}
+
 func TestControllerTPSReservationAboveNonzeroRawCannotOvershootLimit(t *testing.T) {
 	now := time.Unix(10_500, 0)
 	capability := testCapability()

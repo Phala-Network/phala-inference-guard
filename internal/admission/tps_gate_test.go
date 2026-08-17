@@ -322,7 +322,7 @@ func TestV01215TPSGateUsesCurrentMeanForOneMarginalHealthyWave(t *testing.T) {
 	}
 }
 
-func TestV01215TPSGateAllowsOnlyOneIdleProbeWithoutCurrentGeneration(t *testing.T) {
+func TestV01215TPSGateAllowsBoundedIdleRefillWithoutCurrentGeneration(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 20,
 		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
@@ -330,8 +330,11 @@ func TestV01215TPSGateAllowsOnlyOneIdleProbeWithoutCurrentGeneration(t *testing.
 	}
 	first := (tpsGate{}).evaluate(ProjectedState{TPS: snapshot})
 	second := (tpsGate{}).evaluate(ProjectedState{PendingPrefillSequences: 1, TPS: snapshot})
-	if !first.fits || first.sequenceLimit != 1 || second.fits ||
-		second.reason != ReasonTPSReference || second.sequenceLimit != 1 {
-		t.Fatalf("idle probe first=%+v second=%+v", first, second)
+	third := (tpsGate{}).evaluate(ProjectedState{PendingPrefillSequences: 2, TPS: snapshot})
+	if !first.fits || first.sequenceLimit != tpsWarmingSequenceLimit ||
+		!second.fits || second.sequenceLimit != tpsWarmingSequenceLimit ||
+		third.fits || third.reason != ReasonTPSReference ||
+		third.sequenceLimit != tpsWarmingSequenceLimit {
+		t.Fatalf("bounded idle refill first=%+v second=%+v third=%+v", first, second, third)
 	}
 }
