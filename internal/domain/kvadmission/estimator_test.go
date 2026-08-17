@@ -135,35 +135,6 @@ func TestFixedMarginTokensRejectsInvalidAndOverflowingInputs(t *testing.T) {
 	}
 }
 
-func TestAddApproximateRoundedRunRejectsInvalidAndOverflowingInputs(t *testing.T) {
-	for _, test := range []struct {
-		name          string
-		total         *int64
-		runBytes      int64
-		bytesPerToken int64
-	}{
-		{name: "nil total", runBytes: 1, bytesPerToken: 4},
-		{name: "negative run", total: new(int64), runBytes: -1, bytesPerToken: 4},
-		{name: "zero divisor", total: new(int64), runBytes: 1},
-		{name: "rounding overflow", total: new(int64), runBytes: math.MaxInt64, bytesPerToken: 4},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			if addApproximateRoundedRun(test.total, test.runBytes, test.bytesPerToken) {
-				t.Fatalf("accepted invalid rounded run: %+v", test)
-			}
-		})
-	}
-
-	total := int64(math.MaxInt64 - 3)
-	if addApproximateRoundedRun(&total, 1, 4) {
-		t.Fatal("accepted rounded run whose quarter-token sum overflows")
-	}
-	total = 0
-	if !addApproximateRoundedRun(&total, 5, 4) || total != 8 {
-		t.Fatalf("rounded five-byte run=%d want 8 quarter-token units", total)
-	}
-}
-
 func TestApproximateJSONStringTokensSmallPrefixDoesNotDominate(t *testing.T) {
 	plain := []byte(strings.Repeat("word ", 8*1024))
 	prefixed := append([]byte(nil), plain...)
@@ -185,8 +156,9 @@ func TestApproximateJSONStringTokensSmallPrefixDoesNotDominate(t *testing.T) {
 
 func TestApproximateJSONStringTokensChargesEachShortLexicalRun(t *testing.T) {
 	const lexicalRuns = 60_000
+	const spaceBytesPerToken = 32
 	raw := []byte(strings.Repeat("x ", lexicalRuns))
-	want := int64(lexicalRuns + ceilDiv(lexicalRuns, approximateSpaceBytesPerToken))
+	want := int64(lexicalRuns + ceilDiv(lexicalRuns, spaceBytesPerToken))
 
 	tokens, known := approximateJSONStringTokens(raw)
 	if !known || tokens != want {
@@ -196,8 +168,9 @@ func TestApproximateJSONStringTokensChargesEachShortLexicalRun(t *testing.T) {
 
 func TestApproximateJSONStringTokensChargesWhitespaceInsideTheString(t *testing.T) {
 	const spaces = 64 * 1024
+	const spaceBytesPerToken = 32
 	tokens, known := approximateJSONStringTokens([]byte(strings.Repeat(" ", spaces)))
-	want := int64(ceilDiv(spaces, approximateSpaceBytesPerToken))
+	want := int64(ceilDiv(spaces, spaceBytesPerToken))
 	if !known || tokens != want {
 		t.Fatalf("string whitespace=%d/%t want %d/true", tokens, known, want)
 	}
