@@ -182,7 +182,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 				cache.leaseSequence = c.cacheLeaseSequence
 			}
 		}
-		nextOverlay, ok := c.reconciledOverlayLocked(window.eventSequence)
+		nextOverlay, forwardedSequenceLiabilities, ok := c.reconciledOverlayLocked(window.eventSequence)
 		if !ok {
 			c.failClosedLocked(ReasonControllerUnavailable)
 			return PublicationResult{Reason: ReasonControllerUnavailable, RuntimeEpoch: c.runtimeEpoch}
@@ -199,6 +199,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			running:                   observation.Running,
 			previousLocalActiveDecode: c.observation.localActiveDecode,
 			localActiveDecode:         c.overlay.localActiveDecode,
+			forwardedSequenceLiabilities: forwardedSequenceLiabilities,
 		}) {
 			c.failClosedLocked(ReasonCounterOverflow)
 			return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
@@ -550,35 +551,46 @@ func (c *AdmissionController) failClosedLocked(reason Reason) {
 	c.tpsWindow.reset()
 }
 
-func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reservationOverlay, bool) {
+func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reservationOverlay, int64, bool) {
 	nextOverlay := c.overlay
+	var forwardedSequenceLiabilities int64
 	for _, item := range c.reservations {
+		if item.forwardedSequence > 0 && item.forwardedSequence <= watermark {
+			var ok bool
+			forwardedSequenceLiabilities, ok = addNonnegativeInt64(
+				forwardedSequenceLiabilities,
+				item.work.Estimate.DecodeSequences,
+			)
+			if !ok {
+				return reservationOverlay{}, 0, false
+			}
+		}
 		oldContribution, oldValid := item.contribution()
 		if !oldValid {
-			return reservationOverlay{}, false
+			return reservationOverlay{}, 0, false
 		}
 		next, remove, changed := reconcileReservation(item, watermark)
 		if remove {
 			var ok bool
 			nextOverlay, ok = subtractOverlay(nextOverlay, oldContribution)
 			if !ok {
-				return reservationOverlay{}, false
+				return reservationOverlay{}, 0, false
 			}
 			continue
 		}
 		if changed {
 			newContribution, newValid := next.contribution()
 			if !newValid {
-				return reservationOverlay{}, false
+				return reservationOverlay{}, 0, false
 			}
 			var ok bool
 			nextOverlay, ok = replaceOverlay(nextOverlay, oldContribution, newContribution)
 			if !ok {
-				return reservationOverlay{}, false
+				return reservationOverlay{}, 0, false
 			}
 		}
 	}
-	return nextOverlay, true
+	return nextOverlay, forwardedSequenceLiabilities, true
 }
 
 func (c *AdmissionController) applyReconciliationLocked(watermark uint64) {

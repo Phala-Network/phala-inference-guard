@@ -68,7 +68,8 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 	w.expire(sample.end)
 	if sample.start.IsZero() || sample.end.IsZero() || sample.maximumInterval <= 0 ||
 		sample.previousRunning < 0 || sample.running < 0 ||
-		sample.previousLocalActiveDecode < 0 || sample.localActiveDecode < 0 {
+		sample.previousLocalActiveDecode < 0 || sample.localActiveDecode < 0 ||
+		sample.forwardedSequenceLiabilities < 0 {
 		return true
 	}
 	interval := sample.end.Sub(sample.start)
@@ -81,6 +82,7 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		sample.running,
 		sample.previousLocalActiveDecode,
 		sample.localActiveDecode,
+		sample.forwardedSequenceLiabilities,
 	)
 	sequenceCountReliable := activeSequences > 0
 	knownDecode := sample.previousLocalActiveDecode > 0 || sample.localActiveDecode > 0
