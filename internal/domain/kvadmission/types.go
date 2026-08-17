@@ -2,6 +2,13 @@ package kvadmission
 
 import predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 
+type InputEstimateConfidence string
+
+const (
+	InputEstimateLexical      InputEstimateConfidence = "lexical"
+	InputEstimateConservative InputEstimateConfidence = "conservative"
+)
+
 type Cost struct {
 	Supported                   bool
 	UnsupportedReason           string
@@ -21,6 +28,7 @@ type Cost struct {
 	BoundedDecodeTokens         int64
 	BasePromptCount             int64
 	DecodeSequences             int64
+	InputEstimateConfidence     InputEstimateConfidence
 	Estimate                    predictive.RequestEstimate
 }
 

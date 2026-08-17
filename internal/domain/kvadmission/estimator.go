@@ -12,6 +12,8 @@ import (
 const (
 	fixedKVReservationMarginNumerator   int64 = 9
 	fixedKVReservationMarginDenominator int64 = 8
+	conservativeMarginNumerator         int64 = 3
+	conservativeMarginDenominator       int64 = 2
 )
 
 func EstimateJSON(body []byte, maxOutputTokens int, hasMaxOutputTokens bool, cfg EstimatorConfig) Cost {
@@ -128,7 +130,20 @@ func estimateJSON(
 	cost.EstimatedInputHigh = high
 	cost.BoundedDecodeTokens = int64(decode)
 	maximumSequenceInput, valid := maximumSequenceInputTokens(cost, shape)
-	if !valid || !setTextPredictiveEstimate(&cost, maximumSequenceInput) {
+	maximumSequenceHigh, highValid := maximumSequenceEstimatedInputHigh(
+		cost,
+		shape,
+		features,
+		cfg,
+		len(body),
+	)
+	conservative := features.ConservativeInputEstimate || cost.ToolSchemaBytes > 0 || cost.ModalityCount > 0
+	if !valid || !highValid || !setTextPredictiveEstimate(
+		&cost,
+		maximumSequenceInput,
+		maximumSequenceHigh,
+		conservative,
+	) {
 		cost.UnsupportedReason = "request_estimate_overflow"
 		return cost
 	}
@@ -167,6 +182,7 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 		BasePromptCount:                         cost.BasePromptCount,
 		DecodeSequences:                         cost.DecodeSequences,
 	}
+	cost.InputEstimateConfidence = InputEstimateConservative
 	if cost.Estimate.Validate() != nil {
 		cost.UnsupportedReason = "request_estimate_overflow"
 		return cost
@@ -175,8 +191,14 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 	return cost
 }
 
-func setTextPredictiveEstimate(cost *Cost, maximumSequenceInput int64) bool {
+func setTextPredictiveEstimate(
+	cost *Cost,
+	maximumSequenceInput,
+	maximumSequenceHigh int64,
+	conservative bool,
+) bool {
 	if cost == nil || cost.EstimatedInputHigh <= 0 || maximumSequenceInput <= 0 ||
+		maximumSequenceHigh <= 0 || maximumSequenceHigh > cost.EstimatedInputHigh ||
 		cost.BoundedDecodeTokens < 0 {
 		return false
 	}
@@ -186,23 +208,40 @@ func setTextPredictiveEstimate(cost *Cost, maximumSequenceInput int64) bool {
 	if cost.ModalityCount > 0 || !known || selection <= 0 {
 		selection = cost.EstimatedInputHigh
 		reservation = cost.EstimatedInputHigh
-		maximumReservation = reservation
+		maximumReservation = maximumSequenceHigh
+		cost.InputEstimateConfidence = InputEstimateConservative
 	} else {
+		marginNumerator := fixedKVReservationMarginNumerator
+		marginDenominator := fixedKVReservationMarginDenominator
+		cost.InputEstimateConfidence = InputEstimateLexical
+		if conservative {
+			marginNumerator = conservativeMarginNumerator
+			marginDenominator = conservativeMarginDenominator
+			cost.InputEstimateConfidence = InputEstimateConservative
+		}
 		var ok bool
 		reservation, ok = fixedMarginTokensForSequences(
 			selection,
 			cost.BasePromptCount,
-			fixedKVReservationMarginNumerator,
-			fixedKVReservationMarginDenominator,
+			marginNumerator,
+			marginDenominator,
 		)
 		if !ok {
 			return false
 		}
 		maximumReservation, ok = fixedMarginTokens(
 			maximumSequenceInput,
-			fixedKVReservationMarginNumerator,
-			fixedKVReservationMarginDenominator,
+			marginNumerator,
+			marginDenominator,
 		)
+		if conservative {
+			if cost.EstimatedInputHigh > reservation {
+				reservation = cost.EstimatedInputHigh
+			}
+			if maximumSequenceHigh > maximumReservation {
+				maximumReservation = maximumSequenceHigh
+			}
+		}
 		if !ok || maximumReservation > reservation {
 			return false
 		}
@@ -254,6 +293,52 @@ func maximumSequenceInputTokens(
 	return maximum, true
 }
 
+func maximumSequenceEstimatedInputHigh(
+	cost Cost,
+	shape RequestShape,
+	features jsonFeatures,
+	cfg EstimatorConfig,
+	bodyBytes int,
+) (int64, bool) {
+	if cost.EstimatedInputHigh <= 0 || shape.PromptBatchSize <= 0 ||
+		shape.PromptStringBytes < 0 || shape.MaximumPromptStringBytes < 0 ||
+		shape.MaximumPromptStringBytes > shape.PromptStringBytes ||
+		shape.PromptStringBytes > int64(features.StringValueBytes) ||
+		shape.PromptStringBytes > int64(bodyBytes) ||
+		shape.PromptStringBytes > int64(math.MaxInt) ||
+		shape.MaximumPromptStringBytes > int64(math.MaxInt) {
+		return 0, false
+	}
+	if shape.PromptBatchSize == 1 {
+		return cost.EstimatedInputHigh, true
+	}
+
+	promptBytes := int(shape.PromptStringBytes)
+	maximumPromptBytes := int(shape.MaximumPromptStringBytes)
+	maximumStringBytes := features.StringValueBytes - promptBytes + maximumPromptBytes
+	maximumBodyBytes := bodyBytes - promptBytes + maximumPromptBytes
+	textHigh := ceilDiv(maximumStringBytes, cfg.MinBytesPerToken)
+	toolHigh := ceilDiv(cost.ToolSchemaBytes, cfg.ToolMinBytesPerToken)
+	templateHigh := cost.MessageCount * cfg.TemplateTokensPerMessageHigh
+	modalityHigh := cost.ModalityCount * cfg.ModalityTokensHigh
+	high := int64(textHigh + toolHigh + templateHigh + modalityHigh)
+	wholeBodyHigh := int64(ceilDiv(maximumBodyBytes, cfg.MinBytesPerToken) + templateHigh + modalityHigh)
+	if high < wholeBodyHigh {
+		high = wholeBodyHigh
+	}
+	if high > math.MaxInt64-shape.MaximumExplicitPromptTokens {
+		return 0, false
+	}
+	high += shape.MaximumExplicitPromptTokens
+	if high < 1 {
+		high = 1
+	}
+	if high > cost.EstimatedInputHigh {
+		return 0, false
+	}
+	return high, true
+}
+
 func addRequestShapeTokens(left, right int64) (int64, bool) {
 	if left < 0 || right < 0 || left > math.MaxInt64-right {
 		return 0, false
@@ -294,6 +379,7 @@ type jsonFeatures struct {
 	ModalityCount               int
 	ApproximateInputTokens      int64
 	ApproximateInputTokensKnown bool
+	ConservativeInputEstimate   bool
 }
 
 func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
@@ -333,14 +419,8 @@ func scanJSONFeatures(body []byte) (jsonFeatures, bool) {
 			next := skipJSONSpace(body, closing+1)
 			if next >= len(body) || body[next] != ':' {
 				features.StringValueBytes += len(raw)
-				hint, known := int64(0), true
-				switch len(raw) {
-				case 0:
-				case 1, 2, 3:
-					hint = 1
-				default:
-					hint, known = approximateJSONStringTokens(raw)
-				}
+				hint, conservative, known := approximateJSONStringTokensWithRisk(raw)
+				features.ConservativeInputEstimate = features.ConservativeInputEstimate || conservative
 				if known {
 					if !addApproximateInputTokens(&features.ApproximateInputTokens, hint) {
 						features.ApproximateInputTokensKnown = false

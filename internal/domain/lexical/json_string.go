@@ -15,11 +15,23 @@ const (
 // EstimateJSONStringTokens returns a rough model-neutral token count for one
 // raw JSON string value. The input excludes the surrounding quotes.
 func EstimateJSONStringTokens(raw []byte) (int64, bool) {
+	tokens, _, valid := EstimateJSONStringTokensWithRisk(raw)
+	return tokens, valid
+}
+
+// EstimateJSONStringTokensWithRisk also reports lexical shapes for which a
+// narrow fixed margin is not a suitable hard KV or Context estimate.
+func EstimateJSONStringTokensWithRisk(raw []byte) (tokens int64, conservative bool, valid bool) {
 	if len(raw) == 0 {
-		return 0, true
+		return 0, false, true
 	}
 	if len(raw) <= 3 {
-		return 1, true
+		for _, value := range raw {
+			if value == '\\' || value >= 0x80 {
+				conservative = true
+			}
+		}
+		return 1, conservative, true
 	}
 
 	var quarterTokenUnits int64
@@ -29,16 +41,20 @@ func EstimateJSONStringTokens(raw []byte) (int64, bool) {
 	var seenHigh uint64
 	denseASCIIBytes := 0
 	transitions := 0
+	hasEscapeOrNonASCII := false
 	previous := raw[0]
 	for index, value := range raw {
 		if index > 0 && value != previous {
 			transitions++
 		}
 		previous = value
+		if value == '\\' || value >= 0x80 {
+			hasEscapeOrNonASCII = true
+		}
 		if value < 0x80 && isASCIIDigit(value) {
 			if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) ||
 				!addQuarterTokenUnits(&quarterTokenUnits, ASCIIBytesPerToken) {
-				return 0, false
+				return 0, false, false
 			}
 			asciiWordRunBytes = 0
 			denseASCIIBytes++
@@ -51,7 +67,7 @@ func EstimateJSONStringTokens(raw []byte) (int64, bool) {
 		}
 		if value < 0x80 && isASCIIWord(value) {
 			if asciiWordRunBytes == math.MaxInt64 {
-				return 0, false
+				return 0, false, false
 			}
 			asciiWordRunBytes++
 			denseASCIIBytes++
@@ -63,34 +79,34 @@ func EstimateJSONStringTokens(raw []byte) (int64, bool) {
 			continue
 		}
 		if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) {
-			return 0, false
+			return 0, false, false
 		}
 		asciiWordRunBytes = 0
 		switch {
 		case value < 0x80 && isDenseASCII(value):
 			if !addQuarterTokenUnits(&quarterTokenUnits, ASCIIBytesPerToken) {
-				return 0, false
+				return 0, false, false
 			}
 			denseASCIIBytes++
 			seenLow |= uint64(1) << value
 		case value < 0x80 && isJSONSpace(value):
 			if stringSpaceBytes == math.MaxInt64 {
-				return 0, false
+				return 0, false, false
 			}
 			stringSpaceBytes++
 		case value < 0x80:
 			if !addQuarterTokenUnits(&quarterTokenUnits, ASCIIBytesPerToken) {
-				return 0, false
+				return 0, false, false
 			}
 		case value&0xc0 != 0x80:
 			if !addQuarterTokenUnits(&quarterTokenUnits, ASCIIBytesPerToken) {
-				return 0, false
+				return 0, false, false
 			}
 		}
 	}
 	if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) ||
 		!addRoundedRun(&quarterTokenUnits, stringSpaceBytes, spaceBytesPerToken) {
-		return 0, false
+		return 0, false, false
 	}
 
 	distinct := bits.OnesCount64(seenLow) + bits.OnesCount64(seenHigh)
@@ -101,7 +117,7 @@ func EstimateJSONStringTokens(raw []byte) (int64, bool) {
 		transitions >= minimumDenseTransitions
 	if denseUnbrokenASCII {
 		if int64(len(raw)) > math.MaxInt64/3 {
-			return 0, false
+			return 0, false, false
 		}
 		denseUnits := int64(len(raw)) * 3
 		if quarterTokenUnits < denseUnits {
@@ -109,9 +125,11 @@ func EstimateJSONStringTokens(raw []byte) (int64, bool) {
 		}
 	}
 	if quarterTokenUnits <= 0 || quarterTokenUnits > math.MaxInt64-(ASCIIBytesPerToken-1) {
-		return 0, quarterTokenUnits == 0
+		return 0, false, quarterTokenUnits == 0
 	}
-	return (quarterTokenUnits + ASCIIBytesPerToken - 1) / ASCIIBytesPerToken, true
+	return (quarterTokenUnits + ASCIIBytesPerToken - 1) / ASCIIBytesPerToken,
+		hasEscapeOrNonASCII || denseUnbrokenASCII,
+		true
 }
 
 func addRoundedRun(total *int64, runBytes, bytesPerToken int64) bool {
