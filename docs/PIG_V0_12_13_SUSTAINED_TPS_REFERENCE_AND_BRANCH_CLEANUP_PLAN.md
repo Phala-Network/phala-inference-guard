@@ -678,8 +678,8 @@ matrix. Router and production changes require a later explicit step.
 - [x] WIP source commit `1da2644` pushed to
   `pig-origin/codex/pig-v0.12.13-tps-reference`; it is explicitly unverified and
   is not a release identity
-- [x] Pass 3 source matrix permits assigning the v0.12.13 runtime/OCI identity;
-  identity is not assigned yet and will require a fresh complete matrix
+- [x] pre-identity Pass 3 source matrix permitted assigning the v0.12.13
+  runtime/OCI identity and required a fresh identity-specific complete matrix
 - [x] version identity assigned as runtime `PIG-v0.12.13` and OCI `0.12.13`
 - [x] identity-specific focused and complete c21 matrices green for exact
   release source `e2604495fdd5c61ed4699772dd0ac99bad16b386`

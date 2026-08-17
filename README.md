@@ -161,13 +161,13 @@ Metrics and administrative endpoints require the configured bearer token.
 
 ## Development gates
 
-Executable Go tests, race checks, simulations, benchmarks, and any later image
-build are run on the dedicated c21 Linux workbench. The current development
-branch has not been assigned another `0.12.x` release identity and has no
-accepted image. Completed and superseded plans remain available from Git
-history instead of competing with the current contract. The active plan records
-the cleanup, sustained-TPS design, evidence, and gates that must pass before
-versioning or image work:
+Executable Go tests, race checks, simulations, benchmarks, and image acceptance
+run on the dedicated c21 Linux workbench. Exact executable source `e260449` has
+the `PIG-v0.12.13` identity and passed the identity-specific source matrix; this
+does not yet imply an accepted registry image or deployment. Completed and
+superseded plans remain available from Git history instead of competing with
+the current contract. The active plan records the cleanup, sustained-TPS
+design, evidence, and remaining release gates:
 
 - [v0.12.13 sustained TPS reference and branch cleanup](docs/PIG_V0_12_13_SUSTAINED_TPS_REFERENCE_AND_BRANCH_CLEANUP_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
