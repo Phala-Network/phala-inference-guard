@@ -51,7 +51,20 @@ func TestV01215ConservativePromptBatchFitsPerSequenceContext(t *testing.T) {
 	now := time.Unix(1_500, 0)
 	prompt := strings.Repeat("中", 250_000)
 	body := []byte(`{"model":"model-agnostic","prompt":["` + prompt + `","` + prompt + `"],"max_tokens":256}`)
-	cost := kvadmission.EstimateJSON(body, 256, true, kvadmission.DefaultEstimatorConfig())
+	cost := kvadmission.EstimateValidatedJSONWithShape(
+		body,
+		256,
+		true,
+		kvadmission.RequestShape{
+			PromptBatchSize:                2,
+			PromptStringBytes:              1_500_000,
+			MaximumPromptStringBytes:       750_000,
+			PromptApproximateTokens:        500_000,
+			MaximumPromptApproximateTokens: 250_000,
+			DecodeSequences:                2,
+		},
+		kvadmission.DefaultEstimatorConfig(),
+	)
 	estimate, known := cost.PredictiveEstimate()
 	if !known || estimate.InputEstimateConfidence != predictive.InputEstimateConfidenceConservative ||
 		estimate.BasePromptCount != 2 || estimate.DecodeSequences != 2 ||
@@ -61,6 +74,8 @@ func TestV01215ConservativePromptBatchFitsPerSequenceContext(t *testing.T) {
 	}
 
 	capability := testCapability()
+	capability.MaxModelLenTokens = 400_000
+	capability.MaximumInputTokens = capability.MaxModelLenTokens - capability.MinimumDecodeHorizonTokens
 	if estimate.KVReservationInputTokens <= capability.MaxModelLenTokens ||
 		estimate.MaximumSequenceKVReservationInputTokens > capability.MaximumInputTokens {
 		t.Fatalf("fixture does not separate aggregate and per-sequence context: estimate=%+v capability=%+v", estimate, capability)
