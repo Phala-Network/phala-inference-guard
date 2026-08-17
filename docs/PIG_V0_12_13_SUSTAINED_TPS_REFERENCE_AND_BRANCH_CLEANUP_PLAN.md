@@ -850,3 +850,23 @@ Because these corrections change executable test code and simulation
 accounting after round 4, round 4 is retained as prior green evidence but is not
 the final release gate. Commit and push the corrections, reproduce them on c21,
 then rerun the applicable complete matrix.
+
+### 2026-08-17 round 5: representative matrix assertion corrected
+
+Review corrections were committed and pushed as
+`8ffae0cb704f8fb236c2083a9664c47950255df1`. c21 formatting and the admission,
+config, server, and metrics focused packages passed. The expanded simulation
+test failed only for `prefill-quiescent-cancel-recovery`:
+
+```text
+reference disabled: hard-fit idle rejects=1, maximum idle=0.4s
+reference 20:       hard-fit idle rejects=1, maximum idle=0.4s
+```
+
+All other reported metrics were identical as well. This is the scenario's
+existing request-specific retry/recovery behavior, not a TPS regression or
+self-lock; one 0.4-second protection is within the accepted single 500ms poll.
+The new assertion was therefore too strict. Correct it to require that enabling
+TPS adds no hard-fit idle rejection versus the disabled baseline and that the
+maximum idle-with-demand interval remains at most one poll. The production
+Controller remains unchanged. Rerun focused evidence from a new commit.

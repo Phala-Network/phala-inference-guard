@@ -250,7 +250,7 @@ func TestTPSReferenceSafetyAcrossRepresentativePressureScenarios(t *testing.T) {
 			if candidate.Preemptions > baseline.Preemptions {
 				t.Fatalf("new preemptions: baseline=%d candidate=%d", baseline.Preemptions, candidate.Preemptions)
 			}
-			if candidate.HardFitIdleRejects > 0 ||
+			if candidate.HardFitIdleRejects > baseline.HardFitIdleRejects ||
 				candidate.MaximumIdleWithDemandSeconds > simulationPollInterval.Seconds()+simulationDurationEpsilon {
 				t.Fatalf("idle/self-lock protection: %+v", candidate)
 			}
