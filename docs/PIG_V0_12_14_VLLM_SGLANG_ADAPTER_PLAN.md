@@ -392,5 +392,66 @@ protection, and recovery before publication.
 
 ### 8.3 Pass 3: exact evidence and release
 
-Status: pending. No v0.12.14 image has been uploaded and production `f563...`
-has not been changed.
+Status: pre-publication acceptance complete for executable revision
+`7896a8ccd4fec1da9fdfac3f2bced72924effe97`. No v0.12.14 image has been
+uploaded and production `f563...` has not been changed.
+
+The exact executable revision passed the complete c21 source matrix in
+`/var/volatile/dstack/persistent/pig-v0124/evidence/pig-v01214-final-source-7896a8c`:
+
+- focused Prometheus/server adapter tests, `go test ./...`, `go test -race
+  ./...`, `go vet ./...`, and `go build` passed;
+- the deterministic request-aware simulation reported `acceptance="passed"`,
+  including TPS, pressure, stale recovery, cancellation, completion-before-poll,
+  and long-prefill cases;
+- Controller decision hot paths remained allocation-free and sub-microsecond;
+- 4-MiB request classification measured 34.0-35.1 ms, estimator-only scans
+  measured 24.4-25.5 ms, and the many-string estimator shape measured
+  37.7-38.3 ms, all within the accepted 100-ms extreme-input budget;
+- the produced binary SHA-256 is
+  `36c28f212d1ff6c3bd2f5d33cb09237064d06b1772064d0b19d1b0b57bdff6d3`;
+- the source evidence manifest SHA-256 is
+  `fdbdbf5e5c6682520033ab4b8178aeda51f0b1367d1dc26df546e9b18cf152ad`.
+
+The accepted local image is `pig-v01214-sglang-test:7896a8c`, image ID
+`sha256:11eb58efdc997c9777d291175900a289a3a8060d7b4ad8a7f5b2e806aa40e938`.
+Its runtime version is `PIG-v0.12.14`, OCI version is `0.12.14`, and OCI
+revision is the exact executable revision above. The release step must tag and
+push this same image; it must not rebuild a different image from the later
+documentation-only commit.
+
+Final shadow and default-enforce validation used that exact image against the
+unchanged c21 SGLang container. The live evidence is in
+`/var/volatile/dstack/persistent/pig-v0124/evidence/pig-v01214-final-live-7896a8c`;
+its manifest SHA-256 is
+`c0c319127224934adc1a76e87528b7d1c8335945f20bf81329e6b9125c7772d5`.
+The evidence establishes:
+
+- startup selected `backend_kind=sglang`, full-pool capacity `3971118`, page
+  size `1`, model limit `131072`, and TPS reference `50`;
+- the final streaming check observed realtime decode `4717 -> 4865` while the
+  completed-stream counter stayed at `2496`; only after completion did the
+  latter become `2656`. PIG observed about 62-72 output token/s while the stream
+  was active, so only the realtime decode counter is suitable for the 500-ms
+  TPS window;
+- current SGLang HELP/TYPE and source sites confirm the chosen gauges and
+  counters. The cumulative retraction counter remained completely
+  unmaterialized at zero, matching the accepted multiprocess cold rule;
+- default enforce rejected the third warming stream before forwarding with
+  HTTP 429 and exposed the same `tps_reference` protection in logs, PIG metrics,
+  Router compatibility capacity, and `/v1/upstream-status=1`;
+- after drain, reservations and backpressure returned to zero immediately,
+  `/v1/upstream-status=0`, and a low-flow request returned HTTP 200;
+- PIG and SGLang both remained running with restart count zero. SGLang was not
+  restarted or rebuilt.
+
+The vLLM contract was also rechecked at upstream source commit
+`5fd7a888386cff800f32de6b5a33d1dd3ca1e397`: generation and preemption are
+iteration counters, running/waiting are per-engine gauges, KV usage is a
+per-engine ratio gauge, and cache config is per-engine geometry. These values
+retain the vLLM sum/maximum rules in section 3.1 and are not passed through the
+SGLang priority or TP/PP deduplication rules.
+
+Review result: accepted for registry publication. Registry digest verification
+and production preparation remain separate stages and must be appended after
+they occur.
