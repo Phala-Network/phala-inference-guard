@@ -407,7 +407,14 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 				KVReservationInputTokens: 1_600, MaximumSequenceKVReservationInputTokens: 1_000,
 				BasePromptCount: 2, DecodeSequences: 4,
 			},
-			Work: domainpredictive.RequestWork{PrefillInputTokens: 1_500, PrefillComputeTokens: 1_200},
+			Work: domainpredictive.RequestWork{
+				PrefillInputTokens: 1_500, PrefillComputeTokens: 1_200,
+				FirstBytePendingPrefillInputTokens: 600,
+				FirstBytePendingPrefillComputeTokens: 500,
+				FirstBytePendingPrefillSequences: 3,
+				InputKVTokens: 1_600, FirstByteCoverableInputKVTokens: 400,
+				FirstBytePendingInputKVTokens: 1_200, FutureKVTokens: 800,
+			},
 			State: coreadmission.ProjectedState{
 				UnobservedSequences: 2,
 				TPS: coreadmission.TPSSnapshot{
@@ -426,7 +433,11 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 		"action=protect", "reason=kv_capacity", "scope=load", "enforced=true",
 		"maximum_sequence_input_tokens=900",
 		"base_prompt_count=2", "prefill_input_tokens=1500", "prefill_compute_tokens=1200",
+		"first_byte_pending_prefill_input_tokens=600",
+		"first_byte_pending_prefill_compute_tokens=500", "first_byte_pending_prefill_sequences=3",
 		"maximum_sequence_kv_reservation_input_tokens=1000",
+		"input_kv_tokens=1600", "first_byte_coverable_input_kv_tokens=400",
+		"first_byte_pending_input_kv_tokens=1200", "future_kv_tokens=800",
 		"tps_reference=20.000000", "tps_window_ready=true", "tps_sequence_limit=9",
 		"tps_current_sequences=9", "tps_post_admit_sequences=10", "tps_unobserved_sequences=2",
 		"decode_sequences=4",

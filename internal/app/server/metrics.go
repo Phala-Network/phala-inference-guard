@@ -150,8 +150,15 @@ func applyAdmissionDecisionMetrics(
 	input.AdmissionMaximumSequenceInputTokens = decision.Estimate.MaximumSequenceInputTokens
 	input.AdmissionBasePromptCount = decision.Estimate.BasePromptCount
 	input.AdmissionPrefillInputTokens = decision.Work.PrefillInputTokens
+	input.AdmissionFirstBytePendingPrefillInput = decision.Work.FirstBytePendingPrefillInputTokens
+	input.AdmissionFirstBytePendingPrefillCompute = decision.Work.FirstBytePendingPrefillComputeTokens
+	input.AdmissionFirstBytePendingPrefillSequences = decision.Work.FirstBytePendingPrefillSequences
 	input.AdmissionMaximumSequenceKVReservation = decision.Estimate.MaximumSequenceKVReservationInputTokens
 	input.AdmissionDecodeSequences = decision.Estimate.DecodeSequences
+	input.AdmissionInputKVTokens = decision.Work.InputKVTokens
+	input.AdmissionFirstByteCoverableInputKV = decision.Work.FirstByteCoverableInputKVTokens
+	input.AdmissionFirstBytePendingInputKV = decision.Work.FirstBytePendingInputKVTokens
+	input.AdmissionFutureKVTokens = decision.Work.FutureKVTokens
 	input.AdmissionReservedTokens = decision.Work.TotalKVTokens
 	if decision.HardKVLimitTokens >= decision.State.EffectiveKVTokens {
 		input.AdmissionAllowanceTokens = decision.HardKVLimitTokens - decision.State.EffectiveKVTokens
