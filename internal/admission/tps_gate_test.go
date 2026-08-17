@@ -68,62 +68,38 @@ func TestTPSGateDoesNotExploreWhenBasePlusOneWouldExceedTolerance(t *testing.T) 
 	}
 }
 
-func TestTPSGateSpendsLongWindowHeadroomForOneBoundedObservationWave(t *testing.T) {
+func TestTPSGateUsesQualifiedRateBeforeWindowMatures(t *testing.T) {
 	snapshot := TPSSnapshot{
-		Enabled: true, Ready: true, Reference: 20,
-		QualifiedSamples: 4, QualifiedTokens: 120,
-		QualifiedActiveSeconds: 2, QualifiedSequenceSeconds: 4,
-		AggregateTPS: 60, MeanActiveTPS: 30,
+		Enabled: true, Reference: 20,
+		QualifiedSamples: 1, QualifiedTokens: 75,
+		QualifiedActiveSeconds: 0.5, QualifiedSequenceSeconds: 2,
+		AggregateTPS: 150, MeanActiveTPS: 37.5,
 	}
-	for unobserved := int64(0); unobserved <= 4; unobserved++ {
+	for unobserved := int64(0); unobserved <= 3; unobserved++ {
 		state := ProjectedState{
-			RawRunning:               2,
+			RawRunning:               4,
 			UnobservedSequences:      unobserved,
-			GenerationDelta:          30,
+			GenerationDelta:          75,
 			ObservationInterval:      500 * time.Millisecond,
 			ObservationIntervalValid: true,
 			TPS:                      snapshot,
 		}
 		decision := (tpsGate{}).evaluate(state)
-		wantFit := unobserved < 4
-		if decision.fits != wantFit || decision.sequenceLimit != 6 ||
-			decision.currentSequences != 2+unobserved ||
-			decision.postAdmitSequences != 3+unobserved {
-			t.Fatalf("unobserved=%d decision=%+v want fit/limit=%t/6", unobserved, decision, wantFit)
+		wantFit := unobserved < 3
+		if decision.fits != wantFit || decision.sequenceLimit != 7 ||
+			decision.currentSequences != 4+unobserved ||
+			decision.postAdmitSequences != 5+unobserved {
+			t.Fatalf("unobserved=%d decision=%+v want fit/limit=%t/7", unobserved, decision, wantFit)
 		}
 	}
 }
 
-func TestTPSGateSpendsQualifiedHeadroomBeforeWindowMatures(t *testing.T) {
+func TestTPSGateDoesNotUseQualifiedWarmingRateWithoutCurrentSafeSignal(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Reference: 20,
-		QualifiedSamples: 1, QualifiedTokens: 30,
-		QualifiedActiveSeconds: 0.5, QualifiedSequenceSeconds: 1,
-		AggregateTPS: 60, MeanActiveTPS: 30,
-	}
-	state := ProjectedState{
-		RawRunning: 2, GenerationDelta: 30,
-		ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true,
-		TPS: snapshot,
-	}
-	fit := (tpsGate{}).evaluate(state)
-	if !fit.fits || fit.sequenceLimit != 3 || fit.postAdmitSequences != 3 {
-		t.Fatalf("qualified warming headroom fit=%+v", fit)
-	}
-	state.UnobservedSequences = 1
-	protected := (tpsGate{}).evaluate(state)
-	if protected.fits || protected.reason != ReasonTPSReference ||
-		protected.sequenceLimit != 3 || protected.postAdmitSequences != 4 {
-		t.Fatalf("qualified warming headroom protection=%+v", protected)
-	}
-}
-
-func TestTPSGateDoesNotSpendHeadroomWithoutCurrentSafeSignal(t *testing.T) {
-	snapshot := TPSSnapshot{
-		Enabled: true, Ready: true, Reference: 20,
-		QualifiedSamples: 4, QualifiedTokens: 120,
-		QualifiedActiveSeconds: 2, QualifiedSequenceSeconds: 4,
-		AggregateTPS: 60, MeanActiveTPS: 30,
+		QualifiedSamples: 1, QualifiedTokens: 75,
+		QualifiedActiveSeconds: 0.5, QualifiedSequenceSeconds: 2,
+		AggregateTPS: 150, MeanActiveTPS: 37.5,
 	}
 	for _, test := range []struct {
 		name  string
@@ -137,10 +113,9 @@ func TestTPSGateDoesNotSpendHeadroomWithoutCurrentSafeSignal(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			state := test.state
 			state.RawRunning = 2
-			state.UnobservedSequences = 1
 			state.TPS = snapshot
 			decision := (tpsGate{}).evaluate(state)
-			if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != 3 {
+			if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != 2 {
 				t.Fatalf("unsafe exploration decision=%+v state=%+v", decision, state)
 			}
 		})
