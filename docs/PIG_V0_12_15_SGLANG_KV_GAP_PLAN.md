@@ -640,6 +640,50 @@ This historical `d708950` green matrix is not image acceptance. The newer
 Section 4, but Pass 1 remains open until the remaining exact-source gates and
 evidence review complete.
 
+The 2026-08-17 continuation then reviewed request-path memory bounds and the
+causal use of cache/TPS evidence. Three defects were converted to isolated f563
+red tests before implementation:
+
+- `8d605e3` proved that the default 64-entry 4-MiB request-body pool could retain
+  256 MiB while idle (`feb4477ce36aaa39140afcfcbecee97b3674ddb5223f529664fa637543df150f`);
+  `8c29647` bounds idle pooled body capacity to 32 MiB without reducing the 64
+  concurrent scanner slots;
+- `696b54e` proved that one cache observation could be charged repeatedly to
+  same-snapshot admissions (`3053d724f2491f032a27ddb6dab327fd8db7337b465ffdc8ee6d5f77e68f9f90`);
+  `ff1c295` reserves complete pending Prefill input and atomically limits cache
+  credit to the recent evidence-derived token budget;
+- `5531c1f` proved that historical TPS headroom could be spent repeatedly while
+  waiting, preemption, or unobserved same-poll demand already existed
+  (`d1752529419ac18dcf538020b47ee30f348ddf5203fd749aaa48607abdf17b38`);
+  `c6a0fad` freezes current pressure and limits a qualified current poll to one
+  reservation-backed expansion wave.
+
+The first exact TPS rerun at `90b44d6` exposed a separate throughput defect in
+the reference-25 saturation scenario: four existing 30-TPS Decode sequences
+could not admit a fifth sequence even though its projected 24 TPS remained
+inside the documented five-percent tolerance. Focused red commit `b947031`
+reported `sequenceLimit=4` instead of 5; its f563 log SHA-256 is
+`71acab8a8696d0948cdb71900fb9b576c95353ec75ee47e451d86cf211b3a0e0`.
+Executable fix `e3ae3d0c1b9b137c782170a9dc5b822aedbf7059` supplies the current
+per-running-sequence mean to the existing bounded exploration calculation while
+preserving waiting/preemption freezes, unobserved reservations, and the one-wave
+limit. Exact-commit f563 targeted evidence is:
+
+```text
+TPS focused             26f360303fd54739c234601697269e0858220785ccba51fc84c71ef0351a8900
+TPS/cache simulations   c9a74c74e4b71ce5f869791c8598a1b2f8d70b8662f8b116339b0143e36e88f9
+```
+
+For reference 25, the corrected candidate admitted two bounded additions,
+produced 8907.78 completion tokens versus the unprotected 8901.11 baseline,
+held long-run mean active TPS at 25.20, and produced zero preemptions. Reference
+20 retained 8906.67 completion tokens and 21.75 mean active TPS. Cache hot,
+cold-transition, and mixed scenarios retained their 5-to-7 admission and
+SLO-goodput improvements without preemption or TPS-floor time. These targeted
+results reject both the over-protective pre-fix behavior and restoration of
+same-poll historical bursting. Pass 1 remains in progress until the complete
+exact-executable source matrix and artifact audit pass.
+
 ### Pass 2: safety and lifecycle
 
 Status: pending. This pass must cover reservation/release/cancel/reset races,
