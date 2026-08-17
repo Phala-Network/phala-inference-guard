@@ -452,6 +452,14 @@ per-engine ratio gauge, and cache config is per-engine geometry. These values
 retain the vLLM sum/maximum rules in section 3.1 and are not passed through the
 SGLang priority or TP/PP deduplication rules.
 
-Review result: accepted for registry publication. Registry digest verification
-and production preparation remain separate stages and must be appended after
-they occur.
+Review result: accepted and published. The already accepted local image was
+tagged without rebuilding and pushed as:
+
+- `ghcr.io/phala-network/phala-inference-guard:0.12.14`;
+- `ghcr.io/phala-network/phala-inference-guard:0.12.14-7896a8ccd4fe`.
+
+Both registry descriptors resolve to the same immutable digest
+`sha256:b118bacd259157ee0529dfae7fcbcfa8a99eca5c1c31f1144e7d5e5e954453cb`.
+The image OCI revision remains executable commit `7896a8c`; this
+documentation-only commit is not an executable image revision. Production
+preparation and deployment remain separate stages.
