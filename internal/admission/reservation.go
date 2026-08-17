@@ -67,10 +67,14 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 		}
 		return contribution, true
 	case reservationResidualDebt:
-		return reservationOverlay{
+		contribution := reservationOverlay{
 			kvTokens:      r.work.TotalKVTokens,
 			residualDebts: 1,
-		}, true
+		}
+		if !r.sequenceCovered && r.terminalCause != TerminalSuccess {
+			contribution.unobservedSequences = 1
+		}
+		return contribution, true
 	default:
 		return reservationOverlay{}, false
 	}
@@ -144,11 +148,15 @@ func replaceOverlay(current, oldContribution, newContribution reservationOverlay
 }
 
 func (o reservationOverlay) valid() bool {
+	demandCapacity, ok := addNonnegativeInt64(o.liveReservations, o.residualDebts)
+	if !ok {
+		return false
+	}
 	return o.kvTokens >= 0 && o.pendingPrefillTokens >= 0 &&
 		o.pendingPrefillSequences >= 0 && o.pendingExclusiveSequences >= 0 &&
 		o.pendingQuiescentSequences >= 0 &&
 		o.pendingExclusiveSequences <= o.pendingPrefillSequences &&
 		o.pendingQuiescentSequences <= o.pendingPrefillSequences &&
 		o.localActiveDecode >= 0 && o.unobservedSequences >= 0 &&
-		o.unobservedSequences <= o.liveReservations && o.liveReservations >= 0 && o.residualDebts >= 0
+		o.unobservedSequences <= demandCapacity && o.liveReservations >= 0 && o.residualDebts >= 0
 }

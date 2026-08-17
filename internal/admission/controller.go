@@ -401,6 +401,7 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 	if !remove {
 		next = item
 		next.phase = reservationResidualDebt
+		next.terminalCause = cause
 		newContribution, newValid = next.contribution()
 	}
 	nextOverlay, overlayValid := replaceOverlay(c.overlay, oldContribution, newContribution)
@@ -417,7 +418,6 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 		delete(c.reservations, id)
 	} else {
 		next.terminalSequence = sequence
-		next.terminalCause = cause
 		c.reservations[id] = next
 	}
 	return true

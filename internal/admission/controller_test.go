@@ -500,6 +500,40 @@ func TestControllerTPSTerminalBeforeCoveringSampleRetainsUnobservedDemand(t *tes
 	}
 }
 
+func TestControllerTPSUnobservedSuccessDoesNotDelayReplacement(t *testing.T) {
+	now := time.Unix(10_937, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t,
+		capability,
+		20,
+		testObservation(capability, now, 0, 4, 0, 0, 0),
+	)
+	for step := 1; step <= 4; step++ {
+		publishObservation(t, controller, testObservation(
+			capability,
+			now.Add(time.Duration(step)*time.Second),
+			0,
+			4,
+			0,
+			uint64(step*100),
+			0,
+		))
+	}
+
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	completed := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate)
+	if !completed.Decision.Admitted() || !completed.Handle.MarkForwarded() ||
+		!completed.Handle.MarkFirstByte() || !completed.Handle.Terminate(TerminalSuccess) {
+		t.Fatalf("successful lifecycle=%+v", completed.Decision)
+	}
+	replacement := controller.Admit(now.Add(4*time.Second+2*time.Millisecond), estimate).Decision
+	if !replacement.Admitted() || replacement.State.ResidualDebts != 1 ||
+		replacement.State.UnobservedSequences != 0 || replacement.TPSPostAdmitSequences != 5 {
+		t.Fatalf("successful completion delayed replacement: %+v", replacement)
+	}
+}
+
 func TestControllerRuntimeResetClearsTPSWindow(t *testing.T) {
 	now := time.Unix(11_000, 0)
 	capability := testCapability()

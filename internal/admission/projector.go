@@ -57,6 +57,10 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 }
 
 func validProjectedState(state ProjectedState) bool {
+	demandCapacity, ok := addNonnegativeInt64(state.LiveReservations, state.ResidualDebts)
+	if !ok {
+		return false
+	}
 	return state.ObservedKVTokens >= 0 && state.ReservationKVTokens >= 0 &&
 		state.EffectiveKVTokens >= state.ObservedKVTokens &&
 		state.PendingPrefillTokens >= 0 && state.PendingPrefillSequences >= 0 &&
@@ -64,7 +68,7 @@ func validProjectedState(state ProjectedState) bool {
 		state.PendingExclusiveSequences <= state.PendingPrefillSequences &&
 		state.PendingQuiescentSequences <= state.PendingPrefillSequences &&
 		state.LocalActiveDecode >= 0 && state.UnobservedSequences >= 0 &&
-		state.UnobservedSequences <= state.LiveReservations && state.LiveReservations >= 0 &&
+		state.UnobservedSequences <= demandCapacity && state.LiveReservations >= 0 &&
 		state.ResidualDebts >= 0 && state.RawRunning >= 0 && state.RawWaiting >= 0 &&
 		state.PreviousRawRunning >= 0 && state.ObservationInterval >= 0 &&
 		validTPSSnapshot(state.TPS)
