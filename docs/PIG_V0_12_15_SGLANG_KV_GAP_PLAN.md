@@ -1,20 +1,34 @@
-# PIG v0.12.15 Backend Metrics Contract Correction Plan
+# PIG v0.12.15 Cache-Aware Backend Contract And Release Plan
 
 ## 1. Objective
 
-Correct two backend-adapter contract defects discovered after v0.12.14:
+Maximize sustained aggregate throughput subject to bounded QoS degradation. The
+request must be admitted or protected before it reaches the backend; backend
+feedback only updates the next observation and never rewrites an in-flight
+decision.
+
+v0.12.15 must correct two backend-adapter contract defects discovered after
+v0.12.14:
 
 - accept the SGLang protected/session-held KV gap while charging the whole
   non-reclaimable gap to admission;
-- require vLLM gauges and counters to have the types declared by vLLM itself.
+- require vLLM gauges and counters to have the types declared by vLLM itself;
+- use backend-native token counters to estimate recent cache-aware Prefill
+  compute cost without weakening KV fit or long-context safeguards.
 
-Do not change request estimation, prefill policy, TPS policy, reservations, or
-Router compatibility behavior.
+Keep the bounded fast tokenizer and complete estimated input tokens as the
+request-size signal. Do not add a cache lookup, per-model asset, learning
+algorithm, TTFT gate, Router behavior, or request mutation. Keep the default
+backend metrics interval at 500 ms and default predictive mode at enforce.
+`PREDICTIVE_TPS_REFERENCE=50` remains the intended f563 production QoS
+reference; isolated tests may explicitly override it.
 
 The correction must preserve QoS-constrained throughput: count all
 non-reclaimable full-pool slots against admission, accept valid
 protected/session-held KV gaps, and reject a torn scrape whenever accepting it
-could understate non-reclaimable KV.
+could understate non-reclaimable KV. It must also avoid treating evictable
+prefix-cache KV as occupied hard capacity merely because the cache hit rate is
+high.
 
 ## 2. Production Finding
 
@@ -103,6 +117,66 @@ fresh-observation validation fail closed. Unlike SGLang's documented
 multiprocess cold-zero exceptions, vLLM initializes these labeled children; no
 missing-TYPE cold-zero exception is allowed.
 
+### 3.3 Cache-aware Prefill cost
+
+Cache awareness has two deliberately separate effects:
+
+```text
+KV fit and reservation             = complete estimated input tokens
+long-input admission class         = complete estimated input tokens
+recent Prefill compute estimate    = complete input * bounded cold fraction
+```
+
+A prefix-cache hit avoids part of Prefill compute, but the reused prefix is
+locked/non-reclaimable while the request runs and therefore still consumes KV.
+Consequently cache hit credit must never reduce per-request KV reservation,
+post-admit KV projection, maximum-input validation, or the
+regular/exclusive/quiescent request class. It may only reduce the request's
+aggregate Prefill contention cost inside the existing class.
+
+PIG does not inspect the exact request prefix and must not present a recent
+global hit rate as a per-request fact. The observation is a short-lived,
+bounded workload estimate. No cache credit is available on the first sample,
+after a counter reset, after backend/model/engine epoch drift, when metric type
+or labels are invalid, when the observation is stale, or when the recent token
+denominator is below the minimum evidence threshold. These cases fall back to
+fully cold Prefill without closing a healthy backend.
+
+The backend contracts remain independent:
+
+| Backend | Source | Aggregation |
+| --- | --- | --- |
+| SGLang | `sglang:prefill_effective_tokens_total{mode="input|device_hit|host_hit|storage_hit",priority=""}` counters | maximum duplicated TP/PP view per mode; one DP replica |
+| vLLM | `vllm:prefix_cache_queries_total` and `vllm:prefix_cache_hits_total` counters | sum independent `engine` series |
+
+For SGLang, `input` is the uncached Prefill-compute contribution and the hit
+modes are cached token contributions; retraction re-counts are excluded by the
+backend. The recent hit fraction is:
+
+```text
+hits_delta / (input_delta + hits_delta)
+```
+
+For vLLM, the token-level recent hit fraction is:
+
+```text
+hits_delta / queries_delta
+```
+
+PIG validates `counter` TYPE, finite monotonic values, backend-specific labels,
+and `0 <= hits <= total`. The observation component owns only bounded counter
+state and produces a conservative cold fraction. Admission owns request
+classification, KV reservation, TPS policy, and the final decision. This keeps
+the backend adapters, observation policy, and admission policy separately
+testable.
+
+The initial implementation must remain intentionally small: one previous
+counter snapshot plus one bounded recent observation, no learned state, no
+prefix table, no customer cardinality, and no extra upstream request. A longer
+window or stronger cache credit may only be introduced after candidate/live
+evidence shows that the 500 ms observation cadence is too noisy without causing
+low-flow self-lock or workload-transition under-protection.
+
 ## 4. Tests And Evidence
 
 Required focused tests:
@@ -116,6 +190,17 @@ Required focused tests:
   wrong declaration;
 - vLLM DP engine series retain sum/maximum/unique-geometry aggregation without
   SGLang label rules;
+- SGLang and vLLM accept only their own cache metric TYPE, labels, and
+  aggregation contracts;
+- first sample, missing metrics, low evidence, stale observation, counter reset,
+  backend epoch change, and invalid ratios produce zero cache credit;
+- a cache observation can reduce only aggregate Prefill compute cost while KV
+  fit, KV reservation, maximum input, and long-input class remain byte-for-byte
+  unchanged;
+- exclusive and quiescent requests cannot be downgraded by a high recent global
+  cache hit rate;
+- cold traffic following hot traffic does not bypass the long-input safeguards,
+  and idle/low-flow intervals do not self-lock admission;
 - all backend observer and startup fixtures remain green.
 
 Required f563 gates at the exact executable commit:
@@ -140,22 +225,60 @@ lock, runtime/OCI identity, and zero backend restart. Do not restart or rebuild
 SGLang, HAProxy, or the CVM. Upload that exact image only after three review
 passes accept it.
 
+Candidate monitoring must run continuously for every source/image revision,
+not only after the final deployment. Record at least admission outcomes and
+reasons, predicted full/cold Prefill tokens, cache observation validity and hit
+fraction, KV used/available/evictable plus reservations, running/waiting,
+generation TPS, TPS-gate state, retractions/preemptions, upstream errors,
+429/503, latency, completion throughput, PIG/backend restart counts, and GPU
+utilization when available. Compare time-aligned baseline and candidate windows;
+an isolated protection event or TPS dip is acceptable, but sustained QoS loss,
+false lock, hidden protection, materially higher preemption, or lower
+SLO-compliant goodput is not.
+
+After a production update, observe real traffic for at least 30 minutes and keep
+the same monitors active. If evidence exposes a material defect or a clear
+throughput opportunity, return to red test -> implementation -> isolated
+candidate -> review -> image -> PIG-only update. Repeat until no obvious issue
+remains; never optimize from a single low-TPS sample or a single cache-hit
+snapshot.
+
 ## 5. Production Boundary
 
 The v0.12.14 f563 observation continues as fail-closed evidence while the
-correction is developed. Do not hot-patch the production binary. A v0.12.15
-production replacement requires the same PIG-only drain, rollback, identity,
-readiness, and live-traffic gates used for v0.12.14. Do not restart the CVM,
+correction is developed. Do not hot-patch the production binary.
+
+Before replacing production PIG, switch the live PIG service to the exact
+previously proven f563 `0.8.13` image and configuration so normal traffic is not
+dependent on the candidate update. First recover and verify that baseline from
+the live/committed deployment history: exact image digest, environment, ports,
+auth/metrics behavior, health checks, and Router-visible semantics. Do not put
+v0.12.x-only variables into the old image or invent an approximate legacy
+configuration. Validate authenticated models/chat/stream and protected metrics,
+then keep it as the immediate rollback target.
+
+The isolated v0.12.15 candidate must use separate name/port/network state and
+must not displace the `0.8.13` traffic path. Only after all candidate gates and
+three reviews pass may the production PIG service move from `0.8.13` to the
+exact accepted v0.12.15 digest. A failed readiness or live-monitoring gate rolls
+PIG back to the verified `0.8.13` configuration. Do not restart the CVM,
 SGLang, HAProxy, or rebuild the model service.
+
+The transition itself must remain PIG-only and drain-aware. Snapshot the route
+and live Compose first, preserve the exact pre-change files and hashes, verify
+that no backend/CVM restart occurred, and never equate Compose acceptance or a
+running container with request-path readiness.
 
 ## 6. Review Record
 
 ### Pass 1: metric model and causality
 
 Status: in progress. SGLang source and the f563 live scrape established the
-one-sided KV invariant and selected scheduler-interval decode counter. vLLM
-upstream source established the metric types, per-engine labels, and update
-sites. Focused red/green evidence is pending.
+one-sided KV invariant and selected scheduler-interval decode counter. The live
+SGLang scrape also exposes `prefill_effective_tokens_total` as token-level
+counters with the required input/device/host/storage modes. vLLM upstream source
+established the metric types, per-engine labels, and update sites. Cache metric
+source/update semantics and focused red/green evidence are pending.
 
 ### Pass 2: safety and lifecycle
 
@@ -163,5 +286,6 @@ Status: pending.
 
 ### Pass 3: exact evidence and release
 
-Status: pending. No v0.12.15 image has been built or uploaded, and production
-still runs the accepted v0.12.14 image.
+Status: pending. No v0.12.15 image has been built or uploaded, production still
+runs the accepted v0.12.14 image, and the exact f563 `0.8.13` rollback
+configuration has not yet been reconstructed and revalidated.
