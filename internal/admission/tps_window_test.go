@@ -112,6 +112,76 @@ func TestV01215TPSWindowUsesMeasuredShortDecodeExposureInsteadOfFullIntervalLiab
 	}
 }
 
+func TestV01215TPSWindowUsesForwardedExposureForNonStreamingCompletion(t *testing.T) {
+	window := newTPSWindow(20)
+	start := time.Unix(30_700, 0)
+	if !window.observe(tpsSample{
+		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
+		generatedTokens: 50, localForwardedSequenceSeconds: 0.5,
+	}) {
+		t.Fatal("non-streaming forwarded exposure caused numeric failure")
+	}
+
+	got := window.snapshot(start.Add(500 * time.Millisecond))
+	if got.QualifiedSequenceSamples != 1 ||
+		math.Abs(got.QualifiedSequenceSeconds-0.5) > 1e-9 ||
+		math.Abs(got.MeanActiveTPS-100) > 1e-9 {
+		t.Fatalf("non-streaming completion lost forwarded exposure: %+v", got)
+	}
+}
+
+func TestV01215TPSWindowDoesNotTurnPurePrefillExposureIntoTPSDebt(t *testing.T) {
+	window := newTPSWindow(20)
+	start := time.Unix(30_800, 0)
+	if !window.observe(tpsSample{
+		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
+		previousRunning: 1, running: 1, localForwardedSequenceSeconds: 0.5,
+	}) {
+		t.Fatal("pure Prefill exposure caused numeric failure")
+	}
+
+	if got := window.snapshot(start.Add(500 * time.Millisecond)); got.QualifiedSamples != 0 ||
+		got.QualifiedSequenceSamples != 0 || got.QualifiedSequenceSeconds != 0 {
+		t.Fatalf("pure Prefill exposure became TPS debt: %+v", got)
+	}
+}
+
+func TestV01215TPSWindowKeepsKnownDecodeStallWithConservativeForwardedExposure(t *testing.T) {
+	window := newTPSWindow(20)
+	start := time.Unix(30_900, 0)
+	if !window.observe(tpsSample{
+		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
+		localForwardedSequenceSeconds: 0.5, localDecodeSequenceSeconds: 0.25,
+	}) {
+		t.Fatal("known Decode stall exposure caused numeric failure")
+	}
+
+	got := window.snapshot(start.Add(500 * time.Millisecond))
+	if got.QualifiedSamples != 1 || got.QualifiedSequenceSamples != 1 ||
+		math.Abs(got.QualifiedSequenceSeconds-0.5) > 1e-9 || got.MeanActiveTPS != 0 {
+		t.Fatalf("known Decode stall was discarded or undercharged: %+v", got)
+	}
+}
+
+func TestV01215TPSWindowUnionsOverlappingBackendAndLocalExposure(t *testing.T) {
+	window := newTPSWindow(20)
+	start := time.Unix(31_000, 0)
+	if !window.observe(tpsSample{
+		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
+		generatedTokens: 75, previousRunning: 2, running: 2,
+		localForwardedSequenceSeconds: 1.5, localDecodeSequenceSeconds: 0.5,
+	}) {
+		t.Fatal("overlapping exposure caused numeric failure")
+	}
+
+	got := window.snapshot(start.Add(500 * time.Millisecond))
+	if got.QualifiedSequenceSamples != 1 ||
+		math.Abs(got.QualifiedSequenceSeconds-1.5) > 1e-9 ||
+		math.Abs(got.MeanActiveTPS-50) > 1e-9 {
+		t.Fatalf("backend and local exposure were summed or local excess was lost: %+v", got)
+	}
+}
+
 func TestV01215TPSWindowSeparatesAggregateAndReliableSequenceEvidence(t *testing.T) {
 	window := newTPSWindow(20)
 	start := time.Unix(31_000, 0)
