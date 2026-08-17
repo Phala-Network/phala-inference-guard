@@ -212,3 +212,80 @@ func TestV01215VLLMFirstByteRetainsOtherChildPrefillAndInputKV(t *testing.T) {
 		t.Fatalf("one materialized child covered all vLLM liabilities: state=%+v work=%+v", covered, result.Decision.Work)
 	}
 }
+
+func TestV01215ForwardedCancellationRetainsPrefillDebtUntilCoveringPoll(t *testing.T) {
+	now := time.Unix(13_750, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(
+		t,
+		capability,
+		testObservation(capability, now, 0, 0, 0, 1, 0),
+	)
+	estimate := testEstimate(300*1024, 300*1024, 256)
+
+	result := controller.Admit(now.Add(time.Millisecond), estimate)
+	if !result.Decision.Admitted() || !result.Handle.MarkForwarded() ||
+		!result.Handle.Terminate(TerminalCancel) {
+		t.Fatalf("forwarded cancellation lifecycle=%+v", result.Decision)
+	}
+	debt := controller.Snapshot(now.Add(2 * time.Millisecond)).State
+	if debt.ResidualDebts != 1 ||
+		debt.PendingPrefillInputTokens != result.Decision.Work.PrefillInputTokens ||
+		debt.PendingPrefillTokens != result.Decision.Work.PrefillComputeTokens ||
+		debt.PendingPrefillSequences != result.Decision.Work.Estimate.DecodeSequences ||
+		debt.PendingExclusiveSequences != 1 || debt.UnobservedSequences != 1 {
+		t.Fatalf("forwarded cancellation dropped Prefill debt: state=%+v work=%+v", debt, result.Decision.Work)
+	}
+
+	protected := controller.Admit(
+		now.Add(3*time.Millisecond),
+		testEstimate(1, 1, capability.MinimumDecodeHorizonTokens),
+	).Decision
+	if protected.Admitted() || protected.Reason != ReasonPrefillExclusive {
+		t.Fatalf("forwarded cancellation admitted through Prefill debt: %+v", protected)
+	}
+
+	publishObservation(t, controller, testObservation(capability, now.Add(4*time.Millisecond), 0, 0, 0, 2, 0))
+	reopened := controller.Admit(
+		now.Add(5*time.Millisecond),
+		testEstimate(1, 1, capability.MinimumDecodeHorizonTokens),
+	)
+	if !reopened.Decision.Admitted() || reopened.Decision.State.ResidualDebts != 0 ||
+		reopened.Decision.State.PendingPrefillSequences != 0 {
+		t.Fatalf("covering poll did not release forwarded cancellation debt: %+v", reopened.Decision)
+	}
+	_ = reopened.Handle.Terminate(TerminalCancel)
+}
+
+func TestV01215DecodeCancellationRetainsRemainingExecutionDebtUntilCoveringPoll(t *testing.T) {
+	now := time.Unix(13_875, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(
+		t,
+		capability,
+		testObservation(capability, now, 0, 0, 0, 1, 0),
+	)
+	estimate := testEstimate(63, 63, 1)
+	estimate.DecodeSequences = 2
+
+	result := controller.Admit(now.Add(time.Millisecond), estimate)
+	if !result.Decision.Admitted() || !result.Handle.MarkForwarded() ||
+		!result.Handle.MarkFirstByte() || !result.Handle.Terminate(TerminalDisconnect) {
+		t.Fatalf("Decode cancellation lifecycle=%+v", result.Decision)
+	}
+	debt := controller.Snapshot(now.Add(2 * time.Millisecond)).State
+	if debt.ResidualDebts != 1 ||
+		debt.PendingPrefillInputTokens != result.Decision.Work.FirstBytePendingPrefillInputTokens ||
+		debt.PendingPrefillTokens != result.Decision.Work.FirstBytePendingPrefillComputeTokens ||
+		debt.PendingPrefillSequences != result.Decision.Work.FirstBytePendingPrefillSequences ||
+		debt.LocalActiveDecode != 1 || debt.UnobservedSequences != 2 {
+		t.Fatalf("Decode cancellation dropped execution debt: state=%+v work=%+v", debt, result.Decision.Work)
+	}
+
+	publishObservation(t, controller, testObservation(capability, now.Add(3*time.Millisecond), 0, 0, 0, 2, 0))
+	released := controller.Snapshot(now.Add(4 * time.Millisecond)).State
+	if released.ResidualDebts != 0 || released.PendingPrefillSequences != 0 ||
+		released.LocalActiveDecode != 0 || released.UnobservedSequences != 0 {
+		t.Fatalf("covering poll did not release Decode cancellation debt: %+v", released)
+	}
+}
