@@ -1,4 +1,0 @@
-{"at_ms":0,"type":"config","control_limit":24,"decode_drift_tokens":0,"sglang_target":0.78,"sglang_hard":0.84,"sglang_emergency":0.85}
-{"at_ms":0,"type":"sample","backend":"sglang-eagle","kind":"sglang","capacity_tokens":1041408,"used_tokens":958095,"available_tokens":83313,"evictable_tokens":0,"generation_tokens":1000,"running":23}
-{"at_ms":10,"type":"request","id":"risk","estimate_low":100,"estimate_high":500,"expect":"emergency_red"}
-{"at_ms":20,"type":"assert","expect_shadow_fit":0,"expect_hard_violations":0,"expect_decision_counts":{"emergency_red":1}}

@@ -1,6 +1,0 @@
-{"at_ms":0,"type":"config","control_limit":64,"decode_drift_tokens":0,"max_metrics_age_ms":1000}
-{"at_ms":0,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":100000,"used_tokens":50000,"generation_tokens":1000,"running":10}
-{"at_ms":1500,"type":"request","id":"stale","estimate_low":100,"estimate_high":500,"expect":"stale_metrics"}
-{"at_ms":2000,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":0,"used_tokens":0,"generation_tokens":1000,"token_metrics_valid":false,"failed":true,"running":0}
-{"at_ms":2001,"type":"request","id":"failed","estimate_low":100,"estimate_high":500,"expect":"capacity_unknown"}
-{"at_ms":2010,"type":"assert","expect_shadow_fit":0,"expect_hard_violations":0,"expect_decision_counts":{"stale_metrics":1,"capacity_unknown":1}}

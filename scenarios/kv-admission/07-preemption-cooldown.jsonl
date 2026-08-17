@@ -1,7 +1,0 @@
-{"at_ms":0,"type":"config","control_limit":64,"decode_drift_tokens":0,"cooldown_ms":10000,"max_metrics_age_ms":20000}
-{"at_ms":0,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":100000,"used_tokens":50000,"generation_tokens":1000,"preemption_delta":1,"preemption_delta_valid":true,"running":20}
-{"at_ms":10,"type":"request","id":"cool-1","estimate_low":100,"estimate_high":500,"expect":"preemption_cooldown"}
-{"at_ms":1000,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":100000,"used_tokens":49000,"generation_tokens":1100,"preemption_delta":0,"preemption_delta_valid":true,"running":19}
-{"at_ms":1010,"type":"request","id":"cool-2","estimate_low":100,"estimate_high":500,"expect":"preemption_cooldown"}
-{"at_ms":11001,"type":"request","id":"after-cooldown","estimate_low":100,"estimate_high":500,"expect":"fit"}
-{"at_ms":11002,"type":"assert","expect_shadow_fit":1,"expect_hard_violations":0,"expect_decision_counts":{"preemption_cooldown":2,"fit":1}}

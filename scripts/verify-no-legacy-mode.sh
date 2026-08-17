@@ -29,6 +29,8 @@ list_compatibility_files() {
 for path in \
     cmd/pig-kv-sim \
     cmd/pig-predictive-goodput-sim \
+    scenarios/kv-admission \
+    tools/validate-v0.9.0-builder.sh \
     internal/app/dynamic \
     internal/app/gate \
     internal/domain/capacity \

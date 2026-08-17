@@ -1,8 +1,0 @@
-{"at_ms":0,"type":"config","control_limit":64,"decode_drift_tokens":0,"max_metrics_age_ms":2000}
-{"at_ms":0,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":100000,"used_tokens":82000,"generation_tokens":1000,"running":20}
-{"at_ms":10,"type":"request","id":"long-1","estimate_low":4000,"estimate_high":5500,"actual_tokens":5667,"expect":"fit"}
-{"at_ms":20,"type":"request","id":"long-2","estimate_low":4000,"estimate_high":5500,"actual_tokens":5667,"expect":"over_budget"}
-{"at_ms":30,"type":"request","id":"long-3","estimate_low":4000,"estimate_high":5500,"actual_tokens":5667,"expect":"over_budget"}
-{"at_ms":40,"type":"request","id":"long-4","estimate_low":4000,"estimate_high":5500,"actual_tokens":5667,"expect":"over_budget"}
-{"at_ms":500,"type":"sample","backend":"vllm-a","kind":"vllm","capacity_tokens":100000,"used_tokens":99000,"generation_tokens":1100,"running":24}
-{"at_ms":501,"type":"assert","expect_shadow_fit":1,"expect_control_fit":4,"expect_hard_violations":0,"expect_control_hard_violations":3,"expect_decision_counts":{"fit":1,"over_budget":3}}

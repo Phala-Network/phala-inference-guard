@@ -1,5 +1,0 @@
-{"at_ms":0,"type":"config","control_limit":64,"decode_drift_tokens":0}
-{"at_ms":0,"type":"sample","backend":"vllm-hot","kind":"vllm","capacity_tokens":100000,"used_tokens":86000,"generation_tokens":1000,"running":20}
-{"at_ms":0,"type":"sample","backend":"vllm-cool","kind":"vllm","capacity_tokens":100000,"used_tokens":50000,"generation_tokens":1000,"running":10}
-{"at_ms":10,"type":"request","id":"select","estimate_low":500,"estimate_high":1000,"expect":"fit","expect_backend":"vllm-cool"}
-{"at_ms":20,"type":"assert","expect_shadow_fit":1,"expect_hard_violations":0,"expect_decision_counts":{"fit":1}}
