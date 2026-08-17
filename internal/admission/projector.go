@@ -15,6 +15,7 @@ type observedState struct {
 
 type reservationOverlay struct {
 	kvTokens                  int64
+	pendingPrefillInputTokens int64
 	pendingPrefillTokens      int64
 	pendingPrefillSequences   int64
 	pendingExclusiveSequences int64
@@ -39,6 +40,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		ObservedKVTokens:          observed.observation.UsedKVTokens,
 		ReservationKVTokens:       overlay.kvTokens,
 		EffectiveKVTokens:         effectiveKV,
+		PendingPrefillInputTokens: overlay.pendingPrefillInputTokens,
 		PendingPrefillTokens:      overlay.pendingPrefillTokens,
 		PendingPrefillSequences:   overlay.pendingPrefillSequences,
 		PendingExclusiveSequences: overlay.pendingExclusiveSequences,
@@ -59,6 +61,8 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		CacheCreditFraction:       observed.cache.creditFraction,
 		CacheEvidenceTokens:       observed.cache.evidenceTokens,
 	}
+	state.PendingCacheCreditTokens = state.PendingPrefillInputTokens - state.PendingPrefillTokens
+	state.CacheCreditBudgetTokens = cacheCreditTokenBudget(state)
 	if !validProjectedState(state) {
 		return ProjectedState{}, false
 	}
@@ -72,7 +76,9 @@ func validProjectedState(state ProjectedState) bool {
 	}
 	return state.ObservedKVTokens >= 0 && state.ReservationKVTokens >= 0 &&
 		state.EffectiveKVTokens >= state.ObservedKVTokens &&
+		state.PendingPrefillInputTokens >= state.PendingPrefillTokens &&
 		state.PendingPrefillTokens >= 0 && state.PendingPrefillSequences >= 0 &&
+		state.PendingCacheCreditTokens == state.PendingPrefillInputTokens-state.PendingPrefillTokens &&
 		state.PendingExclusiveSequences >= 0 && state.PendingQuiescentSequences >= 0 &&
 		state.PendingExclusiveSequences <= state.PendingPrefillSequences &&
 		state.PendingQuiescentSequences <= state.PendingPrefillSequences &&
@@ -85,7 +91,8 @@ func validProjectedState(state ProjectedState) bool {
 		finiteNonnegative(state.CacheCreditFraction) &&
 		state.CacheCreditFraction <= cachePrefillMaximumHitCredit &&
 		state.CacheCreditFraction <= state.CacheHitFraction &&
+		state.CacheCreditBudgetTokens >= 0 &&
 		(!state.CacheObservationValid || state.CacheEvidenceTokens >= cachePrefillMinimumEvidenceTokens) &&
-		(state.CacheObservationValid || (state.CacheHitFraction == 0 && state.CacheCreditFraction == 0 && state.CacheEvidenceTokens == 0)) &&
+		(state.CacheObservationValid || (state.CacheHitFraction == 0 && state.CacheCreditFraction == 0 && state.CacheEvidenceTokens == 0 && state.CacheCreditBudgetTokens == 0)) &&
 		validTPSSnapshot(state.TPS)
 }

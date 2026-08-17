@@ -42,11 +42,14 @@ type PredictiveAdmissionInput struct {
 	Reservations                           int
 	VirtualDecodeSequences                 int
 	ForwardedPendingPrefills               int
+	ForwardedPendingPrefillInputTokens     int64
 	ForwardedPendingPrefillTokens          int64
+	ForwardedPendingCacheCreditTokens      int64
 	CacheObservationValid                  bool
 	CacheHitFraction                       float64
 	CacheCreditFraction                    float64
 	CacheEvidenceTokens                    uint64
+	CacheCreditBudgetTokens                int64
 	FailureClose                           uint64
 	FailureDecide                          uint64
 	FailureForward                         uint64
@@ -174,11 +177,14 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_admission_reservations %d\n", input.Reservations)
 	fmt.Fprintf(w, "pig_predictive_admission_virtual_decode_sequences %d\n", input.VirtualDecodeSequences)
 	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefills %d\n", input.ForwardedPendingPrefills)
+	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefill_input_tokens %d\n", input.ForwardedPendingPrefillInputTokens)
 	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_prefill_tokens %d\n", input.ForwardedPendingPrefillTokens)
+	fmt.Fprintf(w, "pig_predictive_admission_forwarded_pending_cache_credit_tokens %d\n", input.ForwardedPendingCacheCreditTokens)
 	fmt.Fprintf(w, "pig_predictive_cache_observation_valid %d\n", num.BoolAsInt(input.CacheObservationValid))
 	fmt.Fprintf(w, "pig_predictive_cache_hit_fraction %.6f\n", input.CacheHitFraction)
 	fmt.Fprintf(w, "pig_predictive_cache_credit_fraction %.6f\n", input.CacheCreditFraction)
 	fmt.Fprintf(w, "pig_predictive_cache_evidence_tokens %d\n", input.CacheEvidenceTokens)
+	fmt.Fprintf(w, "pig_predictive_cache_credit_budget_tokens %d\n", input.CacheCreditBudgetTokens)
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_active %d\n", num.BoolAsInt(input.RouterBackpressure.Active))
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_applied %d\n", num.BoolAsInt(input.RouterBackpressure.Applied))
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_state_info{scope=%q,reason=%q,source=%q} 1\n", backpressureScope, backpressureReason, backpressureSource)

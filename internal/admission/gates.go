@@ -79,10 +79,33 @@ func (g prefillGate) computeTokens(state ProjectedState, selectionTokens int64) 
 	if computed > selectionTokens {
 		computed = selectionTokens
 	}
+	availableCredit := state.CacheCreditBudgetTokens - state.PendingCacheCreditTokens
+	requestedCredit := selectionTokens - computed
+	if availableCredit <= 0 {
+		computed = selectionTokens
+	} else if requestedCredit > availableCredit {
+		computed = selectionTokens - availableCredit
+	}
 	if g.classify(selectionTokens) == PrefillWeighted && computed < g.regularTokens {
 		computed = g.regularTokens
 	}
 	return computed
+}
+
+func cacheCreditTokenBudget(state ProjectedState) int64 {
+	if !state.CacheObservationValid || state.CacheEvidenceTokens == 0 ||
+		!finiteNonnegative(state.CacheCreditFraction) || state.CacheCreditFraction <= 0 ||
+		state.CacheCreditFraction > cachePrefillMaximumHitCredit {
+		return 0
+	}
+	credit := math.Floor(float64(state.CacheEvidenceTokens) * state.CacheCreditFraction)
+	if credit <= 0 {
+		return 0
+	}
+	if credit >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	return int64(credit)
 }
 
 func (g prefillGate) evaluate(state ProjectedState, work predictive.RequestWork) (gateDecision, PrefillClass, int64) {

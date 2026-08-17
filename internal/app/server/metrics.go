@@ -111,11 +111,14 @@ func (s *proxyServer) predictiveAdmissionMetricsInput(
 	input.Reservations = nonnegativeInt(snapshot.Capacity.State.LiveReservations)
 	input.VirtualDecodeSequences = projectedDecodeSequences(snapshot.Capacity.State)
 	input.ForwardedPendingPrefills = nonnegativeInt(snapshot.Capacity.State.PendingPrefillSequences)
+	input.ForwardedPendingPrefillInputTokens = snapshot.Capacity.State.PendingPrefillInputTokens
 	input.ForwardedPendingPrefillTokens = snapshot.Capacity.State.PendingPrefillTokens
+	input.ForwardedPendingCacheCreditTokens = snapshot.Capacity.State.PendingCacheCreditTokens
 	input.CacheObservationValid = snapshot.Capacity.State.CacheObservationValid
 	input.CacheHitFraction = snapshot.Capacity.State.CacheHitFraction
 	input.CacheCreditFraction = snapshot.Capacity.State.CacheCreditFraction
 	input.CacheEvidenceTokens = snapshot.Capacity.State.CacheEvidenceTokens
+	input.CacheCreditBudgetTokens = snapshot.Capacity.State.CacheCreditBudgetTokens
 	input.PredictionDuration = snapshot.PredictionDuration
 	applyTPSCapacityMetrics(&input, snapshot.Capacity)
 	if report.HasLastDecision {

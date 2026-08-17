@@ -57,7 +57,9 @@ type ProjectedState struct {
 	ObservedKVTokens          int64
 	ReservationKVTokens       int64
 	EffectiveKVTokens         int64
+	PendingPrefillInputTokens int64
 	PendingPrefillTokens      int64
+	PendingCacheCreditTokens  int64
 	PendingPrefillSequences   int64
 	PendingExclusiveSequences int64
 	PendingQuiescentSequences int64
@@ -76,6 +78,7 @@ type ProjectedState struct {
 	CacheHitFraction          float64
 	CacheCreditFraction       float64
 	CacheEvidenceTokens       uint64
+	CacheCreditBudgetTokens   int64
 	TPS                       TPSSnapshot
 }
 

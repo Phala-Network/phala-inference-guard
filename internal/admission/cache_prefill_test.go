@@ -23,7 +23,7 @@ func TestControllerUsesBoundedRecentCacheCreditOnlyForPrefillCompute(t *testing.
 		t.Fatalf("first admission lifecycle=%+v", first)
 	}
 
-	next := cacheObservation(capability, now.Add(time.Second), 20_000, 12_500)
+	next := cacheObservation(capability, now.Add(time.Second), 10_000+32*1024, 5_000+24*1024)
 	publishObservation(t, controller, next)
 	hot := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
 	if hot.Work.PrefillComputeTokens != 8*1024 {
@@ -40,7 +40,7 @@ func TestControllerCacheCreditDoesNotDowngradeLongInputClasses(t *testing.T) {
 	now := time.Unix(21_000, 0)
 	capability := testCapability()
 	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 9_000))
-	publishObservation(t, controller, cacheObservation(capability, now.Add(time.Second), 20_000, 18_900))
+	publishObservation(t, controller, cacheObservation(capability, now.Add(time.Second), 10_000+128*1024, 9_000+128*1024))
 
 	weighted := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(128*1024, 128*1024, 256)).Decision
 	if weighted.PrefillClass != PrefillWeighted || weighted.Work.PrefillComputeTokens != 64*1024 {
@@ -95,6 +95,36 @@ func TestV01215ControllerBoundsCacheCreditByRecentEvidence(t *testing.T) {
 	if admitted != expectedAdmitted {
 		t.Fatalf("cache-aware admissions=%d want %d without exceeding recent evidence", admitted, expectedAdmitted)
 	}
+	snapshot := controller.Snapshot(now.Add(2 * time.Second))
+	if snapshot.State.CacheCreditBudgetTokens != recentCreditTokens ||
+		snapshot.State.PendingCacheCreditTokens != pendingCreditTokens ||
+		snapshot.State.PendingPrefillInputTokens != int64(admitted)*inputTokens {
+		t.Fatalf("bounded cache-credit state=%+v", snapshot.State)
+	}
+}
+
+func TestV01215ControllerColdTransitionStopsNewCreditWithoutInvalidatingPendingWork(t *testing.T) {
+	now := time.Unix(21_750, 0)
+	capability := testCapability()
+	initial := cacheObservation(capability, now, 10_000, 5_000)
+	controller := testControllerWithObservation(t, capability, initial)
+	hot := cacheObservation(capability, now.Add(time.Second), 10_000+32*1024, 5_000+32*1024)
+	publishObservation(t, controller, hot)
+
+	first := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(16*1024, 16*1024, 256)).Decision
+	if !first.Admitted() || first.Work.PrefillComputeTokens != 4*1024 {
+		t.Fatalf("hot admission=%+v", first)
+	}
+
+	cold := cacheObservation(capability, now.Add(2*time.Second), 10_000+64*1024, 5_000+32*1024)
+	publishObservation(t, controller, cold)
+	second := controller.Admit(now.Add(2*time.Second+time.Millisecond), testEstimate(16*1024, 16*1024, 256)).Decision
+	if !second.Admitted() || second.Work.PrefillComputeTokens != 16*1024 {
+		t.Fatalf("cold transition admission=%+v", second)
+	}
+	if second.State.CacheCreditBudgetTokens != 0 || second.State.PendingCacheCreditTokens != 12*1024 {
+		t.Fatalf("cold transition lost pending work or retained new credit=%+v", second.State)
+	}
 }
 
 func TestControllerCacheFallbacksNeverCloseLowFlowAdmission(t *testing.T) {
@@ -123,10 +153,10 @@ func TestControllerCacheCreditCarriesWithoutDeltaForTenSecondsThenExpires(t *tes
 	now := time.Unix(23_000, 0)
 	capability := testCapability()
 	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 5_000))
-	hotCounters := cacheObservation(capability, now.Add(time.Second), 20_000, 12_500)
+	hotCounters := cacheObservation(capability, now.Add(time.Second), 10_000+32*1024, 5_000+24*1024)
 	publishObservation(t, controller, hotCounters)
 
-	atLifetime := cacheObservation(capability, now.Add(11*time.Second), 20_000, 12_500)
+	atLifetime := cacheObservation(capability, now.Add(11*time.Second), 10_000+32*1024, 5_000+24*1024)
 	publishObservation(t, controller, atLifetime)
 	carried := controller.Admit(now.Add(11*time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
 	if !carried.Admitted() || carried.Work.PrefillComputeTokens != 8*1024 {
@@ -135,7 +165,7 @@ func TestControllerCacheCreditCarriesWithoutDeltaForTenSecondsThenExpires(t *tes
 	carriedHandle := ReservationHandle{controller: controller, runtimeEpoch: carried.RuntimeEpoch, id: carried.ReservationID}
 	_ = carriedHandle.Terminate(TerminalCancel)
 
-	expiredCounters := cacheObservation(capability, now.Add(11*time.Second+2*time.Millisecond), 20_000, 12_500)
+	expiredCounters := cacheObservation(capability, now.Add(11*time.Second+2*time.Millisecond), 10_000+32*1024, 5_000+24*1024)
 	publishObservation(t, controller, expiredCounters)
 	expired := controller.Admit(now.Add(11*time.Second+3*time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
 	if !expired.Admitted() || expired.Work.PrefillComputeTokens != 32*1024 {
@@ -164,7 +194,7 @@ func TestControllerRuntimeEpochResetClearsCacheCredit(t *testing.T) {
 	initial.RuntimeStartTime = 100
 	controller := testControllerWithObservation(t, capability, initial)
 
-	hotCounters := cacheObservation(capability, now.Add(time.Second), 20_000, 12_500)
+	hotCounters := cacheObservation(capability, now.Add(time.Second), 10_000+32*1024, 5_000+24*1024)
 	hotCounters.RuntimeStartTime = 100
 	publishObservation(t, controller, hotCounters)
 	hot := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision

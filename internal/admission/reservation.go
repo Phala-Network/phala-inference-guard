@@ -35,10 +35,11 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 	switch r.phase {
 	case reservationReserved, reservationForwardedPrefill:
 		contribution := reservationOverlay{
-			kvTokens:                r.work.TotalKVTokens,
-			pendingPrefillTokens:    r.work.PrefillComputeTokens,
-			pendingPrefillSequences: 1,
-			liveReservations:        1,
+			kvTokens:                  r.work.TotalKVTokens,
+			pendingPrefillInputTokens: r.work.Estimate.SelectionInputTokens,
+			pendingPrefillTokens:      r.work.PrefillComputeTokens,
+			pendingPrefillSequences:   1,
+			liveReservations:          1,
 		}
 		if !r.sequenceCovered {
 			contribution.unobservedSequences = 1
@@ -87,6 +88,9 @@ func addOverlay(left, right reservationOverlay) (reservationOverlay, bool) {
 	if result.kvTokens, ok = addNonnegativeInt64(left.kvTokens, right.kvTokens); !ok {
 		return reservationOverlay{}, false
 	}
+	if result.pendingPrefillInputTokens, ok = addNonnegativeInt64(left.pendingPrefillInputTokens, right.pendingPrefillInputTokens); !ok {
+		return reservationOverlay{}, false
+	}
 	if result.pendingPrefillTokens, ok = addNonnegativeInt64(left.pendingPrefillTokens, right.pendingPrefillTokens); !ok {
 		return reservationOverlay{}, false
 	}
@@ -116,6 +120,7 @@ func addOverlay(left, right reservationOverlay) (reservationOverlay, bool) {
 
 func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) {
 	if !left.valid() || !right.valid() || left.kvTokens < right.kvTokens ||
+		left.pendingPrefillInputTokens < right.pendingPrefillInputTokens ||
 		left.pendingPrefillTokens < right.pendingPrefillTokens ||
 		left.pendingPrefillSequences < right.pendingPrefillSequences ||
 		left.pendingExclusiveSequences < right.pendingExclusiveSequences ||
@@ -128,6 +133,7 @@ func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) 
 	}
 	result := reservationOverlay{
 		kvTokens:                  left.kvTokens - right.kvTokens,
+		pendingPrefillInputTokens: left.pendingPrefillInputTokens - right.pendingPrefillInputTokens,
 		pendingPrefillTokens:      left.pendingPrefillTokens - right.pendingPrefillTokens,
 		pendingPrefillSequences:   left.pendingPrefillSequences - right.pendingPrefillSequences,
 		pendingExclusiveSequences: left.pendingExclusiveSequences - right.pendingExclusiveSequences,
@@ -153,7 +159,8 @@ func (o reservationOverlay) valid() bool {
 	if !ok {
 		return false
 	}
-	return o.kvTokens >= 0 && o.pendingPrefillTokens >= 0 &&
+	return o.kvTokens >= 0 && o.pendingPrefillInputTokens >= o.pendingPrefillTokens &&
+		o.pendingPrefillTokens >= 0 &&
 		o.pendingPrefillSequences >= 0 && o.pendingExclusiveSequences >= 0 &&
 		o.pendingQuiescentSequences >= 0 &&
 		o.pendingExclusiveSequences <= o.pendingPrefillSequences &&
