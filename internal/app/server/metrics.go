@@ -169,7 +169,8 @@ func applyAdmissionDecisionMetrics(
 	input.AdmissionRunning = nonnegativeInt(decision.State.RawRunning)
 	input.AdmissionWaiting = nonnegativeInt(decision.State.RawWaiting)
 	input.AdmissionEffectiveSequences = projectedDecodeSequences(decision.State)
-	input.AdmissionAggregateTPS, input.AdmissionMeanActiveTPS = admissionGenerationTPS(decision.State)
+	input.AdmissionAggregateTPS, input.AdmissionMeanActiveTPS, input.AdmissionMeanActiveTPSValid =
+		admissionGenerationTPS(decision.State)
 	input.AdmissionPrefillClass = string(decision.PrefillClass)
 	input.AdmissionEstimatedPrefillTokens = decision.Work.PrefillComputeTokens
 	input.AdmissionPendingPrefillSequences = nonnegativeInt(decision.State.PendingPrefillSequences)
@@ -203,9 +204,9 @@ func admissionPressureSource(reason coreadmission.Reason) string {
 	}
 }
 
-func admissionGenerationTPS(state coreadmission.ProjectedState) (aggregate, mean float64) {
+func admissionGenerationTPS(state coreadmission.ProjectedState) (aggregate, mean float64, meanValid bool) {
 	if state.GenerationDelta == 0 || state.PreemptionDelta > 0 || state.ObservationInterval <= 0 {
-		return 0, 0
+		return 0, 0, false
 	}
 	aggregate = float64(state.GenerationDelta) / state.ObservationInterval.Seconds()
 	denominator := state.RawRunning
@@ -213,9 +214,9 @@ func admissionGenerationTPS(state coreadmission.ProjectedState) (aggregate, mean
 		denominator = state.PreviousRawRunning
 	}
 	if denominator < 1 {
-		denominator = 1
+		return aggregate, 0, false
 	}
-	return aggregate, aggregate / float64(denominator)
+	return aggregate, aggregate / float64(denominator), true
 }
 
 func projectedDecodeSequences(state coreadmission.ProjectedState) int {
@@ -245,6 +246,7 @@ func applyTPSCapacityMetrics(input *metrics.PredictiveAdmissionInput, capacity c
 	input.TPSReference = snapshot.Reference
 	input.TPSWindowReady = snapshot.Ready
 	input.TPSWindowQualifiedSamples = snapshot.QualifiedSamples
+	input.TPSWindowQualifiedSequenceSamples = snapshot.QualifiedSequenceSamples
 	input.TPSWindowQualifiedSequenceSeconds = snapshot.QualifiedSequenceSeconds
 	input.TPSWindowAggregate = snapshot.AggregateTPS
 	input.TPSWindowMeanActive = snapshot.MeanActiveTPS
@@ -308,7 +310,7 @@ func (s *proxyServer) backendMetricsInput(
 	observation := capacity.Observation
 	fresh := capacity.IntakeOpen && capacity.HasObservation && !now.IsZero() &&
 		!now.Before(observation.ObservedAt) && now.Sub(observation.ObservedAt) <= observation.MaximumAge
-	aggregateTPS, _ := admissionGenerationTPS(capacity.State)
+	aggregateTPS, _, _ := admissionGenerationTPS(capacity.State)
 	availableKV := observation.KVCapacityTokens - observation.UsedKVTokens
 	if availableKV < 0 {
 		availableKV = 0

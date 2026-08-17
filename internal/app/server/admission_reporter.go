@@ -141,7 +141,7 @@ func (r *admissionReporter) Snapshot() admissionReportSnapshot {
 func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
 	decision := event.Decision
 	return fmt.Sprintf(
-		"predictive_admission event=admission_decision mode=%s enforced=%t action=%s reason=%s scope=%s prefill_class=%s selection_input_tokens=%d maximum_sequence_input_tokens=%d base_prompt_count=%d prefill_input_tokens=%d prefill_compute_tokens=%d first_byte_pending_prefill_input_tokens=%d first_byte_pending_prefill_compute_tokens=%d first_byte_pending_prefill_sequences=%d request_cache_credit_tokens=%d cache_observation_valid=%t cache_hit_fraction=%.6f cache_credit_fraction=%.6f cache_evidence_tokens=%d cache_credit_budget_tokens=%d cache_credit_spent_tokens_before=%d kv_reservation_input_tokens=%d maximum_sequence_kv_reservation_input_tokens=%d input_kv_tokens=%d first_byte_coverable_input_kv_tokens=%d first_byte_pending_input_kv_tokens=%d future_kv_tokens=%d decode_horizon_tokens=%d decode_sequences=%d effective_kv_tokens=%d post_admit_kv_tokens=%d remaining_kv_tokens=%d pending_prefill_input_tokens_before=%d pending_prefill_tokens_before=%d pending_cache_credit_tokens_before=%d pending_prefill_tokens_after=%d running=%d waiting=%d tps_unobserved_sequences=%d tps_reference=%.6f tps_window_ready=%t tps_window_aggregate=%.6f tps_window_mean_active=%.6f tps_sequence_limit=%d tps_current_sequences=%d tps_post_admit_sequences=%d observation_sequence=%d controller_sequence=%d runtime_epoch=%d suppressed=%d observed_at=%s",
+		"predictive_admission event=admission_decision mode=%s enforced=%t action=%s reason=%s scope=%s prefill_class=%s selection_input_tokens=%d maximum_sequence_input_tokens=%d base_prompt_count=%d prefill_input_tokens=%d prefill_compute_tokens=%d first_byte_pending_prefill_input_tokens=%d first_byte_pending_prefill_compute_tokens=%d first_byte_pending_prefill_sequences=%d request_cache_credit_tokens=%d cache_observation_valid=%t cache_hit_fraction=%.6f cache_credit_fraction=%.6f cache_evidence_tokens=%d cache_credit_budget_tokens=%d cache_credit_spent_tokens_before=%d kv_reservation_input_tokens=%d maximum_sequence_kv_reservation_input_tokens=%d input_kv_tokens=%d first_byte_coverable_input_kv_tokens=%d first_byte_pending_input_kv_tokens=%d future_kv_tokens=%d decode_horizon_tokens=%d decode_sequences=%d effective_kv_tokens=%d post_admit_kv_tokens=%d remaining_kv_tokens=%d pending_prefill_input_tokens_before=%d pending_prefill_tokens_before=%d pending_cache_credit_tokens_before=%d pending_prefill_tokens_after=%d running=%d waiting=%d tps_unobserved_sequences=%d tps_reference=%.6f tps_window_ready=%t tps_window_qualified_sequence_samples=%d tps_window_aggregate=%.6f tps_window_mean_active=%.6f tps_sequence_limit=%d tps_current_sequences=%d tps_post_admit_sequences=%d observation_sequence=%d controller_sequence=%d runtime_epoch=%d suppressed=%d observed_at=%s",
 		event.Mode,
 		event.Enforced,
 		decision.Action,
@@ -183,6 +183,7 @@ func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
 		decision.State.UnobservedSequences,
 		decision.State.TPS.Reference,
 		decision.State.TPS.Ready,
+		decision.State.TPS.QualifiedSequenceSamples,
 		decision.State.TPS.AggregateTPS,
 		decision.State.TPS.MeanActiveTPS,
 		decision.TPSSequenceLimit,

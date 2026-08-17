@@ -451,11 +451,11 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 }
 
 func TestV01215AdmissionGenerationTPSDoesNotInventOneSequence(t *testing.T) {
-	aggregate, mean := admissionGenerationTPS(coreadmission.ProjectedState{
+	aggregate, mean, meanValid := admissionGenerationTPS(coreadmission.ProjectedState{
 		GenerationDelta:     25,
 		ObservationInterval: 500 * time.Millisecond,
 	})
-	if aggregate != 50 || mean != 0 {
-		t.Fatalf("completion-between-polls TPS aggregate=%v mean=%v", aggregate, mean)
+	if aggregate != 50 || mean != 0 || meanValid {
+		t.Fatalf("completion-between-polls TPS aggregate=%v mean=%v valid=%t", aggregate, mean, meanValid)
 	}
 }

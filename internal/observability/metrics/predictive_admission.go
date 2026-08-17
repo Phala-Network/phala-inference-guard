@@ -87,6 +87,7 @@ type PredictiveAdmissionInput struct {
 	AdmissionEffectiveSequences               int
 	AdmissionAggregateTPS                     float64
 	AdmissionMeanActiveTPS                    float64
+	AdmissionMeanActiveTPSValid               bool
 	AdmissionPrefillClass                     string
 	AdmissionEstimatedPrefillTokens           int64
 	AdmissionPendingPrefillSequences          int
@@ -97,6 +98,7 @@ type PredictiveAdmissionInput struct {
 	TPSReference                              float64
 	TPSWindowReady                            bool
 	TPSWindowQualifiedSamples                 uint64
+	TPSWindowQualifiedSequenceSamples         uint64
 	TPSWindowQualifiedSequenceSeconds         float64
 	TPSWindowAggregate                        float64
 	TPSWindowMeanActive                       float64
@@ -236,6 +238,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_request_aware_effective_sequences %d\n", input.AdmissionEffectiveSequences)
 	fmt.Fprintf(w, "pig_predictive_request_aware_aggregate_tps_proxy %.6f\n", input.AdmissionAggregateTPS)
 	fmt.Fprintf(w, "pig_predictive_request_aware_mean_active_tps_proxy %.6f\n", input.AdmissionMeanActiveTPS)
+	fmt.Fprintf(w, "pig_predictive_request_aware_mean_active_tps_proxy_valid %d\n", num.BoolAsInt(input.AdmissionMeanActiveTPSValid))
 	fmt.Fprintf(w, "pig_predictive_request_aware_estimated_prefill_tokens %d\n", input.AdmissionEstimatedPrefillTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_pending_prefill_sequences %d\n", input.AdmissionPendingPrefillSequences)
 	fmt.Fprintf(w, "pig_predictive_request_aware_pending_prefill_tokens %d\n", input.AdmissionPendingPrefillTokens)
@@ -251,6 +254,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_tps_reference %.6f\n", input.TPSReference)
 	fmt.Fprintf(w, "pig_predictive_tps_window_ready %d\n", num.BoolAsInt(input.TPSWindowReady))
 	fmt.Fprintf(w, "pig_predictive_tps_window_qualified_samples %d\n", input.TPSWindowQualifiedSamples)
+	fmt.Fprintf(w, "pig_predictive_tps_window_qualified_sequence_samples %d\n", input.TPSWindowQualifiedSequenceSamples)
 	fmt.Fprintf(w, "pig_predictive_tps_window_qualified_sequence_seconds %.6f\n", input.TPSWindowQualifiedSequenceSeconds)
 	fmt.Fprintf(w, "pig_predictive_tps_window_aggregate %.6f\n", input.TPSWindowAggregate)
 	fmt.Fprintf(w, "pig_predictive_tps_window_mean_active %.6f\n", input.TPSWindowMeanActive)
