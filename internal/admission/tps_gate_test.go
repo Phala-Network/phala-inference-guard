@@ -1,6 +1,9 @@
 package admission
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestTPSGateDisabledDoesNotChangeAdmissionOrRunSequenceProjection(t *testing.T) {
 	decision := (tpsGate{}).evaluate(ProjectedState{RawRunning: 100})
@@ -62,6 +65,60 @@ func TestTPSGateDoesNotExploreWhenBasePlusOneWouldExceedTolerance(t *testing.T) 
 	if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != 7 ||
 		decision.postAdmitSequences != 8 {
 		t.Fatalf("unsafe long-lived exploration=%+v", decision)
+	}
+}
+
+func TestTPSGateSpendsLongWindowHeadroomForOneBoundedObservationWave(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 4, QualifiedTokens: 120,
+		QualifiedActiveSeconds: 2, QualifiedSequenceSeconds: 4,
+		AggregateTPS: 60, MeanActiveTPS: 30,
+	}
+	for unobserved := int64(0); unobserved <= 4; unobserved++ {
+		state := ProjectedState{
+			RawRunning:          2,
+			UnobservedSequences: unobserved,
+			GenerationDelta:     30,
+			ObservationInterval: 500 * time.Millisecond,
+			TPS:                 snapshot,
+		}
+		decision := (tpsGate{}).evaluate(state)
+		wantFit := unobserved < 4
+		if decision.fits != wantFit || decision.sequenceLimit != 6 ||
+			decision.currentSequences != 2+unobserved ||
+			decision.postAdmitSequences != 3+unobserved {
+			t.Fatalf("unobserved=%d decision=%+v want fit/limit=%t/6", unobserved, decision, wantFit)
+		}
+	}
+}
+
+func TestTPSGateDoesNotSpendHeadroomWithoutCurrentSafeSignal(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 4, QualifiedTokens: 120,
+		QualifiedActiveSeconds: 2, QualifiedSequenceSeconds: 4,
+		AggregateTPS: 60, MeanActiveTPS: 30,
+	}
+	for _, test := range []struct {
+		name  string
+		state ProjectedState
+	}{
+		{name: "no current generation", state: ProjectedState{}},
+		{name: "waiting", state: ProjectedState{GenerationDelta: 30, RawWaiting: 1, ObservationInterval: 500 * time.Millisecond}},
+		{name: "preemption", state: ProjectedState{GenerationDelta: 30, PreemptionDelta: 1, ObservationInterval: 500 * time.Millisecond}},
+		{name: "invalid interval", state: ProjectedState{GenerationDelta: 30}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := test.state
+			state.RawRunning = 2
+			state.UnobservedSequences = 1
+			state.TPS = snapshot
+			decision := (tpsGate{}).evaluate(state)
+			if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != 3 {
+				t.Fatalf("unsafe exploration decision=%+v state=%+v", decision, state)
+			}
+		})
 	}
 }
 

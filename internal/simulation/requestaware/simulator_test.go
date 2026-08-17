@@ -165,6 +165,48 @@ func TestTPSReferenceCandidatesPreserveSaturatedThroughputAndBoundLongRunMean(t 
 	}
 }
 
+func TestTPSReferenceBoundsHealthyMixedGoodputRegressionWhileSpendingHeadroom(t *testing.T) {
+	const reference = 20.0
+	var scenario scenarioSpec
+	found := false
+	for _, candidate := range simulationScenarios(SimulationSeed) {
+		if candidate.name == "mix-80-20" {
+			scenario = candidate
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("mix-80-20 scenario is missing")
+	}
+	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
+	if err != nil {
+		t.Fatalf("construct mixed capability: %v", err)
+	}
+	baseline, _, err := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, 0)
+	if err != nil {
+		t.Fatalf("run reference-disabled mixed baseline: %v", err)
+	}
+	candidate, _, err := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, reference)
+	if err != nil {
+		t.Fatalf("run reference-enabled mixed candidate: %v", err)
+	}
+	t.Logf("healthy mixed baseline=%+v candidate=%+v", baseline, candidate)
+	if baseline.MeanActiveTPS+simulationFloatTolerance < reference {
+		t.Fatalf("fixture baseline TPS %.3f is below reference %.3f", baseline.MeanActiveTPS, reference)
+	}
+	if candidate.MeanActiveTPS+simulationFloatTolerance < 0.95*reference {
+		t.Fatalf("candidate TPS %.3f spends more than 5%% reference tolerance: %+v", candidate.MeanActiveTPS, candidate)
+	}
+	if candidate.SLOCompletionTokens+simulationFloatTolerance < 0.90*baseline.SLOCompletionTokens {
+		t.Fatalf("candidate SLO goodput %.3f regresses healthy baseline %.3f by more than 10%%",
+			candidate.SLOCompletionTokens, baseline.SLOCompletionTokens)
+	}
+	if candidate.Preemptions > baseline.Preemptions {
+		t.Fatalf("candidate preemptions=%d exceed baseline=%d", candidate.Preemptions, baseline.Preemptions)
+	}
+}
+
 func newTPSReferenceSaturationScenario() scenarioSpec {
 	requests := make([]requestSpec, 0, 20)
 	for index := 0; index < 20; index++ {
