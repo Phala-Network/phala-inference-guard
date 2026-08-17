@@ -840,6 +840,26 @@ Execution resumes test-first from these findings. Required order is:
    exact-source f563 matrix. No image build or upload is permitted before all
    corrective tests, simulations, benchmarks, and three reviews pass.
 
+Focused red source `232350e` was pushed and executed only in the isolated f563
+workbench from its GitHub archive. The archive SHA-256 was
+`a38fc5356d719e49abc9d0413ff0997342ac70a24e03ece83eab63ad13b818ed`;
+the pinned Go toolchain resolved to image ID
+`sha256:e0cffc405270b9114fac7706d07c373727d1b42b0e47c525b9cd1ab1097779ff`.
+The focused command was:
+
+```text
+go test ./internal/admission ./internal/app/request ./internal/app/server -run TestV01215 -count=1
+```
+
+It exited 1 with log SHA-256
+`8432381918744832ef9ab98b4a29b31ba17ede6f0801bfbfbda28ed307c69e4b`.
+The failures were the intended behavioral assertions: `n`/`best_of`/prompt
+batches all produced one post-admit sequence and one Decode horizon; a ready
+long-window limit of six was replaced by the current count of three; and valid
+unknown-length JSON returned `unknown_body_length`. All packages compiled and
+dependencies resolved, so this is valid red evidence. No service container,
+Compose file, backend, route, or production request was changed.
+
 ### Pass 3: exact evidence and release
 
 Status: pending. No v0.12.15 image has been built or uploaded, production still
