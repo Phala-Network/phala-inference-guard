@@ -103,6 +103,17 @@ func tpsQualifiedCurrentRateSequenceLimit(state ProjectedState, snapshot TPSSnap
 	if !ok {
 		return 0
 	}
+	// One active sequence cannot reveal whether aggregate throughput scales with
+	// concurrency, so permit exactly one low-flow probe. At higher concurrency,
+	// the current aggregate rate already bounds the marginal wave and must not
+	// knowingly project below the exploration floor.
+	if state.RawRunning > 1 {
+		projectedCurrentTPS := currentAggregateTPS / float64(waveLimit)
+		if !finiteNonnegative(projectedCurrentTPS) ||
+			projectedCurrentTPS < snapshot.Reference*tpsExplorationFloorRatio {
+			return 0
+		}
+	}
 	return waveLimit
 }
 
