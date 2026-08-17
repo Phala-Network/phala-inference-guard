@@ -6,8 +6,10 @@ call, combines that estimate with one Controller-owned coherent vLLM observation
 and every live reservation, and decides whether the post-admit state can
 preserve service quality.
 
-Current source identity: `PIG-v0.12.13`. This identifies the tested source line;
-it does not by itself imply an accepted registry image or production deployment.
+Current accepted source identity: `PIG-v0.12.13`. The Linux/amd64 registry image
+is published by digest as
+`ghcr.io/phala-network/phala-inference-guard@sha256:3e714440e683ee2efdc1b7634e427f762b839faaf65a38723d14f8980f0ddd74`.
+Source and image acceptance do not by themselves imply a production deployment.
 
 The objective is QoS-constrained throughput, not a fixed request-count limit.
 Small requests can still fit while a larger request is protected under the same
@@ -163,11 +165,13 @@ Metrics and administrative endpoints require the configured bearer token.
 
 Executable Go tests, race checks, simulations, benchmarks, and image acceptance
 run on the dedicated c21 Linux workbench. Exact executable source `e260449` has
-the `PIG-v0.12.13` identity and passed the identity-specific source matrix; this
-does not yet imply an accepted registry image or deployment. Completed and
-superseded plans remain available from Git history instead of competing with
-the current contract. The active plan records the cleanup, sustained-TPS
-design, evidence, and remaining release gates:
+the `PIG-v0.12.13` identity, passed the identity-specific source matrix, and is
+published under both `0.12.13` and immutable source tag
+`0.12.13-e2604495fdd5` at the accepted digest above. No Compose, deployment,
+Router, or live-traffic action is implied. Completed and superseded plans remain
+available from Git history instead of competing with the current contract. The
+active plan records the cleanup, sustained-TPS design, evidence, and release
+boundary:
 
 - [v0.12.13 sustained TPS reference and branch cleanup](docs/PIG_V0_12_13_SUSTAINED_TPS_REFERENCE_AND_BRANCH_CLEANUP_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)

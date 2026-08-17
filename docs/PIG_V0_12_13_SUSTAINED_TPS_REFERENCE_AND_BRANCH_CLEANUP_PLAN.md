@@ -3,8 +3,10 @@
 Status: exact release source `e2604495fdd5c61ed4699772dd0ac99bad16b386`
 has the v0.12.13 identity and passed identity-specific focused and complete c21
 acceptance. Its builder-local deployable image passed production-contract and
-isolated runtime smoke acceptance. Registry upload, deployment, and production
-evidence do not exist yet.
+isolated runtime smoke acceptance. Both registry tags resolve to one accepted
+digest that passed digest-specific pull, production-contract, and isolated
+runtime smoke reproduction. Release preparation is complete; no Compose,
+deployment, Router, live-traffic, or production evidence exists.
 
 Authoritative baseline: branch `codex/pig-v0.11.0-request-aware`, commit
 `53cb1d5abef55096c2a13dfa0193c257e64bd397`, whose executable v0.12.12 tag is
@@ -591,7 +593,12 @@ exception is removed and only the rate-derived envelope remains.
 Finding: adding raw running and all PIG active reservations double-counts work
 after vLLM observes a reservation.
 
-Correction: use the maximum of raw running and PIG pending-plus-active sequences.
+Correction: `tracked` is PIG pending-Prefill plus active-Decode sequences, while
+`raw_demand` is backend running plus waiting. Project current demand as
+`max(raw_demand + unobserved_sequences, tracked)`. The watermark-bounded
+`unobserved_sequences` term protects same-poll and non-success terminal blind
+windows, then disappears when a coherent observation covers the lifecycle
+event. This avoids both blind-window undercounting and persistent double count.
 The physical KV overlay remains unchanged and conservative.
 
 Finding: a sticky below-reference latch cannot recover after traffic drains
@@ -687,8 +694,10 @@ matrix. Router and production changes require a later explicit step.
   release source `e2604495fdd5c61ed4699772dd0ac99bad16b386`
 - [x] builder-local deployable image built from exact accepted source and passed
   static production-contract plus isolated runtime smoke acceptance
-- [ ] registry upload and digest-specific pull/contract reproduction pending
-- [ ] Compose, deployment, Router, and live traffic remain unperformed
+- [x] registry tags uploaded and confirmed at one digest; digest-specific pull,
+  production contract, and isolated runtime smoke reproduced green
+- [x] release boundary audited: Compose, deployment, Router, and live traffic
+  remain deliberately unperformed and require separate authorization
 
 ## 16. c21 execution record
 
@@ -1205,3 +1214,80 @@ request for only the missing package scope is pending. Registry digest, pull,
 and digest-specific production-contract evidence therefore remain unproven,
 and no Compose, deployment, Router, or live-traffic action is authorized by this
 builder-local result.
+
+### 2026-08-17 round 16: registry digest accepted
+
+Device authorization added only the missing `write:packages` scope to the
+existing GitHub credential. Re-login used stdin without printing the token. A
+fresh pre-push check again returned `manifest unknown` for both intended tags,
+while all local tags resolved to accepted image config ID
+`sha256:a3d5178ebd0e7ea11f088eed4e043c19816447dd91d149840c1a5ca68ee2ff5a`.
+Both pushes then succeeded:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:0.12.13
+ghcr.io/phala-network/phala-inference-guard:0.12.13-e2604495fdd5
+
+registry digest:
+sha256:3e714440e683ee2efdc1b7634e427f762b839faaf65a38723d14f8980f0ddd74
+```
+
+Independent verbose manifest inspection proved that both tags resolve to the
+same Docker schema-v2 manifest: Linux/amd64, size 3444, 15 layers, and config
+digest equal to the accepted builder-local image ID. Validation then addressed
+the immutable registry reference directly:
+
+```text
+ghcr.io/phala-network/phala-inference-guard@sha256:3e714440e683ee2efdc1b7634e427f762b839faaf65a38723d14f8980f0ddd74
+```
+
+The digest pull returned that exact digest. The repository production-image
+validator returned:
+
+```text
+PIG_PRODUCTION_IMAGE_CONTRACT_OK \
+image=ghcr.io/phala-network/phala-inference-guard@sha256:3e714440e683ee2efdc1b7634e427f762b839faaf65a38723d14f8980f0ddd74 \
+version=0.12.13 revision=e2604495fdd5c61ed4699772dd0ac99bad16b386
+```
+
+The complete isolated round-15 smoke matrix was then repeated from the digest,
+not from a mutable tag. It again proved default `enforce` with reference zero,
+explicit reference 20, bounded invalid-reference failure, runtime identity,
+health, authenticated metrics, green idle status, and a simulated upstream
+proxy request. It returned:
+
+```text
+IMAGE_SMOKE_OK \
+image=ghcr.io/phala-network/phala-inference-guard@sha256:3e714440e683ee2efdc1b7634e427f762b839faaf65a38723d14f8980f0ddd74 \
+revision=e2604495fdd5c61ed4699772dd0ac99bad16b386
+```
+
+Evidence is under:
+
+```text
+/workspace/evidence/pig-v01213-image-r16-registry-e260449
+```
+
+Material SHA-256 values:
+
+```text
+registry-pull.log            ac75ac0e691c486d005fbfc04db1d3d91d5c489e6a643fe9be2799eb2ef05480
+image-inspect.json           f23b1c34fb16718c9b34a233d59236c18343ebaa58f9f5cb102eb181b3104784
+distroless-base-inspect.json 96a82dc7419bd7e28d1d1f20756b4992c7dcf7923b10a3786d9c81f61cad86c2
+production-contract.log      8452582d9a2cbdfbc1f8d526bd17aaa6d52b3037803f1c0cd5f16adfb41cc5a9
+invalid-tps.log              a1a0c97b28ec62363d4f523e34baad99b1f5e5f7c490dabe90f7851f74b34561
+default-runtime.log          0e3e8d226ee390ab2708ac1bd224334e83799e5c852a43f7ae14ad7a435525ad
+default-metrics.log          af44bb1e303057682b817b89c5f330d04e6aa1738ebe60b1942ef54d38607082
+default-status.log           9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa
+default-chat.log             a3f510043bd3518e6a62b6c3d40f6c4ab48edfc7210e1b3304f668cfe292ac28
+tps-runtime.log              d3f8670cdd7a46e4ef1542c5d37afe8c82c5126c69856a7096cb7e90afcd925a
+tps-metrics.log              754e6e2f90fef120f85da596699ab0ea9bba2b1fbf9852a6c85e815077c39e58
+tps-status.log               9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa
+```
+
+The smoke trap again removed all temporary containers and its temporary
+network. This completes source, builder-local image, registry identity, and
+digest-specific release-preparation evidence. It does not constitute a Compose
+change, deployment, Router change, real traffic test, OpenRouter rank proof, or
+production-readiness claim; each of those requires a separately authorized
+stage and live evidence.
