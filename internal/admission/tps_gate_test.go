@@ -68,14 +68,14 @@ func TestTPSGateDoesNotExploreWhenBasePlusOneWouldExceedTolerance(t *testing.T) 
 	}
 }
 
-func TestTPSGateUsesQualifiedRateBeforeWindowMatures(t *testing.T) {
+func TestTPSGateUsesCurrentRateForOneBoundedWarmingStep(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Reference: 20,
 		QualifiedSamples: 1, QualifiedTokens: 75,
 		QualifiedActiveSeconds: 0.5, QualifiedSequenceSeconds: 2,
 		AggregateTPS: 150, MeanActiveTPS: 37.5,
 	}
-	for unobserved := int64(0); unobserved <= 3; unobserved++ {
+	for unobserved := int64(0); unobserved <= 1; unobserved++ {
 		state := ProjectedState{
 			RawRunning:               4,
 			UnobservedSequences:      unobserved,
@@ -85,16 +85,42 @@ func TestTPSGateUsesQualifiedRateBeforeWindowMatures(t *testing.T) {
 			TPS:                      snapshot,
 		}
 		decision := (tpsGate{}).evaluate(state)
-		wantFit := unobserved < 3
-		if decision.fits != wantFit || decision.sequenceLimit != 7 ||
+		wantFit := unobserved == 0
+		if decision.fits != wantFit || decision.sequenceLimit != 5 ||
 			decision.currentSequences != 4+unobserved ||
 			decision.postAdmitSequences != 5+unobserved {
-			t.Fatalf("unobserved=%d decision=%+v want fit/limit=%t/7", unobserved, decision, wantFit)
+			t.Fatalf("unobserved=%d decision=%+v want fit/limit=%t/5", unobserved, decision, wantFit)
 		}
 	}
 }
 
-func TestTPSGateDoesNotUseQualifiedWarmingRateWithoutCurrentSafeSignal(t *testing.T) {
+func TestTPSGateUsesCurrentRateForOneBoundedMatureRecoveryStep(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 4, QualifiedTokens: 100,
+		QualifiedActiveSeconds: 1, QualifiedSequenceSeconds: 4,
+		AggregateTPS: 100, MeanActiveTPS: 25,
+	}
+	for unobserved := int64(0); unobserved <= 1; unobserved++ {
+		state := ProjectedState{
+			RawRunning:               5,
+			UnobservedSequences:      unobserved,
+			GenerationDelta:          70,
+			ObservationInterval:      500 * time.Millisecond,
+			ObservationIntervalValid: true,
+			TPS:                      snapshot,
+		}
+		decision := (tpsGate{}).evaluate(state)
+		wantFit := unobserved == 0
+		if decision.fits != wantFit || decision.sequenceLimit != 6 ||
+			decision.currentSequences != 5+unobserved ||
+			decision.postAdmitSequences != 6+unobserved {
+			t.Fatalf("unobserved=%d decision=%+v want fit/limit=%t/6", unobserved, decision, wantFit)
+		}
+	}
+}
+
+func TestTPSGateDoesNotUseCurrentRateWithoutCurrentSafeSignal(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Reference: 20,
 		QualifiedSamples: 1, QualifiedTokens: 75,
