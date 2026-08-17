@@ -279,6 +279,150 @@ func TestV01215RequestEstimateRejectsImpossibleAggregateMaximumPairs(t *testing.
 	}
 }
 
+func TestV01215BackendWorkBoundsEverySmallPromptDistribution(t *testing.T) {
+	const blockSize int64 = 4
+	profiles := []BackendExecutionProfile{
+		{
+			PrefillExecution:  PrefillExecutionIndependentSequences,
+			InputKVSharing:    InputKVSharingIndependentSequences,
+			FirstByteCoverage: FirstByteCoverageOneSequence,
+		},
+		basePromptWorkProfile(),
+	}
+	for _, profile := range profiles {
+		for basePrompts := int64(1); basePrompts <= 3; basePrompts++ {
+			for maximum := int64(1); maximum <= 9; maximum++ {
+				for aggregate := maximum; aggregate <= maximum*basePrompts; aggregate++ {
+					if aggregate < basePrompts {
+						continue
+					}
+					for fanout := int64(1); fanout <= 3; fanout++ {
+						estimate := RequestEstimate{
+							SelectionInputTokens:                    aggregate,
+							MaximumSequenceInputTokens:              maximum,
+							KVReservationInputTokens:                aggregate,
+							MaximumSequenceKVReservationInputTokens: maximum,
+							DecodeHorizonTokens:                     3,
+							BasePromptCount:                         basePrompts,
+							DecodeSequences:                         basePrompts * fanout,
+						}
+						work, err := BuildRequestWork(estimate, profile, blockSize)
+						if err != nil {
+							t.Fatalf("profile=%+v estimate=%+v: %v", profile, estimate, err)
+						}
+						forEachPromptDistribution(basePrompts, maximum, aggregate, func(tokens []int64) {
+							actual := actualBackendWork(tokens, fanout, blockSize, profile)
+							if work.PrefillInputTokens < actual.prefill ||
+								work.FirstBytePendingPrefillInputTokens < actual.firstBytePendingPrefill ||
+								work.InputKVTokens < actual.inputKV ||
+								work.FirstBytePendingInputKVTokens < actual.firstBytePendingInputKV ||
+								work.FutureKVTokens != estimate.DecodeSequences*blockSize {
+								t.Fatalf(
+									"profile=%+v estimate=%+v tokens=%v work=%+v actual=%+v",
+									profile,
+									estimate,
+									tokens,
+									work,
+									actual,
+								)
+							}
+						})
+					}
+				}
+			}
+		}
+	}
+}
+
+type actualRequestWork struct {
+	prefill                    int64
+	firstBytePendingPrefill    int64
+	inputKV                    int64
+	firstBytePendingInputKV    int64
+}
+
+func actualBackendWork(
+	tokens []int64,
+	fanout,
+	blockSize int64,
+	profile BackendExecutionProfile,
+) actualRequestWork {
+	actual := actualRequestWork{}
+	minimumCoveredPrefill := int64(math.MaxInt64)
+	minimumCoveredInputKV := int64(math.MaxInt64)
+	for _, input := range tokens {
+		rounded, valid := requestWorkRoundUp(input, blockSize)
+		if !valid {
+			panic("small exact input did not round")
+		}
+		remainder := input % blockSize
+		switch profile.PrefillExecution {
+		case PrefillExecutionIndependentSequences:
+			actual.prefill += input * fanout
+			if input < minimumCoveredPrefill {
+				minimumCoveredPrefill = input
+			}
+		case PrefillExecutionPageAlignedPrecache:
+			if fanout == 1 {
+				actual.prefill += input
+				if input < minimumCoveredPrefill {
+					minimumCoveredPrefill = input
+				}
+			} else {
+				actual.prefill += input + fanout*remainder
+				covered := input + remainder
+				if covered < minimumCoveredPrefill {
+					minimumCoveredPrefill = covered
+				}
+			}
+		default:
+			panic("invalid test Prefill profile")
+		}
+		switch profile.InputKVSharing {
+		case InputKVSharingIndependentSequences:
+			actual.inputKV += rounded * fanout
+		case InputKVSharingPageAlignedPrefix:
+			actual.inputKV += input - remainder
+			if remainder > 0 {
+				actual.inputKV += fanout * blockSize
+			}
+		default:
+			panic("invalid test KV profile")
+		}
+		if rounded < minimumCoveredInputKV {
+			minimumCoveredInputKV = rounded
+		}
+	}
+	if int64(len(tokens))*fanout > 1 {
+		actual.firstBytePendingPrefill = actual.prefill - minimumCoveredPrefill
+		actual.firstBytePendingInputKV = actual.inputKV - minimumCoveredInputKV
+	}
+	return actual
+}
+
+func forEachPromptDistribution(
+	count,
+	maximum,
+	aggregate int64,
+	visit func([]int64),
+) {
+	values := make([]int64, count)
+	var walk func(int64, int64)
+	walk = func(index, total int64) {
+		if index == count {
+			if total == aggregate {
+				visit(values)
+			}
+			return
+		}
+		for value := int64(1); value <= maximum && total+value <= aggregate; value++ {
+			values[index] = value
+			walk(index+1, total+value)
+		}
+	}
+	walk(0, 0)
+}
+
 func basePromptWorkProfile() BackendExecutionProfile {
 	return BackendExecutionProfile{
 		PrefillExecution:  PrefillExecutionPageAlignedPrecache,
