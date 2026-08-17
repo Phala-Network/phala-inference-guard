@@ -6,7 +6,7 @@ import (
 )
 
 func TestParseSampleUsesCoherentSGLangAdmissionMetrics(t *testing.T) {
-	metrics := `
+	metrics := sglangGaugeDeclarations + `
 # TYPE sglang:num_retracted_requests_total counter
 # TYPE sglang:realtime_tokens_total counter
 sglang:max_total_num_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 1000000
@@ -48,6 +48,18 @@ process_start_time_seconds 1234
 	}
 }
 
+func TestParseSampleAcceptsLiveShapedColdSGLangRetractionCounter(t *testing.T) {
+	metrics := coherentSGLangFixtureWithoutRetractionDeclaration() + `
+# TYPE sglang:num_retracted_reqs gauge
+sglang:num_retracted_reqs{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 0
+`
+	sample := ParseSample(metrics)
+	if !sample.PreemptionsValid || sample.Preemptions != 0 || !sample.GenerationValid ||
+		!sample.ModelNameValid || !sample.KVTokenMetricsValid {
+		t.Fatalf("live-shaped cold SGLang retraction counter self-locked startup: %#v", sample)
+	}
+}
+
 func TestParseSampleDeduplicatesMonotonicSGLangRetractionCounterAcrossTPRanks(t *testing.T) {
 	metrics := coherentSGLangFixture() + `
 sglang:num_retracted_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 7
@@ -74,15 +86,18 @@ func TestParseSampleTreatsRegisteredColdSGLangDecodeCounterAsZero(t *testing.T) 
 		"# TYPE sglang:realtime_tokens_total counter\n"
 	metrics = strings.ReplaceAll(metrics,
 		"sglang:realtime_tokens_total{engine_type=\"unified\",mode=\"decode\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 100\n",
-		"")
+		"sglang:realtime_tokens_total{engine_type=\"unified\",mode=\"prefill_compute\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 200\n")
 	sample := ParseSample(metrics)
 	if !sample.ModelNameValid || !sample.GenerationValid || sample.Generation != 0 {
-		t.Fatalf("registered cold SGLang decode counter was not exact zero: %#v", sample)
+		t.Fatalf("prefill-only SGLang counter did not preserve exact decode zero: %#v", sample)
 	}
 }
 
 func TestParseSampleAcceptsRegisteredColdSGLangDynamicMetricsAsIdle(t *testing.T) {
 	metrics := `
+# TYPE sglang:max_total_num_tokens gauge
+# TYPE sglang:page_size gauge
+# TYPE sglang:num_pages gauge
 # TYPE sglang:kv_available_tokens gauge
 # TYPE sglang:kv_evictable_tokens gauge
 # TYPE sglang:kv_used_tokens gauge
@@ -101,6 +116,25 @@ sglang:num_pages{engine_type="unified",model_name="meta/test-model",tp_rank="0",
 		sample.KVUsedTokens != 0 || sample.Running != 0 || sample.Waiting != 0 || sample.Generation != 0 ||
 		sample.Preemptions != 0 {
 		t.Fatalf("registered cold SGLang metrics did not produce coherent idle state: %#v", sample)
+	}
+}
+
+func TestParseSampleAcceptsUnmaterializedMultiprocessSGLangMetricsAsIdle(t *testing.T) {
+	metrics := `
+# TYPE sglang:max_total_num_tokens gauge
+# TYPE sglang:page_size gauge
+# TYPE sglang:num_pages gauge
+sglang:max_total_num_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 1000000
+sglang:page_size{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 16
+sglang:num_pages{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 62500
+`
+	sample := ParseSample(metrics)
+	if !sample.ModelNameValid || !sample.KVTokenMetricsValid || !sample.KVBlockSizeValid ||
+		!sample.RunningValid || !sample.WaitingValid || !sample.GenerationValid || !sample.PreemptionsValid ||
+		sample.KVCapacityTokens != 1_000_000 || sample.KVAvailableTokens != 1_000_000 ||
+		sample.KVUsedTokens != 0 || sample.Running != 0 || sample.Waiting != 0 || sample.Generation != 0 ||
+		sample.Preemptions != 0 {
+		t.Fatalf("unmaterialized multiprocess metrics did not produce coherent idle state: %#v", sample)
 	}
 }
 
@@ -126,12 +160,36 @@ sglang:kv_used_tokens{engine_type="unified",model_name="meta/test-model",tp_rank
 
 func TestParseSampleRejectsLegacySGLangRetractionGaugesAsPreemptionCounter(t *testing.T) {
 	metrics := coherentSGLangFixtureWithoutRetractionDeclaration() + `
+# TYPE sglang:num_retracted_reqs gauge
 sglang:num_retracted_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 7
 sglang:num_paused_reqs{model_name="meta/test-model",tp_rank="0",priority=""} 5
 `
 	sample := ParseSample(metrics)
 	if sample.PreemptionsValid || sample.Preemptions != 0 {
 		t.Fatalf("legacy SGLang gauges fabricated preemption counter: %#v", sample)
+	}
+}
+
+func TestParseSampleRejectsSGLangPriorityChildrenWithoutTotals(t *testing.T) {
+	metrics := strings.ReplaceAll(coherentSGLangFixture(),
+		"sglang:num_running_reqs{engine_type=\"unified\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 0\n",
+		"sglang:num_running_reqs{engine_type=\"unified\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"10\"} 1\n")
+	metrics = strings.ReplaceAll(metrics,
+		"sglang:realtime_tokens_total{engine_type=\"unified\",mode=\"decode\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"\"} 100\n",
+		"sglang:realtime_tokens_total{engine_type=\"unified\",mode=\"decode\",model_name=\"meta/test-model\",tp_rank=\"0\",priority=\"10\"} 100\n")
+	sample := ParseSample(metrics)
+	if sample.RunningValid || sample.GenerationValid {
+		t.Fatalf("SGLang priority children were fabricated into scheduler totals: %#v", sample)
+	}
+}
+
+func TestParseSampleRequiresSGLangMetricTypesOnceSamplesMaterialize(t *testing.T) {
+	metrics := strings.ReplaceAll(coherentSGLangFixture(),
+		"# TYPE sglang:kv_used_tokens gauge\n",
+		"# TYPE sglang:kv_used_tokens counter\n")
+	sample := ParseSample(metrics)
+	if sample.KVTokenMetricsValid {
+		t.Fatalf("wrongly typed SGLang KV sample was accepted: %#v", sample)
 	}
 }
 
@@ -171,7 +229,7 @@ func coherentSGLangFixtureWithoutRetractionDeclaration() string {
 }
 
 func coherentSGLangFixtureWithoutCounterDeclarations() string {
-	return `
+	return sglangGaugeDeclarations + `
 sglang:max_total_num_tokens{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 1000000
 sglang:page_size{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 16
 sglang:num_pages{engine_type="unified",model_name="meta/test-model",tp_rank="0",priority=""} 62500
@@ -183,3 +241,14 @@ sglang:num_queue_reqs{engine_type="unified",model_name="meta/test-model",tp_rank
 sglang:realtime_tokens_total{engine_type="unified",mode="decode",model_name="meta/test-model",tp_rank="0",priority=""} 100
 `
 }
+
+const sglangGaugeDeclarations = `
+# TYPE sglang:max_total_num_tokens gauge
+# TYPE sglang:page_size gauge
+# TYPE sglang:num_pages gauge
+# TYPE sglang:kv_available_tokens gauge
+# TYPE sglang:kv_evictable_tokens gauge
+# TYPE sglang:kv_used_tokens gauge
+# TYPE sglang:num_running_reqs gauge
+# TYPE sglang:num_queue_reqs gauge
+`

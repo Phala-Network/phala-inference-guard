@@ -82,31 +82,40 @@ Python source inside `muse-glimmer-r10-candidate`.
 | KV free | `sglang:kv_available_tokens` | free full-pool slots |
 | KV evictable | `sglang:kv_evictable_tokens` | radix-cached slots reclaimable for a new request |
 | KV active | `sglang:kv_used_tokens` | active locked slots; consistency check only |
-| running | `sglang:num_running_reqs` | maximum series because the empty-priority series is the total and priority series are subsets |
-| waiting | `sglang:num_queue_reqs` | same total-versus-priority rule as running |
-| generation | `sglang:realtime_tokens_total{mode="decode"}` | monotonic counter; take the maximum across duplicate TP/PP rank series for the one supported logical scheduler |
-| preemption | `sglang:num_retracted_requests_total` | monotonic KV-pressure counter; take the maximum across duplicate TP/PP rank series |
+| running | `sglang:num_running_reqs{priority=""}` | the empty-priority series is the total; take its maximum across duplicate TP/PP rank views and never combine priority subsets |
+| waiting | `sglang:num_queue_reqs{priority=""}` | same total-versus-priority rule as running |
+| generation | `sglang:realtime_tokens_total{mode="decode",priority=""}` | monotonic counter; take the maximum across duplicate TP/PP rank views for the one supported logical scheduler |
+| preemption | `sglang:num_retracted_requests_total{priority=""}` | monotonic KV-pressure counter; take the maximum across duplicate TP/PP rank views |
 | runtime epoch | `process_start_time_seconds` when available | positive value; counter rollback still detects reset |
 
 `sglang:num_retracted_requests_total` may have no sample before the first
-retraction. Zero is valid only when the Prometheus type declaration proves the
-counter is registered. Its legacy gauge and `num_paused_reqs` must never feed
-the common preemption counter.
+retraction. In the live SGLang Python multiprocess registry, an unmaterialized
+labeled metric emits neither a sample nor HELP/TYPE, even though the current
+source has constructed the counter. Therefore an otherwise coherent modern
+SGLang admission schema may treat complete absence as cold zero. Once any
+counter sample materializes, it must carry counter type and the unified total
+label. A non-zero legacy `num_retracted_reqs` gauge without the monotonic
+counter invalidates that scrape; the resettable gauge and `num_paused_reqs`
+must never be fabricated into a cumulative preemption value.
 
 `sglang:realtime_tokens_total{mode="decode"}` follows the same cold-start rule:
-SGLang creates its labeled sample only on the first non-zero increment. A
-registered counter with no decode sample is exact zero and must allow startup;
-the model identity is established by always-present admission gauges rather
-than by requiring prior decode traffic.
+SGLang creates its labeled sample only on the first non-zero increment and the
+multiprocess exporter may omit HELP/TYPE before that point. Complete absence is
+exact cold zero. Prefill-only children may materialize the counter family while
+the absent decode child remains exact zero. Once any decode child exists, a
+counter-typed `mode="decode",priority=""` total is mandatory. The model
+identity comes from the static admission geometry rather than requiring prior
+decode traffic.
 
 SGLang also does not materialize the labeled running, waiting, or absolute KV
 gauges until its first scheduler report (idle reporting may take 30 seconds),
 while PIG's default startup probe is 10 seconds. If and only if the static
-model/KV geometry is coherent and the missing dynamic families are explicitly
-declared with the expected Prometheus gauge types, their all-missing cold state
-is interpreted as idle: running/waiting/used/evictable are zero and available
-equals capacity. A partial dynamic family remains invalid. This avoids restart
-loops without turning an incomplete scrape into a mixed observation.
+model/KV geometry is coherent, an all-missing dynamic family is interpreted as
+the multiprocess cold state: running/waiting/used/evictable are zero and
+available equals capacity. A declaration with the wrong type, a materialized
+sample without the expected type, a missing empty-priority total, or a partial
+dynamic family remains invalid. This avoids low-flow startup self-lock without
+turning a partially materialized scrape into a mixed observation.
 
 The common SGLang used-KV value is:
 
@@ -171,10 +180,11 @@ Rules:
 - no new production environment variable selects the framework.
 
 The observer indexes only fields consumed by current admission. Historical
-vLLM prompt-source and prefill-duration counters are not parsed: prefill and KV
-capability are initialized from immutable model metadata and KV geometry, and
-the removed counters had no consumer in prediction, reservation, or admission.
-This version does not imply a hidden prefill-learning path.
+vLLM prompt-source and prefill-duration counters and SGLang diagnostic
+throughput/completion/paused metrics are not parsed: they have no consumer in
+prediction, reservation, or admission. The legacy SGLang retraction gauge is
+indexed only to invalidate a non-zero scrape when the real monotonic counter is
+unavailable. This version does not imply a hidden prefill-learning path.
 
 This keeps framework detection and parsing open for extension while the
 Controller remains closed to framework-specific changes.
@@ -186,13 +196,17 @@ Controller remains closed to framework-specific changes.
 - exact live-shaped SGLang idle fixture;
 - running/waiting total plus priority subsets, proving max rather than sum;
 - mixed streaming/completion counters do not affect the realtime decode source;
-- registered-but-zero cold decode counter does not self-lock startup;
+- unmaterialized multiprocess cold decode/retraction counters do not self-lock
+  startup even when HELP/TYPE is absent;
 - registered cold dynamic gauges initialize an idle backend before SGLang's
   first 30-second report, while a partial family remains unusable;
 - registered-but-zero retraction counter;
 - non-zero retraction counter and reset;
-- legacy retraction gauge/paused gauges cannot satisfy preemption validity;
-- KV identity with free, evictable, active, and protected gap;
+- a non-zero legacy retraction gauge and paused gauges cannot fabricate a
+  preemption counter;
+- priority child series without `priority=""` totals are rejected;
+- materialized gauges/counters with the wrong Prometheus type are rejected;
+- KV identity with coherent free, evictable, and used accounting;
 - invalid page geometry, inconsistent absolute KV gauges,
   negative/NaN/fractional values, duplicate model identities, mixed frameworks,
   multiple DP replicas, non-unified engines, missing required metrics, wrong

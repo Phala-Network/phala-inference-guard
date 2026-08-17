@@ -25,10 +25,13 @@ var sglangAdmissionIdentityMetrics = []string{
 }
 
 func parseSGLangSample(metricsText string, index metricIndex) telemetry.Sample {
-	runningValue, runningPresent := index.maximum("sglang:num_running_reqs", nil)
-	waitingValue, waitingPresent := index.maximum("sglang:num_queue_reqs", nil)
+	totalPriority := func(labels map[string]string) bool {
+		return labels["priority"] == ""
+	}
+	runningValue, runningPresent := index.maximum("sglang:num_running_reqs", totalPriority)
+	waitingValue, waitingPresent := index.maximum("sglang:num_queue_reqs", totalPriority)
 	generationValue, generationPresent := index.maximum(sglangRealtimeTokenCounter, func(labels map[string]string) bool {
-		return labels["mode"] == "decode"
+		return labels["mode"] == "decode" && labels["priority"] == ""
 	})
 	preemptions, preemptionsValid := parseSGLangRetractions(index)
 	modelName, staticModelValid := index.requiredUniqueLabel(sglangStaticIdentityMetrics, "model_name")
@@ -39,18 +42,30 @@ func parseSGLangSample(metricsText string, index metricIndex) telemetry.Sample {
 	modelNameValid := staticModelValid && allModelsValid && modelName == observedModel &&
 		staticEngineValid && allEnginesValid && engineType == "unified" && engineType == observedEngine &&
 		singleDPReplica
-	running, runningValid := exactNonNegativeMetricInt(runningValue, runningPresent)
-	waiting, waitingValid := exactNonNegativeMetricInt(waitingValue, waitingPresent)
-	if !runningPresent && index.declaredType("sglang:num_running_reqs", "gauge") {
-		runningValid = true
-	}
-	if !waitingPresent && index.declaredType("sglang:num_queue_reqs", "gauge") {
-		waitingValid = true
+	running, runningValid := parseSGLangRequestGauge(index, "sglang:num_running_reqs", runningValue, runningPresent)
+	waiting, waitingValid := parseSGLangRequestGauge(index, "sglang:num_queue_reqs", waitingValue, waitingPresent)
+	if runningPresent != waitingPresent {
+		runningValid = false
+		waitingValid = false
 	}
 	generation := uint64(0)
-	generationValid := index.declaredType(sglangRealtimeTokenCounter, "counter")
+	generationValid := !index.has(sglangRealtimeTokenCounter)
+	decodeSamplePresent, decodeLabelsValid := index.hasMatchingSamples(
+		sglangRealtimeTokenCounter,
+		func(labels map[string]string) bool { return labels["mode"] == "decode" },
+	)
 	if generationPresent {
-		generation, generationValid = exactNonNegativeMetricUint64(generationValue, generationValid)
+		generation, generationValid = exactNonNegativeMetricUint64(
+			generationValue,
+			decodeLabelsValid && index.declaredType(sglangRealtimeTokenCounter, "counter"),
+		)
+	} else if !decodeLabelsValid || decodeSamplePresent {
+		// Decode samples exist, but none is the unified scheduler's total.
+		generationValid = false
+	} else if index.has(sglangRealtimeTokenCounter) {
+		// Prefill-only children materialize the counter family before its first
+		// decode child. The absent decode child is still an exact zero.
+		generationValid = index.declaredType(sglangRealtimeTokenCounter, "counter")
 	}
 
 	sample := telemetry.Sample{
@@ -71,18 +86,60 @@ func parseSGLangSample(metricsText string, index metricIndex) telemetry.Sample {
 	return sample
 }
 
-func parseSGLangRetractions(index metricIndex) (uint64, bool) {
-	if !index.declaredType(sglangRetractionCounter, "counter") {
+func parseSGLangRequestGauge(index metricIndex, name string, value float64, present bool) (int, bool) {
+	if present {
+		return exactNonNegativeMetricInt(value, index.declaredType(name, "gauge"))
+	}
+	if index.hasSamples(name) {
+		// A priority subset without priority="" is not a scheduler total.
 		return 0, false
 	}
-	value, present := index.maximum(sglangRetractionCounter, nil)
-	if !present {
-		// A labeled prometheus_client counter has no sample until labels() is
-		// first called. The registered TYPE declaration makes absence an exact
-		// zero rather than an unsupported metric.
-		return 0, true
+	if index.has(name) && !index.declaredType(name, "gauge") {
+		return 0, false
 	}
-	return exactNonNegativeMetricUint64(value, true)
+	// prometheus_client multiprocess mode does not expose HELP/TYPE or a sample
+	// before the first labeled child is written. An entirely unmaterialized
+	// request gauge is therefore the exact cold-start zero.
+	return 0, true
+}
+
+func parseSGLangRetractions(index metricIndex) (uint64, bool) {
+	totalPriority := func(labels map[string]string) bool {
+		return labels["priority"] == ""
+	}
+	value, present := index.maximum(sglangRetractionCounter, totalPriority)
+	if present {
+		return exactNonNegativeMetricUint64(value, index.declaredType(sglangRetractionCounter, "counter"))
+	}
+	if index.hasSamples(sglangRetractionCounter) {
+		// Per-priority children without the unified total cannot be aggregated
+		// safely, especially when TP ranks also duplicate each child.
+		return 0, false
+	}
+	if index.has(sglangRetractionCounter) {
+		return 0, index.declaredType(sglangRetractionCounter, "counter")
+	}
+
+	legacyValue, legacyPresent := index.maximum("sglang:num_retracted_reqs", totalPriority)
+	if legacyPresent {
+		legacy, legacyValid := exactNonNegativeMetricInt(
+			legacyValue,
+			index.declaredType("sglang:num_retracted_reqs", "gauge"),
+		)
+		// A non-zero resettable gauge proves that a retraction occurred but
+		// cannot be converted into a monotonic total. Keep the sample invalid
+		// until the real counter materializes instead of fabricating a delta.
+		return 0, legacyValid && legacy == 0
+	}
+	if index.hasSamples("sglang:num_retracted_reqs") ||
+		(index.has("sglang:num_retracted_reqs") && !index.declaredType("sglang:num_retracted_reqs", "gauge")) {
+		return 0, false
+	}
+	// The current SGLang counter is a labeled prometheus_client multiprocess
+	// metric. Before its first increment, even HELP/TYPE is absent from the
+	// scrape. With a coherent modern SGLang admission schema, that absence is
+	// the exact cold-start zero.
+	return 0, true
 }
 
 func adaptSGLangKV(index metricIndex, sample *telemetry.Sample) {
@@ -97,17 +154,24 @@ func adaptSGLangKV(index metricIndex, sample *telemetry.Sample) {
 	available, availableValid := exactNonNegativeMetricInt64(availableValue, availablePresent)
 	evictable, evictableValid := exactNonNegativeMetricInt64(evictableValue, evictablePresent)
 	directUsed, directUsedValid := exactNonNegativeMetricInt64(directUsedValue, directUsedPresent)
-	registeredColdKV := !availablePresent && !evictablePresent && !directUsedPresent &&
-		index.declaredType("sglang:kv_available_tokens", "gauge") &&
-		index.declaredType("sglang:kv_evictable_tokens", "gauge") &&
-		index.declaredType("sglang:kv_used_tokens", "gauge")
+	allKVAbsent := !availablePresent && !evictablePresent && !directUsedPresent
+	registeredColdKV := allKVAbsent &&
+		validAbsentSGLangGauge(index, "sglang:kv_available_tokens") &&
+		validAbsentSGLangGauge(index, "sglang:kv_evictable_tokens") &&
+		validAbsentSGLangGauge(index, "sglang:kv_used_tokens")
 	if registeredColdKV && capacityValid {
 		available = capacity
 		availableValid = true
 		evictableValid = true
 		directUsedValid = true
 	}
-	if !capacityValid || capacity <= 0 || !availableValid || !evictableValid || !directUsedValid ||
+	if !index.declaredType("sglang:max_total_num_tokens", "gauge") ||
+		!index.declaredType("sglang:page_size", "gauge") ||
+		!index.declaredType("sglang:num_pages", "gauge") ||
+		(!allKVAbsent && (!index.declaredType("sglang:kv_available_tokens", "gauge") ||
+			!index.declaredType("sglang:kv_evictable_tokens", "gauge") ||
+			!index.declaredType("sglang:kv_used_tokens", "gauge"))) ||
+		!capacityValid || capacity <= 0 || !availableValid || !evictableValid || !directUsedValid ||
 		available > capacity || evictable > capacity-available {
 		return
 	}
@@ -137,4 +201,8 @@ func adaptSGLangKV(index metricIndex, sample *telemetry.Sample) {
 		sample.KVBlockSize = pageSize
 		sample.KVBlockSizeValid = true
 	}
+}
+
+func validAbsentSGLangGauge(index metricIndex, name string) bool {
+	return !index.has(name) || index.declaredType(name, "gauge")
 }

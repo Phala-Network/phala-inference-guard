@@ -21,15 +21,11 @@ var indexedAdmissionMetrics = metricNameSet(
 	"sglang:kv_available_tokens",
 	"sglang:kv_evictable_tokens",
 	"sglang:kv_used_tokens",
-	"sglang:token_usage",
 	"sglang:num_running_reqs",
 	"sglang:num_queue_reqs",
 	"sglang:realtime_tokens_total",
-	"sglang:generation_tokens_total",
-	"sglang:gen_throughput",
 	"sglang:num_retracted_requests_total",
 	"sglang:num_retracted_reqs",
-	"sglang:num_paused_reqs",
 )
 
 var vllmAdmissionSignatures = []string{
@@ -48,15 +44,11 @@ var sglangAdmissionSignatures = []string{
 	"sglang:kv_available_tokens",
 	"sglang:kv_evictable_tokens",
 	"sglang:kv_used_tokens",
-	"sglang:token_usage",
 	"sglang:num_running_reqs",
 	"sglang:num_queue_reqs",
 	"sglang:realtime_tokens_total",
-	"sglang:generation_tokens_total",
-	"sglang:gen_throughput",
 	"sglang:num_retracted_requests_total",
 	"sglang:num_retracted_reqs",
-	"sglang:num_paused_reqs",
 }
 
 func ParseSample(metricsText string) telemetry.Sample {

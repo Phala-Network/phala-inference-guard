@@ -41,8 +41,18 @@ func TestParseSampleCapturesOptionalRuntimeStartTime(t *testing.T) {
 
 func TestParseSampleDeduplicatesSGLangRanksAndExcludesEvictable(t *testing.T) {
 	metrics := `
+# TYPE sglang:max_total_num_tokens gauge
+# TYPE sglang:page_size gauge
+# TYPE sglang:num_pages gauge
+# TYPE sglang:kv_available_tokens gauge
+# TYPE sglang:kv_evictable_tokens gauge
+# TYPE sglang:kv_used_tokens gauge
 sglang:max_total_num_tokens{tp_rank="0"} 1041408
 sglang:max_total_num_tokens{tp_rank="1"} 1041408
+sglang:page_size{tp_rank="0"} 16
+sglang:page_size{tp_rank="1"} 16
+sglang:num_pages{tp_rank="0"} 65088
+sglang:num_pages{tp_rank="1"} 65088
 sglang:kv_available_tokens{tp_rank="0"} 300000
 sglang:kv_available_tokens{tp_rank="1"} 300000
 sglang:kv_evictable_tokens{tp_rank="0"} 400000

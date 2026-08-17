@@ -80,6 +80,22 @@ func (i metricIndex) has(name string) bool {
 	return len(i.samples[name]) > 0 || i.types[name] != ""
 }
 
+func (i metricIndex) hasSamples(name string) bool {
+	return len(i.samples[name]) > 0
+}
+
+func (i metricIndex) hasMatchingSamples(name string, include func(map[string]string) bool) (bool, bool) {
+	for _, sample := range i.samples[name] {
+		if !sample.labelsValid {
+			return false, false
+		}
+		if include == nil || include(sample.labels) {
+			return true, true
+		}
+	}
+	return false, true
+}
+
 func (i metricIndex) hasAny(names ...string) bool {
 	for _, name := range names {
 		if i.has(name) {
