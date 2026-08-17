@@ -70,6 +70,8 @@ type scenarioRunner struct {
 	idleDemandStarted      time.Duration
 	idleDemandActive       bool
 	externalPreemptionSeen bool
+	cacheQueryTokens       uint64
+	cacheHitTokens         uint64
 }
 
 func runScenario(
@@ -190,6 +192,9 @@ func (r *scenarioRunner) initializeArrivals() error {
 		if _, duplicate := seen[request.id]; duplicate {
 			return fmt.Errorf("scenario request ID %q is duplicated", request.id)
 		}
+		if request.actualInput <= 0 || request.cacheHitTokens < 0 || request.cacheHitTokens > request.actualInput {
+			return fmt.Errorf("scenario request %q has invalid input/cache tokens", request.id)
+		}
 		seen[request.id] = struct{}{}
 		return nil
 	}
@@ -290,7 +295,7 @@ func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
 	}
 	active := &activeRequest{
 		spec:             request,
-		prefillRemaining: float64(request.actualInput),
+		prefillRemaining: float64(request.actualInput - request.cacheHitTokens),
 		outputRemaining:  request.actualOutput,
 		unabsorbed:       true,
 	}
@@ -360,7 +365,10 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	scheduled := r.scheduledRequests()
 	waitingAtStart := r.currentWaiting(at - elapsed)
 	for _, request := range scheduled {
-		request.active.materialized = true
+		if !request.active.materialized {
+			r.observeCacheInput(request.active.spec)
+			request.active.materialized = true
+		}
 	}
 	prefillAtStart := 0
 	prefillExcessAtStart := 0.0
@@ -524,10 +532,26 @@ func (r *scenarioRunner) publishControllerObservationWindow(
 		Waiting:               int64(waiting),
 		GenerationTokensTotal: uint64(math.Floor(r.metrics.CompletionTokens)),
 		PreemptionsTotal:      uint64(r.metrics.Preemptions),
+		CacheQueryTokensTotal: r.cacheQueryTokens,
+		CacheHitTokensTotal:   r.cacheHitTokens,
+		CacheCountersValid:    r.spec.cacheMetrics,
 	})
 	if !result.Accepted {
 		panic(fmt.Sprintf("simulation Controller observation: %+v", result))
 	}
+}
+
+func (r *scenarioRunner) observeCacheInput(request requestSpec) {
+	if !r.spec.cacheMetrics {
+		return
+	}
+	queryTokens := uint64(request.actualInput)
+	hitTokens := uint64(request.cacheHitTokens)
+	if r.cacheQueryTokens > math.MaxUint64-queryTokens || r.cacheHitTokens > math.MaxUint64-hitTokens {
+		panic("simulation cache counter overflow")
+	}
+	r.cacheQueryTokens += queryTokens
+	r.cacheHitTokens += hitTokens
 }
 
 func (r *scenarioRunner) currentWaiting(at time.Duration) int {

@@ -126,6 +126,70 @@ func TestDeterministicRequestAwareGoodputSuiteIsReplayable(t *testing.T) {
 	}
 }
 
+func TestCacheAwareAdmissionBoundsHotColdAndMixedTransitionRisk(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		burstHits []int64
+	}{
+		{name: "hot", burstHits: []int64{16 * 1024, 16 * 1024, 16 * 1024, 16 * 1024, 16 * 1024, 16 * 1024, 16 * 1024, 16 * 1024}},
+		{name: "cold", burstHits: []int64{0, 0, 0, 0, 0, 0, 0, 0}},
+		{name: "mixed", burstHits: []int64{16 * 1024, 0, 16 * 1024, 0, 16 * 1024, 0, 16 * 1024, 0}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			scenario := newCacheTransitionScenario(test.name, test.burstHits)
+			profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))
+			if err != nil {
+				t.Fatalf("construct cache scenario capability: %v", err)
+			}
+			withoutCacheMetrics := scenario
+			withoutCacheMetrics.cacheMetrics = false
+			baseline, _, err := runScenario(withoutCacheMetrics, PolicyCandidate, profile)
+			if err != nil {
+				t.Fatalf("run cache-disabled candidate: %v", err)
+			}
+			candidate, _, err := runScenario(scenario, PolicyCandidate, profile)
+			if err != nil {
+				t.Fatalf("run cache-aware candidate: %v", err)
+			}
+			t.Logf("cache transition=%s baseline=%+v candidate=%+v", test.name, baseline, candidate)
+			if baseline.Admitted != 5 || candidate.Admitted != 7 {
+				t.Fatalf("cache transition=%s admissions baseline/candidate=%d/%d want 5/7", test.name, baseline.Admitted, candidate.Admitted)
+			}
+			if candidate.Preemptions != 0 || candidate.TPSFloorViolationSeconds != 0 ||
+				candidate.MeanActiveTPS+simulationFloatTolerance < simulationTPSFloor {
+				t.Fatalf("cache transition=%s violated QoS: %+v", test.name, candidate)
+			}
+			if candidate.SLOCompletionTokens <= baseline.SLOCompletionTokens {
+				t.Fatalf("cache transition=%s did not improve SLO goodput: baseline=%+v candidate=%+v", test.name, baseline, candidate)
+			}
+		})
+	}
+}
+
+func newCacheTransitionScenario(name string, burstHits []int64) scenarioSpec {
+	requests := []requestSpec{{
+		id: "cache-warm", at: 100 * time.Millisecond,
+		selectionInput: 60 * 1024, estimatedPrefill: 60 * 1024,
+		safetyInput: 60 * 1024, decodeHorizon: 256,
+		actualInput: 60 * 1024, cacheHitTokens: 60 * 1024, actualOutput: 1,
+	}}
+	for index, hitTokens := range burstHits {
+		requests = append(requests, requestSpec{
+			id: fmt.Sprintf("cache-%s-%02d", name, index), at: 600 * time.Millisecond,
+			selectionInput: 16 * 1024, estimatedPrefill: 16 * 1024,
+			safetyInput: 16 * 1024, decodeHorizon: 256,
+			actualInput: 16 * 1024, cacheHitTokens: hitTokens, actualOutput: 64,
+		})
+	}
+	return scenarioSpec{
+		name: "cache-" + name, category: "cache-transition", duration: 12 * time.Second,
+		initialKVTokens: 100_000, backgroundRunning: 4, requests: requests,
+		capacityTokens: 4 * 1024 * 1024, maxModelLen: 256 * 1024,
+		maximumNoWait: 16, aggregateTPSCap: 12 * simulationUncontendedTPS,
+		cacheMetrics: true,
+	}
+}
+
 func TestTPSReferenceCandidatesPreserveSaturatedThroughputAndBoundLongRunMean(t *testing.T) {
 	scenario := newTPSReferenceSaturationScenario()
 	profile, err := simulationCapabilityProfile(scenario, scenarioMaxModelLen(scenario))

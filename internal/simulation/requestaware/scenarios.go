@@ -33,6 +33,7 @@ type requestSpec struct {
 	safetyInput      int64
 	decodeHorizon    int64
 	actualInput      int64
+	cacheHitTokens   int64
 	actualOutput     float64
 	cancelAfter      time.Duration
 }
@@ -59,6 +60,7 @@ type scenarioSpec struct {
 	capacityTokens     int64
 	maxModelLen        int64
 	maximumNoWait      int
+	cacheMetrics       bool
 }
 
 type requestShape uint8
