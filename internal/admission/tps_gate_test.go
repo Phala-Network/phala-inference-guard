@@ -255,6 +255,25 @@ func TestV01215TPSGateLimitsEachQualifiedPollToOneCurrentRateWave(t *testing.T) 
 	}
 }
 
+func TestV01215TPSGateUsesCurrentMeanForOneMarginalHealthyWave(t *testing.T) {
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 25,
+		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
+		AggregateTPS: 120, MeanActiveTPS: 30,
+	}
+	decision := (tpsGate{}).evaluate(ProjectedState{
+		RawRunning:               4,
+		GenerationDelta:          60,
+		ObservationInterval:      500 * time.Millisecond,
+		ObservationIntervalValid: true,
+		TPS:                      snapshot,
+	})
+	if !decision.fits || decision.sequenceLimit != 5 ||
+		decision.currentSequences != 4 || decision.postAdmitSequences != 5 {
+		t.Fatalf("marginal healthy current wave was not admitted: %+v", decision)
+	}
+}
+
 func TestV01215TPSGateAllowsOnlyOneIdleProbeWithoutCurrentGeneration(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 20,
