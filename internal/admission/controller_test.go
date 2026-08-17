@@ -35,6 +35,43 @@ func TestControllerRetainsCompletionBeforePollDebtUntilCoveringSample(t *testing
 	}
 }
 
+func TestV01215ControllerCarriesBetweenPollForwardedLiabilitiesIntoTPSWindow(t *testing.T) {
+	now := time.Unix(1_250, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t,
+		capability,
+		20,
+		testObservation(capability, now, 0, 0, 0, 0, 0),
+	)
+	for index := 0; index < 2; index++ {
+		result := controller.Admit(
+			now.Add(time.Duration(index+1)*time.Millisecond),
+			testEstimate(1, 1, capability.MinimumDecodeHorizonTokens),
+		)
+		if !result.Decision.Admitted() || !result.Handle.MarkForwarded() ||
+			!result.Handle.MarkFirstByte() || !result.Handle.Terminate(TerminalSuccess) {
+			t.Fatalf("short completion %d lifecycle=%+v", index, result.Decision)
+		}
+	}
+	before := controller.Snapshot(now.Add(3 * time.Millisecond)).State
+	if before.ResidualDebts != 2 || before.SequenceLiabilities != 2 {
+		t.Fatalf("short completion liabilities were not retained: %+v", before)
+	}
+	publishObservation(
+		t,
+		controller,
+		testObservation(capability, now.Add(500*time.Millisecond), 0, 0, 0, 20, 0),
+	)
+	after := controller.Snapshot(now.Add(501 * time.Millisecond)).State
+	if after.ResidualDebts != 0 || after.SequenceLiabilities != 0 ||
+		after.TPS.QualifiedSequenceSamples != 1 ||
+		math.Abs(after.TPS.QualifiedSequenceSeconds-1) > 1e-9 ||
+		math.Abs(after.TPS.MeanActiveTPS-20) > 1e-9 {
+		t.Fatalf("between-poll liabilities did not reach TPS window: %+v", after)
+	}
+}
+
 func TestControllerRejectsInvalidTPSPolicyConfiguration(t *testing.T) {
 	for _, reference := range []float64{-1, math.NaN(), math.Inf(1), 1_000_000.001} {
 		if _, err := NewAdmissionController(ControllerConfig{

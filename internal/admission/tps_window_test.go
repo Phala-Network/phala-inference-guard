@@ -75,6 +75,24 @@ func TestV01215TPSWindowRetainsCompletionBetweenPollsOnlyAsAggregateEvidence(t *
 	}
 }
 
+func TestV01215TPSWindowUsesForwardedLiabilitiesForBetweenPollSequenceEvidence(t *testing.T) {
+	window := newTPSWindow(20)
+	start := time.Unix(30_500, 0)
+	if !window.observe(tpsSample{
+		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
+		generatedTokens: 25, forwardedSequenceLiabilities: 2,
+	}) {
+		t.Fatal("tracked completion-between-polls sample caused numeric failure")
+	}
+	got := window.snapshot(start.Add(500 * time.Millisecond))
+	if got.QualifiedSamples != 1 || got.QualifiedSequenceSamples != 1 ||
+		math.Abs(got.QualifiedSequenceSeconds-1) > 1e-9 ||
+		math.Abs(got.AggregateTPS-50) > 1e-9 || math.Abs(got.MeanActiveTPS-25) > 1e-9 ||
+		got.Ready {
+		t.Fatalf("tracked completion-between-polls snapshot=%+v", got)
+	}
+}
+
 func TestV01215TPSWindowSeparatesAggregateAndReliableSequenceEvidence(t *testing.T) {
 	window := newTPSWindow(20)
 	start := time.Unix(31_000, 0)

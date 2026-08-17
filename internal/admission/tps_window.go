@@ -21,6 +21,7 @@ type tpsSample struct {
 	running                   int64
 	previousLocalActiveDecode int64
 	localActiveDecode         int64
+	forwardedSequenceLiabilities int64
 }
 
 type tpsBucket struct {
