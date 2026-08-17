@@ -237,25 +237,25 @@ func TestControllerCacheFallbacksNeverCloseLowFlowAdmission(t *testing.T) {
 	}
 }
 
-func TestControllerCacheCreditCarriesWithoutDeltaForTenSecondsThenExpires(t *testing.T) {
+func TestV01215ControllerCacheCreditCarriesForTwoDefaultPollsThenExpires(t *testing.T) {
 	now := time.Unix(23_000, 0)
 	capability := testCapability()
 	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 5_000))
 	hotCounters := cacheObservation(capability, now.Add(time.Second), 10_000+32*1024, 5_000+24*1024)
 	publishObservation(t, controller, hotCounters)
 
-	atLifetime := cacheObservation(capability, now.Add(11*time.Second), 10_000+32*1024, 5_000+24*1024)
+	atLifetime := cacheObservation(capability, now.Add(2*time.Second), 10_000+32*1024, 5_000+24*1024)
 	publishObservation(t, controller, atLifetime)
-	carried := controller.Admit(now.Add(11*time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
+	carried := controller.Admit(now.Add(2*time.Second+time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
 	if !carried.Admitted() || carried.Work.PrefillComputeTokens != 8*1024 {
-		t.Fatalf("cache credit was not carried through its ten-second lifetime: %+v", carried)
+		t.Fatalf("cache credit was not carried through two default polls: %+v", carried)
 	}
 	carriedHandle := ReservationHandle{controller: controller, runtimeEpoch: carried.RuntimeEpoch, id: carried.ReservationID}
 	_ = carriedHandle.Terminate(TerminalCancel)
 
-	expiredCounters := cacheObservation(capability, now.Add(11*time.Second+2*time.Millisecond), 10_000+32*1024, 5_000+24*1024)
+	expiredCounters := cacheObservation(capability, now.Add(2*time.Second+2*time.Millisecond), 10_000+32*1024, 5_000+24*1024)
 	publishObservation(t, controller, expiredCounters)
-	expired := controller.Admit(now.Add(11*time.Second+3*time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
+	expired := controller.Admit(now.Add(2*time.Second+3*time.Millisecond), testEstimate(32*1024, 40*1024, 256)).Decision
 	if !expired.Admitted() || expired.Work.PrefillComputeTokens != 32*1024 {
 		t.Fatalf("expired cache credit still changed Prefill compute: %+v", expired)
 	}
