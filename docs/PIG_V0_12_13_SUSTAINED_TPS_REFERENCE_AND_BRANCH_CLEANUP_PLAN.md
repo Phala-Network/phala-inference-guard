@@ -259,15 +259,22 @@ The pre-admit current sequence estimate is:
 
 ```text
 tracked_pig_sequences = pending_prefill_sequences + local_active_decode
-current_sequences = max(raw_running, tracked_pig_sequences)
+raw_demand = raw_running + raw_waiting
+current_sequences = max(raw_demand + unobserved_sequences,
+                        tracked_pig_sequences)
 post_admit_sequences = current_sequences + 1
 ```
 
-Using `max` avoids known double counting after a PIG reservation becomes visible
-in vLLM `running`, while still covering a reservation not yet visible upstream.
-Both the tracked sum and the post-admit increment are checked for overflow. PIG
-remains a single-upstream admission owner; bypass traffic is outside this
-estimate and must be excluded operationally.
+`unobserved_sequences` counts forwarded or active reservations whose lifecycle
+event is newer than the latest metrics sample watermark. A covering sample
+clears that extra contribution, so a same-poll reservation cannot be lost below
+a nonzero raw count and already visible work is not permanently double-counted.
+Backend waiting is demand that will become runnable and therefore also consumes
+the sequence envelope. A non-success terminal before coverage retains one
+unobserved sequence until the first covering poll; a confirmed success does not
+delay replacement. Every sum and the post-admit increment are checked for
+overflow. PIG remains a single-upstream admission owner; bypass traffic is
+outside this estimate and must be excluded operationally.
 
 ### 5.5 Gate behavior
 
@@ -366,6 +373,7 @@ pig_predictive_tps_window_qualified_samples
 pig_predictive_tps_window_qualified_sequence_seconds
 pig_predictive_tps_window_aggregate
 pig_predictive_tps_window_mean_active
+pig_predictive_tps_unobserved_sequences
 pig_predictive_tps_sequence_limit
 pig_predictive_tps_current_sequences
 pig_predictive_tps_post_admit_sequences
@@ -907,3 +915,59 @@ This establishes focused Linux acceptance for `96c222d`; it does not replace
 the final full/race/vet/build/simulation/performance matrix. Complete review
 passes 2 and 3, revise if needed, and run the final matrix from the resulting
 exact HEAD.
+
+### 2026-08-17 review pass 2: atomic TPS demand correction
+
+The safety/lifecycle review found that the first TPS implementation projected
+`max(raw_running, tracked)`. With four raw sequences and a learned limit of five,
+one same-poll reservation left the next decision at `max(4, 1) = 4`, allowing
+the envelope to be exceeded before the next 500-ms observation. It also omitted
+backend waiting from future demand. Commit
+`9d02d619560efdd39132956e30da9d6f4f55653b` added two behavioral tests; c21
+round 7 failed both for the intended reason. The admission log SHA-256 is:
+
+```text
+e4f37287652c3402197d7b4e152849b677facd2a434c9da2ce6909cf9136df4a
+```
+
+Commit `e0c06a35e2d9cda3fa35591246549bb5781cd059` added a bounded
+`unobserved_sequences` reservation contribution and counted raw waiting. The
+same Controller lock owns the event watermark, projection, decision, and
+reservation. A covering observation removes the extra contribution so the
+correction protects the blind window without becoming sticky. c21 round 8 was
+green across all five focused packages.
+
+The lifecycle review then found that a forwarded non-success terminal dropped
+unobserved TPS demand immediately even though upstream cancellation is not a
+synchronous completion guarantee. Commit
+`6270b955de14e33f7c456ceae464d5a77e4d84f9` reproduced this in c21 round 9;
+the admission log SHA-256 is:
+
+```text
+95cdf7d6a8b3f6acb7ceeee70ebf2a3ff148086f738f6b10cf069bc4f4ed18b4
+```
+
+Commit `fd2d9f8112006371c0e55f9f6995c26afe0c29b3` retains that demand in
+residual debt until the first covering observation. Confirmed success releases
+sequence demand immediately, avoiding a replacement bubble. c21 round 10 was
+green across admission, config, server, metrics, and simulation. Its focused
+evidence directory is:
+
+```text
+/workspace/evidence/pig-v01213-tps-focused-r10-green-fd2d9f8
+```
+
+Material SHA-256 values:
+
+```text
+focused-admission.log   72e726d329fdfae92c36ada03f4b2289b9882b02e948765d47646cdf415855bd
+focused-config.log      f311a7ffcbd3392c2f65d0c08c752471e4a0afedae41607177f0278a6b295d8a
+focused-server.log      7b9044d9344259d8e171b825a6508eee05bb40aae7def743a2b622b402aed8db
+focused-metrics.log     7f94a28d4460d5e6e95d8c672fd27aacef8074b8e7873b786500ae120fdcfa78
+focused-simulation.log  719009f9da9eecba57027e7e7c8d5f751080d56fba46c2bbffd28db84bcfa8d0
+metadata.log            7e9ad205b5a6cd8a450ee350b84da7ba4680b0a91a7799d7969786616161a948
+```
+
+Logs, metrics, and the periodic status line now expose the unobserved sequence
+count. This completes the identified Pass 2 corrections, subject to the final
+race/property/full-matrix reproduction after review pass 3.

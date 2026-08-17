@@ -142,17 +142,23 @@ explore = base + 1 only when
 sequence_limit = base or explore
 
 tracked = pending_prefill_sequences + local_active_decode
-current = max(raw_running, tracked)
+raw_demand = raw_running + raw_waiting
+current = max(raw_demand + unobserved_sequences, tracked)
 post_admit = current + 1
 ```
 
-The checked `max` avoids double counting work already visible upstream while
-covering reservations not visible in metrics. Disabled state has no TPS
-hot-path projection. Warming state permits at most two total sequences, or the
-already observed `raw_running` value when it is larger, and therefore cannot
-admit an unbounded cold-start burst. Ready idle state always permits one atomic
-probe. There is no sticky degraded flag, rejection hold, cooldown, online
-reference learning, or background performance probe.
+The Controller event watermark keeps `unobserved_sequences` positive for work
+that may not be present in the current scrape and removes it on a covering
+sample. This closes the same-poll blind window without permanently double
+counting work already visible upstream. Raw waiting counts as future demand.
+A canceled, timed-out, disconnected, errored, or shutdown request retains
+unobserved demand through a covering poll; confirmed success releases it
+immediately. Disabled state has no TPS hot-path projection. Warming state
+permits at most two total sequences, or the already observed `raw_running`
+value when it is larger, and therefore cannot admit an unbounded cold-start
+burst. Ready idle state always permits one atomic probe. There is no sticky
+degraded flag, rejection hold, cooldown, online reference learning, or
+background performance probe.
 
 ## Atomic decision, reservation, and scope
 

@@ -105,6 +105,7 @@ pig_predictive_tps_window_qualified_samples
 pig_predictive_tps_window_qualified_sequence_seconds
 pig_predictive_tps_window_aggregate
 pig_predictive_tps_window_mean_active
+pig_predictive_tps_unobserved_sequences
 pig_predictive_tps_sequence_limit
 pig_predictive_tps_current_sequences
 pig_predictive_tps_post_admit_sequences
@@ -115,6 +116,9 @@ window. The last three values are the canonical minimum request's current
 pre-forward projection. A not-ready window with a positive reference reports
 the bounded warming limit, so an operator can distinguish cold-start
 protection from a mature rate-derived limit.
+`pig_predictive_tps_unobserved_sequences` is the bounded local contribution not
+yet covered by the latest metrics watermark; it normally returns to zero on the
+next coherent poll and makes same-poll protection auditable.
 `pig_predictive_request_aware_*_tps_proxy` remains the latest-interval diagnostic
 and must not be interpreted as the sustained policy window.
 
@@ -176,7 +180,8 @@ The startup line records build identity, mode, 500-ms default observation
 cadence, and freshness. Capability initialization logs the frozen profile and
 its source/reason. Bounded decision logs include enforced state, runtime and
 HTTP reasons, scope, request class/estimate, KV counterfactual, current
-running/waiting, TPS diagnostics, and pending Prefill state.
+running/waiting, the watermark-bounded unobserved sequence reservation, TPS
+diagnostics, and pending Prefill state.
 
 The periodic status line includes mode, attempts, outcomes, actual enforced
 rejects, reservations, last action/reason, Prefill class/estimate, KV values,

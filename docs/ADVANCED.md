@@ -74,6 +74,12 @@ base-plus-one exploration sequence whose fixed-rate counterfactual remains at
 least 95 percent of the reference. These are algorithm constants, not extra
 production YAML values.
 
+The sequence projection counts backend running and waiting plus only those
+local reservations newer than the latest observation watermark. The next
+covering poll absorbs that extra contribution. This prevents a concurrent
+same-poll burst from bypassing a learned limit while avoiding a permanent
+double count after vLLM exposes the request.
+
 Before the window has four qualified samples and eight qualified
 sequence-seconds, TPS warming admits at most two total sequences. If PIG starts
 while more than two are already running, it preserves that population but does

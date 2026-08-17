@@ -95,6 +95,11 @@ and the projected base-plus-one TPS remain within five percent of the
 reference. It is a long-run operating target, not a promise that every request
 or every 500-ms interval stays above the value.
 
+The pre-forward sequence counter includes vLLM running and waiting plus
+watermark-bounded local reservations that may not yet be visible in metrics.
+The next covering poll absorbs those local contributions, preventing both a
+same-poll overshoot and a persistent double count.
+
 When that business target exists, add only:
 
 ```yaml
