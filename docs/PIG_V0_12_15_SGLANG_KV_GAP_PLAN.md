@@ -335,9 +335,12 @@ Required focused tests:
   without invalidating the otherwise coherent primary admission sample;
 - first sample, missing metrics, low evidence, stale observation, counter reset,
   backend epoch change, and invalid ratios produce zero cache credit;
-- a qualified cache observation is carried across zero-delta polls for at most
-  10 seconds, then expires; a current preemption/retraction delta suppresses it
-  immediately without creating a later cooldown;
+- a qualified cache observation is never transferable indefinitely across
+  unrelated work: its age and finite token budget are both enforced, a
+  650K-class hot sample followed by several cold requests cannot over-discount
+  aggregate Prefill, and a current preemption/retraction delta suppresses it
+  immediately without creating a later cooldown; the final lifetime must be
+  justified against the 500 ms cadence rather than inherited as 10 seconds;
 - a cache observation can reduce only aggregate Prefill compute cost while KV
   fit, KV reservation, maximum input, and long-input class remain byte-for-byte
   unchanged;
@@ -364,6 +367,50 @@ Required focused tests:
 - vLLM fixtures cannot satisfy SGLang fields and SGLang fixtures cannot satisfy
   vLLM fields, including cache, TPS, preemption, and KV families;
 - all backend observer and startup fixtures remain green.
+
+Corrective request-shape, TPS, and estimator tests required after the
+2026-08-18 review:
+
+- the normalized request estimate explicitly carries Decode sequence
+  multiplicity; top-level `n`, `best_of`, string-prompt batches, and token-id
+  prompt batches either produce a complete bounded aggregate estimate or an
+  explicit request-scoped unsupported result before forwarding;
+- per-sequence Context fit remains separate from aggregate Prefill, KV, and TPS
+  demand; multiplicity cannot be hidden by treating one HTTP request as one
+  scheduler sequence, and overflow fails closed without a reservation;
+- one multi-sequence admission atomically reserves all predicted Decode KV and
+  sequence demand; cancellation, terminal release, observation reconciliation,
+  and runtime reset release it once without leaking or double releasing;
+- decision logs, status, and metrics expose the request Decode sequence count
+  and agree with TPS post-admit demand for both admitted and protected requests;
+- a ready 60-second TPS window remains the primary capacity estimate when the
+  latest 500 ms observation is valid; one ordinary low sample cannot overwrite
+  long-window headroom, while current waiting or preemption still freezes new
+  admission immediately;
+- atomic reservations prevent repeated requests in one poll from exceeding the
+  long-window sequence limit, and a newly healthy current sample can recover at
+  most one bounded step when old long-window evidence remains degraded;
+- reference-50 sparse, saturated, low-sample, counter-jitter, recovery, burst,
+  and multiplicity simulations preserve long-run mean active TPS and improve or
+  retain SLO-compliant completion goodput without low-flow self-lock;
+- the model-neutral estimator oracle includes representative byte-BPE,
+  SentencePiece, multilingual, emoji/rare-Unicode, escape-heavy, tool-schema,
+  chat-template, and multimodal shapes. Lexical Prefill ranking and conservative
+  KV/Context safety are evaluated separately; Gemma4-only evidence cannot select
+  a universal hard-capacity margin;
+- remote multimodal content whose expansion cannot be bounded from the JSON
+  body is explicitly represented as low-confidence or unsupported for hard
+  admission instead of being reported as a cross-model reliable estimate;
+- a 512K/650K hot observation followed in the same and later observations by
+  multiple 64K/128K cold requests cannot spend more cache credit than current,
+  age-bounded evidence justifies, and the cold transition does not bypass long
+  input, aggregate Prefill, KV, or TPS gates;
+- valid chunked or HTTP/2 JSON with unknown `Content-Length` uses the existing
+  bounded reader and is classified up to the configured maximum; only the
+  first byte beyond the maximum changes it to `body_too_large`;
+- several concurrent short Decode requests that start and finish between polls
+  cannot be represented as one sequence-second when doing so would overstate
+  per-user TPS.
 
 Required f563 gates at the exact executable commit:
 
@@ -749,6 +796,49 @@ gofmt                     fd6c987ec7e755c1df6bfb551a9259ea12b634b676dc5f8dca3be9
 The final exact-source full tests, full race, vet, build, legacy audit,
 deterministic simulations, performance gates, and bounded-state evidence remain
 pending; therefore Pass 2 is not complete.
+
+### Corrective review: request shape and long-window QoS
+
+Status: red design review recorded on 2026-08-18. This section supersedes any
+earlier targeted acceptance that conflicts with it. Current source commit
+`79ec93c9c09a986691bb62ea0448d666e4f587fd` is not a release candidate.
+
+The review found three release blockers:
+
+1. `RequestEstimate`, reservation overlays, and TPS projection account every
+   HTTP request as one Decode sequence. `n`, `best_of`, and batched completion
+   prompts can therefore under-reserve future KV and post-admit TPS demand until
+   a later backend observation arrives.
+2. Once the TPS window is ready and the current interval is valid,
+   `tpsGate.evaluate` replaces the 60-second rate-derived sequence limit with the
+   last 500 ms running/current-rate result. This makes the long window mostly a
+   readiness latch and contradicts the long-run reference contract.
+3. The runtime lexical estimator is model-independent, but the fixed `9/8` KV
+   margin was selected only by Gemma4 exact-token fixtures. That evidence does
+   not bound byte-fallback Unicode, other tokenizer/template families, or remote
+   multimodal expansion.
+
+The same review recorded four additional gaps: cache credit can remain fully
+effective for 20 default polls; automatic Prefill initialization is fixed
+64K/256K/512K policy with geometry clipping rather than measured Prefill
+capability; valid unknown-length JSON is rejected before the already-bounded
+reader; and completion-between-polls TPS accounting falls back to one active
+sequence even when several concurrent short requests may have completed.
+
+Execution resumes test-first from these findings. Required order is:
+
+1. add focused red request-shape/multiplicity and TPS long-window tests and run
+   them only in the isolated f563 workbench at the exact pushed red commit;
+2. implement one normalized request-shape contract through classifier,
+   estimator, `RequestWork`, policy, reservation lifecycle, logs, and metrics;
+3. restore long-window TPS capacity as the primary limit while retaining atomic
+   same-snapshot accounting, immediate waiting/preemption protection, idle
+   probing, and bounded current-rate recovery;
+4. add cross-tokenizer/low-confidence oracle coverage, cache age/burst tests,
+   unknown-length body support, and short-request sequence-time accounting;
+5. repeat model/causality and safety/lifecycle reviews, then run the complete
+   exact-source f563 matrix. No image build or upload is permitted before all
+   corrective tests, simulations, benchmarks, and three reviews pass.
 
 ### Pass 3: exact evidence and release
 
