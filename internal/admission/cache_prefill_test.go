@@ -39,29 +39,30 @@ func TestControllerUsesBoundedRecentCacheCreditOnlyForPrefillCompute(t *testing.
 func TestControllerCacheCreditDoesNotDowngradeLongInputClasses(t *testing.T) {
 	now := time.Unix(21_000, 0)
 	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, cacheObservation(capability, now, 10_000, 9_000))
-	publishObservation(t, controller, cacheObservation(capability, now.Add(time.Second), 10_000+128*1024, 9_000+128*1024))
+	initial := cacheObservation(capability, now, 10_000, 9_000)
+	initial.Running = 4
+	controller := testControllerWithObservation(t, capability, initial)
+	hot := cacheObservation(capability, now.Add(time.Second), 10_000+128*1024, 9_000+128*1024)
+	hot.Running = 4
+	publishObservation(t, controller, hot)
 
 	weighted := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(128*1024, 128*1024, 256)).Decision
-	if weighted.PrefillClass != PrefillWeighted || weighted.Work.PrefillComputeTokens != 64*1024 {
+	if !weighted.Admitted() || weighted.PrefillClass != PrefillWeighted ||
+		weighted.Work.PrefillComputeTokens != 64*1024 || weighted.Work.InputKVTokens < 128*1024 {
 		t.Fatalf("weighted cache charge/class=%+v", weighted)
 	}
-	if weighted.Admitted() {
-		weightedHandle := ReservationHandle{controller: controller, runtimeEpoch: weighted.RuntimeEpoch, id: weighted.ReservationID}
-		_ = weightedHandle.Terminate(TerminalCancel)
+	weightedHandle := ReservationHandle{controller: controller, runtimeEpoch: weighted.RuntimeEpoch, id: weighted.ReservationID}
+	if !weightedHandle.Terminate(TerminalCancel) {
+		t.Fatalf("weighted cache admission lifecycle=%+v", weighted)
 	}
 
 	exclusive := controller.Admit(now.Add(time.Second+2*time.Millisecond), testEstimate(300*1024, 300*1024, 256)).Decision
-	if exclusive.PrefillClass != PrefillExclusive || exclusive.Work.TotalKVTokens < 300*1024 {
+	if exclusive.Admitted() || exclusive.PrefillClass != PrefillExclusive || exclusive.Work.TotalKVTokens < 300*1024 {
 		t.Fatalf("exclusive cache class/KV=%+v", exclusive)
-	}
-	if exclusive.Admitted() {
-		exclusiveHandle := ReservationHandle{controller: controller, runtimeEpoch: exclusive.RuntimeEpoch, id: exclusive.ReservationID}
-		_ = exclusiveHandle.Terminate(TerminalCancel)
 	}
 
 	quiescent := controller.Admit(now.Add(time.Second+3*time.Millisecond), testEstimate(600*1024, 600*1024, 256)).Decision
-	if quiescent.PrefillClass != PrefillQuiescent || quiescent.Work.TotalKVTokens < 600*1024 {
+	if quiescent.Admitted() || quiescent.PrefillClass != PrefillQuiescent || quiescent.Work.TotalKVTokens < 600*1024 {
 		t.Fatalf("quiescent cache class/KV=%+v", quiescent)
 	}
 }
