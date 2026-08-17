@@ -295,6 +295,17 @@ reuse did not prevent harmful scheduler pressure, so admission uses fully cold
 Prefill cost. A later coherent no-preemption poll may resume a still-fresh
 bounded cache observation; this suppression creates no cooldown.
 
+Decode activity alone must not discard useful cache evidence before applying
+the existing contended Prefill token budget. A `weighted` request may therefore
+enter under Decode contention only when its bounded cache-aware Prefill compute
+cost, without changing its class, fits the same contended budget as regular
+work. Backend waiting or a current preemption/retraction delta still blocks that
+weighted admission, and `exclusive` or `quiescent` work remains blocked while
+Decode is active. KV fit and reservation always charge the complete estimated
+input. This opens at most the capacity already represented by the atomic
+Prefill and cache-credit reservations; it does not add a new threshold or
+learned state.
+
 The initial implementation must remain intentionally small: one previous
 counter snapshot plus one bounded recent observation, no learned state, no
 prefix table, no customer cardinality, and no extra upstream request. A longer
@@ -332,6 +343,10 @@ Required focused tests:
   unchanged;
 - exclusive and quiescent requests cannot be downgraded by a high recent global
   cache hit rate;
+- under Decode contention, a cache-aware weighted request can enter only when
+  its predicted Prefill compute fits the atomic contended budget; a cold
+  weighted request, waiting/preemption pressure, and every exclusive or
+  quiescent request remain protected;
 - a request-scoped 256K/512K-class protection decision leaves truthful positive
   capacity for a canonical smaller request whenever that smaller request fits;
   no blanket node closure or enlarged global queue is introduced;
@@ -684,12 +699,56 @@ results reject both the over-protective pre-fix behavior and restoration of
 same-poll historical bursting. Pass 1 remains in progress until the complete
 exact-executable source matrix and artifact audit pass.
 
+The 2026-08-18 review found that `prefillGate.evaluate` rejected every weighted
+request as soon as any Decode sequence existed, before its already bounded
+cache-aware compute cost could be compared with the contended token budget.
+That made recent cache evidence causally ineffective for 64K-256K work on a
+continuously busy backend. Focused red commit `553c318` held KV geometry,
+running Decode load, and cache evidence constant and failed because both cold
+and cache-aware runs admitted only one of two requests. Its f563 log SHA-256 is
+`7dea32a2166be8c0d8aa536c449a60abc3b2928982cdf9641b44c82e5b8ce7f4`.
+
+Executable fix `fea7eb3` allows regular and weighted work to reach the same
+atomic contended Prefill budget while preserving waiting/preemption freezes and
+the exclusive/quiescent ownership rules. Test commits `dc2bf10` and `38466b1`
+lock the complete-KV/class invariant and a hot-to-cold workload transition.
+Exact archive SHA-256 for `38466b1` is
+`93e0a792b7b204916a72f799695ffe4c24ee4dbcd18277a73f328d33daa3fc2f`.
+Its f563 targeted log SHA-256 is
+`2acd542d052da1532c1e8fe30d73763e31844cdefd752f627644c821f46cf339`.
+The cache-aware steady case improved admissions from 1/2 to 2/2 and
+SLO-completion tokens from 1441 to 1505 with mean active TPS 29.92 and zero
+preemptions. The adversarial hot-to-cold case admitted 4/4 versus the cold
+baseline's 3/4, retained mean active TPS 29.41 against reference 25, retained
+approximately 97 percent of baseline SLO-completion tokens, and produced zero
+preemptions; its one bounded TPS-floor excursion lasted 5.4 seconds over the
+180-second run. This is accepted as an occasional transition dip, not a
+sustained TPS failure.
+
 ### Pass 2: safety and lifecycle
 
-Status: pending. This pass must cover reservation/release/cancel/reset races,
-low-flow and transition recovery, cache observation bounds, current-capacity
-observability, request-path efficiency, removal of dead legacy behavior, and
-SOLID ownership boundaries.
+Status: in progress. Controller and HTTP lifecycle review confirmed atomic
+reserved/forwarded-prefill/active-decode/residual-debt transitions, pre-forward
+cache-credit refund, old-lease isolation, next-sample reconciliation, runtime
+epoch reset, terminal-cause coverage, and bounded reservation count. Commit
+`c83d3d8` removed the dead `v0.9.0` builder script and its unreferenced legacy
+KV-simulation scenarios, then extended `verify-no-legacy-mode.sh` so those
+paths cannot return. Exact `c83d3d8` f563 legacy audit passed with log SHA-256
+`455cf163ebdc8cd358ea90370bf09603ddeec7deb7a64d3c3018975046aba5c0`.
+
+The cache-credit lease fix at `d7bd22a` also passed its exact targeted focused,
+race, simulation, and formatting gates on f563:
+
+```text
+cache lease focused       e0071bf51e31ba2a643d17108ab53ca922c004094c238d14f2821784320ce866
+cache lease focused race  aedf9286b9f94b3e8ae5abefcc18b888a535b78692f930b328a7b6fbb18cf6c2
+cache/TPS simulations     17e988e41df30dff866fd05d7ad953e9bab1eddbcc0d62949a92f99ff17dcc4f
+gofmt                     fd6c987ec7e755c1df6bfb551a9259ea12b634b676dc5f8dca3be9ad635e2310
+```
+
+The final exact-source full tests, full race, vet, build, legacy audit,
+deterministic simulations, performance gates, and bounded-state evidence remain
+pending; therefore Pass 2 is not complete.
 
 ### Pass 3: exact evidence and release
 
