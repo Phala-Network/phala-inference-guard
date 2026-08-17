@@ -2,8 +2,9 @@
 
 Status: exact release source `e2604495fdd5c61ed4699772dd0ac99bad16b386`
 has the v0.12.13 identity and passed identity-specific focused and complete c21
-acceptance. No accepted image, registry upload, deployment, or production
-evidence exists yet.
+acceptance. Its builder-local deployable image passed production-contract and
+isolated runtime smoke acceptance. Registry upload, deployment, and production
+evidence do not exist yet.
 
 Authoritative baseline: branch `codex/pig-v0.11.0-request-aware`, commit
 `53cb1d5abef55096c2a13dfa0193c257e64bd397`, whose executable v0.12.12 tag is
@@ -11,7 +12,8 @@ Authoritative baseline: branch `codex/pig-v0.11.0-request-aware`, commit
 
 Target source line: v0.12.13. Runtime `PIG-v0.12.13` and OCI version `0.12.13`
 were assigned only after the exact pre-identity source passed the complete
-acceptance matrix. The identity-specific source must now repeat that matrix.
+acceptance matrix. The identity-specific source repeated that matrix before its
+builder-local image was built and accepted.
 
 ## 1. Goal
 
@@ -683,8 +685,10 @@ matrix. Router and production changes require a later explicit step.
 - [x] version identity assigned as runtime `PIG-v0.12.13` and OCI `0.12.13`
 - [x] identity-specific focused and complete c21 matrices green for exact
   release source `e2604495fdd5c61ed4699772dd0ac99bad16b386`
-- [ ] local image, registry upload, Compose, deployment, Router, and live traffic
-  remain unperformed
+- [x] builder-local deployable image built from exact accepted source and passed
+  static production-contract plus isolated runtime smoke acceptance
+- [ ] registry upload and digest-specific pull/contract reproduction pending
+- [ ] Compose, deployment, Router, and live traffic remain unperformed
 
 ## 16. c21 execution record
 
@@ -1106,3 +1110,98 @@ This establishes exact source acceptance for `e260449`; it permits a builder-
 local deployable image build and image-specific acceptance, but it does not by
 itself establish registry, Compose, deployment, Router, live-traffic, or
 production readiness.
+
+### 2026-08-17 round 14: image smoke evidence utility failure
+
+The exact accepted source was built on c21 as local image
+`pig-v0.12.13-candidate:e260449`, with image ID:
+
+```text
+sha256:a3d5178ebd0e7ea11f088eed4e043c19816447dd91d149840c1a5ca68ee2ff5a
+```
+
+The build used `SOURCE_REVISION=e2604495fdd5c61ed4699772dd0ac99bad16b386`.
+Static inspection established Linux/amd64, OCI version `0.12.13`, the exact
+40-character revision, entrypoint `/phala-inference-guard`, port 8000,
+`NVIDIA_VISIBLE_DEVICES=all`, and a 14-layer prefix exactly matching the pinned
+distroless Debian 12 base plus one binary layer. The repository production-image
+validator also passed the CGO/native-NVML checks.
+
+The first isolated runtime smoke reached the final evidence-checksum step after
+the default and positive-reference containers had started and served checks,
+but the c21 host BusyBox `xargs` rejected GNU-only option `-0`. This is a test
+utility portability failure, not image acceptance. The trap removed the three
+temporary containers and network. Round 14 is retained as failed test-tool
+evidence and was not used to approve the image.
+
+### 2026-08-17 round 15: builder-local image accepted
+
+The corrected checksum loop used controlled newline-safe evidence filenames and
+a fresh temporary network/container namespace. It re-ran every image assertion
+from the same unchanged image ID and returned:
+
+```text
+IMAGE_SMOKE_OK image=pig-v0.12.13-candidate:e260449 \
+revision=e2604495fdd5c61ed4699772dd0ac99bad16b386
+```
+
+Evidence is under:
+
+```text
+/workspace/evidence/pig-v01213-image-r15-e260449
+```
+
+The isolated mock-vLLM test established:
+
+- production image contract success, including runtime/OCI identity,
+  distroless, CGO, and the native NVML path;
+- negative `PREDICTIVE_TPS_REFERENCE` fails startup with the bounded validation
+  error;
+- omitted TPS reference starts in default `enforce` mode with reference zero;
+- explicit reference 20 starts in `enforce` mode and exports reference 20;
+- both instances serve `/healthz`, authenticated `/pig/metrics`, and green idle
+  `/v1/upstream-status`;
+- the default instance forwards one OpenAI-compatible smoke request to the mock
+  upstream and returns the expected completion;
+- no active completion, calibration, or performance request reached a real
+  model; and
+- the trap removed every temporary PIG/mock container and temporary network.
+
+Runtime identity evidence:
+
+```text
+phala-inference-guard PIG-v0.12.13 ... predictive_admission=enforce tps_reference=0.000000
+pig_info{version="PIG-v0.12.13"} 1
+pig_predictive_admission_mode_info{mode="enforce"} 1
+pig_predictive_tps_reference 0.000000
+
+phala-inference-guard PIG-v0.12.13 ... predictive_admission=enforce tps_reference=20.000000
+pig_info{version="PIG-v0.12.13"} 1
+pig_predictive_admission_mode_info{mode="enforce"} 1
+pig_predictive_tps_reference 20.000000
+```
+
+Material SHA-256 values:
+
+```text
+image-inspect.json           d19e25a52c41029d9667d99418724409147aa32281a350c06d328bfbf0a9eba6
+distroless-base-inspect.json 96a82dc7419bd7e28d1d1f20756b4992c7dcf7923b10a3786d9c81f61cad86c2
+production-contract.log      07c8fe414d5eb46643fca8ca86e8dc72d718ec986ad29216859d72febe740966
+invalid-tps.log              cedb66ed6f2b2c3100c4d3247444a3d1f5ffa17207aaa0e82acf92a412e13483
+default-runtime.log          7af8cb6aa10c3808be4db3eb66a48717a9875b8937854ce362df6c2a733d90d8
+default-metrics.log          00ab35515be55330cf3b7b7649fa0c88035a6827cb0264c6ef0a2115572e4652
+default-status.log           9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa
+default-chat.log             a3f510043bd3518e6a62b6c3d40f6c4ab48edfc7210e1b3304f668cfe292ac28
+tps-runtime.log              5de56d292944faf744bf70e174283e3ba2934413bf5f93b37598b262c11a998d
+tps-metrics.log              6970eed9559d34f9654bbca2d3e939c2dc7c9ce70aad8e476e4f95fc9baaee9f
+tps-status.log               9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa
+```
+
+Both intended registry tags, `0.12.13` and
+`0.12.13-e2604495fdd5`, were confirmed absent before upload. The first push was
+denied before manifest publication because the stored GitHub OAuth token has
+`repo` but not `write:packages`; neither tag was created. A device authorization
+request for only the missing package scope is pending. Registry digest, pull,
+and digest-specific production-contract evidence therefore remain unproven,
+and no Compose, deployment, Router, or live-traffic action is authorized by this
+builder-local result.
