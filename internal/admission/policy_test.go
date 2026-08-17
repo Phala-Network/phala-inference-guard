@@ -73,7 +73,7 @@ func TestPolicyEnforcesExclusiveAndQuiescentOwnership(t *testing.T) {
 		t.Fatalf("decision behind exclusive owner=%+v", blockedByOwner)
 	}
 
-	quiescentBusy := policy.evaluate(ProjectedState{RawRunning: 1}, testWork(t, 600*1024, 900*1024, 256))
+	quiescentBusy := policy.evaluate(ProjectedState{RawRunning: 1}, testWork(t, 600*1024, 700*1024, 256))
 	if quiescentBusy.action != ActionProtect || quiescentBusy.reason != ReasonPrefillContention ||
 		quiescentBusy.prefillClass != PrefillQuiescent {
 		t.Fatalf("quiescent busy decision=%+v", quiescentBusy)

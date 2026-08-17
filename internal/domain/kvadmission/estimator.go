@@ -203,10 +203,12 @@ func setTextPredictiveEstimate(
 		return false
 	}
 	selection, known := cost.ApproximateInputTokenHint()
+	maximumSelection := maximumSequenceInput
 	reservation := int64(0)
 	maximumReservation := int64(0)
 	if cost.ModalityCount > 0 || !known || selection <= 0 {
 		selection = cost.EstimatedInputHigh
+		maximumSelection = maximumSequenceHigh
 		reservation = cost.EstimatedInputHigh
 		maximumReservation = maximumSequenceHigh
 		cost.InputEstimateConfidence = InputEstimateConservative
@@ -248,7 +250,7 @@ func setTextPredictiveEstimate(
 	}
 	cost.Estimate = predictive.RequestEstimate{
 		SelectionInputTokens:                    selection,
-		MaximumSequenceInputTokens:              maximumSequenceInput,
+		MaximumSequenceInputTokens:              maximumSelection,
 		KVReservationInputTokens:                reservation,
 		MaximumSequenceKVReservationInputTokens: maximumReservation,
 		DecodeHorizonTokens:                     cost.BoundedDecodeTokens,
