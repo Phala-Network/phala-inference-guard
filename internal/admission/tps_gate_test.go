@@ -364,7 +364,7 @@ func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T)
 		limit int64
 	}{
 		{name: "positive surplus", state: base, fits: true, limit: 8},
-		{name: "same snapshot spent", state: withUnobservedSequences(base, 1), fits: false, limit: 8},
+		{name: "same snapshot spent", state: withUnobservedSequences(base, 1), fits: false, limit: 7},
 		{name: "negative surplus", state: base, fits: false, limit: 7},
 		{name: "current rate too low", state: withGenerationDelta(base, 60), fits: false, limit: 7},
 		{name: "waiting", state: withWaiting(base, 1), fits: false, limit: 8},

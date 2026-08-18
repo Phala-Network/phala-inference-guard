@@ -72,7 +72,7 @@ func (tpsGate) evaluateAdditional(state ProjectedState, additionalSequences int6
 		if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
 			decision.sequenceLimit = currentRateLimit
 		}
-		if budgetLimit := (qosBudgetForecast{}).sequenceLimit(state); budgetLimit > decision.sequenceLimit {
+		if budgetLimit := (qosBudgetForecast{}).sequenceLimit(state, current); budgetLimit > decision.sequenceLimit {
 			decision.sequenceLimit = budgetLimit
 		}
 	}

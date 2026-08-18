@@ -7,11 +7,12 @@ import "math"
 // baseline by more than one sequence per coherent observation.
 type qosBudgetForecast struct{}
 
-func (qosBudgetForecast) sequenceLimit(state ProjectedState) int64 {
+func (qosBudgetForecast) sequenceLimit(state ProjectedState, currentSequences int64) int64 {
 	snapshot := state.TPS
 	baseLimit := rateDerivedBaseSequenceLimit(snapshot)
 	if !snapshot.Enabled || !snapshot.Ready || snapshot.Reference <= 0 ||
 		state.RawRunning <= 0 || state.RawWaiting > 0 || state.PreemptionDelta > 0 ||
+		currentSequences < baseLimit || state.UnobservedSequences > 0 ||
 		state.GenerationDelta == 0 || !state.ObservationIntervalValid ||
 		snapshot.QualifiedActiveSeconds <= 0 || snapshot.QualifiedSequenceSeconds <= 0 {
 		return baseLimit
