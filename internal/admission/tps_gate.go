@@ -3,9 +3,8 @@ package admission
 import "math"
 
 const (
-	tpsHealthyHeadroomRatio  = 1.05
-	tpsExplorationFloorRatio = 0.95
-	tpsWarmingSequenceLimit  = int64(2)
+	tpsHealthyHeadroomRatio = 1.05
+	tpsWarmingSequenceLimit = int64(2)
 )
 
 type tpsGateDecision struct {
@@ -13,15 +12,22 @@ type tpsGateDecision struct {
 	sequenceLimit      int64
 	currentSequences   int64
 	postAdmitSequences int64
+	qosBudgeted        bool
 }
 
 type tpsGate struct{}
 
-func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
-	return (tpsGate{}).evaluateAdditional(state, 1)
+type tpsAdmissionDemand struct {
+	additionalSequences int64
+	outputLimitTokens   int64
+	outputLimitKnown    bool
 }
 
-func (tpsGate) evaluateAdditional(state ProjectedState, additionalSequences int64) tpsGateDecision {
+func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
+	return (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{additionalSequences: 1})
+}
+
+func (tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDemand) tpsGateDecision {
 	decision := tpsGateDecision{
 		gateDecision: gateDecision{fits: true, reason: ReasonOpen},
 	}
@@ -29,7 +35,7 @@ func (tpsGate) evaluateAdditional(state ProjectedState, additionalSequences int6
 	if !snapshot.Enabled {
 		return decision
 	}
-	current, postAdmit, valid := projectedTPSSequences(state, additionalSequences)
+	current, postAdmit, valid := projectedTPSSequences(state, demand.additionalSequences)
 	decision.currentSequences = current
 	decision.postAdmitSequences = postAdmit
 	if !valid || !validTPSSnapshot(snapshot) || snapshot.Reference <= 0 {
@@ -63,7 +69,7 @@ func (tpsGate) evaluateAdditional(state ProjectedState, additionalSequences int6
 		decision.reason = ReasonTPSReference
 		return decision
 	}
-	decision.sequenceLimit = rateDerivedSequenceLimit(snapshot)
+	decision.sequenceLimit = rateDerivedBaseSequenceLimit(snapshot)
 	if state.RawRunning == 0 && state.GenerationDelta == 0 {
 		if decision.sequenceLimit > tpsWarmingSequenceLimit {
 			decision.sequenceLimit = tpsWarmingSequenceLimit
@@ -72,8 +78,9 @@ func (tpsGate) evaluateAdditional(state ProjectedState, additionalSequences int6
 		if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
 			decision.sequenceLimit = currentRateLimit
 		}
-		if budgetLimit := (qosBudgetForecast{}).sequenceLimit(state, current); budgetLimit > decision.sequenceLimit {
+		if budgetLimit, budgeted := (qosBudgetForecast{}).sequenceLimit(state, current, decision.sequenceLimit, demand); budgetLimit > decision.sequenceLimit {
 			decision.sequenceLimit = budgetLimit
+			decision.qosBudgeted = budgeted && postAdmit <= budgetLimit
 		}
 	}
 	if current == 0 || postAdmit <= decision.sequenceLimit {
@@ -110,12 +117,11 @@ func tpsQualifiedCurrentRateSequenceLimit(state ProjectedState, snapshot TPSSnap
 	}
 	// One active sequence cannot reveal whether aggregate throughput scales with
 	// concurrency, so permit exactly one low-flow probe. At higher concurrency,
-	// the current aggregate rate already bounds the marginal wave and must not
-	// knowingly project below the exploration floor.
+	// below-reference expansion must use a request-bounded QoS budget lease.
 	if state.RawRunning > 1 {
 		projectedCurrentTPS := currentAggregateTPS / float64(waveLimit)
 		if !finiteNonnegative(projectedCurrentTPS) ||
-			projectedCurrentTPS < snapshot.Reference*tpsExplorationFloorRatio {
+			projectedCurrentTPS < snapshot.Reference {
 			return 0
 		}
 	}
@@ -146,18 +152,6 @@ func projectedTPSSequences(state ProjectedState, additionalSequences int64) (cur
 		return current, math.MaxInt64, false
 	}
 	return current, postAdmit, true
-}
-
-func rateDerivedSequenceLimit(snapshot TPSSnapshot) int64 {
-	limit := rateDerivedBaseSequenceLimit(snapshot)
-	if limit < math.MaxInt64 && snapshot.MeanActiveTPS >= snapshot.Reference*tpsHealthyHeadroomRatio {
-		exploration := limit + 1
-		projectedTPS := snapshot.AggregateTPS / float64(exploration)
-		if projectedTPS >= snapshot.Reference*tpsExplorationFloorRatio {
-			limit = exploration
-		}
-	}
-	return limit
 }
 
 func rateDerivedBaseSequenceLimit(snapshot TPSSnapshot) int64 {

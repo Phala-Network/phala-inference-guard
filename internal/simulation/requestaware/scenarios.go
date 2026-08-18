@@ -35,6 +35,8 @@ type requestSpec struct {
 	actualInput      int64
 	cacheHitTokens   int64
 	actualOutput     float64
+	outputLimit      int64
+	outputLimitUnknown bool
 	cancelAfter      time.Duration
 }
 

@@ -23,6 +23,7 @@ type reservationOverlay struct {
 	localActiveDecode         int64
 	unobservedSequences       int64
 	sequenceLiabilities       int64
+	qosBudgetLeases           int64
 	liveReservations          int64
 	residualDebts             int64
 }
@@ -49,6 +50,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		LocalActiveDecode:         overlay.localActiveDecode,
 		UnobservedSequences:       overlay.unobservedSequences,
 		SequenceLiabilities:       overlay.sequenceLiabilities,
+		QoSBudgetLeases:           overlay.qosBudgetLeases,
 		LiveReservations:          overlay.liveReservations,
 		ResidualDebts:             overlay.residualDebts,
 		RawRunning:                observed.observation.Running,
@@ -73,6 +75,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 }
 
 func validProjectedState(state ProjectedState) bool {
+	leaseCapacity, leaseCapacityValid := addNonnegativeInt64(state.LiveReservations, state.ResidualDebts)
 	return state.ObservedKVTokens >= 0 && state.ReservationKVTokens >= 0 &&
 		state.EffectiveKVTokens >= state.ObservedKVTokens &&
 		state.PendingPrefillInputTokens >= state.PendingPrefillTokens &&
@@ -83,6 +86,7 @@ func validProjectedState(state ProjectedState) bool {
 		state.PendingQuiescentSequences <= state.PendingPrefillSequences &&
 		state.LocalActiveDecode >= 0 && state.UnobservedSequences >= 0 &&
 		state.SequenceLiabilities >= 0 && state.UnobservedSequences <= state.SequenceLiabilities &&
+		leaseCapacityValid && state.QoSBudgetLeases >= 0 && state.QoSBudgetLeases <= leaseCapacity &&
 		state.LiveReservations >= 0 &&
 		state.ResidualDebts >= 0 && state.RawRunning >= 0 && state.RawWaiting >= 0 &&
 		state.PreviousRawRunning >= 0 && state.ObservationInterval >= 0 &&

@@ -32,6 +32,7 @@ type policyDecision struct {
 	tpsSequenceLimit          int64
 	tpsCurrentSequences       int64
 	tpsPostAdmitSequences     int64
+	tpsQoSBudgeted            bool
 }
 
 func newAdmissionPolicy(
@@ -80,7 +81,11 @@ func (p admissionPolicy) evaluate(state ProjectedState, work predictive.RequestW
 func (p admissionPolicy) evaluateCandidate(state ProjectedState, work predictive.RequestWork) policyDecision {
 	kv, postAdmit := p.kvGate.evaluate(state, work)
 	prefill, class, postPending := p.prefillGate.evaluate(state, work)
-	tps := p.tpsGate.evaluateAdditional(state, work.Estimate.DecodeSequences)
+	tps := p.tpsGate.evaluateAdditional(state, tpsAdmissionDemand{
+		additionalSequences: work.Estimate.DecodeSequences,
+		outputLimitTokens:   work.Estimate.OutputLimitTokens,
+		outputLimitKnown:    work.Estimate.OutputLimitKnown,
+	})
 	decision := policyDecision{
 		action:                    ActionProtect,
 		reason:                    ReasonInvalidRequest,
@@ -90,6 +95,7 @@ func (p admissionPolicy) evaluateCandidate(state ProjectedState, work predictive
 		tpsSequenceLimit:          tps.sequenceLimit,
 		tpsCurrentSequences:       tps.currentSequences,
 		tpsPostAdmitSequences:     tps.postAdmitSequences,
+		tpsQoSBudgeted:            tps.qosBudgeted,
 	}
 	if context := p.contextGate.evaluate(work); !context.fits {
 		decision.reason = context.reason

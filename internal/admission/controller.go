@@ -311,6 +311,7 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 		phase:             reservationReserved,
 		cacheCreditTokens: cacheCreditTokens,
 		cacheCreditLease:  cacheCreditLease,
+		qosBudgeted:       policy.tpsQoSBudgeted,
 	}
 	contribution, valid := item.contribution()
 	if !valid {
@@ -569,6 +570,7 @@ func (c *AdmissionController) decisionLocked(policy policyDecision, estimate pre
 		TPSSequenceLimit:           policy.tpsSequenceLimit,
 		TPSCurrentSequences:        policy.tpsCurrentSequences,
 		TPSPostAdmitSequences:      policy.tpsPostAdmitSequences,
+		TPSQoSBudgeted:             policy.action == ActionAdmit && policy.tpsQoSBudgeted,
 		ObservationSequence:        c.observationSequence,
 		ControllerSequence:         c.eventSequence,
 		RuntimeEpoch:               c.runtimeEpoch,

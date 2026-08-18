@@ -32,6 +32,8 @@ type RequestEstimate struct {
 	KVReservationInputTokens                int64
 	MaximumSequenceKVReservationInputTokens int64
 	DecodeHorizonTokens                     int64
+	OutputLimitTokens                       int64
+	OutputLimitKnown                        bool
 	BasePromptCount                         int64
 	DecodeSequences                         int64
 	InputEstimateConfidence                 InputEstimateConfidence
@@ -43,7 +45,10 @@ func (e RequestEstimate) Validate() error {
 		e.KVReservationInputTokens < e.SelectionInputTokens ||
 		e.MaximumSequenceKVReservationInputTokens < e.MaximumSequenceInputTokens ||
 		e.MaximumSequenceKVReservationInputTokens > e.KVReservationInputTokens ||
-		e.DecodeHorizonTokens < 0 || e.BasePromptCount <= 0 ||
+		e.DecodeHorizonTokens < 0 || e.OutputLimitTokens < 0 ||
+		(!e.OutputLimitKnown && e.OutputLimitTokens != 0) ||
+		(e.OutputLimitKnown && e.DecodeHorizonTokens > e.OutputLimitTokens) ||
+		e.BasePromptCount <= 0 ||
 		e.SelectionInputTokens < e.BasePromptCount ||
 		e.KVReservationInputTokens < e.BasePromptCount ||
 		decodeShapeInvalid(e.BasePromptCount, e.DecodeSequences) ||

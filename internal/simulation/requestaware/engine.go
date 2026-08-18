@@ -719,12 +719,21 @@ func (r *scenarioRunner) terminateAll(at time.Duration, cause coreadmission.Term
 }
 
 func simulationRequestEstimate(request requestSpec) domainpredictive.RequestEstimate {
+	outputLimit := request.outputLimit
+	if !request.outputLimitUnknown && outputLimit == 0 {
+		outputLimit = int64(math.Ceil(request.actualOutput))
+		if outputLimit < request.decodeHorizon {
+			outputLimit = request.decodeHorizon
+		}
+	}
 	estimate := domainpredictive.RequestEstimate{
 		SelectionInputTokens:                    request.selectionInput,
 		MaximumSequenceInputTokens:              request.selectionInput,
 		KVReservationInputTokens:                request.safetyInput,
 		MaximumSequenceKVReservationInputTokens: request.safetyInput,
 		DecodeHorizonTokens:                     request.decodeHorizon,
+		OutputLimitTokens:                       outputLimit,
+		OutputLimitKnown:                        !request.outputLimitUnknown,
 		BasePromptCount:                         1,
 		DecodeSequences:                         1,
 	}

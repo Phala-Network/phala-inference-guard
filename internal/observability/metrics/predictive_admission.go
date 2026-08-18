@@ -74,6 +74,8 @@ type PredictiveAdmissionInput struct {
 	AdmissionFirstBytePendingPrefillSequences int64
 	AdmissionMaximumSequenceKVReservation     int64
 	AdmissionDecodeSequences                  int64
+	AdmissionOutputLimitTokens                int64
+	AdmissionOutputLimitKnown                 bool
 	AdmissionInputKVTokens                    int64
 	AdmissionFirstByteCoverableInputKV        int64
 	AdmissionFirstBytePendingInputKV          int64
@@ -104,6 +106,8 @@ type PredictiveAdmissionInput struct {
 	TPSWindowAggregate                        float64
 	TPSWindowMeanActive                       float64
 	TPSUnobservedSequences                    int64
+	TPSQoSBudgetLeases                        int64
+	TPSLastDecisionQoSBudgeted                bool
 	TPSSequenceLimit                          int64
 	TPSCurrentSequences                       int64
 	TPSPostAdmitSequences                     int64
@@ -227,6 +231,8 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_request_aware_first_byte_pending_prefill_sequences %d\n", input.AdmissionFirstBytePendingPrefillSequences)
 	fmt.Fprintf(w, "pig_predictive_request_aware_maximum_sequence_kv_reservation_input_tokens %d\n", input.AdmissionMaximumSequenceKVReservation)
 	fmt.Fprintf(w, "pig_predictive_request_aware_decode_sequences %d\n", input.AdmissionDecodeSequences)
+	fmt.Fprintf(w, "pig_predictive_request_aware_output_limit_tokens %d\n", input.AdmissionOutputLimitTokens)
+	fmt.Fprintf(w, "pig_predictive_request_aware_output_limit_known %d\n", num.BoolAsInt(input.AdmissionOutputLimitKnown))
 	fmt.Fprintf(w, "pig_predictive_request_aware_input_kv_tokens %d\n", input.AdmissionInputKVTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_first_byte_coverable_input_kv_tokens %d\n", input.AdmissionFirstByteCoverableInputKV)
 	fmt.Fprintf(w, "pig_predictive_request_aware_first_byte_pending_input_kv_tokens %d\n", input.AdmissionFirstBytePendingInputKV)
@@ -262,6 +268,8 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_tps_window_aggregate %.6f\n", input.TPSWindowAggregate)
 	fmt.Fprintf(w, "pig_predictive_tps_window_mean_active %.6f\n", input.TPSWindowMeanActive)
 	fmt.Fprintf(w, "pig_predictive_tps_unobserved_sequences %d\n", input.TPSUnobservedSequences)
+	fmt.Fprintf(w, "pig_predictive_tps_qos_budget_leases %d\n", input.TPSQoSBudgetLeases)
+	fmt.Fprintf(w, "pig_predictive_tps_last_decision_qos_budgeted %d\n", num.BoolAsInt(input.TPSLastDecisionQoSBudgeted))
 	fmt.Fprintf(w, "pig_predictive_tps_sequence_limit %d\n", input.TPSSequenceLimit)
 	fmt.Fprintf(w, "pig_predictive_tps_current_sequences %d\n", input.TPSCurrentSequences)
 	fmt.Fprintf(w, "pig_predictive_tps_post_admit_sequences %d\n", input.TPSPostAdmitSequences)

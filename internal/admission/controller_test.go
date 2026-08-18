@@ -602,17 +602,49 @@ func TestV01215ControllerQoSBudgetChangesPreForwardDecisionAndIsAtomic(t *testin
 	if !snapshot.Ready || snapshot.QualifiedSequenceTokens <= snapshot.Reference*snapshot.QualifiedSequenceSeconds {
 		t.Fatalf("fixture did not build positive long-window surplus: %+v", snapshot)
 	}
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	estimate := testEstimate(1, 1, 16)
+	estimate.OutputLimitTokens = 16
+	estimate.OutputLimitKnown = true
 	first := controller.Admit(clock.Now(), estimate)
 	if !first.Decision.Admitted() || first.Decision.TPSSequenceLimit != 8 ||
-		first.Decision.TPSCurrentSequences != 7 || first.Decision.TPSPostAdmitSequences != 8 {
+		first.Decision.TPSCurrentSequences != 7 || first.Decision.TPSPostAdmitSequences != 8 ||
+		!first.Decision.TPSQoSBudgeted {
 		t.Fatalf("positive QoS budget did not change pre-forward decision: %+v", first.Decision)
 	}
 	second := controller.Admit(clock.Now(), estimate).Decision
 	if second.Admitted() || second.Reason != ReasonTPSReference ||
 		second.TPSSequenceLimit != 7 || second.TPSCurrentSequences != 8 ||
-		second.TPSPostAdmitSequences != 9 || second.ReservationID != 0 {
+		second.TPSPostAdmitSequences != 9 || second.ReservationID != 0 || second.TPSQoSBudgeted ||
+		second.State.QoSBudgetLeases != 1 {
 		t.Fatalf("same-snapshot QoS budget was spent twice: %+v", second)
+	}
+	if !first.Handle.MarkForwarded() {
+		t.Fatal("QoS-budget reservation did not forward")
+	}
+	coveredAt := start.Add(2500 * time.Millisecond)
+	clock.Set(coveredAt)
+	publishObservation(t, controller, testObservation(capability, coveredAt, 0, 8, 0, 375, 0))
+	covered := controller.Snapshot(clock.Now()).State
+	if covered.QoSBudgetLeases != 1 || covered.UnobservedSequences != 0 {
+		t.Fatalf("backend coverage released QoS-budget lease: %+v", covered)
+	}
+	coveredReject := controller.Admit(clock.Now(), estimate).Decision
+	if coveredReject.Admitted() || coveredReject.Reason != ReasonTPSReference ||
+		coveredReject.State.QoSBudgetLeases != 1 {
+		t.Fatalf("covered live lease spent QoS surplus twice: %+v", coveredReject)
+	}
+	if !first.Handle.Terminate(TerminalSuccess) {
+		t.Fatal("QoS-budget reservation did not terminate")
+	}
+	if got := controller.Snapshot(clock.Now()).State.QoSBudgetLeases; got != 0 {
+		t.Fatalf("terminal covered QoS-budget lease=%d want 0", got)
+	}
+	reopenedAt := start.Add(3 * time.Second)
+	clock.Set(reopenedAt)
+	publishObservation(t, controller, testObservation(capability, reopenedAt, 0, 7, 0, 450, 0))
+	reopened := controller.Admit(clock.Now(), estimate).Decision
+	if !reopened.Admitted() || !reopened.TPSQoSBudgeted || reopened.TPSSequenceLimit != 8 {
+		t.Fatalf("terminal QoS-budget lease did not reopen bounded surplus: %+v", reopened)
 	}
 }
 

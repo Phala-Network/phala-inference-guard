@@ -173,12 +173,15 @@ func estimateGenericJSONValue(cost Cost, body []byte, cfg EstimatorConfig) Cost 
 	cost.ApproximateInputTokens = high
 	cost.ApproximateInputTokensKnown = true
 	cost.BoundedDecodeTokens = int64(cfg.BlindOutputTokens)
+	outputLimit, outputLimitKnown := predictiveOutputLimit(cost)
 	cost.Estimate = predictive.RequestEstimate{
 		SelectionInputTokens:                    high,
 		MaximumSequenceInputTokens:              high,
 		KVReservationInputTokens:                high,
 		MaximumSequenceKVReservationInputTokens: high,
 		DecodeHorizonTokens:                     cost.BoundedDecodeTokens,
+		OutputLimitTokens:                       outputLimit,
+		OutputLimitKnown:                        outputLimitKnown,
 		BasePromptCount:                         cost.BasePromptCount,
 		DecodeSequences:                         cost.DecodeSequences,
 		InputEstimateConfidence:                 InputEstimateConservative,
@@ -248,17 +251,27 @@ func setTextPredictiveEstimate(
 			return false
 		}
 	}
+	outputLimit, outputLimitKnown := predictiveOutputLimit(*cost)
 	cost.Estimate = predictive.RequestEstimate{
 		SelectionInputTokens:                    selection,
 		MaximumSequenceInputTokens:              maximumSelection,
 		KVReservationInputTokens:                reservation,
 		MaximumSequenceKVReservationInputTokens: maximumReservation,
 		DecodeHorizonTokens:                     cost.BoundedDecodeTokens,
+		OutputLimitTokens:                       outputLimit,
+		OutputLimitKnown:                        outputLimitKnown,
 		BasePromptCount:                         cost.BasePromptCount,
 		DecodeSequences:                         cost.DecodeSequences,
 		InputEstimateConfidence:                 inputConfidence,
 	}
 	return cost.Estimate.Validate() == nil
+}
+
+func predictiveOutputLimit(cost Cost) (int64, bool) {
+	if !cost.HasMaxOutputTokens || cost.MaxOutputTokens < 0 {
+		return 0, false
+	}
+	return int64(cost.MaxOutputTokens), true
 }
 
 func maximumSequenceInputTokens(

@@ -156,6 +156,9 @@ func applyAdmissionDecisionMetrics(
 	input.AdmissionFirstBytePendingPrefillSequences = decision.Work.FirstBytePendingPrefillSequences
 	input.AdmissionMaximumSequenceKVReservation = decision.Estimate.MaximumSequenceKVReservationInputTokens
 	input.AdmissionDecodeSequences = decision.Estimate.DecodeSequences
+	input.AdmissionOutputLimitTokens = decision.Estimate.OutputLimitTokens
+	input.AdmissionOutputLimitKnown = decision.Estimate.OutputLimitKnown
+	input.TPSLastDecisionQoSBudgeted = decision.TPSQoSBudgeted
 	input.AdmissionInputKVTokens = decision.Work.InputKVTokens
 	input.AdmissionFirstByteCoverableInputKV = decision.Work.FirstByteCoverableInputKVTokens
 	input.AdmissionFirstBytePendingInputKV = decision.Work.FirstBytePendingInputKVTokens
@@ -252,6 +255,7 @@ func applyTPSCapacityMetrics(input *metrics.PredictiveAdmissionInput, capacity c
 	input.TPSWindowAggregate = snapshot.AggregateTPS
 	input.TPSWindowMeanActive = snapshot.MeanActiveTPS
 	input.TPSUnobservedSequences = capacity.State.UnobservedSequences
+	input.TPSQoSBudgetLeases = capacity.State.QoSBudgetLeases
 	input.TPSSequenceLimit = capacity.MinimumDecision.TPSSequenceLimit
 	input.TPSCurrentSequences = capacity.MinimumDecision.TPSCurrentSequences
 	input.TPSPostAdmitSequences = capacity.MinimumDecision.TPSPostAdmitSequences

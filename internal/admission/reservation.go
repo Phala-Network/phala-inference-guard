@@ -26,6 +26,7 @@ type reservation struct {
 	terminalCause     TerminalCause
 	cacheCreditTokens int64
 	cacheCreditLease  uint64
+	qosBudgeted       bool
 }
 
 func (r reservation) contribution() (reservationOverlay, bool) {
@@ -42,6 +43,7 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 			pendingPrefillTokens:      r.work.PrefillComputeTokens,
 			pendingPrefillSequences:   decodeSequences,
 			sequenceLiabilities:       decodeSequences,
+			qosBudgetLeases:           r.qosBudgetLease(),
 			liveReservations:          1,
 		}
 		if !r.sequenceCovered {
@@ -72,6 +74,7 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 			pendingPrefillSequences:   r.work.FirstBytePendingPrefillSequences,
 			localActiveDecode:         activeDecode,
 			sequenceLiabilities:       decodeSequences,
+			qosBudgetLeases:           r.qosBudgetLease(),
 			liveReservations:          1,
 		}
 		if !applyPendingPrefillClass(&contribution, r.prefillClass) {
@@ -97,6 +100,7 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 		contribution := reservationOverlay{
 			kvTokens:            kvTokens,
 			sequenceLiabilities: decodeSequences,
+			qosBudgetLeases:     r.qosBudgetLease(),
 			residualDebts:       1,
 		}
 		if r.terminalCause != TerminalSuccess {
@@ -121,6 +125,13 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 	default:
 		return reservationOverlay{}, false
 	}
+}
+
+func (r reservation) qosBudgetLease() int64 {
+	if r.qosBudgeted {
+		return 1
+	}
+	return 0
 }
 
 func applyPendingPrefillClass(contribution *reservationOverlay, class PrefillClass) bool {
@@ -183,6 +194,9 @@ func addOverlay(left, right reservationOverlay) (reservationOverlay, bool) {
 	if result.sequenceLiabilities, ok = addNonnegativeInt64(left.sequenceLiabilities, right.sequenceLiabilities); !ok {
 		return reservationOverlay{}, false
 	}
+	if result.qosBudgetLeases, ok = addNonnegativeInt64(left.qosBudgetLeases, right.qosBudgetLeases); !ok {
+		return reservationOverlay{}, false
+	}
 	if result.liveReservations, ok = addNonnegativeInt64(left.liveReservations, right.liveReservations); !ok {
 		return reservationOverlay{}, false
 	}
@@ -202,6 +216,7 @@ func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) 
 		left.localActiveDecode < right.localActiveDecode ||
 		left.unobservedSequences < right.unobservedSequences ||
 		left.sequenceLiabilities < right.sequenceLiabilities ||
+		left.qosBudgetLeases < right.qosBudgetLeases ||
 		left.liveReservations < right.liveReservations ||
 		left.residualDebts < right.residualDebts {
 		return reservationOverlay{}, false
@@ -216,6 +231,7 @@ func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) 
 		localActiveDecode:         left.localActiveDecode - right.localActiveDecode,
 		unobservedSequences:       left.unobservedSequences - right.unobservedSequences,
 		sequenceLiabilities:       left.sequenceLiabilities - right.sequenceLiabilities,
+		qosBudgetLeases:           left.qosBudgetLeases - right.qosBudgetLeases,
 		liveReservations:          left.liveReservations - right.liveReservations,
 		residualDebts:             left.residualDebts - right.residualDebts,
 	}
@@ -231,6 +247,7 @@ func replaceOverlay(current, oldContribution, newContribution reservationOverlay
 }
 
 func (o reservationOverlay) valid() bool {
+	leaseCapacity, leaseCapacityValid := addNonnegativeInt64(o.liveReservations, o.residualDebts)
 	return o.kvTokens >= 0 && o.pendingPrefillInputTokens >= o.pendingPrefillTokens &&
 		o.pendingPrefillTokens >= 0 &&
 		o.pendingPrefillSequences >= 0 && o.pendingExclusiveSequences >= 0 &&
@@ -239,5 +256,6 @@ func (o reservationOverlay) valid() bool {
 		o.pendingQuiescentSequences <= o.pendingPrefillSequences &&
 		o.localActiveDecode >= 0 && o.unobservedSequences >= 0 &&
 		o.sequenceLiabilities >= 0 && o.unobservedSequences <= o.sequenceLiabilities &&
+		leaseCapacityValid && o.qosBudgetLeases >= 0 && o.qosBudgetLeases <= leaseCapacity &&
 		o.liveReservations >= 0 && o.residualDebts >= 0
 }

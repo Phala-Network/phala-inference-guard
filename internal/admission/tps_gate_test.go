@@ -43,15 +43,16 @@ func TestTPSGateWarmingAllowsBoundedColdStartsButNotAnUnboundedBurst(t *testing.
 	}
 }
 
-func TestTPSGateUsesRateDerivedBaseAndOneHealthyExploration(t *testing.T) {
+func TestTPSGateUsesStrictRateDerivedBaseWithoutRequestBudget(t *testing.T) {
 	gate := tpsGate{}
 	healthy := TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 210, MeanActiveTPS: 25}
-	fit := gate.evaluate(ProjectedState{RawRunning: 10, TPS: healthy})
-	if !fit.fits || fit.sequenceLimit != 11 || fit.currentSequences != 10 || fit.postAdmitSequences != 11 {
-		t.Fatalf("healthy fit=%+v", fit)
+	protected := gate.evaluate(ProjectedState{RawRunning: 10, TPS: healthy})
+	if protected.fits || protected.reason != ReasonTPSReference || protected.sequenceLimit != 10 ||
+		protected.currentSequences != 10 || protected.postAdmitSequences != 11 {
+		t.Fatalf("strict base protection=%+v", protected)
 	}
-	protected := gate.evaluate(ProjectedState{RawRunning: 11, TPS: healthy})
-	if protected.fits || protected.reason != ReasonTPSReference || protected.sequenceLimit != 11 || protected.postAdmitSequences != 12 {
+	protected = gate.evaluate(ProjectedState{RawRunning: 11, TPS: healthy})
+	if protected.fits || protected.reason != ReasonTPSReference || protected.sequenceLimit != 10 || protected.postAdmitSequences != 12 {
 		t.Fatalf("healthy protection=%+v", protected)
 	}
 
@@ -303,7 +304,7 @@ func TestV01215TPSGateLowFlowHealthOpensExactlyOneProbeWave(t *testing.T) {
 	}
 }
 
-func TestV01215TPSGateUsesCurrentMeanForOneMarginalHealthyWave(t *testing.T) {
+func TestV01215TPSGateDoesNotUseCurrentMeanBelowReferenceWithoutBudget(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 25,
 		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
@@ -316,9 +317,9 @@ func TestV01215TPSGateUsesCurrentMeanForOneMarginalHealthyWave(t *testing.T) {
 		ObservationIntervalValid: true,
 		TPS:                      snapshot,
 	})
-	if !decision.fits || decision.sequenceLimit != 5 ||
+	if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != 4 ||
 		decision.currentSequences != 4 || decision.postAdmitSequences != 5 {
-		t.Fatalf("marginal healthy current wave was not admitted: %+v", decision)
+		t.Fatalf("below-reference current wave bypassed request budget: %+v", decision)
 	}
 }
 
@@ -343,6 +344,9 @@ func TestV01215TPSGateDoesNotOpenKnownBelowFloorMarginalWave(t *testing.T) {
 }
 
 func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T) {
+	shortBounded := tpsAdmissionDemand{additionalSequences: 1, outputLimitTokens: 256, outputLimitKnown: true}
+	longBounded := tpsAdmissionDemand{additionalSequences: 1, outputLimitTokens: 10_000, outputLimitKnown: true}
+	unknown := tpsAdmissionDemand{additionalSequences: 1}
 	positive := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 20,
 		QualifiedSamples: 20, QualifiedTokens: 2400, QualifiedActiveSeconds: 16,
@@ -360,15 +364,20 @@ func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T)
 	for _, test := range []struct {
 		name  string
 		state ProjectedState
+		demand tpsAdmissionDemand
 		fits  bool
 		limit int64
+		budgeted bool
 	}{
-		{name: "positive surplus", state: base, fits: true, limit: 8},
-		{name: "same snapshot spent", state: withUnobservedSequences(base, 1), fits: false, limit: 7},
-		{name: "negative surplus", state: base, fits: false, limit: 7},
-		{name: "current rate too low", state: withGenerationDelta(base, 60), fits: false, limit: 7},
-		{name: "waiting", state: withWaiting(base, 1), fits: false, limit: 8},
-		{name: "preemption", state: withPreemptionDelta(base, 1), fits: false, limit: 7},
+		{name: "positive bounded surplus", state: base, demand: shortBounded, fits: true, limit: 8, budgeted: true},
+		{name: "same snapshot spent", state: withUnobservedSequences(base, 1), demand: shortBounded, fits: false, limit: 7},
+		{name: "live budget lease", state: withQoSBudgetLease(base), demand: shortBounded, fits: false, limit: 7},
+		{name: "long lifetime exceeds surplus", state: base, demand: longBounded, fits: false, limit: 7},
+		{name: "unknown lifetime", state: base, demand: unknown, fits: false, limit: 7},
+		{name: "negative surplus", state: base, demand: shortBounded, fits: false, limit: 7},
+		{name: "current rate too low", state: withGenerationDelta(base, 60), demand: shortBounded, fits: false, limit: 7},
+		{name: "waiting", state: withWaiting(base, 1), demand: shortBounded, fits: false, limit: 8},
+		{name: "preemption", state: withPreemptionDelta(base, 1), demand: shortBounded, fits: false, limit: 7},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := test.state
@@ -376,9 +385,10 @@ func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T)
 			if test.name == "negative surplus" {
 				state.TPS = negative
 			}
-			decision := (tpsGate{}).evaluate(state)
+			decision := (tpsGate{}).evaluateAdditional(state, test.demand)
 			if decision.fits != test.fits || decision.sequenceLimit != test.limit ||
-				decision.currentSequences+1 != decision.postAdmitSequences {
+				decision.currentSequences+1 != decision.postAdmitSequences ||
+				decision.qosBudgeted != test.budgeted {
 				t.Fatalf("QoS-budget decision=%+v state=%+v", decision, state)
 			}
 			if !test.fits && decision.reason != ReasonTPSReference {
@@ -386,6 +396,12 @@ func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T)
 			}
 		})
 	}
+}
+
+func withQoSBudgetLease(state ProjectedState) ProjectedState {
+	state.QoSBudgetLeases = 1
+	state.LiveReservations = 1
+	return state
 }
 
 func withUnobservedSequences(state ProjectedState, sequences int64) ProjectedState {

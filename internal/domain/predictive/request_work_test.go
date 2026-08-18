@@ -204,6 +204,25 @@ func TestBuildRequestWorkRejectsInvalidAndOverflowingInputs(t *testing.T) {
 			profile: basePromptWorkProfile(), blockSize: 64, want: "request estimate is invalid",
 		},
 		{
+			name: "unknown output with stale limit",
+			estimate: RequestEstimate{
+				SelectionInputTokens: 1, MaximumSequenceInputTokens: 1,
+				KVReservationInputTokens: 1, MaximumSequenceKVReservationInputTokens: 1,
+				OutputLimitTokens: 1, BasePromptCount: 1, DecodeSequences: 1,
+			},
+			profile: basePromptWorkProfile(), blockSize: 64, want: "request estimate is invalid",
+		},
+		{
+			name: "bounded horizon above output limit",
+			estimate: RequestEstimate{
+				SelectionInputTokens: 1, MaximumSequenceInputTokens: 1,
+				KVReservationInputTokens: 1, MaximumSequenceKVReservationInputTokens: 1,
+				DecodeHorizonTokens: 2, OutputLimitTokens: 1, OutputLimitKnown: true,
+				BasePromptCount: 1, DecodeSequences: 1,
+			},
+			profile: basePromptWorkProfile(), blockSize: 64, want: "request estimate is invalid",
+		},
+		{
 			name: "aggregate KV overflow",
 			estimate: RequestEstimate{
 				SelectionInputTokens: 1, MaximumSequenceInputTokens: 1,

@@ -66,6 +66,7 @@ type ProjectedState struct {
 	LocalActiveDecode         int64
 	UnobservedSequences       int64
 	SequenceLiabilities       int64
+	QoSBudgetLeases           int64
 	LiveReservations          int64
 	ResidualDebts             int64
 	RawRunning                int64
@@ -125,6 +126,7 @@ type DecisionRecord struct {
 	TPSSequenceLimit           int64
 	TPSCurrentSequences        int64
 	TPSPostAdmitSequences      int64
+	TPSQoSBudgeted             bool
 	ObservationSequence        uint64
 	ControllerSequence         uint64
 	RuntimeEpoch               uint64

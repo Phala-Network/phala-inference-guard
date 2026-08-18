@@ -25,7 +25,8 @@ func TestEstimateJSONBuildsConservativeInterval(t *testing.T) {
 	if cost.EstimatedInputLow <= 0 || cost.EstimatedInputHigh < cost.EstimatedInputLow {
 		t.Fatalf("invalid interval: %#v", cost)
 	}
-	if cost.BoundedDecodeTokens != 256 {
+	if cost.BoundedDecodeTokens != 256 || !cost.Estimate.OutputLimitKnown ||
+		cost.Estimate.OutputLimitTokens != 1024 {
 		t.Fatalf("decode allowance=%d want 256", cost.BoundedDecodeTokens)
 	}
 	minimumWholeBodyHigh := int64(ceilDiv(len(body), DefaultEstimatorConfig().MinBytesPerToken))
@@ -36,7 +37,8 @@ func TestEstimateJSONBuildsConservativeInterval(t *testing.T) {
 
 func TestEstimateJSONBoundsDecodeByRequestedMaximum(t *testing.T) {
 	cost := EstimateJSON([]byte(`{"prompt":"hello"}`), 64, true, DefaultEstimatorConfig())
-	if !cost.Supported || cost.BoundedDecodeTokens != 64 {
+	if !cost.Supported || cost.BoundedDecodeTokens != 64 ||
+		!cost.Estimate.OutputLimitKnown || cost.Estimate.OutputLimitTokens != 64 {
 		t.Fatalf("cost=%#v want supported decode=64", cost)
 	}
 }
@@ -84,7 +86,8 @@ func TestEstimateJSONBuildsIndependentKVReservationEstimate(t *testing.T) {
 	}
 	estimate, estimateKnown := cost.PredictiveEstimate()
 	if !estimateKnown || estimate.SelectionInputTokens != selection ||
-		estimate.DecodeHorizonTokens != int64(DefaultEstimatorConfig().BlindOutputTokens) {
+		estimate.DecodeHorizonTokens != int64(DefaultEstimatorConfig().BlindOutputTokens) ||
+		estimate.OutputLimitKnown || estimate.OutputLimitTokens != 0 {
 		t.Fatalf("estimate=%+v/%t selection=%d", estimate, estimateKnown, selection)
 	}
 	wantReservation := (selection*fixedKVReservationMarginNumerator +
