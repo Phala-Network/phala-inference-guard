@@ -201,3 +201,147 @@ func TestV01215TPSPolicyUpdatePreservesQoSBudgetLeaseLifecycle(t *testing.T) {
 		t.Fatalf("covered terminal policy-crossing lifecycle=%+v", terminal)
 	}
 }
+
+func TestV01215TPSPolicyUpdatePreservesEveryReservationPhase(t *testing.T) {
+	tests := []struct {
+		name         string
+		advance      func(t *testing.T, handle ReservationHandle)
+		terminal     TerminalCause
+		wantResidual int64
+	}{
+		{
+			name:     "reserved cancel",
+			advance:  func(*testing.T, ReservationHandle) {},
+			terminal: TerminalCancel,
+		},
+		{
+			name: "forwarded prefill cancel",
+			advance: func(t *testing.T, handle ReservationHandle) {
+				t.Helper()
+				if !handle.MarkForwarded() {
+					t.Fatal("reservation did not reach forwarded Prefill")
+				}
+			},
+			terminal:     TerminalCancel,
+			wantResidual: 1,
+		},
+		{
+			name: "active decode timeout",
+			advance: func(t *testing.T, handle ReservationHandle) {
+				t.Helper()
+				if !handle.MarkForwarded() || !handle.MarkFirstByte() {
+					t.Fatal("reservation did not reach active Decode")
+				}
+			},
+			terminal:     TerminalTimeout,
+			wantResidual: 1,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			start := time.Unix(12_400, 0)
+			capability := testCapability()
+			controller := testControllerWithTPSObservation(
+				t, capability, 0, testObservation(capability, start, 0, 0, 0, 100, 0),
+			)
+			admitted := controller.Admit(start.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
+			if !admitted.Decision.Admitted() {
+				t.Fatalf("admission=%+v", admitted.Decision)
+			}
+			test.advance(t, admitted.Handle)
+
+			updatedAt := start.Add(2 * time.Millisecond)
+			before := controller.Snapshot(updatedAt).State
+			update, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
+				ExpectedRevision: 1, Reference: 25, UpdatedAt: updatedAt,
+			})
+			if err != nil || !update.WindowReset || update.Policy.Revision != 2 {
+				t.Fatalf("policy update=%+v err=%v", update, err)
+			}
+			afterSnapshot := controller.Snapshot(updatedAt)
+			after := afterSnapshot.State
+			before.TPS = TPSSnapshot{}
+			after.TPS = TPSSnapshot{}
+			if before != after || afterSnapshot.Policy.Revision != 2 || afterSnapshot.Policy.Reference != 25 {
+				t.Fatalf("policy update changed reservation phase: before=%+v after=%+v policy=%+v", before, after, afterSnapshot.Policy)
+			}
+
+			if !admitted.Handle.Terminate(test.terminal) || admitted.Handle.Terminate(test.terminal) {
+				t.Fatal("terminal event was not exact-once")
+			}
+			terminal := controller.Snapshot(updatedAt).State
+			if terminal.LiveReservations != 0 || terminal.ResidualDebts != test.wantResidual {
+				t.Fatalf("terminal state=%+v want_residual=%d", terminal, test.wantResidual)
+			}
+			publishObservation(t, controller, testObservation(
+				capability, start.Add(3*time.Millisecond), 0, 0, 0, 100, 0,
+			))
+			covered := controller.Snapshot(start.Add(3 * time.Millisecond)).State
+			if covered.LiveReservations != 0 || covered.ResidualDebts != 0 ||
+				covered.ReservationKVTokens != 0 || covered.SequenceLiabilities != 0 {
+				t.Fatalf("covering observation retained lifecycle debt: %+v", covered)
+			}
+		})
+	}
+}
+
+func TestV01215TPSPolicyUpdateThenBackendResetFencesOldHandle(t *testing.T) {
+	start := time.Unix(12_500, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t, capability, 0, testObservation(capability, start, 0, 0, 0, 100, 0),
+	)
+	admitted := controller.Admit(start.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
+	if !admitted.Decision.Admitted() || !admitted.Handle.MarkForwarded() {
+		t.Fatalf("admission=%+v", admitted.Decision)
+	}
+	update, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
+		ExpectedRevision: 1, Reference: 25, UpdatedAt: start.Add(2 * time.Millisecond),
+	})
+	if err != nil || update.Policy.Revision != 2 {
+		t.Fatalf("policy update=%+v err=%v", update, err)
+	}
+	reset := publishObservation(t, controller, testObservation(
+		capability, start.Add(3*time.Millisecond), 0, 0, 0, 1, 0,
+	))
+	if !reset.RuntimeReset || admitted.Handle.MarkFirstByte() || admitted.Handle.Terminate(TerminalSuccess) {
+		t.Fatalf("runtime reset did not fence pre-update handle: %+v", reset)
+	}
+	snapshot := controller.Snapshot(start.Add(3 * time.Millisecond))
+	if snapshot.State.LiveReservations != 0 || snapshot.State.ResidualDebts != 0 ||
+		snapshot.State.ReservationKVTokens != 0 || snapshot.Policy.Revision != 2 ||
+		snapshot.Policy.Reference != 25 {
+		t.Fatalf("post-reset policy/lifecycle=%+v/%+v", snapshot.Policy, snapshot.State)
+	}
+}
+
+func TestV01215TPSPolicyUpdateThenCloseClearsStateAndFencesOldHandle(t *testing.T) {
+	start := time.Unix(12_600, 0)
+	capability := testCapability()
+	controller := testControllerWithTPSObservation(
+		t, capability, 0, testObservation(capability, start, 0, 0, 0, 100, 0),
+	)
+	admitted := controller.Admit(start.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
+	if !admitted.Decision.Admitted() || !admitted.Handle.MarkForwarded() {
+		t.Fatalf("admission=%+v", admitted.Decision)
+	}
+	if _, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
+		ExpectedRevision: 1, Reference: 25, UpdatedAt: start.Add(2 * time.Millisecond),
+	}); err != nil {
+		t.Fatalf("policy update: %v", err)
+	}
+	controller.Close()
+	if admitted.Handle.MarkFirstByte() || admitted.Handle.Terminate(TerminalShutdown) {
+		t.Fatal("closed Controller accepted pre-update handle")
+	}
+	if _, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
+		ExpectedRevision: 2, Reference: 30, UpdatedAt: start.Add(3 * time.Millisecond),
+	}); !errors.Is(err, ErrTPSPolicyUnavailable) {
+		t.Fatalf("closed policy update error=%v", err)
+	}
+	snapshot := controller.Snapshot(start.Add(3 * time.Millisecond))
+	if snapshot.MinimumDecision.Reason != ReasonClosed || snapshot.State.LiveReservations != 0 ||
+		snapshot.State.ResidualDebts != 0 || snapshot.State.ReservationKVTokens != 0 {
+		t.Fatalf("closed policy/lifecycle=%+v/%+v", snapshot.Policy, snapshot.State)
+	}
+}
