@@ -362,11 +362,11 @@ func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T)
 		ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true,
 	}
 	for _, test := range []struct {
-		name  string
-		state ProjectedState
-		demand tpsAdmissionDemand
-		fits  bool
-		limit int64
+		name     string
+		state    ProjectedState
+		demand   tpsAdmissionDemand
+		fits     bool
+		limit    int64
 		budgeted bool
 	}{
 		{name: "positive bounded surplus", state: base, demand: shortBounded, fits: true, limit: 8, budgeted: true},

@@ -26,18 +26,18 @@ func (w timeWindow) contains(at time.Duration) bool {
 }
 
 type requestSpec struct {
-	id               string
-	at               time.Duration
-	selectionInput   int64
-	estimatedPrefill int64
-	safetyInput      int64
-	decodeHorizon    int64
-	actualInput      int64
-	cacheHitTokens   int64
-	actualOutput     float64
-	outputLimit      int64
+	id                 string
+	at                 time.Duration
+	selectionInput     int64
+	estimatedPrefill   int64
+	safetyInput        int64
+	decodeHorizon      int64
+	actualInput        int64
+	cacheHitTokens     int64
+	actualOutput       float64
+	outputLimit        int64
 	outputLimitUnknown bool
-	cancelAfter      time.Duration
+	cancelAfter        time.Duration
 }
 
 type workerPoolSpec struct {
