@@ -22,8 +22,9 @@ type tpsSample struct {
 	previousLocalActiveDecode    int64
 	localActiveDecode            int64
 	forwardedSequenceLiabilities int64
+	localExposureMeasured         bool
 	localForwardedSequenceSeconds float64
-	localDecodeSequenceSeconds   float64
+	localResponseSequenceSeconds  float64
 }
 
 type tpsBucket struct {
@@ -71,7 +72,9 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 	if sample.start.IsZero() || sample.end.IsZero() || sample.maximumInterval <= 0 ||
 		sample.previousRunning < 0 || sample.running < 0 ||
 		sample.previousLocalActiveDecode < 0 || sample.localActiveDecode < 0 ||
-		sample.forwardedSequenceLiabilities < 0 {
+		sample.forwardedSequenceLiabilities < 0 ||
+		!finiteNonnegative(sample.localForwardedSequenceSeconds) ||
+		!finiteNonnegative(sample.localResponseSequenceSeconds) {
 		return true
 	}
 	interval := sample.end.Sub(sample.start)
@@ -79,19 +82,15 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		return true
 	}
 
-	activeSequences := maximumInt64(
+	endpointSequences := maximumInt64(
 		sample.previousRunning,
 		sample.running,
 		sample.previousLocalActiveDecode,
 		sample.localActiveDecode,
-		sample.forwardedSequenceLiabilities,
 	)
-	sequenceCountReliable := activeSequences > 0
-	knownDecode := sample.previousLocalActiveDecode > 0 || sample.localActiveDecode > 0
+	knownDecode := sample.previousLocalActiveDecode > 0 || sample.localActiveDecode > 0 ||
+		sample.localResponseSequenceSeconds > 0
 	if sample.generatedTokens == 0 && !knownDecode {
-		return true
-	}
-	if activeSequences <= 0 && sample.generatedTokens == 0 {
 		return true
 	}
 
@@ -99,6 +98,24 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 	if !finiteNonnegative(intervalSeconds) || intervalSeconds == 0 {
 		return false
 	}
+	endpointSequenceSeconds := intervalSeconds * float64(endpointSequences)
+	if !finiteNonnegative(endpointSequenceSeconds) {
+		return false
+	}
+	sequenceSecondsTotal := maximumFloat64(
+		endpointSequenceSeconds,
+		sample.localForwardedSequenceSeconds,
+		sample.localResponseSequenceSeconds,
+	)
+	if !sample.localExposureMeasured && sample.localForwardedSequenceSeconds == 0 &&
+		sample.localResponseSequenceSeconds == 0 {
+		fallbackSequenceSeconds := intervalSeconds * float64(sample.forwardedSequenceLiabilities)
+		if !finiteNonnegative(fallbackSequenceSeconds) {
+			return false
+		}
+		sequenceSecondsTotal = maximumFloat64(sequenceSecondsTotal, fallbackSequenceSeconds)
+	}
+	sequenceCountReliable := sequenceSecondsTotal > 0
 	cutoff := sample.end.Add(-tpsWindowDuration)
 	cursor := sample.start
 	if cursor.Before(cutoff) {
@@ -126,7 +143,7 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		sequenceSamples := uint64(0)
 		if sequenceCountReliable {
 			sequenceTokens = tokens
-			sequenceSeconds = segmentSeconds * float64(activeSequences)
+			sequenceSeconds = sequenceSecondsTotal * fraction
 			sequenceSamples = samples
 		}
 		if !w.add(
@@ -270,6 +287,16 @@ func finiteNonnegative(value float64) bool {
 
 func maximumInt64(values ...int64) int64 {
 	var maximum int64
+	for _, value := range values {
+		if value > maximum {
+			maximum = value
+		}
+	}
+	return maximum
+}
+
+func maximumFloat64(values ...float64) float64 {
+	var maximum float64
 	for _, value := range values {
 		if value > maximum {
 			maximum = value

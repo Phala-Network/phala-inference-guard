@@ -99,7 +99,7 @@ func TestV01215TPSWindowUsesMeasuredShortDecodeExposureInsteadOfFullIntervalLiab
 	if !window.observe(tpsSample{
 		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
 		generatedTokens: 50, forwardedSequenceLiabilities: 100,
-		localDecodeSequenceSeconds: 0.5,
+		localResponseSequenceSeconds: 0.5,
 	}) {
 		t.Fatal("measured short Decode exposure caused numeric failure")
 	}
@@ -151,7 +151,7 @@ func TestV01215TPSWindowKeepsKnownDecodeStallWithConservativeForwardedExposure(t
 	start := time.Unix(30_900, 0)
 	if !window.observe(tpsSample{
 		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
-		localForwardedSequenceSeconds: 0.5, localDecodeSequenceSeconds: 0.25,
+		localForwardedSequenceSeconds: 0.5, localResponseSequenceSeconds: 0.25,
 	}) {
 		t.Fatal("known Decode stall exposure caused numeric failure")
 	}
@@ -169,7 +169,7 @@ func TestV01215TPSWindowUnionsOverlappingBackendAndLocalExposure(t *testing.T) {
 	if !window.observe(tpsSample{
 		start: start, end: start.Add(500 * time.Millisecond), maximumInterval: time.Second,
 		generatedTokens: 75, previousRunning: 2, running: 2,
-		localForwardedSequenceSeconds: 1.5, localDecodeSequenceSeconds: 0.5,
+		localForwardedSequenceSeconds: 1.5, localResponseSequenceSeconds: 0.5,
 	}) {
 		t.Fatal("overlapping exposure caused numeric failure")
 	}

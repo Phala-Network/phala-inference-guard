@@ -106,6 +106,7 @@ type ControllerConfig struct {
 	Capability  Capability
 	WorkProfile predictive.BackendExecutionProfile
 	TPS         TPSPolicyConfig
+	Now         func() time.Time
 }
 
 type DecisionRecord struct {

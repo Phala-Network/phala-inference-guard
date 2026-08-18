@@ -14,6 +14,7 @@ type SampleWindow struct {
 	runtimeEpoch  uint64
 	id            uint64
 	eventSequence uint64
+	exposure      sequenceExposureSnapshot
 }
 
 type ReservationHandle struct {
@@ -46,12 +47,15 @@ type AdmissionController struct {
 	policy      admissionPolicy
 	projector   stateProjector
 	tpsWindow   tpsWindow
+	now         func() time.Time
+	exposure    sequenceExposureLedger
 
 	runtimeEpoch        uint64
 	eventSequence       uint64
 	sampleSequence      uint64
 	observationSequence uint64
 	lastPublishedSample uint64
+	lastExposure        sequenceExposureSnapshot
 	cacheLeaseSequence  uint64
 	observation         observedState
 	hasObservation      bool
@@ -78,11 +82,16 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 	if err != nil {
 		return nil, err
 	}
+	now := config.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &AdmissionController{
 		capability:          capability,
 		workProfile:         config.WorkProfile,
 		policy:              policy,
 		tpsWindow:           newTPSWindow(config.TPS.Reference),
+		now:                 now,
 		runtimeEpoch:        1,
 		reservations:        make(map[uint64]reservation),
 		maximumReservations: capability.KVHardLimitTokens / capability.KVBlockSize,
@@ -102,12 +111,18 @@ func (c *AdmissionController) StartSampleWindow() (SampleWindow, bool) {
 		c.failClosedLocked(ReasonCounterOverflow)
 		return SampleWindow{}, false
 	}
+	exposure, ok := c.exposure.snapshot(c.now())
+	if !ok {
+		c.failClosedLocked(ReasonControllerUnavailable)
+		return SampleWindow{}, false
+	}
 	c.sampleSequence++
 	return SampleWindow{
 		controller:    c,
 		runtimeEpoch:  c.runtimeEpoch,
 		id:            c.sampleSequence,
 		eventSequence: c.eventSequence,
+		exposure:      exposure,
 	}, true
 }
 
@@ -164,7 +179,9 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		c.overlay = reservationOverlay{}
 		c.sampleSequence = 0
 		c.lastPublishedSample = 0
+		c.lastExposure = sequenceExposureSnapshot{}
 		c.cacheLeaseSequence = 0
+		c.exposure.reset()
 		c.tpsWindow.reset()
 	} else {
 		if c.hasObservation {
@@ -182,6 +199,11 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 				cache.leaseSequence = c.cacheLeaseSequence
 			}
 		}
+		exposure, exposureOK := window.exposure.subtract(c.lastExposure)
+		if !exposureOK {
+			c.failClosedLocked(ReasonControllerUnavailable)
+			return PublicationResult{Reason: ReasonControllerUnavailable, RuntimeEpoch: c.runtimeEpoch}
+		}
 		nextOverlay, forwardedSequenceLiabilities, ok := c.reconciledOverlayLocked(window.eventSequence)
 		if !ok {
 			c.failClosedLocked(ReasonControllerUnavailable)
@@ -190,6 +212,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		c.applyReconciliationLocked(window.eventSequence)
 		c.overlay = nextOverlay
 		c.lastPublishedSample = window.id
+		c.lastExposure = window.exposure
 		if c.hasObservation && c.tpsWindow.enabled() && !c.tpsWindow.observe(tpsSample{
 			start:                        c.observation.observation.ObservedAt,
 			end:                          observation.ObservedAt,
@@ -200,6 +223,9 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			previousLocalActiveDecode:    c.observation.localActiveDecode,
 			localActiveDecode:            c.overlay.localActiveDecode,
 			forwardedSequenceLiabilities: forwardedSequenceLiabilities,
+			localExposureMeasured:         true,
+			localForwardedSequenceSeconds: exposure.forwardedSequenceSeconds,
+			localResponseSequenceSeconds:  exposure.responseSequenceSeconds,
 		}) {
 			c.failClosedLocked(ReasonCounterOverflow)
 			return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
@@ -374,6 +400,10 @@ func (c *AdmissionController) markForwarded(epoch, id uint64) bool {
 	if !ok {
 		return false
 	}
+	if !c.exposure.addForwarded(c.now(), item.work.Estimate.DecodeSequences) {
+		c.failClosedLocked(ReasonControllerUnavailable)
+		return false
+	}
 	item.phase = reservationForwardedPrefill
 	item.forwardedSequence = sequence
 	c.reservations[id] = item
@@ -401,6 +431,11 @@ func (c *AdmissionController) markFirstByte(epoch, id uint64) bool {
 	}
 	sequence, ok := c.nextEventSequenceLocked()
 	if !ok {
+		return false
+	}
+	responseSequences := next.work.Estimate.DecodeSequences - next.work.FirstBytePendingPrefillSequences
+	if responseSequences <= 0 || !c.exposure.addResponse(c.now(), responseSequences) {
+		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
 	next.firstByteSequence = sequence
@@ -457,6 +492,12 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 	}
 	sequence, ok := c.nextEventSequenceLocked()
 	if !ok {
+		return false
+	}
+	forwardedExposure, responseExposure, exposureValid := reservationExposureCounts(item)
+	if !exposureValid || (forwardedExposure > 0 &&
+		!c.exposure.remove(c.now(), forwardedExposure, responseExposure)) {
+		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
 	c.overlay = nextOverlay
@@ -548,7 +589,29 @@ func (c *AdmissionController) failClosedLocked(reason Reason) {
 	}
 	clear(c.reservations)
 	c.overlay = reservationOverlay{}
+	c.exposure.reset()
+	c.lastExposure = sequenceExposureSnapshot{}
 	c.tpsWindow.reset()
+}
+
+func reservationExposureCounts(item reservation) (forwarded, response int64, valid bool) {
+	if item.work.Validate() != nil {
+		return 0, 0, false
+	}
+	switch item.phase {
+	case reservationReserved:
+		return 0, 0, true
+	case reservationForwardedPrefill:
+		return item.work.Estimate.DecodeSequences, 0, true
+	case reservationActiveDecode:
+		response = item.work.Estimate.DecodeSequences - item.work.FirstBytePendingPrefillSequences
+		if response <= 0 {
+			return 0, 0, false
+		}
+		return item.work.Estimate.DecodeSequences, response, true
+	default:
+		return 0, 0, false
+	}
 }
 
 func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reservationOverlay, int64, bool) {
