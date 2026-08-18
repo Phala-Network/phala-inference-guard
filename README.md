@@ -8,9 +8,9 @@ can preserve service quality.
 
 Current candidate source identity: `PIG-v0.12.16`. Published `PIG-v0.12.15` is
 held from production because its TPS gate can preserve unused capacity. The
-v0.12.16 candidate is not an accepted or published image until the active plan
-passes its source and image gates. Source and image acceptance do not by
-themselves imply a production deployment.
+accepted v0.12.16 image is published by digest as
+`ghcr.io/phala-network/phala-inference-guard@sha256:1a3f85875a436cbd33c5ddc77a2c81084cac41a70ef11869ad2b815e1353e2e0`.
+Source and image acceptance do not by themselves imply a production deployment.
 
 The objective is QoS-constrained throughput, not a fixed request-count limit.
 Small requests can still fit while a larger request is protected under the same
@@ -177,9 +177,9 @@ Metrics and administrative endpoints require the configured bearer token.
 Executable Go tests, race checks, simulations, benchmarks, and image acceptance
 run in an isolated temporary workbench on f563. Published `PIG-v0.12.15` remains
 immutable and is not the production candidate after the throughput-objective
-red test. `PIG-v0.12.16` must pass the active plan before image publication. No
-Compose, deployment, Router, or live-traffic action is implied by source
-identity alone.
+red test. `PIG-v0.12.16` passed source and isolated image acceptance before
+publication. No Compose, deployment, Router, or live-traffic action is implied
+by source or registry identity alone.
 
 - [v0.12.13 sustained TPS reference and branch cleanup](docs/PIG_V0_12_13_SUSTAINED_TPS_REFERENCE_AND_BRANCH_CLEANUP_PLAN.md)
 - [v0.12.14 vLLM and SGLang backend adapters](docs/PIG_V0_12_14_VLLM_SGLANG_ADAPTER_PLAN.md)

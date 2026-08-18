@@ -1920,3 +1920,31 @@ Three image-stage reviews accept registry publication only:
    runtime endpoints, and fixed-cardinality metrics agree. The exact image may
    be published as `0.12.16` and an immutable revision tag. This does not accept
    rollback readiness, production promotion, or 30-minute live observation.
+
+Registry publication then completed from the accepted local image. Both tags
+resolve to manifest digest
+`sha256:1a3f85875a436cbd33c5ddc77a2c81084cac41a70ef11869ad2b815e1353e2e0`:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:0.12.16
+ghcr.io/phala-network/phala-inference-guard:0.12.16-031b9ce441ff
+```
+
+The local image ID remains
+`sha256:0c633dba4ac18da3613d312ef95db8422dbad14157bd7d0c95acee79971b71e7`;
+OCI version/revision remain `0.12.16` and
+`031b9ce441ff90a7c1767b727f8c8579d3082e93`. Push and registry evidence
+SHA-256 values are:
+
+```text
+immutable push  96873b7cc276c2244f5ca46cfd3569db6555c9aa3fd400e55621d5b88f811f2c
+release push    b3c3e348335c49b893fb1c6e4b3404db074ff41d9c8af72a18c355bbe1fdf91f
+immutable view  93b6ec1583b3c644cdc6064fc131804ca16a2addfc4a3d0939724874e39b238c
+release view    8ecbb015ae864b48af746b0316199bc5d8acbf4743fa20a95eeed51054db088e
+identity        7ebb9d86280faf8295d67ac44df335f1ef7a5cae382730adee24d288f15d225e
+```
+
+Both tags were absent before publication. The temporary f563 GHCR login used
+the already authorized GitHub credential through stdin and was removed with
+`docker logout` immediately after verification. Registry publication is now
+complete; production and rollback-readiness gates remain unchanged and pending.
