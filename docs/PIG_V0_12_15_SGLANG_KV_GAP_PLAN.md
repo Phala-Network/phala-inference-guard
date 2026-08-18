@@ -1575,13 +1575,87 @@ and the empty-log SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca4959
 This is pre-commit focused evidence only. A new pushed exact source and its
 complete clean f563 matrix remain required.
 
+Exact pushed source `5d52593073881131db92a509590e1e74de3ea7a0` then used
+GitHub archive SHA-256
+`ac7480b5a7af20a82a4a8c4f8296e43c8ee1907e3b9c486b8f42b1d413c3daec`
+and the fixed Go image ID
+`sha256:e0cffc405270b9114fac7706d07c373727d1b42b0e47c525b9cd1ab1097779ff`.
+The first matrix harness requested eight CPUs even though the f563 Docker
+daemon exposed one and therefore failed before Go with Docker exit 125. That
+directory is retained as invalid harness evidence and is not a source failure.
+The fresh one-CPU matrix passed:
+
+```text
+format                    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+policy focused            1a07c5aeb0248c04a5288f4635093a175e64c83fc2e2c7ce9e82f6a35164cab5
+focused packages          fa417098ea4d3429e47d31657640d03d185d5d7b43b6c203e55d7918661ea811
+admission/server race     a0397fedf8a7b366514e37fc368edff350c641d6b01e5f74ae6876d99cb6ef74
+request-aware simulation  9c17b2b0603b7f09327ec17d240b4fb6e18bae7621e5b913b5c0d3ae8a50b3ea
+complete test             b91c22b21064af6295b88a52d752e6c558d91a30ba0730d4f0e430a4e2c2c01a
+complete race             32726be4a57bdfa4771f98ceb032b919e69df082688cd9ad8ca7d441ada814dc
+vet and build             empty logs with the format SHA-256 above
+```
+
+The exact-source performance gates also passed. Across three runs, Controller
+Snapshot/Admit p99 stayed below 2.9 microseconds with zero allocations even at
+4096 reservations and with TPS enabled. The 4-MiB estimator p99 maximum was
+65.994 ms with zero allocations; classifier p99 was 20.447-30.760 ms. The
+classifier benchmark was 18.906-20.021 ms/op with 17 allocations, the strict
+field parser was 6.010-6.271 ms/op with zero allocations, and estimator
+benchmarks were 20.146-21.382 ms/op with zero allocations. Log SHA-256 values
+were:
+
+```text
+Controller performance    6ca5e616b666c1f85ed7ad446554e42d15189cd361537a228958fe950e1466cf
+estimator latency          1a82aa5c4e35a1a5c62df5377cf20c7db411b69b9a62c5149a7706750cf81bfd
+classifier latency         ee372c3e890427770117f95b2f60fb835327c5467fa56e4c1f8e9b9d2f27d3f4
+4-MiB benchmarks           075c3935c54adae811193ace724d0bd600f389c71ab50ca6239cc7cdc49c53cd
+```
+
+The safety/lifecycle review then found that direct update coverage proved only
+one forwarded QoS-budget lease, while this plan requires every reservation
+phase and terminal boundary. Test-only commit
+`6e30a0383d261c0f9b6411010a5d9a48a5244bab` adds direct reserved,
+forwarded-Prefill, active-Decode, cancel, timeout, residual-debt, backend-reset,
+stale-handle, and close assertions without changing non-test Go source. Its
+GitHub archive SHA-256 is
+`ff120a758e4ffac6c178d935287b9f52ddd263bf4308ab3fa381ac73e747de6b`.
+The exact f563 matrix passed:
+
+```text
+format                    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+lifecycle focused         bbdb58b6db0a69df8d9f4f7fc0a9be5c19a7f72b5bd88d34716aade0308c62ff
+admission/server packages 3ebaa13aec8b9a69688c55e0b8a4b6e40031ebfaadec3e592867a7020067cdff
+admission/server race     38bc384c5a3ff7083be308006dc76d89e558e2e18e4a2d72636dac9d3c567b13
+complete test             5bef633b6e9cebc2dc54d5984de3597b5383827cb12cd9fa10305128014d6962
+complete race             65ab7df8d0fc98efa110b39f0a3fae4b7beba62470fa6c766d88d900faf512ec
+vet and build             empty logs with the format SHA-256 above
+```
+
+Three corrective review passes now accept the source layer:
+
+1. Model and causality: only the operator-owned TPS reference is mutable;
+   immutable KV/Prefill capability remains initialization-owned; a changed
+   reference clears old evidence and changes the next real pre-forward
+   decision. Feedback does not authorize the current request.
+2. Safety and lifecycle: authentication, bounded strict JSON, lock-owned CAS,
+   in-flight sample exclusion, fixed-cardinality observability, reservation
+   preservation, exact-once terminal handling, runtime reset, close, panic,
+   and race behavior are directly covered and green.
+3. Evidence and release: both executable source and final test-only source have
+   exact GitHub provenance; complete tests, races, simulations, static checks,
+   build, and performance thresholds pass. No image, Compose, Router, backend,
+   production PIG, or inference traffic changed.
+
 ### Pass 3: exact evidence and release
 
-Status: pending. No v0.12.15 image has been built or uploaded, production still
-runs the accepted v0.12.14 image, and the exact f563 `0.8.13` rollback
-configuration has not yet been reconstructed and revalidated. The control-plane
-Compose currently names `0.8.13` while the runtime still runs `0.12.14`; this is
-configuration drift, not evidence that the fallback is active.
+Status: source candidate accepted; image, deployment, and live release remain
+pending and were not authorized by this API task. No v0.12.15 image has been
+built or uploaded, production still runs the accepted v0.12.14 image, and the
+exact f563 `0.8.13` rollback configuration has not yet been reconstructed and
+revalidated. The control-plane Compose currently names `0.8.13` while the
+runtime still runs `0.12.14`; this is configuration drift, not evidence that
+the fallback is active.
 
 Repository deployment evidence identifies the former f563 baseline image as
 `ghcr.io/phala-network/phala-inference-guard:v0.8.13@sha256:aec805d6e7bbfd82375199d7950ecfbf6148e501c64822dcb46102a9e24a2ea4`
