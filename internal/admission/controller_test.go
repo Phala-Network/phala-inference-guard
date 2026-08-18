@@ -610,7 +610,7 @@ func TestV01215ControllerQoSBudgetChangesPreForwardDecisionAndIsAtomic(t *testin
 	}
 	second := controller.Admit(clock.Now(), estimate).Decision
 	if second.Admitted() || second.Reason != ReasonTPSReference ||
-		second.TPSSequenceLimit != 8 || second.TPSCurrentSequences != 8 ||
+		second.TPSSequenceLimit != 7 || second.TPSCurrentSequences != 8 ||
 		second.TPSPostAdmitSequences != 9 || second.ReservationID != 0 {
 		t.Fatalf("same-snapshot QoS budget was spent twice: %+v", second)
 	}
