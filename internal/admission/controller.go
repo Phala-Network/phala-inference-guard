@@ -204,6 +204,11 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			c.failClosedLocked(ReasonControllerUnavailable)
 			return PublicationResult{Reason: ReasonControllerUnavailable, RuntimeEpoch: c.runtimeEpoch}
 		}
+		forwardedSequenceSeconds, responseSequenceSeconds, exposureSecondsOK := exposure.seconds()
+		if !exposureSecondsOK {
+			c.failClosedLocked(ReasonControllerUnavailable)
+			return PublicationResult{Reason: ReasonControllerUnavailable, RuntimeEpoch: c.runtimeEpoch}
+		}
 		nextOverlay, forwardedSequenceLiabilities, ok := c.reconciledOverlayLocked(window.eventSequence)
 		if !ok {
 			c.failClosedLocked(ReasonControllerUnavailable)
@@ -224,8 +229,8 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			localActiveDecode:             c.overlay.localActiveDecode,
 			forwardedSequenceLiabilities:  forwardedSequenceLiabilities,
 			localExposureMeasured:         true,
-			localForwardedSequenceSeconds: exposure.forwardedSequenceSeconds,
-			localResponseSequenceSeconds:  exposure.responseSequenceSeconds,
+			localForwardedSequenceSeconds: forwardedSequenceSeconds,
+			localResponseSequenceSeconds:  responseSequenceSeconds,
 		}) {
 			c.failClosedLocked(ReasonCounterOverflow)
 			return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}

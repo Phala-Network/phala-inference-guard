@@ -2,31 +2,85 @@ package admission
 
 import (
 	"math"
+	"math/bits"
 	"time"
 )
 
+type sequenceNanoseconds struct {
+	high uint64
+	low  uint64
+}
+
+func (n sequenceNanoseconds) addDuration(duration time.Duration, sequences int64) (sequenceNanoseconds, bool) {
+	if duration < 0 || sequences < 0 {
+		return sequenceNanoseconds{}, false
+	}
+	high, low := bits.Mul64(uint64(duration), uint64(sequences))
+	low, carry := bits.Add64(n.low, low, 0)
+	high, overflow := bits.Add64(n.high, high, carry)
+	if overflow != 0 {
+		return sequenceNanoseconds{}, false
+	}
+	return sequenceNanoseconds{high: high, low: low}, true
+}
+
+func (n sequenceNanoseconds) subtract(previous sequenceNanoseconds) (sequenceNanoseconds, bool) {
+	low, borrow := bits.Sub64(n.low, previous.low, 0)
+	high, underflow := bits.Sub64(n.high, previous.high, borrow)
+	if underflow != 0 {
+		return sequenceNanoseconds{}, false
+	}
+	return sequenceNanoseconds{high: high, low: low}, true
+}
+
+func (n sequenceNanoseconds) compare(other sequenceNanoseconds) int {
+	if n.high < other.high || (n.high == other.high && n.low < other.low) {
+		return -1
+	}
+	if n == other {
+		return 0
+	}
+	return 1
+}
+
+func (n sequenceNanoseconds) seconds() float64 {
+	nanoseconds := math.Ldexp(float64(n.high), 64) + float64(n.low)
+	return nanoseconds / float64(time.Second)
+}
+
 type sequenceExposureSnapshot struct {
-	forwardedSequenceSeconds float64
-	responseSequenceSeconds  float64
+	forwardedSequenceNanoseconds sequenceNanoseconds
+	responseSequenceNanoseconds  sequenceNanoseconds
 }
 
 func (s sequenceExposureSnapshot) subtract(previous sequenceExposureSnapshot) (sequenceExposureSnapshot, bool) {
-	if !s.valid() || !previous.valid() ||
-		s.forwardedSequenceSeconds < previous.forwardedSequenceSeconds ||
-		s.responseSequenceSeconds < previous.responseSequenceSeconds {
+	if !s.valid() || !previous.valid() {
+		return sequenceExposureSnapshot{}, false
+	}
+	forwarded, forwardedOK := s.forwardedSequenceNanoseconds.subtract(previous.forwardedSequenceNanoseconds)
+	response, responseOK := s.responseSequenceNanoseconds.subtract(previous.responseSequenceNanoseconds)
+	if !forwardedOK || !responseOK {
 		return sequenceExposureSnapshot{}, false
 	}
 	result := sequenceExposureSnapshot{
-		forwardedSequenceSeconds: s.forwardedSequenceSeconds - previous.forwardedSequenceSeconds,
-		responseSequenceSeconds:  s.responseSequenceSeconds - previous.responseSequenceSeconds,
+		forwardedSequenceNanoseconds: forwarded,
+		responseSequenceNanoseconds:  response,
 	}
 	return result, result.valid()
 }
 
 func (s sequenceExposureSnapshot) valid() bool {
-	return finiteNonnegative(s.forwardedSequenceSeconds) &&
-		finiteNonnegative(s.responseSequenceSeconds) &&
-		s.responseSequenceSeconds <= s.forwardedSequenceSeconds
+	return s.responseSequenceNanoseconds.compare(s.forwardedSequenceNanoseconds) <= 0
+}
+
+func (s sequenceExposureSnapshot) seconds() (forwarded, response float64, valid bool) {
+	if !s.valid() {
+		return 0, 0, false
+	}
+	forwarded = s.forwardedSequenceNanoseconds.seconds()
+	response = s.responseSequenceNanoseconds.seconds()
+	return forwarded, response, finiteNonnegative(forwarded) &&
+		finiteNonnegative(response) && response <= forwarded
 }
 
 // sequenceExposureLedger integrates local HTTP lifecycle evidence without a
@@ -37,8 +91,8 @@ type sequenceExposureLedger struct {
 	lastEventAt              time.Time
 	activeForwardedSequences int64
 	activeResponseSequences  int64
-	forwardedSequenceSeconds float64
-	responseSequenceSeconds  float64
+	forwardedSequenceTime    sequenceNanoseconds
+	responseSequenceTime     sequenceNanoseconds
 }
 
 func (l *sequenceExposureLedger) addForwarded(now time.Time, sequences int64) bool {
@@ -76,8 +130,8 @@ func (l *sequenceExposureLedger) snapshot(now time.Time) (sequenceExposureSnapsh
 		return sequenceExposureSnapshot{}, false
 	}
 	snapshot := sequenceExposureSnapshot{
-		forwardedSequenceSeconds: l.forwardedSequenceSeconds,
-		responseSequenceSeconds:  l.responseSequenceSeconds,
+		forwardedSequenceNanoseconds: l.forwardedSequenceTime,
+		responseSequenceNanoseconds:  l.responseSequenceTime,
 	}
 	return snapshot, snapshot.valid()
 }
@@ -101,17 +155,17 @@ func (l *sequenceExposureLedger) advance(now time.Time) bool {
 	if now.Before(l.lastEventAt) {
 		return false
 	}
-	elapsed := now.Sub(l.lastEventAt).Seconds()
-	if !finiteNonnegative(elapsed) {
+	elapsed := now.Sub(l.lastEventAt)
+	if elapsed < 0 {
 		return false
 	}
-	forwarded := l.forwardedSequenceSeconds + elapsed*float64(l.activeForwardedSequences)
-	response := l.responseSequenceSeconds + elapsed*float64(l.activeResponseSequences)
-	if !finiteNonnegative(forwarded) || !finiteNonnegative(response) || response > forwarded {
+	forwarded, forwardedOK := l.forwardedSequenceTime.addDuration(elapsed, l.activeForwardedSequences)
+	response, responseOK := l.responseSequenceTime.addDuration(elapsed, l.activeResponseSequences)
+	if !forwardedOK || !responseOK || response.compare(forwarded) > 0 {
 		return false
 	}
-	l.forwardedSequenceSeconds = forwarded
-	l.responseSequenceSeconds = response
+	l.forwardedSequenceTime = forwarded
+	l.responseSequenceTime = response
 	l.lastEventAt = now
 	return l.valid()
 }
@@ -119,15 +173,13 @@ func (l *sequenceExposureLedger) advance(now time.Time) bool {
 func (l *sequenceExposureLedger) valid() bool {
 	if l == nil || l.activeForwardedSequences < 0 || l.activeResponseSequences < 0 ||
 		l.activeResponseSequences > l.activeForwardedSequences ||
-		!finiteNonnegative(l.forwardedSequenceSeconds) ||
-		!finiteNonnegative(l.responseSequenceSeconds) ||
-		l.responseSequenceSeconds > l.forwardedSequenceSeconds {
+		l.responseSequenceTime.compare(l.forwardedSequenceTime) > 0 {
 		return false
 	}
 	if !l.initialized {
 		return l.lastEventAt.IsZero() && l.activeForwardedSequences == 0 &&
-			l.activeResponseSequences == 0 && l.forwardedSequenceSeconds == 0 &&
-			l.responseSequenceSeconds == 0
+			l.activeResponseSequences == 0 && l.forwardedSequenceTime == (sequenceNanoseconds{}) &&
+			l.responseSequenceTime == (sequenceNanoseconds{})
 	}
 	return !l.lastEventAt.IsZero()
 }

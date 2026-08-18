@@ -34,8 +34,9 @@ func TestV01215SequenceExposureLedgerIntegratesSequentialAndConcurrentLifetimes(
 		t.Fatal("concurrent lifecycle failed")
 	}
 	got, ok := ledger.snapshot(start.Add(400 * time.Millisecond))
-	if !ok || math.Abs(got.forwardedSequenceSeconds-0.65) > 1e-9 ||
-		math.Abs(got.responseSequenceSeconds-0.55) > 1e-9 {
+	forwarded, response, secondsOK := got.seconds()
+	if !ok || !secondsOK || math.Abs(forwarded-0.65) > 1e-9 ||
+		math.Abs(response-0.55) > 1e-9 {
 		t.Fatalf("integrated exposure=%+v/%t", got, ok)
 	}
 	if !ledger.remove(start.Add(400*time.Millisecond), 2, 2) ||
@@ -59,6 +60,44 @@ func TestV01215SequenceExposureLedgerRejectsInvalidTransitionsAndReset(t *testin
 	ledger.reset()
 	if !ledger.valid() || ledger.initialized || !ledger.lastEventAt.IsZero() {
 		t.Fatalf("reset exposure=%+v", ledger)
+	}
+}
+
+func TestV01215SequenceExposureWatermarksAreExactAndOverflowChecked(t *testing.T) {
+	forwardedPrevious, ok := (sequenceNanoseconds{}).addDuration(1552*time.Millisecond, 1)
+	if !ok {
+		t.Fatal("forwarded previous watermark overflowed")
+	}
+	forwardedCurrent, ok := (sequenceNanoseconds{}).addDuration(1571*time.Millisecond, 1)
+	if !ok {
+		t.Fatal("forwarded current watermark overflowed")
+	}
+	responsePrevious, ok := (sequenceNanoseconds{}).addDuration(591*time.Millisecond, 1)
+	if !ok {
+		t.Fatal("response previous watermark overflowed")
+	}
+	responseCurrent, ok := (sequenceNanoseconds{}).addDuration(610*time.Millisecond, 1)
+	if !ok {
+		t.Fatal("response current watermark overflowed")
+	}
+	delta, ok := (sequenceExposureSnapshot{
+		forwardedSequenceNanoseconds: forwardedCurrent,
+		responseSequenceNanoseconds:  responseCurrent,
+	}).subtract(sequenceExposureSnapshot{
+		forwardedSequenceNanoseconds: forwardedPrevious,
+		responseSequenceNanoseconds:  responsePrevious,
+	})
+	forwarded, response, secondsOK := delta.seconds()
+	if !ok || !secondsOK || forwarded != response || math.Abs(forwarded-0.019) > 1e-12 {
+		t.Fatalf("exact exposure delta=%+v seconds=%v/%v valid=%t/%t", delta, forwarded, response, ok, secondsOK)
+	}
+
+	maximum := sequenceNanoseconds{high: math.MaxUint64, low: math.MaxUint64}
+	if _, ok := maximum.addDuration(time.Nanosecond, 1); ok {
+		t.Fatal("128-bit exposure overflow was accepted")
+	}
+	if _, ok := (sequenceNanoseconds{}).subtract(sequenceNanoseconds{low: 1}); ok {
+		t.Fatal("128-bit exposure underflow was accepted")
 	}
 }
 
