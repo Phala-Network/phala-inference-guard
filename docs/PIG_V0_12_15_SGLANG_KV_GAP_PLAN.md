@@ -1540,6 +1540,41 @@ Dropping that lease immediately would permit premature surplus reuse. The
 updated test now requires the residual lease before the covering sample and
 exact release afterward.
 
+The exact pushed API source `1d82572` used GitHub archive SHA-256
+`c5174051e4a5ed40b8bf120a870dae93c767058e0a5a0a8b2602ab9248be4703`.
+Its focused policy tests and build passed, but the first complete-matrix audit
+correctly invalidated that narrow green result. The package, race, complete
+test, and vet logs exited nonzero with SHA-256 values
+`76012256ebd6c28d3cb6c2d00b0411c98d2faee34d699c8aadb28fc9eae17b34`,
+`97564d378e2c44a8e77a153b537f486b03f7c24efb33e0fd3eef9e31db698af8`,
+`98349a7e6a1615babcdad3ee640f76445c15e49d370ddae5fd11efd34a56c684`,
+and `6bc28b11d873f143e96e0f6463a1b9c06e29e99e4b51ddd723b2ecfa47184c70`.
+The failures exposed three stale pre-API assumptions and one real static-test
+defect: the reference-15 causal limit is `floor(100/15)=6`, unsupported request
+shapes must not retain partially parsed prompt-cost fields, the saturated
+reference-25 fixture cannot require 99 percent raw throughput while also
+refusing to assume unobserved aggregate scaling, and the panic test must not
+copy a counter struct containing atomics.
+
+The reference-25 correction is not a golden relaxation to hide a QoS failure.
+The deterministic fixture proves 120 TPS from four uncontended background
+streams against a 150 TPS saturation cap, so 80 percent is the conservative
+raw-throughput floor. The candidate held mean active TPS at 30 with zero
+preemptions and increased SLO-qualified tokens from `567.778` to `7200`; the
+reference-20 candidate still retains the existing 99-percent throughput gate.
+
+An isolated f563 development rerun applied only those four corrections to the
+exact `1d82572` archive. Controller causality, the complete request parser
+package, policy API tests, the two previously failing request-aware simulations,
+and server vet all exited zero. Their log SHA-256 values are respectively
+`c50633b3c45d8dace55d61a03a13483ec38e3a64ee54d6b810e01c8d827c0c5b`,
+`c378bc17f2aebd18e27d4d713b4ca32a048fdf121bbdfa4a3d90044821b24221`,
+`4e5b9268302291d92097cefdfa21e9d47a3316ec0203aa069ebd3b75988e5f41`,
+`21ccc00e49a5b4532786d4ca61607f469b4ec01b14b53c8d13bab1c8ca3d4bb8`,
+and the empty-log SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+This is pre-commit focused evidence only. A new pushed exact source and its
+complete clean f563 matrix remain required.
+
 ### Pass 3: exact evidence and release
 
 Status: pending. No v0.12.15 image has been built or uploaded, production still

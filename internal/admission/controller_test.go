@@ -427,7 +427,7 @@ func TestControllerTPSReferenceAloneChangesPreForwardDecision(t *testing.T) {
 		strictDecision.TPSSequenceLimit != 5 || strictDecision.TPSCurrentSequences != 5 || strictDecision.TPSPostAdmitSequences != 6 {
 		t.Fatalf("strict TPS decision=%+v", strictDecision)
 	}
-	if !permissiveDecision.Admitted() || permissiveDecision.TPSSequenceLimit != 7 ||
+	if !permissiveDecision.Admitted() || permissiveDecision.TPSSequenceLimit != 6 ||
 		permissiveDecision.TPSCurrentSequences != 5 || permissiveDecision.TPSPostAdmitSequences != 6 {
 		t.Fatalf("permissive TPS decision=%+v", permissiveDecision)
 	}

@@ -145,9 +145,13 @@ func (p *jsonFieldParser) parseRootObject(fields []string) (JSONFields, bool) {
 func finalizeJSONFields(result JSONFields, decodeCandidates int64) JSONFields {
 	if !result.ShapeSupported || result.PromptBatchSize <= 0 || decodeCandidates <= 0 ||
 		result.PromptBatchSize > math.MaxInt64/decodeCandidates {
-		result.ShapeSupported = false
-		result.DecodeSequences = 0
-		return result
+		return JSONFields{
+			OutputTokens:    result.OutputTokens,
+			HasOutputTokens: result.HasOutputTokens,
+			PromptBatchSize: 1,
+			ShapeSupported:  false,
+			DecodeSequences: 0,
+		}
 	}
 	result.DecodeSequences = result.PromptBatchSize * decodeCandidates
 	return result

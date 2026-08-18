@@ -256,7 +256,12 @@ func TestV01215PredictivePolicyAPIFailsClosedWhenPolicyServicePanics(t *testing.
 	)
 	if current.Revision != 1 || current.Mutable.TPSReference != 20 ||
 		srv.policyUpdates.failed.Load() != 1 || srv.policyUpdates.applied.Load() != 0 {
-		t.Fatalf("panic changed policy=%+v counters=%+v", current, srv.policyUpdates)
+		t.Fatalf(
+			"panic changed policy=%+v failed=%d applied=%d",
+			current,
+			srv.policyUpdates.failed.Load(),
+			srv.policyUpdates.applied.Load(),
+		)
 	}
 }
 
