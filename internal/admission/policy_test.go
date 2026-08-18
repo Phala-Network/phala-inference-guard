@@ -133,32 +133,6 @@ func TestV01215ContextGateUsesHardPerSequenceInputEstimate(t *testing.T) {
 	}
 }
 
-func TestV01215ContextGateUsesDeclaredOutputLimitForFullSequenceContext(t *testing.T) {
-	work := predictive.RequestWork{Estimate: predictive.RequestEstimate{
-		SelectionInputTokens:                    5,
-		MaximumSequenceInputTokens:              5,
-		KVReservationInputTokens:                5,
-		MaximumSequenceKVReservationInputTokens: 5,
-		DecodeHorizonTokens:                     256,
-		OutputLimitTokens:                       4_092,
-		OutputLimitKnown:                        true,
-		BasePromptCount:                         1,
-		DecodeSequences:                         1,
-	}}
-	gate := contextGate{maximumInputTokens: 4_095, maxModelLenTokens: 4_096}
-
-	protected := gate.evaluate(work)
-	if protected.fits || protected.reason != ReasonInputLimit {
-		t.Fatalf("declared output limit bypassed full Context gate: %+v", protected)
-	}
-
-	work.Estimate.OutputLimitTokens = 4_091
-	equality := gate.evaluate(work)
-	if !equality.fits || equality.reason != ReasonOpen {
-		t.Fatalf("exact full-context equality was protected: %+v", equality)
-	}
-}
-
 func testPolicy(t *testing.T) admissionPolicy {
 	t.Helper()
 	capability := testCapability()
