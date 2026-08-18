@@ -342,6 +342,72 @@ func TestV01215TPSGateDoesNotOpenKnownBelowFloorMarginalWave(t *testing.T) {
 	}
 }
 
+func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T) {
+	positive := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 20, QualifiedTokens: 2400, QualifiedActiveSeconds: 16,
+		QualifiedSequenceSamples: 20, QualifiedSequenceTokens: 2400,
+		QualifiedSequenceSeconds: 100, AggregateTPS: 150, MeanActiveTPS: 24,
+	}
+	negative := positive
+	negative.QualifiedSequenceSeconds = 125
+	negative.MeanActiveTPS = 19.2
+
+	base := ProjectedState{
+		RawRunning: 7, GenerationDelta: 75,
+		ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true,
+	}
+	for _, test := range []struct {
+		name  string
+		state ProjectedState
+		fits  bool
+		limit int64
+	}{
+		{name: "positive surplus", state: base, fits: true, limit: 8},
+		{name: "same snapshot spent", state: withUnobservedSequences(base, 1), fits: false, limit: 8},
+		{name: "negative surplus", state: base, fits: false, limit: 7},
+		{name: "current rate too low", state: withGenerationDelta(base, 60), fits: false, limit: 7},
+		{name: "waiting", state: withWaiting(base, 1), fits: false, limit: 8},
+		{name: "preemption", state: withPreemptionDelta(base, 1), fits: false, limit: 7},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := test.state
+			state.TPS = positive
+			if test.name == "negative surplus" {
+				state.TPS = negative
+			}
+			decision := (tpsGate{}).evaluate(state)
+			if decision.fits != test.fits || decision.sequenceLimit != test.limit ||
+				decision.currentSequences+1 != decision.postAdmitSequences {
+				t.Fatalf("QoS-budget decision=%+v state=%+v", decision, state)
+			}
+			if !test.fits && decision.reason != ReasonTPSReference {
+				t.Fatalf("QoS-budget protection reason=%s", decision.reason)
+			}
+		})
+	}
+}
+
+func withUnobservedSequences(state ProjectedState, sequences int64) ProjectedState {
+	state.UnobservedSequences = sequences
+	return state
+}
+
+func withGenerationDelta(state ProjectedState, tokens uint64) ProjectedState {
+	state.GenerationDelta = tokens
+	return state
+}
+
+func withWaiting(state ProjectedState, waiting int64) ProjectedState {
+	state.RawWaiting = waiting
+	return state
+}
+
+func withPreemptionDelta(state ProjectedState, preemptions uint64) ProjectedState {
+	state.PreemptionDelta = preemptions
+	return state
+}
+
 func TestV01215TPSGateAllowsBoundedIdleRefillWithoutCurrentGeneration(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 20,
