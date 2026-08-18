@@ -12,8 +12,9 @@ func (s *proxyServer) statusLogLine() string {
 	projection := projectAdmissionCapacity(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, snapshot.Report)
 	compatibility := projectRouterCompatibility(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, projection)
 	return fmt.Sprintf(
-		"%s predictive={mode=%s attempts=%d fit=%d risk=%d unknown=%d reject=%d reservations=%d last=%s/%s pressure=%s capacity=%s/%s prefill=%s/%d kv=%d/%d/%d tps_proxy=%.3f sustained_tps=%.3f/%.3f reference=%.3f ready=%t sequences=%d/%d/%d unobserved=%d qos_budget=%t/%d router=%t/%s/%d observation=%t/%t/%d/%d compatibility=%d/%d/%d/%d}",
-		version, input.Mode, input.Attempts, input.Fits, input.Risks, input.Unknown,
+		"%s predictive={mode=%s policy=%d/%s attempts=%d fit=%d risk=%d unknown=%d reject=%d reservations=%d last=%s/%s pressure=%s capacity=%s/%s prefill=%s/%d kv=%d/%d/%d tps_proxy=%.3f sustained_tps=%.3f/%.3f reference=%.3f ready=%t sequences=%d/%d/%d unobserved=%d qos_budget=%t/%d router=%t/%s/%d observation=%t/%t/%d/%d compatibility=%d/%d/%d/%d}",
+		version, input.Mode, snapshot.Capacity.Policy.Revision, predictivePolicySource(snapshot.Capacity.Policy),
+		input.Attempts, input.Fits, input.Risks, input.Unknown,
 		input.EnforcedRejects, input.Reservations, input.AdmissionAction,
 		input.AdmissionReason, input.AdmissionPressureSource,
 		snapshot.Capacity.MinimumDecision.Action, snapshot.Capacity.MinimumDecision.Reason,

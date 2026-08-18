@@ -89,6 +89,49 @@ covering poll absorbs that extra contribution. This prevents a concurrent
 same-poll burst from bypassing a learned limit while avoiding a permanent
 double count after the backend exposes the request.
 
+## Runtime predictive policy API
+
+The authenticated runtime policy endpoint is:
+
+```text
+GET   /admin/v1/predictive-policy
+PATCH /admin/v1/predictive-policy
+```
+
+It always requires exactly one `Authorization: Bearer <token>` header, even
+when generation-path authentication is configured differently. Responses are
+bounded JSON with `Cache-Control: no-store`; they never return the token,
+upstream or metrics URL, request data, or model identity.
+
+GET returns schema `pig.predictive-policy.v1`, a monotonic revision, source,
+last update time, process-local persistence semantics, the mutable
+`tps_reference`, and non-secret effective admission/capability values. In v1,
+only the TPS reference is hot-mutable. Admission mode, polling/freshness,
+scanner/estimator construction, KV geometry/hard limit, and Prefill bounds are
+read-only because changing them requires a test-only restart, observer rebuild,
+or new backend capability epoch.
+
+PATCH uses compare-and-swap:
+
+```json
+{
+  "expected_revision": 1,
+  "tps_reference": 50
+}
+```
+
+Unknown or missing fields, trailing JSON, bodies over 4096 bytes, stale
+revisions, and values outside finite `[0, 1000000]` fail without changing the
+current policy. A stale revision returns HTTP 409. A successful write advances
+the revision and affects the next pre-forward decision. Changing the value
+clears old TPS-window evidence atomically; an equal-value write advances the
+revision without clearing valid evidence.
+
+Existing request reservations and QoS-budget leases keep their exact lifecycle
+across an update. A sample that began before a changed policy revision cannot
+refill the new TPS window. API state is intentionally not persistent: restart
+restores the validated `PREDICTIVE_TPS_REFERENCE` startup value and revision 1.
+
 Before the window has four qualified samples and eight qualified
 sequence-seconds, TPS warming admits at most two total sequences. If PIG starts
 while more than two are already running, it preserves that population but does

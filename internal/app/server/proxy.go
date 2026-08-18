@@ -26,6 +26,10 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.upstreamStatus(w, r)
 		return
 	}
+	if r.URL.Path == predictivePolicyAPIPath {
+		s.predictivePolicyAPI(w, r)
+		return
+	}
 	if attestationReportPath(r.URL.Path) {
 		s.attestationReport(w, r)
 		return

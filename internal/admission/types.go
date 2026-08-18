@@ -130,6 +130,7 @@ type DecisionRecord struct {
 	ObservationSequence        uint64
 	ControllerSequence         uint64
 	RuntimeEpoch               uint64
+	PolicyRevision             uint64
 	ReservationID              uint64
 }
 
@@ -170,6 +171,7 @@ type CapacitySnapshot struct {
 	ObservationSequence uint64
 	ControllerSequence  uint64
 	RuntimeEpoch        uint64
+	Policy              TPSPolicySnapshot
 }
 
 type PublicationResult struct {

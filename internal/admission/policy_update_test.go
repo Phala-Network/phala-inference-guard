@@ -189,8 +189,15 @@ func TestV01215TPSPolicyUpdatePreservesQoSBudgetLeaseLifecycle(t *testing.T) {
 	if !admitted.Handle.Terminate(TerminalSuccess) {
 		t.Fatal("pre-update handle did not terminate after policy update")
 	}
+	terminalDebt := controller.Snapshot(clock.Now()).State
+	if terminalDebt.QoSBudgetLeases != 1 || terminalDebt.LiveReservations != 0 ||
+		terminalDebt.ResidualDebts != 1 {
+		t.Fatalf("terminal policy-crossing debt=%+v", terminalDebt)
+	}
+	clock.Set(start.Add(3 * time.Second))
+	publishObservation(t, controller, testObservation(capability, clock.Now(), 0, 7, 0, 450, 0))
 	terminal := controller.Snapshot(clock.Now()).State
 	if terminal.QoSBudgetLeases != 0 || terminal.LiveReservations != 0 || terminal.ResidualDebts != 0 {
-		t.Fatalf("terminal policy-crossing lifecycle=%+v", terminal)
+		t.Fatalf("covered terminal policy-crossing lifecycle=%+v", terminal)
 	}
 }

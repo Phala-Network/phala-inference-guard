@@ -636,12 +636,16 @@ func TestV01215ControllerQoSBudgetChangesPreForwardDecisionAndIsAtomic(t *testin
 	if !first.Handle.Terminate(TerminalSuccess) {
 		t.Fatal("QoS-budget reservation did not terminate")
 	}
-	if got := controller.Snapshot(clock.Now()).State.QoSBudgetLeases; got != 0 {
-		t.Fatalf("terminal covered QoS-budget lease=%d want 0", got)
+	terminalDebt := controller.Snapshot(clock.Now()).State
+	if terminalDebt.QoSBudgetLeases != 1 || terminalDebt.ResidualDebts != 1 {
+		t.Fatalf("terminal QoS-budget debt released before a covering sample: %+v", terminalDebt)
 	}
 	reopenedAt := start.Add(3 * time.Second)
 	clock.Set(reopenedAt)
 	publishObservation(t, controller, testObservation(capability, reopenedAt, 0, 7, 0, 450, 0))
+	if got := controller.Snapshot(clock.Now()).State; got.QoSBudgetLeases != 0 || got.ResidualDebts != 0 {
+		t.Fatalf("covering sample retained terminal QoS-budget debt: %+v", got)
+	}
 	reopened := controller.Admit(clock.Now(), estimate).Decision
 	if !reopened.Admitted() || !reopened.TPSQoSBudgeted || reopened.TPSSequenceLimit != 8 {
 		t.Fatalf("terminal QoS-budget lease did not reopen bounded surplus: %+v", reopened)

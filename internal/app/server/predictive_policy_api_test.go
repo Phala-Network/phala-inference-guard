@@ -24,18 +24,18 @@ type predictivePolicyAPIDocument struct {
 		TPSReference float64 `json:"tps_reference"`
 	} `json:"mutable"`
 	Effective struct {
-		AdmissionMode                 string `json:"admission_mode"`
-		ObservationPollIntervalMS     int64  `json:"observation_poll_interval_ms"`
-		MaximumMetricsAgeMS           int64  `json:"maximum_metrics_age_ms"`
-		KVCapacityTokens              int64  `json:"kv_capacity_tokens"`
-		KVBlockSize                   int64  `json:"kv_block_size"`
-		KVHardLimitTokens             int64  `json:"kv_hard_limit_tokens"`
-		MaximumAdmissibleInputTokens  int64  `json:"maximum_admissible_input_tokens"`
-		PrefillRegularTokens          int64  `json:"prefill_regular_tokens"`
-		PrefillExclusiveTokens        int64  `json:"prefill_exclusive_tokens"`
-		PrefillQuiescentTokens        int64  `json:"prefill_quiescent_tokens"`
-		PrefillAggregateBudgetTokens  int64  `json:"prefill_aggregate_budget_tokens"`
-		PrefillContendedBudgetTokens  int64  `json:"prefill_contended_budget_tokens"`
+		AdmissionMode                string `json:"admission_mode"`
+		ObservationPollIntervalMS    int64  `json:"observation_poll_interval_ms"`
+		MaximumMetricsAgeMS          int64  `json:"maximum_metrics_age_ms"`
+		KVCapacityTokens             int64  `json:"kv_capacity_tokens"`
+		KVBlockSize                  int64  `json:"kv_block_size"`
+		KVHardLimitTokens            int64  `json:"kv_hard_limit_tokens"`
+		MaximumAdmissibleInputTokens int64  `json:"maximum_admissible_input_tokens"`
+		PrefillRegularTokens         int64  `json:"prefill_regular_tokens"`
+		PrefillExclusiveTokens       int64  `json:"prefill_exclusive_tokens"`
+		PrefillQuiescentTokens       int64  `json:"prefill_quiescent_tokens"`
+		PrefillAggregateBudgetTokens int64  `json:"prefill_aggregate_budget_tokens"`
+		PrefillContendedBudgetTokens int64  `json:"prefill_contended_budget_tokens"`
 	} `json:"effective"`
 }
 
@@ -236,6 +236,30 @@ func TestV01215PredictivePolicyAPIConcurrentPatchHasOneWinner(t *testing.T) {
 	}
 }
 
+func TestV01215PredictivePolicyAPIFailsClosedWhenPolicyServicePanics(t *testing.T) {
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{TPSReference: 20})
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("policy update reached backend")
+	}))
+	t.Cleanup(backend.Close)
+	service := &panickingPolicyAdmissionService{admissionService: runtime}
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", service)
+
+	response := servePredictivePolicyAPI(
+		t, srv, http.MethodPatch, []byte(`{"expected_revision":1,"tps_reference":25}`), "application/json",
+	)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("panic status=%d body=%s", response.Code, response.Body.String())
+	}
+	current := decodePredictivePolicyDocument(
+		t, servePredictivePolicyAPI(t, srv, http.MethodGet, nil, ""), http.StatusOK,
+	)
+	if current.Revision != 1 || current.Mutable.TPSReference != 20 ||
+		srv.policyUpdates.failed.Load() != 1 || srv.policyUpdates.applied.Load() != 0 {
+		t.Fatalf("panic changed policy=%+v counters=%+v", current, srv.policyUpdates)
+	}
+}
+
 func TestV01215PredictivePolicyUpdateChangesNextPreForwardDecision(t *testing.T) {
 	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
 		TPSReference: 0,
@@ -259,7 +283,8 @@ func TestV01215PredictivePolicyUpdateChangesNextPreForwardDecision(t *testing.T)
 		t.Fatalf("post-update decision status=%d backend_calls=%d body=%s", response.Code, backendCalls.Load(), response.Body.String())
 	}
 	last := runtime.Snapshot(time.Now()).Report.LastDecision
-	if last.Reason != coreadmission.ReasonTPSReference || last.State.TPS.Reference != 50 {
+	if last.Reason != coreadmission.ReasonTPSReference || last.State.TPS.Reference != 50 ||
+		last.PolicyRevision != 2 {
 		t.Fatalf("post-update decision=%+v", last)
 	}
 }
@@ -317,4 +342,14 @@ func decodePredictivePolicyDocument(
 		t.Fatalf("decode policy response: %v body=%s", err, response.Body.String())
 	}
 	return document
+}
+
+type panickingPolicyAdmissionService struct {
+	admissionService
+}
+
+func (*panickingPolicyAdmissionService) UpdateTPSPolicy(
+	coreadmission.TPSPolicyUpdate,
+) (coreadmission.TPSPolicyUpdateResult, error) {
+	panic("policy update panic")
 }

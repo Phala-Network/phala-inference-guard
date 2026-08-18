@@ -10,11 +10,12 @@ import (
 )
 
 type SampleWindow struct {
-	controller    *AdmissionController
-	runtimeEpoch  uint64
-	id            uint64
-	eventSequence uint64
-	exposure      sequenceExposureSnapshot
+	controller     *AdmissionController
+	runtimeEpoch   uint64
+	tpsPolicyEpoch uint64
+	id             uint64
+	eventSequence  uint64
+	exposure       sequenceExposureSnapshot
 }
 
 type ReservationHandle struct {
@@ -57,6 +58,9 @@ type AdmissionController struct {
 	lastPublishedSample uint64
 	lastExposure        sequenceExposureSnapshot
 	cacheLeaseSequence  uint64
+	policyRevision      uint64
+	policyUpdatedAt     time.Time
+	tpsPolicyEpoch      uint64
 	observation         observedState
 	hasObservation      bool
 	closedReason        Reason
@@ -93,6 +97,8 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 		tpsWindow:           newTPSWindow(config.TPS.Reference),
 		now:                 now,
 		runtimeEpoch:        1,
+		policyRevision:      1,
+		tpsPolicyEpoch:      1,
 		reservations:        make(map[uint64]reservation),
 		maximumReservations: capability.KVHardLimitTokens / capability.KVBlockSize,
 	}, nil
@@ -118,11 +124,12 @@ func (c *AdmissionController) StartSampleWindow() (SampleWindow, bool) {
 	}
 	c.sampleSequence++
 	return SampleWindow{
-		controller:    c,
-		runtimeEpoch:  c.runtimeEpoch,
-		id:            c.sampleSequence,
-		eventSequence: c.eventSequence,
-		exposure:      exposure,
+		controller:     c,
+		runtimeEpoch:   c.runtimeEpoch,
+		tpsPolicyEpoch: c.tpsPolicyEpoch,
+		id:             c.sampleSequence,
+		eventSequence:  c.eventSequence,
+		exposure:       exposure,
 	}, true
 }
 
@@ -218,7 +225,8 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		c.overlay = nextOverlay
 		c.lastPublishedSample = window.id
 		c.lastExposure = window.exposure
-		if c.hasObservation && c.tpsWindow.enabled() && !c.tpsWindow.observe(tpsSample{
+		if c.hasObservation && window.tpsPolicyEpoch == c.tpsPolicyEpoch &&
+			c.tpsWindow.enabled() && !c.tpsWindow.observe(tpsSample{
 			start:                         c.observation.observation.ObservedAt,
 			end:                           observation.ObservedAt,
 			maximumInterval:               observation.MaximumAge,
@@ -274,6 +282,7 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 			Estimate: estimate, HardKVLimitTokens: c.capability.KVHardLimitTokens,
 			ObservationSequence: c.observationSequence,
 			ControllerSequence:  c.eventSequence, RuntimeEpoch: c.runtimeEpoch,
+			PolicyRevision: c.policyRevision,
 		}}
 	}
 	c.mu.Lock()
@@ -361,6 +370,7 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 			ObservationSequence: c.observationSequence,
 			ControllerSequence:  c.eventSequence,
 			RuntimeEpoch:        c.runtimeEpoch,
+			Policy:              c.tpsPolicySnapshotLocked(),
 		}
 	}
 	minimumWork := c.policy.withObservedPrefillCost(state, c.policy.minimumWork)
@@ -380,6 +390,7 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 		ObservationSequence: c.observationSequence,
 		ControllerSequence:  c.eventSequence,
 		RuntimeEpoch:        c.runtimeEpoch,
+		Policy:              c.tpsPolicySnapshotLocked(),
 	}
 }
 
@@ -551,6 +562,7 @@ func (c *AdmissionController) unavailableDecisionLocked(reason Reason, estimate 
 		ObservationSequence: c.observationSequence,
 		ControllerSequence:  c.eventSequence,
 		RuntimeEpoch:        c.runtimeEpoch,
+		PolicyRevision:      c.policyRevision,
 	}
 }
 
@@ -574,6 +586,7 @@ func (c *AdmissionController) decisionLocked(policy policyDecision, estimate pre
 		ObservationSequence:        c.observationSequence,
 		ControllerSequence:         c.eventSequence,
 		RuntimeEpoch:               c.runtimeEpoch,
+		PolicyRevision:             c.policyRevision,
 	}
 }
 

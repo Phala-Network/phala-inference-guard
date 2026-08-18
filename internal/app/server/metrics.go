@@ -52,12 +52,26 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	fmt.Fprintf(w, "pig_info{version=%q} 1\n", version)
 	fmt.Fprintf(w, "pig_uptime_seconds %.6f\n", time.Since(s.started).Seconds())
 	fmt.Fprintf(w, "pig_rejected_total %d\n", s.total429.Load())
+	policy := snapshot.Capacity.Policy
+	fmt.Fprintf(w, "pig_predictive_policy_revision %d\n", policy.Revision)
+	fmt.Fprintf(w, "pig_predictive_policy_last_updated_at_seconds %.6f\n", predictivePolicyUnixSeconds(policy.UpdatedAt))
+	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "applied", s.policyUpdates.applied.Load())
+	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "invalid", s.policyUpdates.invalid.Load())
+	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "conflict", s.policyUpdates.conflict.Load())
+	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "failed", s.policyUpdates.failed.Load())
 	fmt.Fprintf(w, "pig_client_protocol_errors_total{reason=%q} %d\n", "invalid_json", s.clientProtocolInvalidJSON.Load())
 	fmt.Fprintf(w, "pig_predictive_scanner_inflight %d\n", s.requestClassifier.Inflight())
 	fmt.Fprintf(w, "pig_predictive_scanner_saturated_total %d\n", s.requestClassifier.Rejected())
 	metrics.WriteBackends(w, s.backendMetricsInput(snapshot, now))
 	metrics.WritePredictiveAdmission(w, input)
 	metrics.WriteRouterCapacityCompatibility(w, compatibility)
+}
+
+func predictivePolicyUnixSeconds(value time.Time) float64 {
+	if value.IsZero() {
+		return 0
+	}
+	return float64(value.UnixNano()) / float64(time.Second)
 }
 
 func (s *proxyServer) admissionTelemetry(now time.Time) (snapshot admissionTelemetrySnapshot) {

@@ -8,6 +8,9 @@ Router projection, and compatibility values are formatted from that snapshot.
 
 `/pig/metrics` returns PIG metrics. `/v1/metrics` appends a bounded copy of the
 single upstream's Prometheus response. Both require the configured bearer token.
+`GET` and `PATCH /admin/v1/predictive-policy` expose and atomically update the
+runtime TPS reference policy. The admin endpoint always requires the same
+single-value bearer authentication and never proxies to the backend.
 `/v1/upstream-status` returns:
 
 | Code | Meaning |
@@ -121,6 +124,23 @@ yet covered by the latest metrics watermark; it normally returns to zero on the
 next coherent poll and makes same-poll protection auditable.
 `pig_predictive_request_aware_*_tps_proxy` remains the latest-interval diagnostic
 and must not be interpreted as the sustained policy window.
+
+Runtime policy changes are exported with fixed cardinality:
+
+```text
+pig_predictive_policy_revision
+pig_predictive_policy_last_updated_at_seconds
+pig_predictive_policy_updates_total{result="applied"}
+pig_predictive_policy_updates_total{result="invalid"}
+pig_predictive_policy_updates_total{result="conflict"}
+pig_predictive_policy_updates_total{result="failed"}
+```
+
+Decision logs include `policy_revision`; the periodic status line includes
+`policy=<revision>/<startup|runtime_api>`. A changed TPS reference clears the
+qualified TPS window, so metrics show the new reference with `ready=0` until
+new post-revision evidence qualifies. Existing reservation and QoS lease gauges
+must not drop merely because policy changed.
 
 Periodic status logs distinguish `last=<action>/<reason>` from the live
 `capacity=<action>/<reason>` canonical probe. TPS protection caused by a metrics

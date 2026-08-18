@@ -39,6 +39,13 @@ type admissionFailureCounters struct {
 	terminal  atomic.Uint64
 }
 
+type predictivePolicyUpdateCounters struct {
+	applied  atomic.Uint64
+	invalid  atomic.Uint64
+	conflict atomic.Uint64
+	failed   atomic.Uint64
+}
+
 func loadConfig() (config, error)     { return pigconfig.Load() }
 func validateConfig(cfg config) error { return pigconfig.Validate(cfg) }
 
@@ -56,6 +63,7 @@ type proxyServer struct {
 	backendUnavailable        atomic.Uint64
 	predictiveEnforcedRejects atomic.Uint64
 	admissionFailures         admissionFailureCounters
+	policyUpdates             predictivePolicyUpdateCounters
 	decisionDuration          durationHistogram
 	bodyReadDuration          durationHistogram
 	estimatorDuration         durationHistogram

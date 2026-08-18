@@ -1445,9 +1445,10 @@ values merely to accept 19.36 TPS.
 
 ### Corrective extension: authenticated runtime policy API
 
-Status: design contract recorded on 2026-08-18; red tests and implementation
-pending. This extension is part of v0.12.15 and does not authorize an image,
-deployment, Router change, backend restart, or production request.
+Status: test-first source candidate implemented on 2026-08-18; exact pushed
+source and complete f563 evidence are pending. This extension is part of
+v0.12.15 and does not authorize an image, deployment, Router change, backend
+restart, or production request.
 
 External adjustment must operate on admission policy, not expose every startup
 environment variable as writable state. The v1 mutability boundary is:
@@ -1512,6 +1513,32 @@ Required test-first evidence:
 - focused Controller/API tests, admission and server packages, request-aware
   simulations, and admission/server race tests pass from one exact f563 source
   archive before this source can enter the complete v0.12.15 matrix.
+
+The exact red-test source is pushed commit `7ef4b12`. Its GitHub archive
+SHA-256 is `ae92080da1bf1347969beec22a259a14e5178bf6bcba6283c5f93c3b18cf626c`.
+The fixed Go 1.24 focused run failed for the intended missing Controller/API
+symbols with exit 1 and log SHA-256
+`9835a0ecf7edf310144ac8591623e3c8f5bb1b82d6cc6aa0c449b433e4faeae3`.
+
+The first pre-commit candidate run then exposed one return-contract defect:
+invalid Controller updates preserved internal state but returned a zero policy
+snapshot. Admission/API tests otherwise reached the intended routes. That run
+exited 1 with log SHA-256
+`8a10a324310212316f5830658c3894e7955986aac0980fde952a11ab92de088d`.
+The corrected pre-commit focused run passed both packages with exit 0 and log
+SHA-256 `901af26f05f0b71be456510198b645e72d1595852be9bab31e4eb32b92f894e6`.
+These local-diff runs validate development causality only; they are not exact
+commit evidence and cannot satisfy the remaining package/race/simulation gates.
+After adding the policy-service panic boundary, the final pre-commit focused
+run again passed both packages, left `gofmt -l` empty, and produced log
+SHA-256 `fea0a997652a7fcb725f72006c86b3a0bcc275ad4e84b36680d38709060ffbc2`.
+
+Lifecycle review also corrected a stale test expectation in the unvalidated
+request-bounded QoS candidate: a terminal forwarded request remains residual
+debt, including its QoS-budget lease, until a sample covers the terminal event.
+Dropping that lease immediately would permit premature surplus reuse. The
+updated test now requires the residual lease before the covering sample and
+exact release afterward.
 
 ### Pass 3: exact evidence and release
 
