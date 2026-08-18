@@ -1317,6 +1317,26 @@ mean-active TPS from the expected 100 to 1. The focused red log SHA-256 is
 This proves the count-times-interval defect only; it does not prove a ledger,
 the local/backend union, non-streaming handling, or long-run QoS behavior.
 
+Expanded red source `ccf00a733319f92b2ba1a94803ab5c388f6bc819`
+defines the local/backend exposure union before implementation. Its GitHub
+archive SHA-256 is
+`3a13eb4c5df82294735431d0fb1def6527b75c34fc2834a748dc7fa2589c4c21`.
+The isolated f563 command was:
+
+```text
+go test ./internal/admission -run '^TestV01215TPSWindow' -count=1 -v
+```
+
+It exited 1 with log SHA-256
+`87fc93c46cc0ed7af42b976f840619fbb11c54295e691b5e83acd96c7f146ec3`.
+The intended failures separately prove that the current window ignores exact
+short Decode exposure, loses non-streaming forwarded exposure, discards a
+known zero-token Decode stall, and truncates local exposure above backend
+endpoint evidence. The pure-Prefill test passed, proving the red contract does
+not charge forwarded exposure as TPS debt without output or positive
+response-active Decode evidence. No production process, Compose file, backend,
+route, image, or request was changed.
+
 ### Pass 3: exact evidence and release
 
 Status: pending. No v0.12.15 image has been built or uploaded, production still
