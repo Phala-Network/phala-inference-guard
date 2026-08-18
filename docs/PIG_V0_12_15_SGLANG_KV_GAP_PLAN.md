@@ -1981,3 +1981,50 @@ This accepts the exact image and legacy configuration as a verified rollback
 candidate only. Making it traffic-bearing, validating the real HAProxy path,
 and restoring the exact pre-change Router state remain mandatory before the
 v0.12.16 production transition.
+
+The exact rollback then became the f563 traffic-bearing PIG. There is no
+discoverable model Router admin inventory for this endpoint, so the transition
+did not fabricate or modify a Router upstream. Instead, the existing HAProxy
+2.9 master received its documented `SIGTTOU` pause signal at
+`2026-08-18T05:25:49Z`: new frontend connections paused while existing
+connections continued. PIG reached five consecutive 500-ms samples with
+running, waiting, reservations, and pending Prefill all zero. Only PIG was then
+recreated from the exact v0.8.13 digest, and HAProxy received `SIGTTIN` to resume
+at `2026-08-18T05:26:29Z`. SGLang and HAProxy container identity, start time,
+and restart count remained unchanged.
+
+The traffic-bearing path passed authenticated models, non-streaming chat,
+streaming chat with `[DONE]`, green upstream status, and the protected metrics
+authorization boundary. Candidate logs had zero fatal matches. The exact
+host-side Compose changed only the PIG image and environment and now has
+SHA-256 `5ca1489582a0beb340301915be37a464dc697983377469932996bf0a3b97cb45`.
+The accepted evidence directory is
+`/var/volatile/dstack/persistent/pig-v01215-workbench/rollback-v00813/traffic-bearing-20260818T052547Z`.
+
+One minute of resumed traffic increased accepted requests from 8 to 15 and
+completed requests from 7 to 15. Failed requests, proxy errors, backend
+unavailability, dynamic rejects, observed preemptions, and PIG/SGLang/HAProxy
+restart counts remained zero in every sample. The monitor SHA-256 is
+`30a6ac3f91d08af8a80323dbca7c29862a21730179838f841e93292ac536c516`.
+Other material SHA-256 values are:
+
+```text
+chat             b1d7ec97df34eb4962e188827e56cde3af437021159882c375ca9c67bc9cba53
+containers after bf71462857b17af886d647b734ce53dc16a0b93b7a023b502ce53bc40427bfca
+drain gate        e05454dc5ab91233c3488d0ee09972ae606e4da7513fee7a866e86693b7c5b22
+models            773088eecd4c832478bd0db7c3a6a0db2d2fba722a13af587c13854808ca13c3
+PIG metrics       f26f44f830753a0744488ab58e6b481cf759edef4ae84a371535fa35b0b3a6a1
+PIG log           cc9ec5ed40bf92ec1bd148daf0cc7c9b08abf6dfcd72515445dfc014de7b74c1
+signal events     a670fead13142ab3c952de1ce96dde4df17ff50415006a2cec4fcbf93dabddfc
+stream            05fd93c98105708000dd98f2dfef48b50071aada8e080835bf1d99bc21f1f382
+summary           a672a8a6f30845065d201a691b3c534a33216e7877f7ab5380a6e59804e07893
+Compose diff      a5b991cf46f2b09da1300064f9d9f686d7ef8ea4f24cdc0eb439aa20de8ce942
+```
+
+Two earlier harness paths were rejected without promotion: the minimal host
+Python lacked `difflib`, and the first readiness check incorrectly required the
+newer `pig_info` metric that v0.8.13 does not export. The latter correctly
+restored v0.12.14 automatically. A passive 90-second idle wait also made no
+mutation because real traffic remained active. These were harness and drain
+findings, not PIG failures. The exact v0.8.13 traffic-bearing state is now the
+required rollback point for the v0.12.16 transition.
