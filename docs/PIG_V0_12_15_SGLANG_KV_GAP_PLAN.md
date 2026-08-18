@@ -1194,8 +1194,10 @@ review.
 ### Corrective review: long-run QoS budget and exact lifecycle exposure
 
 Status: design correction recorded on 2026-08-18 and revised after the exact
-source review at `291066dd65a4f217ef5cb4e0e5fae52eb8baa304`. The first focused
-red behavior is proven; implementation remains pending. This section
+source review at `291066dd65a4f217ef5cb4e0e5fae52eb8baa304`. Exact lifecycle
+exposure is implemented and package/race validated at the source recorded
+below; `QoSBudgetForecast` and the remaining corrective stages are pending.
+This section
 supersedes any earlier acceptance that treats a per-wave 95% TPS projection,
 a forwarded-request count, or HTTP first body byte alone as proof of the
 long-run QoS objective.
@@ -1336,6 +1338,37 @@ endpoint evidence. The pure-Prefill test passed, proving the red contract does
 not charge forwarded exposure as TPS debt without output or positive
 response-active Decode evidence. No production process, Compose file, backend,
 route, image, or request was changed.
+
+The first implementation at `58b721082bbf2199df9fa889afcde6fbb4356474`
+passed the focused exposure behaviors but failed the formatting gate. After the
+format-only correction, exact source `19a1deec20ee7c9ab0a7f8f570c48f8d3059f755`
+exposed a deeper deterministic property failure in both the package and race
+suites: subtracting two cumulative `float64` watermarks inverted two equal
+19-ms exposure deltas by approximately `1.1e-16`, permanently closing the
+Controller as unavailable. This was a real long-running correctness defect,
+not a stale test assertion.
+
+Pushed source `53aaec4bf490b88c7f1a227d5b33f7990996a52b` replaces cumulative
+floating-point seconds with an O(1), overflow-checked unsigned 128-bit
+sequence-nanosecond accumulator. Watermarks are now subtracted exactly and
+converted to floating-point seconds only after the interval delta is known.
+The deterministic 5000-step lifecycle property uses the injected Controller
+clock and retains diagnostic exposure/reconciliation state on failure. The
+exact GitHub archive SHA-256 is
+`b282ce094be3f330afa3de0d9ddc92b20c7b79cebd85eecf70888cba9e7e4075`.
+The isolated f563 Go 1.24 gates produced:
+
+```text
+gofmt -l                    empty, e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+exposure/property focused   exit 0, 0cbd6d1769803254dcfdc1080df0087c0c8011d68489ac342781b5554fc4e794
+admission package           exit 0, 1af1a5d914e467ef29f29dc9bf7fe5870c55cec1189356ec5e3cb890ec84e035
+admission race              exit 0, 230b1cb60040567f35b75b3c0ddec59b56749357c35cdcfaf90a1534ebf49cdd
+```
+
+This closes only lifecycle exposure accounting. It is not evidence for the
+long-run QoS budget, workload-shift guard, estimator oracle, complete source
+matrix, image, deployment, or production readiness. No production process,
+Compose file, backend, route, image, or inference traffic was changed.
 
 ### Pass 3: exact evidence and release
 
