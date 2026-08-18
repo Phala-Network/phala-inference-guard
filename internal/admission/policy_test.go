@@ -133,6 +133,26 @@ func TestV01215ContextGateUsesHardPerSequenceInputEstimate(t *testing.T) {
 	}
 }
 
+func TestV01215ContextGateUsesBoundedDecodeHorizonNotDeclaredOutputLimit(t *testing.T) {
+	work := predictive.RequestWork{Estimate: predictive.RequestEstimate{
+		SelectionInputTokens:                    3_800,
+		MaximumSequenceInputTokens:              3_800,
+		KVReservationInputTokens:                3_800,
+		MaximumSequenceKVReservationInputTokens: 3_800,
+		DecodeHorizonTokens:                     256,
+		OutputLimitTokens:                       4_096,
+		OutputLimitKnown:                        true,
+		BasePromptCount:                         1,
+		DecodeSequences:                         1,
+	}}
+	gate := contextGate{maximumInputTokens: 3_840, maxModelLenTokens: 4_096}
+
+	decision := gate.evaluate(work)
+	if !decision.fits || decision.reason != ReasonOpen {
+		t.Fatalf("declared output limit was mistaken for the bounded QoS horizon: %+v", decision)
+	}
+}
+
 func testPolicy(t *testing.T) admissionPolicy {
 	t.Helper()
 	capability := testCapability()

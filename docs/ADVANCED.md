@@ -177,6 +177,12 @@ contended budget   = block_align_down(min(64 Ki, maximum_admissible_input))
 aggregate budget   = block_align_down(min(256 Ki, maximum_admissible_input))
 ```
 
+The 256-token Decode horizon is the bounded future-KV/QoS planning horizon.
+PIG deliberately does not add the client's complete declared `max_tokens` to
+the input and reproduce backend context validation. A known output limit is
+used only by the optional TPS lifetime-budget calculation; SGLang or vLLM
+remains authoritative for full request legality.
+
 The fixed 64K/256K/512K request bands are portable workload classes, not
 learned rates and not fractions of context length. `maximum_admissible_input`
 is the hard per-request input ceiling. A shorter model may therefore never

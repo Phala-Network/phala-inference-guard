@@ -2,10 +2,10 @@
 
 ## 1. Objective
 
-Maximize sustained aggregate throughput subject to bounded QoS degradation. The
-request must be admitted or protected before it reaches the backend; backend
+Maximize sustained aggregate throughput subject to bounded QoS degradation.
+Admission-relevant QoS protection must happen before forwarding; backend
 feedback only updates the next observation and never rewrites an in-flight
-decision.
+decision. PIG does not duplicate backend request-legality validation.
 
 v0.12.15 must correct two backend-adapter contract defects and one missing
 admission-accounting input discovered after v0.12.14:
@@ -54,7 +54,7 @@ context reset:
   not add a second JSON parse, model-specific tokenizer assets, exact tokenizer
   parity, a prefix lookup, or a network call. Unsupported, truncated, or
   oversized bodies use the documented conservative fallback. The complete
-  estimated input, not a cache-discounted value, drives context fit, KV
+  estimated input, not a cache-discounted value, drives bounded input-QoS fit, KV
   reservation, and long-input class. The hot path must be benchmarked, and the
   accepted extreme body's p99 must remain below 100 ms on f563.
 - Model context, KV capacity/block geometry, KV hard limit, and Prefill class
@@ -901,11 +901,19 @@ decode_sequences = base_prompt_count * n
 best_of = no admission multiplicity for the supported backend contracts
 unique_input_work = aggregate input of the base prompts
 future_decode_work = per-sequence bounded Decode horizon * decode_sequences
-context_fit = maximum one-base-prompt input + one Decode horizon
+input_qos_fit = maximum one-base-prompt input + one bounded Decode horizon
 ```
 
-This requires a separate maximum-per-prompt context estimate. Reusing aggregate
-batch input for context fit is conservative but can reject a valid prompt batch
+This is a QoS planning envelope, not full backend context validation. Even when
+an explicit output limit is present, PIG must not replace the bounded Decode
+horizon with the complete declared limit or reserve the entire possible output.
+The output limit is used only for the optional TPS surplus lifetime budget;
+SGLang/vLLM remains authoritative for `input + max_tokens` legality and other
+request-parameter validation. A backend 4xx after a QoS-fit forward is therefore
+not evidence that predictive admission failed.
+
+This requires a separate maximum-per-prompt input estimate. Reusing aggregate
+batch input for input-QoS fit is conservative but can reject a valid prompt batch
 whose individual prompts fit, reducing throughput without protecting the
 backend. Aggregate base-prompt input continues to drive Prefill contention and
 unique input KV reservation.
@@ -1432,7 +1440,7 @@ baseline and adds no runtime learning or production parameter:
   request used the marginal QoS budget and how many leases remain. Arithmetic,
   multiplicity, reset, overflow, stale-handle, and double-release paths remain
   fail closed and bounded;
-- Prefill/context/KV gates remain independent and run on their existing
+- Prefill/input-QoS/KV gates remain independent and run on their existing
   request-aware inputs. This correction does not claim to solve the separate
   context-dependent Decode shift or non-streaming first-byte questions below.
 

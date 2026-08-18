@@ -154,6 +154,41 @@ func TestAdmissionHTTPProtectsRepeatedShortLexemeOverContextBeforeForward(t *tes
 	}
 }
 
+func TestV01215AdmissionHTTPDoesNotValidateFullDeclaredOutputContext(t *testing.T) {
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"model-agnostic","messages":[{"role":"user","content":"x"}],"max_tokens":4096}`),
+	)
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	srv.ServeHTTP(response, request)
+
+	decision := runtime.Snapshot(clock.Now()).Report.LastDecision
+	if response.Code != http.StatusOK || backendCalls.Load() != 1 || !decision.Admitted() ||
+		!decision.Estimate.OutputLimitKnown || decision.Estimate.OutputLimitTokens != 4_096 ||
+		decision.Estimate.DecodeHorizonTokens >= decision.Estimate.OutputLimitTokens {
+		t.Fatalf(
+			"PIG performed backend full-context validation instead of bounded QoS admission: status=%d calls=%d decision=%+v",
+			response.Code,
+			backendCalls.Load(),
+			decision,
+		)
+	}
+}
+
 func TestAdmissionHTTPProtectsHighTokenDensityTextBeforeForward(t *testing.T) {
 	for _, test := range []struct {
 		name    string

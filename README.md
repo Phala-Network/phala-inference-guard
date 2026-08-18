@@ -16,10 +16,13 @@ The objective is QoS-constrained throughput, not a fixed request-count limit.
 Small requests can still fit while a larger request is protected under the same
 backend pressure.
 
-The Controller first checks availability, then applies independent `ContextGate`,
-`KVGate`, `PrefillGate`, and optional `TPSGate` decisions to one immutable projected state. The gates
-protect observation freshness, model identity, the upstream input ceiling,
-post-admit KV, and Prefill interference. `PrefillGate` applies
+The Controller first checks availability, then applies independent
+`ContextGate`, `KVGate`, `PrefillGate`, and optional `TPSGate` decisions to one
+immutable projected state. `ContextGate` is a bounded
+input-plus-Decode-horizon QoS envelope, not a duplicate of the backend's full
+`input + max_tokens` validation. The gates protect observation freshness, model
+identity, the upstream input ceiling, post-admit KV, and Prefill interference.
+`PrefillGate` applies
 request-size differentiation: under current contention, fitting regular
 requests share a bounded 64K pending-Prefill budget; when open, regular and
 weighted requests share a 256K aggregate budget, while exclusive and quiescent
@@ -56,7 +59,7 @@ cache-aware Prefill compute fraction. This is not a prefix lookup or a promise
 that the next request will hit. Cache credit is bounded, expires, and falls back
 to cold on missing, low-volume, reset, or invalid evidence. It changes only the
 aggregate Prefill compute charge: complete estimated input remains authoritative
-for context validation, long-input class, and KV reservation.
+for the input QoS ceiling, long-input class, and KV reservation.
 
 ## Production configuration
 
