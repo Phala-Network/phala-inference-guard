@@ -2028,3 +2028,127 @@ restored v0.12.14 automatically. A passive 90-second idle wait also made no
 mutation because real traffic remained active. These were harness and drain
 findings, not PIG failures. The exact v0.8.13 traffic-bearing state is now the
 required rollback point for the v0.12.16 transition.
+
+### v0.12.16 production transition and 30-minute live acceptance
+
+The exact verified v0.8.13 rollback was replaced with published image
+`ghcr.io/phala-network/phala-inference-guard:0.12.16@sha256:1a3f85875a436cbd33c5ddc77a2c81084cac41a70ef11869ad2b815e1353e2e0`
+using the accepted PIG-only transition. The running image ID is
+`sha256:0c633dba4ac18da3613d312ef95db8422dbad14157bd7d0c95acee79971b71e7`.
+HAProxy paused new connections for the drain and then resumed them; neither
+HAProxy nor SGLang was recreated. The host Compose SHA-256 is
+`4156d191a80c05a7adeb0bc4e1e861ef6a9bee688e5a7d0a2efead0ce921bbab`.
+Production PIG has only the required runtime credential, SGLang upstream, TLS
+certificate, and `PREDICTIVE_TPS_REFERENCE=50`; default enforce, 500-ms
+observation, and capability-derived KV/Prefill values remain implicit.
+
+Production readiness passed default enforce, the 500-ms poll interval,
+reference 50, SGLang capability/KV inference, authenticated models, protected
+metrics authorization, policy API, non-streaming chat, streaming chat with
+`[DONE]`, and green upstream status. The stream check was initially protected
+twice by visible `tps_reference/load` 429 responses and succeeded about
+two seconds after the last rejection. This is bounded reopen evidence, not a
+failure. The accepted
+deployment evidence is retained at
+`/var/volatile/dstack/persistent/pig-v01215-workbench/production-v01216/deploy-20260818T054817Z`;
+its final deployment summary SHA-256 is
+`35141557c876da877ed53f2acf4f5ba4b9fbc12735d1426a09078e42643c3a57`.
+
+A passive live-traffic monitor then sampled PIG, exact SGLang metrics, all eight
+GPUs, and container state every five seconds from `2026-08-18T06:06:41Z`
+through `2026-08-18T06:36:41Z`. It sent no generation request and made no
+policy, Compose, Router, backend, or container mutation. The first attempted
+collector was invalid because the CVM host lacks `timeout`; a three-sample
+corrected dry run proved both scrapes before the authoritative window started.
+The collector's compact timestamp was also invalid for `docker logs --since`;
+metrics were unaffected, and the exact RFC3339 window logs were re-exported
+before analysis and hashing. Neither invalid harness result contributes to the
+performance result.
+
+The authoritative evidence directory is
+`/var/volatile/dstack/persistent/pig-v01215-workbench/production-v01216/deploy-20260818T054817Z/monitor-20260818T060641Z`.
+All 360 PIG and SGLang scrapes succeeded. SGLang scheduler gauges, retraction
+counters, cache counters, and effective-Prefill modes select the unified
+`priority=""` total and take the maximum duplicated TP/PP view. Completion
+token counters sum only mutually exclusive streaming children of that unified
+total. This prevented either eight-rank or priority-child double counting.
+
+The 1,795-second counter interval measured:
+
+```text
+TPS reference                                      50.000
+ready-window mean-active TPS mean/p05/p50/p95      88.178 / 51.186 / 85.498 / 132.373
+ready mean-active samples below 50 / below 45       4.80% / 2.62%
+completed output tokens / aggregate goodput        84,075 / 46.838 tokens/s
+accepted / completed / failed requests             170 / 170 / 0
+PIG proxy errors / SGLang retractions               0 / 0
+SGLang aborts / PIG-SGLang-HAProxy restarts          1 / 0-0-0
+Prefill input / device-cache-hit token deltas       4,064,000 / 699,904
+device cached-token share                           14.74%
+GPU utilization mean/p50/p95                        59.23% / 88.63% / 100.00%
+all-GPU mean below 20% / below 40%                  35.00% / 35.83%
+PIG KV active fraction mean/p50/p95/max              6.21% / 2.43% / 25.14% / 38.94%
+backend running mean/p95/max                         0.406 / 2 / 3
+backend waiting mean/p95/max                         0.025 / 0 / 2
+enforced rejects / reject-bearing intervals          338 / 44.29%
+Router backpressure sample occupancy                 33.06%
+```
+
+The raw rejection total alone initially looked like over-protection, but its
+time-aligned resource context does not support that conclusion. When
+backpressure was active, mean GPU utilization was 95.04% for
+`prefill_exclusive`, 93.59% for `kv_capacity`, 91.63% for `prefill_budget`,
+96.48% for `prefill_quiescent`, and 78.40% for `tps_reference`. Only three of
+360 samples simultaneously had a ready mean-active TPS at or above 50, GPU
+utilization below 20%, and active backpressure; all three were
+`tps_reference`. This is 0.83% of the complete window, not sustained unused
+capacity.
+
+Decision logs also show why request and load protection must remain separate.
+Suppression-weighted protection counts were approximately 77 load KV-capacity,
+66 request Prefill-budget, 56 load Prefill-exclusive, 35 request
+Prefill-contention, 32 load TPS-reference, 29 load Prefill-budget, 21 load
+Prefill-contention, 15 request input-limit, and 8 request Prefill-exclusive.
+KV-capacity protection coincided with unabsorbed 375K/604K Prefill reservations
+even when the backend running gauge was temporarily zero. Request-level
+Prefill protection rejected a large candidate while the minimum request still
+fit; it did not close Router capacity. Input-limit cases exceeded the
+capability-derived hard KV fit after the model-independent conservative
+reservation. TPS protection represented only about 32 decisions; its projected
+post-admit TPS was always below 50, while its short isolated low-GPU residue was
+the three samples above.
+
+Three production-observation reviews accept retaining v0.12.16 without another
+algorithm revision:
+
+1. Model and causality: reference 50 is evaluated as a long-window soft target,
+   not a per-poll floor. Ready-window mean-active TPS was 88.18 and only 4.80%
+   of ready observations were below 50. Completion counters, not prompt
+   throughput or instantaneous generation gauges, establish goodput. Protection
+   reason and resource correlation finds no sustained healthy-TPS idle-GPU
+   lock attributable to PIG.
+2. Safety and lifecycle: accepted and completed PIG counter deltas were both
+   170; this aggregate equality is not treated as request-by-request cohort
+   proof. Preemptions, proxy errors, fatal log matches, and restarts were zero.
+   The one
+   backend abort did not produce a PIG failure or preemption. Atomic Prefill/KV
+   reservations explain zero-running KV protection and must not be removed to
+   make the utilization graph look fuller. Compose, image identity, container
+   start times, and restart counts were byte-for-byte or value-for-value stable.
+3. Evidence and release: all 360 paired scrapes succeeded, SGLang rank/priority
+   aggregation follows the exact deployed source contract, all material hashes
+   verify, and the collector defects were isolated before or repaired without
+   altering the measured metrics. Summary JSON, Markdown, complete checksum
+   manifest, and checksum verification SHA-256 values are respectively
+   `80ced2648e3433be36f0a0396eee33ac5b33c2f2c18bea13e455f3bb8bf99b1f`,
+   `479528f5368b6a730b326b51465d2e701c46955d969d7715663fa4c78e240a22`,
+   `ce52a06a02a20a84aaa435116886d10ba3d631a58cdab74db0aaed09e10dc7e6`,
+   and `a75aa5d92d0ec846c0a86313ac1086a03fcb77d2262d9b2012fec5716c928467`.
+
+This closes the v0.12.16 production gate. The runtime remains on v0.12.16 with
+reference 50. There is no obvious evidence-backed algorithm change to make in
+this window: increasing admission merely because full-window GPU mean is 59%
+would ignore bursty demand and the fact that protection intervals were already
+GPU-busy. Continue ordinary monitoring, but require a repeated time-aligned
+healthy-TPS, idle-GPU, request-fit protection pattern before starting a new
+red-test/release loop.
