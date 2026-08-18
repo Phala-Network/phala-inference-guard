@@ -155,8 +155,7 @@ func TestV01215ControllerDefersEventsAfterSampleWatermarkWithoutLosingExposure(t
 	if !first.Accepted {
 		t.Fatalf("first publication=%+v", first)
 	}
-	if got := controller.Snapshot(start.Add(501 * time.Millisecond)).State.TPS;
-		got.QualifiedSequenceSeconds != 0 {
+	if got := controller.Snapshot(start.Add(501 * time.Millisecond)).State.TPS; got.QualifiedSequenceSeconds != 0 {
 		t.Fatalf("post-watermark exposure entered early sample: %+v", got)
 	}
 

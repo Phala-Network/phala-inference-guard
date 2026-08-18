@@ -13,15 +13,15 @@ const (
 )
 
 type tpsSample struct {
-	start                        time.Time
-	end                          time.Time
-	maximumInterval              time.Duration
-	generatedTokens              uint64
-	previousRunning              int64
-	running                      int64
-	previousLocalActiveDecode    int64
-	localActiveDecode            int64
-	forwardedSequenceLiabilities int64
+	start                         time.Time
+	end                           time.Time
+	maximumInterval               time.Duration
+	generatedTokens               uint64
+	previousRunning               int64
+	running                       int64
+	previousLocalActiveDecode     int64
+	localActiveDecode             int64
+	forwardedSequenceLiabilities  int64
 	localExposureMeasured         bool
 	localForwardedSequenceSeconds float64
 	localResponseSequenceSeconds  float64
