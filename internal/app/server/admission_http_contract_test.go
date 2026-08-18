@@ -154,6 +154,53 @@ func TestAdmissionHTTPProtectsRepeatedShortLexemeOverContextBeforeForward(t *tes
 	}
 }
 
+func TestV01215AdmissionHTTPProtectsDeclaredOutputOverContextBeforeForward(t *testing.T) {
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/chat/completions",
+		strings.NewReader(`{"model":"model-agnostic","messages":[{"role":"user","content":"x"}],"max_tokens":4096}`),
+	)
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	srv.ServeHTTP(response, request)
+
+	decision := runtime.Snapshot(clock.Now()).Report.LastDecision
+	if response.Code != http.StatusTooManyRequests || backendCalls.Load() != 0 ||
+		decision.Reason != coreadmission.ReasonInputLimit ||
+		decision.Scope != coreadmission.ProtectionRequest ||
+		!decision.Estimate.OutputLimitKnown || decision.Estimate.OutputLimitTokens != 4_096 {
+		t.Fatalf(
+			"declared output over-context reached upstream: status=%d calls=%d decision=%+v",
+			response.Code,
+			backendCalls.Load(),
+			decision,
+		)
+	}
+
+	following := serveAdmissionRequest(t, srv, "following supported request")
+	if following.Code != http.StatusOK || backendCalls.Load() != 1 ||
+		!runtime.Snapshot(clock.Now()).Report.LastDecision.Admitted() {
+		t.Fatalf(
+			"declared output protection locked following request: status=%d calls=%d snapshot=%+v",
+			following.Code,
+			backendCalls.Load(),
+			runtime.Snapshot(clock.Now()),
+		)
+	}
+}
+
 func TestAdmissionHTTPProtectsHighTokenDensityTextBeforeForward(t *testing.T) {
 	for _, test := range []struct {
 		name    string
