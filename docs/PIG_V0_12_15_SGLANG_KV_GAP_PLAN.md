@@ -44,7 +44,9 @@ context reset:
   throughput and GPU utilization, not minimum concurrency or a perfect
   instantaneous TPS floor. Occasional low-TPS observations are acceptable;
   sustained avoidable degradation, excess preemption, or lower long-window
-  goodput is not.
+  goodput is not. `PREDICTIVE_TPS_REFERENCE` is a soft long-window constraint:
+  when the forecast supports roughly meeting that average, admission should
+  consume the available GPU rather than preserve unused instantaneous margin.
 - Admission is predictive and occurs before forwarding. Backend metrics,
   completion results, and cache counters may affect only the next decision.
   They must never retroactively justify a forwarded request or create a delayed
@@ -1657,13 +1659,15 @@ Three corrective review passes now accept the source layer:
 
 ### Pass 3: exact evidence and release
 
-Status: source candidate accepted; image, deployment, and live release remain
-pending and were not authorized by this API task. No v0.12.15 image has been
-built or uploaded, production still runs the accepted v0.12.14 image, and the
-exact f563 `0.8.13` rollback configuration has not yet been reconstructed and
-revalidated. The control-plane Compose currently names `0.8.13` while the
-runtime still runs `0.12.14`; this is configuration drift, not evidence that
-the fallback is active.
+Status at the API source-acceptance checkpoint: source candidate accepted;
+image, deployment, and live release were still pending and were not authorized
+by that API task. At that checkpoint no v0.12.15 image had been built or
+uploaded. The later image-stage record below supersedes only that image-build
+status. Production still runs the accepted v0.12.14 image, and the exact f563
+`0.8.13` rollback configuration has not yet been reconstructed and revalidated.
+The control-plane Compose currently names `0.8.13` while the runtime still runs
+`0.12.14`; this is configuration drift, not evidence that the fallback is
+active.
 
 Repository deployment evidence identifies the former f563 baseline image as
 `ghcr.io/phala-network/phala-inference-guard:v0.8.13@sha256:aec805d6e7bbfd82375199d7950ecfbf6148e501c64822dcb46102a9e24a2ea4`
@@ -1675,3 +1679,73 @@ Live deployment history, exact container configuration, PIG-only replacement,
 authenticated endpoint behavior, metrics, and Router-visible capacity must be
 revalidated before one exact configuration can become the traffic-bearing
 update fallback.
+
+### Image-stage acceptance and bounded-QoS correction
+
+Status on 2026-08-18: the exact host-local image is accepted for registry
+publication. It is not yet published or authorized for production promotion.
+Production PIG, SGLang, HAProxy, Router, Compose, and traffic routing remain
+unchanged.
+
+The host-local candidate was built on f563 from executable commit
+`6e30a0383d261c0f9b6411010a5d9a48a5244bab`, whose complete source and lifecycle
+matrix is recorded above. The resulting image is
+`pig-v0.12.15-candidate:6e30a03`, image ID
+`sha256:a95984548b8d5a71ea974685b812883fe331e5f08f46b0862fb7b28d1d41de97`,
+OCI version `0.12.15`, and OCI revision `6e30a0383d261c0f9b6411010a5d9a48a5244bab`.
+The production-image contract exited zero and confirmed the native NVML path.
+
+The first enforce smoke exposed an acceptance-specification error rather than a
+PIG defect: a five-token input with declared `max_tokens=1048576` was admitted
+and SGLang returned HTTP 400 without generating output. The user clarified that
+PIG protects QoS and must not duplicate full `input + declared output` context
+validation. Test-only commit `a1805428543526434f094de286cef4db2f3c0f54`
+encoded the wrong behavior and was immediately reverted by
+`508067a`. Commit `f76e769` records the corrected bounded-horizon contract and
+adds passing unit/HTTP regression tests proving that a large declared output
+limit alone does not trigger PIG protection. Its exact archive SHA-256 is
+`8d5eebca0cafc366de1cd61d9e4810fa3894162ea6729fa6169ae43c4386891c`;
+both focused tests passed on f563. No executable non-test Go source changed, so
+the accepted image remains byte-identical to the complete `6e30a03` matrix.
+
+The corrected enforce candidate used only `127.0.0.1:18015`, the existing
+Docker network and runtime mounts, and no Router/HAProxy path.
+It started with mode absent and reported default `enforce`, automatic SGLang
+capability, 500-ms polling, revision 1, and TPS reference 50. Authenticated
+GET/PATCH, duplicate/missing authorization, equal-value CAS, stale CAS conflict,
+policy metrics, protected metrics, read-only models, and restart restoration
+all matched the source contract. A 2.2-MB large-input/short-output request was
+protected before forwarding in 33.047 ms; backend accepted calls remained
+`0 -> 0`. Logs and metrics agreed on `input_limit`, request scope, intake open,
+and no Router backpressure. The exact evidence is under
+`/var/volatile/dstack/persistent/pig-v01215-workbench/image-6e30a03-smoke`:
+
+```text
+enforce-smoke.log   d6ca2416838e69cd22fa19d6e56e9b61437197437a65c07282c274433738f1e8
+enforce-smoke.exit  9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa
+```
+
+An explicit `shadow` container on loopback port 18016 initialized the same
+automatic capability, reported `mode=shadow`, passed health, and was then
+stopped and removed. The retained enforce candidate restarted to revision 1 and
+reference 50. Production PIG, SGLang, and HAProxy all remain running at their
+original start times with restart count zero. No completion-producing request
+was sent through the candidate.
+
+The three image-stage reviews accept the following limited release layer:
+
+1. Model and causality: bounded input size, cache-aware Prefill, KV projection,
+   and long-window TPS remain QoS signals. Declared output lifetime affects only
+   the optional TPS surplus budget and cannot create full-output KV reservation
+   or backend-legality validation. The corrected smoke proves a request-scoped
+   input protection before forwarding without node closure.
+2. Safety and lifecycle: default enforce, explicit test-only shadow, strict
+   authenticated CAS, fixed-cardinality visibility, restart restoration,
+   loopback isolation, and zero backend/service restarts passed. No hidden
+   protection or low-flow lock appeared in the candidate evidence.
+3. Evidence and release: exact executable provenance, source matrices, image
+   identity/contract, corrected contract tests, enforce smoke hashes, and live
+   isolation checks are coherent. The exact image may be published under the
+   release and immutable source tags. This does not accept Compose integration,
+   `0.8.13` rollback readiness, production deployment, or 30-minute live-traffic
+   evidence.
