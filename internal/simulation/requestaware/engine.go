@@ -72,6 +72,7 @@ type scenarioRunner struct {
 	externalPreemptionSeen bool
 	cacheQueryTokens       uint64
 	cacheHitTokens         uint64
+	now                    time.Time
 }
 
 func runScenario(
@@ -106,6 +107,7 @@ func runScenarioWithTPSReference(
 			usedTokens: spec.initialKVTokens,
 			running:    spec.backgroundRunning,
 		},
+		now: time.Unix(0, 0),
 	}
 	if policyName == PolicyV01210 {
 		return Metrics{}, 0, fmt.Errorf("historical v0.12.10 must be loaded from its frozen fixture")
@@ -116,6 +118,7 @@ func runScenarioWithTPSReference(
 			Capability:  capability,
 			WorkProfile: simulationRequestWorkProfile(),
 			TPS:         coreadmission.TPSPolicyConfig{Reference: tpsReference},
+			Now:         func() time.Time { return runner.now },
 		})
 		if controllerErr != nil {
 			return Metrics{}, 0, fmt.Errorf("construct candidate AdmissionController: %w", controllerErr)
@@ -128,6 +131,7 @@ func runScenarioWithTPSReference(
 		return Metrics{}, 0, err
 	}
 	for at := time.Duration(0); at <= spec.duration; at += simulationTick {
+		runner.now = time.Unix(0, int64(at))
 		if at >= spec.duration {
 			runner.ending = true
 		}
