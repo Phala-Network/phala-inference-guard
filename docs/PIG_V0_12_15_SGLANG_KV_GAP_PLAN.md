@@ -1819,3 +1819,42 @@ This accepts only the focused algorithm correction. The complete source/race,
 static, build, full simulation, image, isolated runtime, and production gates
 remain pending. No production process, container, Compose file, route, or
 request changed.
+
+The complete one-CPU f563 matrix then passed against the same exact executable
+source. Full tests include the complete request-aware simulation suite; full
+race covers all packages. Material log SHA-256 values are:
+
+```text
+format       e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+full test    9725aae468d6d3c08cee6a7260d9c18e99d9b7a80ea90a546f155076331314a8
+full race    aada226b20253d343b0ece9e752c3d7d39232113446a8eb3a8c496d449863ee6
+vet          e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+build        e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+controller   51523992eaeb779b20757603f69d3ed1b61d7db4043872ece8c7f83e028781bc
+estimator    994a0a8103da484ab524fc83554fa4cf44be5572fc5e506ff09d6825801c44f3
+classifier   5247773f272717f05dba6d0f8616756ec71d9c69e919fa185de57ef1b25ef24b
+```
+
+The TPS-enabled Controller Snapshot/Admit p99 was 1.509/1.715 microseconds
+with zero allocations. At 4096 reservations, Snapshot/Admit p99 was
+1.627/1.990 microseconds with zero allocations. All five 4-MiB estimator shapes
+remained allocation-free; their maximum p99 was 52.979 ms. The 4-MiB request
+classifier p99 was 54.031 ms. These remain below the 100-ms accepted extreme
+input bound and do not claim backend throughput.
+
+Three source-review passes accept `aeba501` for image construction:
+
+1. Model and causality: the changed pre-forward prediction consumes mature
+   long-window and fresh current-rate evidence to open at most one bounded
+   wave. Feedback affects only later observations. No learning, model-specific
+   behavior, cache/KV/Prefill change, or instantaneous TPS floor was added.
+2. Safety and lifecycle: the existing unobserved-sequence reservation prevents
+   same-poll bursts; a 93.75%-of-reference projection remains protected;
+   waiting, preemption, stale evidence, and all resource gates remain ordered
+   before expansion. Full race and lifecycle suites passed without changing
+   reservation ownership or release code.
+3. Evidence and release: exact red/green causality, archive provenance, full
+   test/race/static/build/simulation gates, and performance bounds agree. The
+   production PIG, SGLang, and HAProxy restart counts remain zero. This accepts
+   source for an isolated `PIG-v0.12.16` image build only; it does not accept
+   image publication, production promotion, or live traffic.
