@@ -572,6 +572,50 @@ func TestControllerTPSReservationAboveNonzeroRawCannotOvershootLimit(t *testing.
 	}
 }
 
+func TestV01215ControllerQoSBudgetChangesPreForwardDecisionAndIsAtomic(t *testing.T) {
+	start := time.Unix(10_625, 0)
+	clock := &manualAdmissionClock{at: start}
+	capability := testCapability()
+	controller, err := NewAdmissionController(ControllerConfig{
+		Capability: capability, WorkProfile: testRequestWorkProfile(),
+		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishObservation(t, controller, testObservation(capability, start, 0, 7, 0, 0, 0))
+	for step := 1; step <= 4; step++ {
+		at := start.Add(time.Duration(step) * 500 * time.Millisecond)
+		clock.Set(at)
+		publishObservation(t, controller, testObservation(
+			capability,
+			at,
+			0,
+			7,
+			0,
+			uint64(step*75),
+			0,
+		))
+	}
+
+	snapshot := controller.Snapshot(clock.Now()).State.TPS
+	if !snapshot.Ready || snapshot.QualifiedSequenceTokens <= snapshot.Reference*snapshot.QualifiedSequenceSeconds {
+		t.Fatalf("fixture did not build positive long-window surplus: %+v", snapshot)
+	}
+	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
+	first := controller.Admit(clock.Now(), estimate)
+	if !first.Decision.Admitted() || first.Decision.TPSSequenceLimit != 8 ||
+		first.Decision.TPSCurrentSequences != 7 || first.Decision.TPSPostAdmitSequences != 8 {
+		t.Fatalf("positive QoS budget did not change pre-forward decision: %+v", first.Decision)
+	}
+	second := controller.Admit(clock.Now(), estimate).Decision
+	if second.Admitted() || second.Reason != ReasonTPSReference ||
+		second.TPSSequenceLimit != 8 || second.TPSCurrentSequences != 8 ||
+		second.TPSPostAdmitSequences != 9 || second.ReservationID != 0 {
+		t.Fatalf("same-snapshot QoS budget was spent twice: %+v", second)
+	}
+}
+
 func TestControllerTPSCoveringSampleDoesNotDoubleCountForwardedReservation(t *testing.T) {
 	now := time.Unix(10_750, 0)
 	capability := testCapability()

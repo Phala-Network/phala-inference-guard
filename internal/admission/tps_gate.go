@@ -68,8 +68,13 @@ func (tpsGate) evaluateAdditional(state ProjectedState, additionalSequences int6
 		if decision.sequenceLimit > tpsWarmingSequenceLimit {
 			decision.sequenceLimit = tpsWarmingSequenceLimit
 		}
-	} else if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
-		decision.sequenceLimit = currentRateLimit
+	} else {
+		if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
+			decision.sequenceLimit = currentRateLimit
+		}
+		if budgetLimit := (qosBudgetForecast{}).sequenceLimit(state); budgetLimit > decision.sequenceLimit {
+			decision.sequenceLimit = budgetLimit
+		}
 	}
 	if current == 0 || postAdmit <= decision.sequenceLimit {
 		return decision
@@ -144,13 +149,7 @@ func projectedTPSSequences(state ProjectedState, additionalSequences int64) (cur
 }
 
 func rateDerivedSequenceLimit(snapshot TPSSnapshot) int64 {
-	quotient := snapshot.AggregateTPS / snapshot.Reference
-	limit := int64(1)
-	if quotient >= float64(math.MaxInt64) {
-		limit = math.MaxInt64
-	} else if quotient >= 1 {
-		limit = int64(math.Floor(quotient))
-	}
+	limit := rateDerivedBaseSequenceLimit(snapshot)
 	if limit < math.MaxInt64 && snapshot.MeanActiveTPS >= snapshot.Reference*tpsHealthyHeadroomRatio {
 		exploration := limit + 1
 		projectedTPS := snapshot.AggregateTPS / float64(exploration)
@@ -159,4 +158,15 @@ func rateDerivedSequenceLimit(snapshot TPSSnapshot) int64 {
 		}
 	}
 	return limit
+}
+
+func rateDerivedBaseSequenceLimit(snapshot TPSSnapshot) int64 {
+	quotient := snapshot.AggregateTPS / snapshot.Reference
+	if quotient >= float64(math.MaxInt64) {
+		return math.MaxInt64
+	}
+	if quotient >= 1 {
+		return int64(math.Floor(quotient))
+	}
+	return 1
 }
