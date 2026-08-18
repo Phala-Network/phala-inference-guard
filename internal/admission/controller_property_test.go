@@ -15,19 +15,28 @@ type propertyHandle struct {
 
 func TestControllerDeterministicLifecyclePropertyKeepsAggregateAndKVExact(t *testing.T) {
 	now := time.Unix(17_000, 0)
+	clock := &manualAdmissionClock{at: now}
 	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 0, 0, 0, 1, 0))
+	controller, err := NewAdmissionController(ControllerConfig{
+		Capability: capability, WorkProfile: testRequestWorkProfile(), Now: clock.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishObservation(t, controller, testObservation(capability, now, 0, 0, 0, 1, 0))
 	random := rand.New(rand.NewSource(0x504947_0120))
 	handles := make(map[uint64]propertyHandle)
 	generation := uint64(1)
 
 	for step := 0; step < 5_000; step++ {
+		stepNow := now.Add(time.Duration(step+1) * time.Millisecond)
+		clock.Set(stepNow)
 		switch random.Intn(5) {
 		case 0:
 			selection := int64(random.Intn(8*1024) + 1)
 			reservation := selection + selection/2 + 1
 			result := controller.Admit(
-				now.Add(time.Duration(step+1)*time.Millisecond),
+				stepNow,
 				testEstimate(selection, reservation, int64(random.Intn(257))),
 			)
 			if result.Decision.Admitted() {
@@ -63,7 +72,7 @@ func TestControllerDeterministicLifecyclePropertyKeepsAggregateAndKVExact(t *tes
 			generation++
 			publishObservation(t, controller, testObservation(
 				capability,
-				now.Add(time.Duration(step+1)*time.Millisecond),
+				stepNow,
 				0,
 				0,
 				0,
@@ -72,7 +81,7 @@ func TestControllerDeterministicLifecyclePropertyKeepsAggregateAndKVExact(t *tes
 			))
 		}
 		assertAggregateMatchesSlow(t, controller)
-		snapshot := controller.Snapshot(now.Add(time.Duration(step+1) * time.Millisecond))
+		snapshot := controller.Snapshot(stepNow)
 		if snapshot.State.EffectiveKVTokens > capability.KVHardLimitTokens {
 			t.Fatalf("step %d effective KV=%d exceeds hard=%d", step, snapshot.State.EffectiveKVTokens, capability.KVHardLimitTokens)
 		}
