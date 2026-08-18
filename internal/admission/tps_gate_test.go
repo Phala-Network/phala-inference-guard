@@ -304,22 +304,33 @@ func TestV01215TPSGateLowFlowHealthOpensExactlyOneProbeWave(t *testing.T) {
 	}
 }
 
-func TestV01215TPSGateDoesNotUseCurrentMeanBelowReferenceWithoutBudget(t *testing.T) {
-	snapshot := TPSSnapshot{
-		Enabled: true, Ready: true, Reference: 25,
-		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
-		AggregateTPS: 120, MeanActiveTPS: 30,
-	}
-	decision := (tpsGate{}).evaluate(ProjectedState{
-		RawRunning:               4,
-		GenerationDelta:          60,
-		ObservationInterval:      500 * time.Millisecond,
-		ObservationIntervalValid: true,
-		TPS:                      snapshot,
-	})
-	if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != 4 ||
-		decision.currentSequences != 4 || decision.postAdmitSequences != 5 {
-		t.Fatalf("below-reference current wave bypassed request budget: %+v", decision)
+func TestV01215TPSGateAllowsOneBoundedNearReferenceProbeWithoutLifetimeBudget(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		reference  float64
+		aggregate  float64
+		generation uint64
+	}{
+		{name: "reference 25", reference: 25, aggregate: 120, generation: 60},
+		{name: "reference 50", reference: 50, aggregate: 240, generation: 120},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			decision := (tpsGate{}).evaluate(ProjectedState{
+				RawRunning:               4,
+				GenerationDelta:          test.generation,
+				ObservationInterval:      500 * time.Millisecond,
+				ObservationIntervalValid: true,
+				TPS: TPSSnapshot{
+					Enabled: true, Ready: true, Reference: test.reference,
+					QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
+					AggregateTPS: test.aggregate, MeanActiveTPS: 1.2 * test.reference,
+				},
+			})
+			if !decision.fits || decision.reason != ReasonOpen || decision.sequenceLimit != 5 ||
+				decision.currentSequences != 4 || decision.postAdmitSequences != 5 || decision.qosBudgeted {
+				t.Fatalf("bounded near-reference probe was over-protected: %+v", decision)
+			}
+		})
 	}
 }
 

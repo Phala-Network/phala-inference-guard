@@ -317,10 +317,10 @@ func TestTPSReferenceCandidatesPreserveSaturatedThroughputAndBoundLongRunMean(t 
 		minimumThroughputRatio float64
 	}{
 		{reference: 20, maximumRunning: 7, minimumThroughputRatio: 0.99},
-		// Four uncontended background streams prove 120 TPS. At reference 25,
-		// 120/150 is the conservative saturated-throughput floor until a fifth
-		// stream can be admitted without assuming unobserved throughput scaling.
-		{reference: 25, maximumRunning: 6, minimumThroughputRatio: 0.80},
+		// Four uncontended background streams prove 120 TPS, while the fixture can
+		// scale to 150 TPS. A bounded fifth-stream probe must discover that capacity
+		// instead of permanently preserving unused instantaneous margin.
+		{reference: 25, maximumRunning: 6, minimumThroughputRatio: 0.99},
 	} {
 		t.Run(fmt.Sprintf("reference_%.0f", test.reference), func(t *testing.T) {
 			candidate, _, runErr := runScenarioWithTPSReference(scenario, PolicyCandidate, profile, test.reference)

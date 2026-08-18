@@ -47,6 +47,13 @@ context reset:
   goodput is not. `PREDICTIVE_TPS_REFERENCE` is a soft long-window constraint:
   when the forecast supports roughly meeting that average, admission should
   consume the available GPU rather than preserve unused instantaneous margin.
+- Optimization is lexicographic but not instantaneous: first keep the
+  sufficiently long mean per-user TPS roughly at or above the configured
+  reference, then maximize completed output-token goodput. A single 500-ms TPS
+  sample, instantaneous floor-violation time, or one request's TPS is
+  diagnostic evidence, not an acceptance objective. When long-window QoS is
+  healthy, unused GPU/KV capacity, feasible rejected work, or materially lower
+  completion goodput is over-protection and blocks promotion.
 - Admission is predictive and occurs before forwarding. Backend metrics,
   completion results, and cache counters may affect only the next decision.
   They must never retroactively justify a forwarded request or create a delayed
@@ -1682,10 +1689,13 @@ update fallback.
 
 ### Image-stage acceptance and bounded-QoS correction
 
-Status on 2026-08-18: the exact host-local image is accepted for registry
-publication. It is not yet published or authorized for production promotion.
+Status on 2026-08-18: the exact host-local image was published as
+`ghcr.io/phala-network/phala-inference-guard:0.12.15` and immutable source tag
+`ghcr.io/phala-network/phala-inference-guard:0.12.15-6e30a0383d26`. Both resolve
+to registry digest
+`sha256:aed1166d3684d4319038a209c13ca1470d420a014a8e58581880ba0e185358ea`.
 Production PIG, SGLang, HAProxy, Router, Compose, and traffic routing remain
-unchanged.
+unchanged. Publication is provenance evidence, not production acceptance.
 
 The host-local candidate was built on f563 from executable commit
 `6e30a0383d261c0f9b6411010a5d9a48a5244bab`, whose complete source and lifecycle
@@ -1749,3 +1759,22 @@ The three image-stage reviews accept the following limited release layer:
    release and immutable source tags. This does not accept Compose integration,
    `0.8.13` rollback readiness, production deployment, or 30-minute live-traffic
    evidence.
+
+The later throughput-objective review supersedes production promotion of this
+published image. The saturation fixture proves four streams at 120 aggregate
+TPS and a backend ceiling of 150 TPS. At reference 25, accepting only 80% of the
+reference-disabled completion throughput because the fifth stream has not yet
+been observed preserves 30 TPS of usable capacity and is over-protection. The
+correct behavior is a bounded one-stream exploration when the mature long
+window and current rate have headroom and the linear post-admit estimate remains
+within 5% of the reference. `UnobservedSequences` must still prevent a same-poll
+burst, and waiting, preemption, stale evidence, KV, Prefill, and input guards
+remain unchanged. The 5% value bounds one predictive exploration; it does not
+lower the production long-window target of approximately 50 TPS.
+
+Test-only red evidence must require both the reference-25 saturation fixture to
+retain at least 99% of reference-disabled completion throughput and equivalent
+reference-25/reference-50 gate decisions. If the current executable fails, do
+not deploy or retag `0.12.15`. Apply the smallest gate correction, rerun the
+exact f563 source/image gates, and publish it under the next patch version only
+after acceptance.
