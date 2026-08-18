@@ -1376,8 +1376,9 @@ Compose file, backend, route, image, or inference traffic was changed.
 
 ### Corrective review: request-bounded QoS surplus
 
-Status: red evidence recorded on 2026-08-18; implementation pending. This
-section supersedes the first `QoSBudgetForecast` acceptance at `f2139d7`.
+Status: candidate implementation pushed at exact source `bc609c7`; exact f563
+focused, package, race, and simulation evidence is still pending. This section
+supersedes the first `QoSBudgetForecast` acceptance at `f2139d7`.
 
 Static review found that the first budget formula is dimensionally incomplete.
 It divides accumulated rolling surplus by historical active seconds and treats
@@ -1441,6 +1442,76 @@ covered live lease cannot spend the same surplus again; prove terminal and
 reset release; then rerun admission/race and the complete request-aware TPS
 matrix. Do not weaken the reference-20 assertion or update simulation golden
 values merely to accept 19.36 TPS.
+
+### Corrective extension: authenticated runtime policy API
+
+Status: design contract recorded on 2026-08-18; red tests and implementation
+pending. This extension is part of v0.12.15 and does not authorize an image,
+deployment, Router change, backend restart, or production request.
+
+External adjustment must operate on admission policy, not expose every startup
+environment variable as writable state. The v1 mutability boundary is:
+
+| Effective field | GET visibility | PATCH | Reason |
+| --- | --- | --- | --- |
+| TPS reference | yes | yes | operator-owned long-window QoS policy |
+| admission mode | yes | no | enforce remains the production default; shadow is an explicit startup test override |
+| observation poll/freshness | yes | no | changing these requires coordinated observer/ticker replacement |
+| KV capacity, block geometry, hard limit | yes | no | immutable initialized backend capability within one runtime epoch |
+| Prefill bounds and aggregate budget | yes | no | immutable initialization-time capability, not a learned or runtime-tuned policy |
+| scanner/estimator limits | no secret data | no | request-path construction and memory/concurrency ownership are static |
+| upstream/metrics URLs, TLS, bearer token | no | no | infrastructure or secret state must never be returned or hot-mutated |
+
+The first API is `GET` and `PATCH /admin/v1/predictive-policy`. It always uses
+the existing single-value Bearer-token constant-time authentication, regardless
+of generation-path auth settings. Responses are bounded JSON with
+`Cache-Control: no-store`; they never contain a bearer token, upstream URL,
+metrics URL, request content, or model identity. GET returns schema version,
+monotonic revision, startup-versus-runtime source, update time, the mutable TPS
+reference, and the non-secret effective read-only policy/capability values.
+
+PATCH accepts exactly one bounded JSON object containing `expected_revision`
+and `tps_reference`. Unknown, missing, trailing, non-finite, negative, or
+out-of-range values fail without changing live state. A stale revision returns
+HTTP 409. The full candidate is validated before one Controller-locked commit;
+concurrent writers using the same revision cannot both succeed. Every accepted
+write advances the revision, while an equal-value write avoids resetting the
+TPS evidence window.
+
+When the reference changes, the Controller atomically installs the new value
+and empties all accumulated TPS-window samples before the next pre-forward
+decision. A metrics sample whose I/O window began before the policy revision
+may update backend state but cannot refill the new TPS window. Existing KV,
+Prefill, Decode, residual-debt, and request-bounded QoS reservations retain
+their handles and normal release lifecycle; old QoS-budget leases remain a
+conservative marginal-budget lock until terminal reconciliation. They are not
+dropped, reinterpreted as new surplus, or allowed to leak. Disabling TPS with
+zero affects only future TPS decisions and does not mutate backend capability.
+
+Runtime API changes are intentionally process-local. A restart restores the
+validated environment baseline and revision 1. Persistence, multiple-node
+coordination, Router policy, and capability epoch reconstruction are outside
+this API and must not be implied by a successful PATCH.
+
+Required test-first evidence:
+
+- auth failure, duplicate Authorization, method handling, media type, body
+  bound, unknown/missing/trailing JSON, finite/range validation, and no secret
+  fields in GET;
+- stale-revision conflict, two concurrent same-revision writers with exactly
+  one success, failed-update atomicity, monotonic revisions, and equal-value
+  update behavior;
+- reference change reaches the next real pre-forward Controller decision,
+  clears historical TPS evidence, and excludes an in-flight pre-update metrics
+  window;
+- live reserved, forwarded-Prefill, active-Decode, cancellation, timeout,
+  residual-debt, backend reset, stale handle, and close paths remain bounded
+  and release exactly once across a policy update;
+- fixed-cardinality logs and metrics expose revision, current reference,
+  accepted/invalid/conflict/failure update counts, and last update time;
+- focused Controller/API tests, admission and server packages, request-aware
+  simulations, and admission/server race tests pass from one exact f563 source
+  archive before this source can enter the complete v0.12.15 matrix.
 
 ### Pass 3: exact evidence and release
 
