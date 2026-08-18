@@ -1196,7 +1196,11 @@ review.
 Status: design correction recorded on 2026-08-18 and revised after the exact
 source review at `291066dd65a4f217ef5cb4e0e5fae52eb8baa304`. Exact lifecycle
 exposure is implemented and package/race validated at the source recorded
-below; `QoSBudgetForecast` and the remaining corrective stages are pending.
+below. The first `QoSBudgetForecast` implementation reached
+`f2139d7ce124bbe250f8e439a3dc64c911e20517`, but the corrected shared
+simulation clock at `2bc6345330047c6cfc58d917f49d2dbb6567b57a` invalidated its
+simulation acceptance and exposed a request-lifetime budget defect. The
+request-bounded correction and remaining stages are pending.
 This section
 supersedes any earlier acceptance that treats a per-wave 95% TPS projection,
 a forwarded-request count, or HTTP first body byte alone as proof of the
@@ -1369,6 +1373,74 @@ This closes only lifecycle exposure accounting. It is not evidence for the
 long-run QoS budget, workload-shift guard, estimator oracle, complete source
 matrix, image, deployment, or production readiness. No production process,
 Compose file, backend, route, image, or inference traffic was changed.
+
+### Corrective review: request-bounded QoS surplus
+
+Status: red evidence recorded on 2026-08-18; implementation pending. This
+section supersedes the first `QoSBudgetForecast` acceptance at `f2139d7`.
+
+Static review found that the first budget formula is dimensionally incomplete.
+It divides accumulated rolling surplus by historical active seconds and treats
+the result as additional sustainable aggregate throughput, but admission is
+not reversible at the next 500-ms observation. A long request admitted by one
+positive snapshot can remain active after the historical surplus expires. The
+same surplus can also be offered again once that request is covered by the next
+backend sample, because `UnobservedSequences` is an observation lease rather
+than a request-lifetime QoS lease.
+
+The shared-clock correction at pushed source
+`2bc6345330047c6cfc58d917f49d2dbb6567b57a` proves the practical failure. Its
+GitHub archive SHA-256 is
+`2c1b01dcfccd7a17b1ac2230355ffdb400c80d2fd165d859861af4f2eddb0f0a`.
+The exact f563 Go 1.24 saturation test exited 1 with log SHA-256
+`b68f724777acb82377cc56e10cf3bcd40b291ed809372f748aa7d3ee5568e809`:
+the reference-20 candidate admitted a fourth foreground request, reached eight
+total running sequences, and held only 19.36 mean active TPS for the 60-second
+run. Reference 25 remained green at six sequences and 25.20 mean active TPS;
+neither case preempted. An earlier evidence command used `bash -lc`, reset the
+Go image `PATH`, and exited 127 with log SHA-256
+`401c099e62bea82f14e1776140d4c4f93011200d3ff094963c1752bac26d19da`;
+that harness error is not behavioral red evidence.
+
+The smallest correct replacement keeps the strict long-window rate-derived
+baseline and adds no runtime learning or production parameter:
+
+- request estimation carries the explicit maximum output-token limit and a
+  separate validity bit. The existing `DecodeHorizonTokens` remains the
+  bounded rolling KV horizon and must not be mistaken for the complete request
+  lifetime. Missing output limits are not fabricated from the 256-token KV
+  horizon;
+- a positive-surplus marginal wave is considered only after the strict
+  baseline is full, for exactly one additional Decode sequence, with no
+  waiting, preemption, stale interval, unobserved sequence, or live QoS-budget
+  lease;
+- with conservative aggregate rate `A = min(current_interval_tps,
+  window_aggregate_tps)`, post-admit count `N`, reference `R`, and an explicit
+  per-sequence output limit `O`, the required lifetime budget is
+  `max(0, R*N-A) * O/(A/N)`. The request fits the marginal wave only when this
+  finite requirement does not exceed positive rolling surplus. A zero-output
+  request has zero Decode deficit; an unknown output lifetime cannot spend
+  surplus;
+- an admission that actually uses surplus owns one atomic QoS-budget lease.
+  The lease survives reservation, forward, first byte, backend coverage,
+  cancellation, disconnect, timeout, and residual-debt reconciliation, and is
+  released only when the reservation lifecycle is terminal and covered. Strict
+  baseline admissions remain available while a marginal lease exists, so the
+  lease cannot create low-flow self-lock;
+- the decision record, logs, status, and metrics expose whether the accepted
+  request used the marginal QoS budget and how many leases remain. Arithmetic,
+  multiplicity, reset, overflow, stale-handle, and double-release paths remain
+  fail closed and bounded;
+- Prefill/context/KV gates remain independent and run on their existing
+  request-aware inputs. This correction does not claim to solve the separate
+  context-dependent Decode shift or non-streaming first-byte questions below.
+
+Execution remains test-first: retain the shared-clock saturation failure; add
+focused short-bounded, long-bounded, and unknown-output forecasts; prove that a
+covered live lease cannot spend the same surplus again; prove terminal and
+reset release; then rerun admission/race and the complete request-aware TPS
+matrix. Do not weaken the reference-20 assertion or update simulation golden
+values merely to accept 19.36 TPS.
 
 ### Pass 3: exact evidence and release
 
