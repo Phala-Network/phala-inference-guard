@@ -70,7 +70,17 @@ func TestControllerDeterministicLifecyclePropertyKeepsAggregateAndKVExact(t *tes
 			}
 		case 4:
 			generation++
-			publishObservation(t, controller, testObservation(
+			window, ok := controller.StartSampleWindow()
+			if !ok {
+				t.Fatalf("step %d sample window unavailable", step)
+			}
+			controller.mu.Lock()
+			exposureDelta, exposureOK := window.exposure.subtract(controller.lastExposure)
+			_, _, reconciliationOK := controller.reconciledOverlayLocked(window.eventSequence)
+			ledgerBefore := controller.exposure
+			lastExposureBefore := controller.lastExposure
+			controller.mu.Unlock()
+			publication := controller.PublishObservation(window, testObservation(
 				capability,
 				stepNow,
 				0,
@@ -79,6 +89,19 @@ func TestControllerDeterministicLifecyclePropertyKeepsAggregateAndKVExact(t *tes
 				generation,
 				0,
 			))
+			if !publication.Accepted {
+				t.Fatalf(
+					"step %d publication=%+v exposure_ok=%t delta=%+v window=%+v last=%+v ledger=%+v reconciliation_ok=%t",
+					step,
+					publication,
+					exposureOK,
+					exposureDelta,
+					window.exposure,
+					lastExposureBefore,
+					ledgerBefore,
+					reconciliationOK,
+				)
+			}
 		}
 		assertAggregateMatchesSlow(t, controller)
 		snapshot := controller.Snapshot(stepNow)
