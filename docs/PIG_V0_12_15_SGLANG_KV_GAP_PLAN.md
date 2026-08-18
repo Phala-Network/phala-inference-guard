@@ -1798,3 +1798,24 @@ linear projection is at least 95% of the reference. The existing 105% current
 headroom requirement, one-wave limit, unobserved reservation, and all pressure
 and resource gates remain intact. This internal prediction tolerance is not a
 new environment variable and does not redefine the long-window operator target.
+
+Exact pushed correction `aeba501119a69c34c6417206ccbca8dab4323f54` used
+GitHub archive SHA-256
+`f96d8b3284dbd6eb038b8c4b4d6f5b9ec7f90ad056b5c9d6182b7c4d2c11b474`
+in the isolated f563 Go 1.24 workbench. The reference-25/reference-50 probe,
+below-95% rejection, same-poll capacity, saturation, and release-identity tests
+all passed. In the saturation fixture the candidate improved completion tokens
+from 7200 to 8907.778 versus the reference-disabled 8901.111, while holding
+long-run mean active TPS at 25.199, zero TPS-floor violation time, zero
+preemptions, and maximum concurrency 6. Focused log SHA-256 values are:
+
+```text
+gate        81c84b77e6f78e3e765d529a5189dcd307c9dd61dd7eef8e4cb0947694c947bc
+simulation  29faa088ac98659f1aba2ff2cf1a9af96ecdab05e4d0bec270bea837be5e2f08
+identity    d1fd9af921ba5819f7dbca74173d82f400f7794de0b760ec1a45adc71728b006
+```
+
+This accepts only the focused algorithm correction. The complete source/race,
+static, build, full simulation, image, isolated runtime, and production gates
+remain pending. No production process, container, Compose file, route, or
+request changed.
