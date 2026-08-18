@@ -1858,3 +1858,65 @@ Three source-review passes accept `aeba501` for image construction:
    production PIG, SGLang, and HAProxy restart counts remain zero. This accepts
    source for an isolated `PIG-v0.12.16` image build only; it does not accept
    image publication, production promotion, or live traffic.
+
+The isolated image was built on f563 from pushed source
+`031b9ce441ff90a7c1767b727f8c8579d3082e93`; commits after executable
+`aeba501` change only this evidence document. The GitHub archive SHA-256 is
+`db7f9f2a0c6e0355ecb977528c15cde2e8ef5a6632281777da97545dceb0347f`.
+The first build command requested BuildKit and exited before compilation because
+the host lacks buildx; its log SHA-256 is
+`90bd9f73d5cf9c8b8e23d90cfc91e206f07d802c22f4e74919da012f92931d64`
+and is invalid harness evidence. The same source then built successfully with
+the host's classic Docker builder without installing software or restarting the
+daemon. The accepted local image is:
+
+```text
+tag       pig-v0.12.16-candidate:031b9ce
+image ID  sha256:0c633dba4ac18da3613d312ef95db8422dbad14157bd7d0c95acee79971b71e7
+version   0.12.16
+revision  031b9ce441ff90a7c1767b727f8c8579d3082e93
+```
+
+The native-NVML/distroless production-image contract passed. Build, contract,
+and identity log SHA-256 values are respectively
+`f917e639d4bb3bcea396476eacb7650fc218689911fa1f000fac328427e54911`,
+`5126737a4b8eab4ca2314b7172cf583a780cbc42360cfca769d89c6f531ffee6`,
+and `d32c92b9302cbdb9b287dda11eff93943d22fb34fe9627a7d2433707e34a28a0`.
+
+Loopback-only candidate `pig-v01216-candidate-031b9ce` uses port 18017,
+`dstack_default`, the existing evidence/socket mounts, and the already verified
+in-memory runtime credential. It started with default enforce, revision 1,
+reference 50, 500-ms observation, automatic SGLang KV capacity 1,124,096 and
+hard limit 989,184. Health, authenticated policy/models/metrics/upstream status
+returned 200; unauthenticated protected metrics returned 401. Metrics reported
+`PIG-v0.12.16`, long-window ready, aggregate TPS 99.684, mean-active TPS
+107.012, Router backpressure 0, and candidate running/waiting 0/0. No generation
+request was sent. The first smoke assertion used the wrong JSON key `mode`
+instead of the stable `effective.admission_mode`; all endpoints were already
+healthy. Corrected v2 evidence passed without changing PIG. Material SHA-256
+values are:
+
+```text
+policy        5b9eef986f4dfed6d013a9896d5c78323e13fddb2a9a234b0207b2c17ee84ef9
+models        4cdb22f9fbff13e39072c53fb762389db824e5ee72fc1cd921e9f9390fdc52fc
+metrics       c6aad97745ae5d902e8f4c68733b9eda22eab4542cd2fb4534f8800d93f97d0f
+upstream      9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa
+container log 58d447c0d878e1021c9d987aec766edb8dbcfd5c6df0894295a8f49463e13b3b
+smoke exit    3cb16930195a97e13fb77559da8ff3caf456e3e9973019485cb884c33ed1403f
+summary       f295b337238376f2f25bc3cb16855469651dbb9583afca8fefcc3c726ef1860e
+```
+
+Three image-stage reviews accept registry publication only:
+
+1. Model and causality: the built binary is the exact bounded-probe source whose
+   red/green and saturation evidence improved throughput while preserving the
+   long-run reference. Runtime SGLang capability and TPS observations are
+   coherent; no additional policy was introduced.
+2. Safety and lifecycle: image contract, default enforce, authentication,
+   immutable capability, loopback isolation, protected metrics, and zero local
+   demand passed. Production PIG, SGLang, and HAProxy restart counts remain
+   zero; no Router/HAProxy path or generation traffic was used.
+3. Evidence and release: source archive, image identity, build/contract logs,
+   runtime endpoints, and fixed-cardinality metrics agree. The exact image may
+   be published as `0.12.16` and an immutable revision tag. This does not accept
+   rollback readiness, production promotion, or 30-minute live observation.
