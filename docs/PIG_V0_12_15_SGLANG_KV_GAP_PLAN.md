@@ -1948,3 +1948,36 @@ Both tags were absent before publication. The temporary f563 GHCR login used
 the already authorized GitHub credential through stdin and was removed with
 `docker logout` immediately after verification. Registry publication is now
 complete; production and rollback-readiness gates remain unchanged and pending.
+
+### Exact v0.8.13 rollback content acceptance
+
+On 2026-08-18, the loopback-only `pig-v00813-rollback-check` candidate passed
+the required content-level rollback check with exit status zero. Authenticated
+`/v1/models` returned the expected `deepseek-ai/DeepSeek-V4-Pro-0813` model;
+authenticated `/pig/metrics` exposed healthy legacy PIG metrics; authenticated
+`/v1/metrics` contained both PIG and SGLang metric families; and authenticated
+`/v1/upstream-status` returned `0`. The exact v0.8.13 source defines `0` as
+green. The protected endpoints returned 401 without authorization, while the
+legacy-public `/v1/models` and `/metrics` behavior remained 200 as expected.
+
+The candidate log contained no fatal, panic, segmentation-fault, OOM, or error
+level match. The candidate and production PIG, SGLang, and HAProxy were all
+running with restart count zero. No generation request, route, Compose file,
+production container, backend, or traffic path changed. Evidence is retained at
+`/var/volatile/dstack/persistent/pig-v01215-workbench/rollback-v00813/content-acceptance`.
+Material SHA-256 values are:
+
+```text
+candidate log   bd6a954dbbdda686e5264dfa094ed723b4f05c7a5b73870b4d10fc3aa16263e9
+containers      f79d0cc0092023c14c9180bd5ce946a27d3e00a0e33d4b64d08364350d5caf85
+merged metrics  aab04ea39c3bc5ce9e1f2f38fabf9d7776dc1578c237e773bf3faf90f081456b
+models          278c408abb2f7813fc856335b1c4a306fa84eb53b4626e50ef3c891232fee4f5
+PIG metrics     725b1e33f59e1b16e781db33b8c8f1717953e4aa2839d117015004ee7f49f274
+summary         1a5547c27cb371f675ea4a6f43327e0c5079e692a6578a4a96716ad2c7a86b3c
+upstream status 9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3ab86aa
+```
+
+This accepts the exact image and legacy configuration as a verified rollback
+candidate only. Making it traffic-bearing, validating the real HAProxy path,
+and restoring the exact pre-change Router state remain mandatory before the
+v0.12.16 production transition.
