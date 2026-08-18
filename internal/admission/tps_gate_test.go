@@ -304,7 +304,7 @@ func TestV01215TPSGateLowFlowHealthOpensExactlyOneProbeWave(t *testing.T) {
 	}
 }
 
-func TestV01215TPSGateAllowsOneBoundedNearReferenceProbeWithoutLifetimeBudget(t *testing.T) {
+func TestV01216TPSGateAllowsOneBoundedNearReferenceProbeWithoutLifetimeBudget(t *testing.T) {
 	for _, test := range []struct {
 		name       string
 		reference  float64

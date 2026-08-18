@@ -6,11 +6,11 @@ upstream call, combines that estimate with one Controller-owned coherent backend
 observation and every live reservation, and decides whether the post-admit state
 can preserve service quality.
 
-Current candidate source identity: `PIG-v0.12.15`. It is not an accepted or
-published image until the cache-aware backend contract plan passes every release
-gate. The last accepted Linux/amd64 image remains `PIG-v0.12.14`, published by
-digest as `ghcr.io/phala-network/phala-inference-guard@sha256:b118bacd259157ee0529dfae7fcbcfa8a99eca5c1c31f1144e7d5e5e954453cb`.
-Source and image acceptance do not by themselves imply a production deployment.
+Current candidate source identity: `PIG-v0.12.16`. Published `PIG-v0.12.15` is
+held from production because its TPS gate can preserve unused capacity. The
+v0.12.16 candidate is not an accepted or published image until the active plan
+passes its source and image gates. Source and image acceptance do not by
+themselves imply a production deployment.
 
 The objective is QoS-constrained throughput, not a fixed request-count limit.
 Small requests can still fit while a larger request is protected under the same
@@ -175,12 +175,11 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image acceptance
-run in an isolated temporary workbench on f563. Exact executable source `7896a8c` is
-the last accepted `PIG-v0.12.14` source and remains published under both
-`0.12.14` and immutable source tag `0.12.14-7896a8ccd4fe` at the accepted digest
-above. The `PIG-v0.12.15` correction remains unpublished until its active plan
-records complete source and live SGLang acceptance. No Compose, deployment,
-Router, or live-traffic action is implied by source identity alone.
+run in an isolated temporary workbench on f563. Published `PIG-v0.12.15` remains
+immutable and is not the production candidate after the throughput-objective
+red test. `PIG-v0.12.16` must pass the active plan before image publication. No
+Compose, deployment, Router, or live-traffic action is implied by source
+identity alone.
 
 - [v0.12.13 sustained TPS reference and branch cleanup](docs/PIG_V0_12_13_SUSTAINED_TPS_REFERENCE_AND_BRANCH_CLEANUP_PLAN.md)
 - [v0.12.14 vLLM and SGLang backend adapters](docs/PIG_V0_12_14_VLLM_SGLANG_ADAPTER_PLAN.md)

@@ -4,6 +4,7 @@ import "math"
 
 const (
 	tpsHealthyHeadroomRatio = 1.05
+	tpsNearReferenceRatio   = 0.95
 	tpsWarmingSequenceLimit = int64(2)
 )
 
@@ -121,7 +122,7 @@ func tpsQualifiedCurrentRateSequenceLimit(state ProjectedState, snapshot TPSSnap
 	if state.RawRunning > 1 {
 		projectedCurrentTPS := currentAggregateTPS / float64(waveLimit)
 		if !finiteNonnegative(projectedCurrentTPS) ||
-			projectedCurrentTPS < snapshot.Reference {
+			projectedCurrentTPS < snapshot.Reference*tpsNearReferenceRatio {
 			return 0
 		}
 	}

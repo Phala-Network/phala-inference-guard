@@ -1778,3 +1778,23 @@ reference-25/reference-50 gate decisions. If the current executable fails, do
 not deploy or retag `0.12.15`. Apply the smallest gate correction, rerun the
 exact f563 source/image gates, and publish it under the next patch version only
 after acceptance.
+
+Exact red source `1ebc6c9a8b0f8903d9a00faed8ca65d732c9ec01` used GitHub
+archive SHA-256
+`913bde724cc6ce46b27b3dc5a140c44315bb6182e1f8309380ec79d2e59b3906`
+in the isolated f563 Go 1.24 workbench. Both focused tests exited 1 for the
+intended behavior. The direct gate rejected the bounded reference-25 and
+reference-50 fifth-stream probes with `tps_reference`; its log SHA-256 is
+`bbf2754c4ee3f058a9f70993807ba2ef7076b5948d42858601c911ba1e462c49`.
+The saturation candidate rejected all 20 arrivals, retained long-run per-user
+TPS 30, but produced only 7200 tokens versus the reference-disabled 8901.111;
+its log SHA-256 is
+`c23b078a94c19c28e7f411e06ae291c47d688f7e234f16bd34bc0e0c21729224`.
+No production process, container, Compose file, route, or request changed.
+
+The smallest correction is assigned `PIG-v0.12.16`. It changes only the mature
+current-rate probe: a single post-admit sequence may enter when its conservative
+linear projection is at least 95% of the reference. The existing 105% current
+headroom requirement, one-wave limit, unobserved reservation, and all pressure
+and resource gates remain intact. This internal prediction tolerance is not a
+new environment variable and does not redefine the long-window operator target.

@@ -1,6 +1,6 @@
 # PIG Advanced Configuration
 
-This document describes the `PIG-v0.12.15` candidate source contract. The assigned
+This document describes the `PIG-v0.12.16` candidate source contract. The assigned
 source identity does not by itself imply an accepted registry image or production
 deployment. The loader exposes bounded overrides for controlled tests, but
 parser capability does not define what belongs in production Compose.
