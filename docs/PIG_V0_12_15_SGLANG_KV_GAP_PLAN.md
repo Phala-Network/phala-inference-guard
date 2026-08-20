@@ -2298,3 +2298,137 @@ paired samples         9fae50520b59ca912920f5d64dc301ce6dbae5c1abc6b4685d2694889
 paired summary         7010079532a02fef1547b7863c40f1e848ce974b4b6482a538a990183bb62a23
 paired metadata        d0ba26b59306aa10f02284f3fec3a7ecb1eb7b0cc7ab949edc352db49619499b
 ```
+
+### v0.12.17 compact-observability release and vLLM r12 live acceptance
+
+This later section closes the v0.12.17 release loop on development CVM
+`311bbcdb-e348-4922-b37d-541755b09ff7` (Router name `use1-19`). It does not
+reinterpret the earlier v0.12.16/SGLang or v0.12.16/vLLM evidence. The
+executable source revision is
+`0091241bc9edc30f0f7ff50010504225d3fa14c8`; the accepted published image is
+`ghcr.io/phala-network/phala-inference-guard:0.12.17@sha256:e96b3a5a0864f8d8c57f39dbfa289402ecac0a7eb0eee42efaa9a23825e504f8`.
+The image revision remains `0091241`; this section and its later commit are
+documentation-only.
+
+The initial PIG-only deployment completed before a separate Gemma4 FA4/MTP
+tuning task began force-recreating vLLM on the same CVM. Its first 17-minute
+traffic fragment was therefore explicitly rejected as release evidence. PIG
+was kept Router-disabled while the independent task ran. Completion was not
+inferred from a short process gap: the task root was required to remain quiet
+for at least 30 minutes with no benchmark/switch process. Its final host Compose
+became the new authority rather than being overwritten with the earlier saved
+baseline. The accepted host SHA-256 is
+`657ec752b94fe0100dcb3de99f4a22c27094ce3f5503f32239741f089a0f9bcd`;
+it uses the r12 vLLM image with MTP4, prefix-retention interval 128, static KV
+scales, and PIG v0.12.17/reference 25. The exact vLLM identity is
+`ghcr.io/phala-network/vllm-openai:main-aa9903490-cu130-ubuntu2404-gemma4-pth-toolfix-r12@sha256:27f9382fdb8d59b5dab28f244569ae499ade293ca649f60849cb92f8cc258c41`.
+
+The full-stack r12 recreation started PIG before vLLM metrics were ready. PIG's
+coherent startup gate therefore refused readiness, and Docker recorded 32
+restart attempts, all between `13:40:07Z` and `13:45:54Z`, each caused by
+connection refusal from the still-starting backend. There was no panic or OOM,
+and the process then remained stable. This pre-window startup history was not
+hidden:
+Router `use1-19` was disabled, all Router/PIG/vLLM running, waiting,
+reservation, and Prefill counters drained naturally to zero, and only PIG was
+force-recreated after vLLM readiness. vLLM, HAProxy, ingress, and CVM identities
+were unchanged. The clean PIG instance started at
+`2026-08-20T15:43:00.780045767Z` with restart count zero and automatically
+initialized KV capacity `1,977,660`, block size 64, and max model length
+262,144. Metrics and the runtime policy API agreed on this geometry, enforce
+mode, and TPS reference 25; unauthenticated/authenticated metrics returned
+401/200.
+
+The host Python lacked even the `json` and `hashlib` standard-library modules,
+so the dry-run correctly rejected the first host-Python observer. The accepted
+collector ran as a bounded 1-CPU/512-MiB container from the already-cached vLLM
+image, joined the existing Docker network, and read Docker state through the
+socket without mutating services. A 15-second/5-second Router-disabled dry-run
+had 3/3 complete samples, zero errors, fixed container identities, and exact
+PIG/backend capability agreement. The original Router enabled set
+`["use1-19","use1-4c"]` was then restored exactly. Initial
+`request_aware_protected` state did not self-lock: pressure passthrough admitted
+new work immediately and the formal observer started without any policy or
+traffic injection.
+
+The authoritative window ran from `2026-08-20T15:51:11.596Z` through
+`16:21:11.597Z`, actual duration 1800.001 seconds. All 360 five-second samples
+were complete; the counter interval was 1,795.001 seconds. There were no
+deployments, synthetic requests, parameter changes, or backend recreations in
+the window.
+
+```text
+TPS reference                                      25.000
+ready mean-active TPS mean/p05/p50/min             34.659 / 22.624 / 31.120 / 20.594
+ready samples below 25 / below 22.5                12.22% / 4.72%
+completed output-token goodput                     895.920 tokens/s
+accepted / completed / failed requests             3,521 / 3,527 / 0
+PIG proxy errors / vLLM preemptions                 0 / 0
+vLLM waiting mean/p95/max                          0.186 / 1 / 8
+backpressure occupancy                             42.22%
+GPU utilization mean / protected mean/min          90.99% / 92.39% / 70%
+healthy-TPS protected samples below 50% GPU         0
+KV usage mean/p95/max                              18.61% / 36.14% / 40.84%
+backend running mean/p95/max                       27.25 / 56 / 60
+backend prefix-cache token hit share               45.55%
+PIG cache-evidence-valid sample share              37.22%
+pre-forward / body-read / estimator mean latency   0.439 / 0.225 / 0.193 ms
+Router pressure passthrough delta                  5,895
+```
+
+Accepted and completed deltas are not a request-cohort equality assertion:
+some work accepted between Router restoration and the first sample completed
+inside the window. The metrics that decide acceptance are zero failures,
+preemptions, proxy errors, lifecycle faults, and the time-aligned QoS/resource
+results. Although KV use averaged only 18.61%, GPU utilization stayed between
+70% and 100% and averaged 90.99%; unused KV therefore does not establish
+over-protection when Decode/compute was the active bottleneck. TPS-reference
+protection occupied 42.22% of samples, but protected GPU averaged 92.39%, no
+protected sample had healthy TPS with GPU below 50%, and passthrough continued
+to admit work. Within this window, there was therefore no observed low-flow
+self-lock or sustained idle-GPU over-protection.
+
+Compact logging also passed its production objective. The 30-minute PIG log
+contained 541/541 structured lines: 60 controller status lines at a
+30.0000005-second mean interval and 481 physical protection lines representing
+14,467 logical events. There were no `protection_detail`, secret-pattern,
+fatal-pattern, or unstructured lines. Suppression-weighted logical groups were
+9,204 TPS-reference load, 3,263 request Prefill-budget, 1,957 load
+Prefill-budget, 28 request input-limit, 9 load Prefill-contention, and 6 invalid
+requests. This retains causal visibility while avoiding one line per rejection.
+
+Three final reviews accept v0.12.17 without another algorithm revision:
+
+1. Model and causality: the window separates completed-output goodput,
+   mean-active TPS, cache evidence, KV use, GPU use, and Router passthrough.
+   Long-run TPS exceeded reference 25 while GPU remained highly utilized;
+   instantaneous TPS excursions were allowed rather than converted into a
+   per-poll floor. Low KV alone is not an admission defect under compute-bound
+   traffic.
+2. Safety and lifecycle: preemption, PIG failure, proxy error, restart, OOM,
+   fatal match, capability drift, collector error, and container lifecycle
+   event were all zero. All four service IDs and start times remained fixed;
+   PIG and backend capacity agreed in every sample. Router ended with the exact
+   original enabled set and fresh, protocol-consistent PIG metrics.
+3. Evidence and release: source, image, host Compose, PIG-only recreation,
+   dry-run, formal window, strict logs, metrics, policy, Router state, Docker
+   events, and the checksum manifest are separate artifacts. The finalizer and
+   remote `sha256sum -c` both passed. No observed defect in this accepted window
+   requires an executable source change; continue ordinary monitoring and open
+   a new release only for a repeated time-aligned QoS/resource defect or a
+   controlled goodput improvement.
+
+Material evidence SHA-256 values are:
+
+```text
+samples                 de5641bb06fa462b0fd767c3a45856b066ba01128112208e18c41c4b0c531a24
+summary                 3359c2be36799571d12feb389d57760155465b7912e44a60eb3d359907ea15be
+metadata                cd67951335f9bce2999c4a380de96bf6486810fb65811111c9b31328bac67b7e
+log summary             5260bba4430ac1f98daee4ab15cbd402201bd7ad8c2b04752ba380b4d496d847
+PIG log                 2dfad70e916c6e2e2740c4b1f5eed6aacb5661f6080c0faabf6880fda4e05a17
+vLLM log                4dc1673fe759ff531cef1cd34a344069e8bb5b3b374099091a3ea070e3c8cd72
+ingress log             ee97966c127809b8da969ffd6eb1f63b3445c1675997d6d304a38e7cac1ce0d8
+HAProxy log             aed047f5ccb1616efc1ea0b236360381c10b902a93c8d2e566790a5fedbe6395
+manifest                88700abe69de4c1a86f15ce5b8e7ab58e3f1d61e98b134fff2f06fa87eb0aab9
+manifest verification   07338bbb23d0ac823ec34717f7d8bb6d92ed052c0bfaacabd1f5a8f59c79488e
+```
