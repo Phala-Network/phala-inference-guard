@@ -417,6 +417,7 @@ func testProxyConfig(upstream string) config {
 		UpstreamErrorClassificationEnabled: true,
 		AttestationEnabled:                 false,
 		ProxyTimeout:                       10 * time.Second,
+		LogLevel:                           "info",
 		PredictiveAdmissionMode:            "enforce",
 		PredictiveScannerBodyBytes:         2 * 1024 * 1024,
 		PredictiveScannerConcurrency:       16,

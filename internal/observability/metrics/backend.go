@@ -47,9 +47,5 @@ func WriteBackends(w io.Writer, backends []BackendSnapshot) {
 		fmt.Fprintf(w, "pig_backend_kv_token_metrics_valid{name=%q} %d\n", backend.Name, num.BoolAsInt(status.KVTokenMetricsValid))
 		fmt.Fprintf(w, "pig_backend_observed_generation_tokens_per_second{name=%q} %.6f\n", backend.Name, status.GenerationTPS)
 		fmt.Fprintf(w, "pig_backend_observed_generation_tokens_per_second_valid{name=%q} %d\n", backend.Name, num.BoolAsInt(status.GenerationTPSValid))
-		fmt.Fprintf(w, "pig_backend_observed_ttft_avg_seconds{name=%q} %.6f\n", backend.Name, status.TTFTAvg)
-		fmt.Fprintf(w, "pig_backend_observed_ttft_p95_seconds{name=%q} %.6f\n", backend.Name, status.TTFTP95)
-		fmt.Fprintf(w, "pig_backend_observed_ttft_p99_seconds{name=%q} %.6f\n", backend.Name, status.TTFTP99)
-		fmt.Fprintf(w, "pig_backend_observed_ttft_valid{name=%q} %d\n", backend.Name, num.BoolAsInt(status.TTFTValid))
 	}
 }

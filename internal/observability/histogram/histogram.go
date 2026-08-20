@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"sync/atomic"
 	"time"
-
-	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
 
 var DurationBucketsSeconds = []float64{0.1, 0.25, 0.5, 1, 2, 5, 10, 20, 30, 60, 120, 300, 600, 1800}
@@ -83,24 +81,6 @@ func (h *DurationHistogram) Observe(elapsed time.Duration) {
 		if elapsedSeconds <= upper {
 			h.buckets[index].Add(1)
 		}
-	}
-}
-
-func (h *DurationHistogram) Sample() telemetry.HistogramSample {
-	if h == nil {
-		return telemetry.HistogramSample{}
-	}
-	buckets := make([]telemetry.HistogramBucketSample, 0, len(h.upperBounds))
-	for index, upper := range h.upperBounds {
-		buckets = append(buckets, telemetry.HistogramBucketSample{
-			UpperBound: upper,
-			Count:      h.buckets[index].Load(),
-		})
-	}
-	return telemetry.HistogramSample{
-		Count:   h.count.Load(),
-		Sum:     float64(h.totalNs.Load()) / float64(time.Second),
-		Buckets: buckets,
 	}
 }
 

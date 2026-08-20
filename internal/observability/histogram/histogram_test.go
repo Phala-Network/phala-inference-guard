@@ -14,9 +14,10 @@ func TestDurationHistogramWithBucketsValidatesAndOwnsBounds(t *testing.T) {
 	}
 	bounds[0] = 100
 	histogram.Observe(1500 * time.Microsecond)
-	sample := histogram.Sample()
-	if len(sample.Buckets) != 2 || sample.Buckets[0].UpperBound != 0.001 || sample.Buckets[0].Count != 0 || sample.Buckets[1].UpperBound != 0.002 || sample.Buckets[1].Count != 1 {
-		t.Fatalf("histogram did not retain immutable instance bounds: %+v", sample)
+	if len(histogram.upperBounds) != 2 || histogram.upperBounds[0] != 0.001 ||
+		histogram.buckets[0].Load() != 0 || histogram.upperBounds[1] != 0.002 ||
+		histogram.buckets[1].Load() != 1 {
+		t.Fatalf("histogram did not retain immutable instance bounds: bounds=%v", histogram.upperBounds)
 	}
 
 	for _, test := range []struct {
@@ -41,22 +42,20 @@ func TestDurationHistogramWithBucketsValidatesAndOwnsBounds(t *testing.T) {
 
 func TestPredictiveDurationHistogramIncludesLiveLatencyGates(t *testing.T) {
 	histogram := NewPredictiveDurationHistogram()
-	sample := histogram.Sample()
 	for _, required := range []float64{0.00025, 0.001} {
 		found := false
-		for _, bucket := range sample.Buckets {
-			if bucket.UpperBound == required {
+		for _, upperBound := range histogram.upperBounds {
+			if upperBound == required {
 				found = true
 				break
 			}
 		}
 		if !found {
-			t.Fatalf("predictive histogram lacks live latency bucket %g: %+v", required, sample.Buckets)
+			t.Fatalf("predictive histogram lacks live latency bucket %g: %+v", required, histogram.upperBounds)
 		}
 	}
 	general := NewDurationHistogram()
-	generalSample := general.Sample()
-	if len(generalSample.Buckets) == 0 || generalSample.Buckets[0].UpperBound != 0.1 {
-		t.Fatalf("general service-duration buckets changed unexpectedly: %+v", generalSample.Buckets)
+	if len(general.upperBounds) == 0 || general.upperBounds[0] != 0.1 {
+		t.Fatalf("general service-duration buckets changed unexpectedly: %+v", general.upperBounds)
 	}
 }

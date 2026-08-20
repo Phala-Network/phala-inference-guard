@@ -140,6 +140,12 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	if cfg.PredictiveObservationPollInterval != 500*time.Millisecond || cfg.PredictiveMaximumMetricsAge != 1500*time.Millisecond {
 		t.Fatalf("default observer cadence/freshness=%s/%s", cfg.PredictiveObservationPollInterval, cfg.PredictiveMaximumMetricsAge)
 	}
+	if cfg.StatusLogInterval != 30*time.Second {
+		t.Fatalf("default status log interval=%s, want low-noise 30s", cfg.StatusLogInterval)
+	}
+	if cfg.LogLevel != "info" {
+		t.Fatalf("default log level=%q, want info", cfg.LogLevel)
+	}
 	if cfg.PredictiveTPSReference != 0 {
 		t.Fatalf("default TPS reference=%v, want disabled zero", cfg.PredictiveTPSReference)
 	}
@@ -150,6 +156,29 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	minimum650KBodyWindow := int64(650_000 * cfg.PredictiveEstimator.MaxBytesPerToken)
 	if cfg.PredictiveScannerBodyBytes < minimum650KBodyWindow {
 		t.Fatalf("production scanner ceiling=%d does not cover the model-neutral 650K window=%d", cfg.PredictiveScannerBodyBytes, minimum650KBodyWindow)
+	}
+}
+
+func TestRuntimeLogLevelIsBounded(t *testing.T) {
+	for _, level := range []string{"info", "INFO", " debug "} {
+		t.Run(strings.TrimSpace(level), func(t *testing.T) {
+			t.Setenv("PIG_LOG_LEVEL", level)
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load log level %q: %v", level, err)
+			}
+			if err := Validate(cfg); err != nil {
+				t.Fatalf("Validate log level %q as %q: %v", level, cfg.LogLevel, err)
+			}
+		})
+	}
+	t.Setenv("PIG_LOG_LEVEL", "trace")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load invalid log level: %v", err)
+	}
+	if err := Validate(cfg); err == nil || !strings.Contains(err.Error(), "PIG_LOG_LEVEL") {
+		t.Fatalf("Validate trace error=%v, want bounded log-level rejection", err)
 	}
 }
 

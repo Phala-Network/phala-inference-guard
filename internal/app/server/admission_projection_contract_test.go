@@ -190,9 +190,47 @@ func TestStatusLogReportsCurrentTPSCapacityReasonWithoutARequestDecision(t *test
 		}},
 	}
 	line := srv.statusLogLine()
-	if !strings.Contains(line, "capacity=protect/tps_reference") ||
+	if !strings.Contains(line, "level=info") ||
+		!strings.Contains(line, "component=controller") ||
+		!strings.Contains(line, "event=status") ||
+		!strings.Contains(line, "capacity=protect/tps_reference") ||
 		!strings.Contains(line, "router=true/load/") {
 		t.Fatalf("status omitted current TPS capacity protection: %s", line)
+	}
+}
+
+func TestStatusLogSeparatesLastRequestFromCurrentCapacity(t *testing.T) {
+	now := time.Now()
+	current := coreadmission.DecisionRecord{
+		Action:            coreadmission.ActionAdmit,
+		Reason:            coreadmission.ReasonOpen,
+		State:             coreadmission.ProjectedState{EffectiveKVTokens: 100},
+		PostAdmitKVTokens: 200,
+		RemainingKVTokens: 800,
+	}
+	last := coreadmission.DecisionRecord{
+		Action:            coreadmission.ActionProtect,
+		Reason:            coreadmission.ReasonKVCapacity,
+		Scope:             coreadmission.ProtectionLoad,
+		State:             coreadmission.ProjectedState{EffectiveKVTokens: 900},
+		PostAdmitKVTokens: 1_100,
+	}
+	srv := &proxyServer{
+		cfg: config{PredictiveAdmissionMode: "enforce"},
+		admission: &staticAdmissionTelemetryService{snapshot: admissionTelemetrySnapshot{
+			Capacity: coreadmission.CapacitySnapshot{
+				IntakeOpen: true, HasObservation: true, Available: true,
+				State: current.State, MinimumDecision: current,
+				Observation: coreadmission.BackendObservation{ObservedAt: now, MaximumAge: time.Minute},
+			},
+			Report: admissionReportSnapshot{HasLastDecision: true, LastDecision: last},
+		}},
+	}
+	line := srv.statusLogLine()
+	if !strings.Contains(line, "last=hard_protect/kv_capacity") ||
+		!strings.Contains(line, "capacity=admit/open") ||
+		!strings.Contains(line, "kv=100/200/800") || strings.Contains(line, "kv=900/1100/") {
+		t.Fatalf("status conflated last request and current capacity: %s", line)
 	}
 }
 

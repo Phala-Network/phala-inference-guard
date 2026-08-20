@@ -274,7 +274,7 @@ func logPredictivePolicyUpdate(
 	windowReset bool,
 ) {
 	log.Printf(
-		"predictive_policy event=update result=%s expected_revision=%d revision=%d tps_reference=%.6f tps_window_reset=%t",
+		"level=info component=policy event=update result=%s expected_revision=%d revision=%d tps_reference=%.6f tps_window_reset=%t",
 		result,
 		expectedRevision,
 		currentRevision,

@@ -1,12 +1,16 @@
 # PIG v0.12.13 Sustained TPS Reference and Branch Cleanup Plan
 
-Status: exact release source `e2604495fdd5c61ed4699772dd0ac99bad16b386`
+Status: historical release evidence. Exact release source
+`e2604495fdd5c61ed4699772dd0ac99bad16b386`
 has the v0.12.13 identity and passed identity-specific focused and complete c21
 acceptance. Its builder-local deployable image passed production-contract and
 isolated runtime smoke acceptance. Both registry tags resolve to one accepted
 digest that passed digest-specific pull, production-contract, and isolated
 runtime smoke reproduction. Release preparation is complete; no Compose,
 deployment, Router, live-traffic, or production evidence exists.
+
+Do not use this plan as the current configuration or operational guide. See
+`docs/README.md` for the current contract documents.
 
 Authoritative baseline: branch `codex/pig-v0.11.0-request-aware`, commit
 `53cb1d5abef55096c2a13dfa0193c257e64bd397`, whose executable v0.12.12 tag is

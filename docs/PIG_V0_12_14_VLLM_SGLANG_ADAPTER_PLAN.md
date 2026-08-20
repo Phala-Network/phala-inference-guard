@@ -1,7 +1,8 @@
 # PIG v0.12.14 vLLM and SGLang Backend Adapter Plan
 
-Status: active implementation plan. Nothing in this document authorizes using
-the unaccepted source or a builder-local image on a production CVM.
+Status: historical v0.12.14 design and release evidence. Nothing in this
+document is a standing deployment instruction. See `docs/README.md` for the
+current source contract.
 
 ## 1. Objective and scope
 

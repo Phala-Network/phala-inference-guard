@@ -1,15 +1,16 @@
 package server
 
 import (
-	"fmt"
-	"log"
 	"sync"
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 )
 
-const defaultAdmissionDecisionLogInterval = time.Second
+const (
+	defaultAdmissionDecisionLogInterval = 5 * time.Second
+	maximumAdmissionLogSignatures       = 256
+)
 
 type admissionReportSnapshot struct {
 	Attempts                uint64
@@ -33,13 +34,20 @@ type admissionDecisionLogEvent struct {
 	ObservedAt time.Time
 }
 
-type admissionDecisionLogState struct {
+type admissionDecisionLogSignature struct {
+	action   coreadmission.Action
+	reason   coreadmission.Reason
+	scope    coreadmission.ProtectionScope
+	enforced bool
+}
+
+type admissionDecisionLogBucket struct {
 	lastLoggedAt time.Time
-	lastAction   coreadmission.Action
-	lastReason   coreadmission.Reason
-	lastScope    coreadmission.ProtectionScope
-	lastEnforced bool
 	suppressed   uint64
+}
+
+type admissionDecisionLogState struct {
+	buckets map[admissionDecisionLogSignature]admissionDecisionLogBucket
 }
 
 func (s *admissionDecisionLogState) Claim(
@@ -53,24 +61,32 @@ func (s *admissionDecisionLogState) Claim(
 	if interval <= 0 {
 		interval = defaultAdmissionDecisionLogInterval
 	}
-	signatureChanged := event.Decision.Action != s.lastAction ||
-		event.Decision.Reason != s.lastReason || event.Decision.Scope != s.lastScope ||
-		event.Enforced != s.lastEnforced
-	elapsed := now.Sub(s.lastLoggedAt)
-	if !s.lastLoggedAt.IsZero() && !signatureChanged && elapsed >= 0 && elapsed < interval {
-		if s.suppressed < ^uint64(0) {
-			s.suppressed++
+	signature := admissionDecisionLogSignature{
+		action: event.Decision.Action, reason: event.Decision.Reason,
+		scope: event.Decision.Scope, enforced: event.Enforced,
+	}
+	if s.buckets == nil {
+		s.buckets = make(map[admissionDecisionLogSignature]admissionDecisionLogBucket)
+	}
+	bucket, exists := s.buckets[signature]
+	elapsed := now.Sub(bucket.lastLoggedAt)
+	if exists && !bucket.lastLoggedAt.IsZero() && elapsed >= 0 && elapsed < interval {
+		if bucket.suppressed < ^uint64(0) {
+			bucket.suppressed++
 		}
+		s.buckets[signature] = bucket
 		return nil
 	}
-	event.Suppressed = s.suppressed
+	if !exists && len(s.buckets) >= maximumAdmissionLogSignatures {
+		// Action, reason, scope and enforce state are all bounded enums. Keep a
+		// defensive bound anyway so a future invalid enum cannot grow logging
+		// state without limit.
+		s.buckets = make(map[admissionDecisionLogSignature]admissionDecisionLogBucket)
+		bucket = admissionDecisionLogBucket{}
+	}
+	event.Suppressed = bucket.suppressed
 	event.ObservedAt = now
-	s.lastLoggedAt = now
-	s.lastAction = event.Decision.Action
-	s.lastReason = event.Decision.Reason
-	s.lastScope = event.Decision.Scope
-	s.lastEnforced = event.Enforced
-	s.suppressed = 0
+	s.buckets[signature] = admissionDecisionLogBucket{lastLoggedAt: now}
 	return &event
 }
 
@@ -136,75 +152,6 @@ func (r *admissionReporter) Snapshot() admissionReportSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.snapshot
-}
-
-func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
-	decision := event.Decision
-	return fmt.Sprintf(
-		"predictive_admission event=admission_decision mode=%s enforced=%t action=%s reason=%s scope=%s prefill_class=%s input_estimate_confidence=%s selection_input_tokens=%d maximum_sequence_input_tokens=%d base_prompt_count=%d prefill_input_tokens=%d prefill_compute_tokens=%d first_byte_pending_prefill_input_tokens=%d first_byte_pending_prefill_compute_tokens=%d first_byte_pending_prefill_sequences=%d request_cache_credit_tokens=%d cache_observation_valid=%t cache_hit_fraction=%.6f cache_credit_fraction=%.6f cache_evidence_tokens=%d cache_credit_budget_tokens=%d cache_credit_spent_tokens_before=%d kv_reservation_input_tokens=%d maximum_sequence_kv_reservation_input_tokens=%d input_kv_tokens=%d first_byte_coverable_input_kv_tokens=%d first_byte_pending_input_kv_tokens=%d future_kv_tokens=%d decode_horizon_tokens=%d output_limit_tokens=%d output_limit_known=%t decode_sequences=%d effective_kv_tokens=%d post_admit_kv_tokens=%d remaining_kv_tokens=%d pending_prefill_input_tokens_before=%d pending_prefill_tokens_before=%d pending_cache_credit_tokens_before=%d pending_prefill_tokens_after=%d running=%d waiting=%d tps_unobserved_sequences=%d tps_qos_budget_leases=%d tps_reference=%.6f tps_window_ready=%t tps_window_qualified_sequence_samples=%d tps_window_aggregate=%.6f tps_window_mean_active=%.6f tps_sequence_limit=%d tps_current_sequences=%d tps_post_admit_sequences=%d tps_qos_budgeted=%t observation_sequence=%d controller_sequence=%d runtime_epoch=%d policy_revision=%d suppressed=%d observed_at=%s",
-		event.Mode,
-		event.Enforced,
-		decision.Action,
-		decision.Reason,
-		decision.Scope,
-		decision.PrefillClass,
-		decision.Estimate.InputEstimateConfidence.String(),
-		decision.Estimate.SelectionInputTokens,
-		decision.Estimate.MaximumSequenceInputTokens,
-		decision.Estimate.BasePromptCount,
-		decision.Work.PrefillInputTokens,
-		decision.Work.PrefillComputeTokens,
-		decision.Work.FirstBytePendingPrefillInputTokens,
-		decision.Work.FirstBytePendingPrefillComputeTokens,
-		decision.Work.FirstBytePendingPrefillSequences,
-		decision.Work.PrefillInputTokens-decision.Work.PrefillComputeTokens,
-		decision.State.CacheObservationValid,
-		decision.State.CacheHitFraction,
-		decision.State.CacheCreditFraction,
-		decision.State.CacheEvidenceTokens,
-		decision.State.CacheCreditBudgetTokens,
-		decision.State.CacheCreditSpentTokens,
-		decision.Estimate.KVReservationInputTokens,
-		decision.Estimate.MaximumSequenceKVReservationInputTokens,
-		decision.Work.InputKVTokens,
-		decision.Work.FirstByteCoverableInputKVTokens,
-		decision.Work.FirstBytePendingInputKVTokens,
-		decision.Work.FutureKVTokens,
-		decision.Estimate.DecodeHorizonTokens,
-		decision.Estimate.OutputLimitTokens,
-		decision.Estimate.OutputLimitKnown,
-		decision.Estimate.DecodeSequences,
-		decision.State.EffectiveKVTokens,
-		decision.PostAdmitKVTokens,
-		decision.RemainingKVTokens,
-		decision.State.PendingPrefillInputTokens,
-		decision.PendingPrefillTokensBefore,
-		decision.State.PendingCacheCreditTokens,
-		decision.PendingPrefillTokensAfter,
-		decision.State.RawRunning,
-		decision.State.RawWaiting,
-		decision.State.UnobservedSequences,
-		decision.State.QoSBudgetLeases,
-		decision.State.TPS.Reference,
-		decision.State.TPS.Ready,
-		decision.State.TPS.QualifiedSequenceSamples,
-		decision.State.TPS.AggregateTPS,
-		decision.State.TPS.MeanActiveTPS,
-		decision.TPSSequenceLimit,
-		decision.TPSCurrentSequences,
-		decision.TPSPostAdmitSequences,
-		decision.TPSQoSBudgeted,
-		decision.ObservationSequence,
-		decision.ControllerSequence,
-		decision.RuntimeEpoch,
-		decision.PolicyRevision,
-		event.Suppressed,
-		event.ObservedAt.UTC().Format(time.RFC3339Nano),
-	)
-}
-
-func logAdmissionDecision(event admissionDecisionLogEvent) {
-	log.Print(admissionDecisionLogLine(event))
 }
 
 func emitAdmissionDecision(

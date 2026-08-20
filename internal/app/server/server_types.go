@@ -12,9 +12,9 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.16 adds one bounded near-reference TPS probe without changing the
-// v0.12.15 backend, cache, KV, or Prefill contracts.
-const version = "PIG-v0.12.16"
+// v0.12.17 makes runtime observability compact and removes unused TTFT
+// aggregation without changing admission, backend, cache, KV, or Prefill policy.
+const version = "PIG-v0.12.17"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 

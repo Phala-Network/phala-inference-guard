@@ -401,7 +401,7 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 		Mode: "enforce", Enforced: true, ObservedAt: time.Unix(1, 0),
 		Decision: coreadmission.DecisionRecord{
 			Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonKVCapacity,
-			Scope: coreadmission.ProtectionLoad,
+			Scope: coreadmission.ProtectionLoad, PrefillClass: coreadmission.PrefillWeighted,
 			Estimate: domainpredictive.RequestEstimate{
 				SelectionInputTokens: 1_500, MaximumSequenceInputTokens: 900,
 				KVReservationInputTokens: 1_600, MaximumSequenceKVReservationInputTokens: 1_000,
@@ -416,12 +416,16 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 				FirstBytePendingInputKVTokens: 1_200, FutureKVTokens: 800,
 			},
 			State: coreadmission.ProjectedState{
+				EffectiveKVTokens:   7_000,
+				RawRunning:          8,
+				RawWaiting:          1,
 				UnobservedSequences: 2,
 				TPS: coreadmission.TPSSnapshot{
 					Enabled: true, Ready: true, Reference: 20,
 					QualifiedSequenceSamples: 4, AggregateTPS: 180, MeanActiveTPS: 22.5,
 				},
 			},
+			PostAdmitKVTokens: 8_600, RemainingKVTokens: 1_400,
 			TPSSequenceLimit: 9, TPSCurrentSequences: 9, TPSPostAdmitSequences: 10,
 		},
 	})
@@ -431,22 +435,84 @@ func TestAdmissionDecisionLogContainsNoRequestOrCredentialData(t *testing.T) {
 		}
 	}
 	for _, required := range []string{
+		"level=warn", "component=admission", "event=protection",
 		"action=protect", "reason=kv_capacity", "scope=load", "enforced=true",
 		"input_estimate_confidence=unknown",
-		"maximum_sequence_input_tokens=900",
-		"base_prompt_count=2", "prefill_input_tokens=1500", "prefill_compute_tokens=1200",
-		"first_byte_pending_prefill_input_tokens=600",
-		"first_byte_pending_prefill_compute_tokens=500", "first_byte_pending_prefill_sequences=3",
-		"maximum_sequence_kv_reservation_input_tokens=1000",
-		"input_kv_tokens=1600", "first_byte_coverable_input_kv_tokens=400",
-		"first_byte_pending_input_kv_tokens=1200", "future_kv_tokens=800",
-		"tps_reference=20.000000", "tps_window_ready=true",
-		"tps_window_qualified_sequence_samples=4", "tps_sequence_limit=9",
-		"tps_current_sequences=9", "tps_post_admit_sequences=10", "tps_unobserved_sequences=2",
-		"decode_sequences=4",
+		"prefill_class=weighted", "input_tokens=1500", "prefill_compute_tokens=1200",
+		"cache_credit_tokens=300", "kv_tokens=7000/8600/1400",
+		"backend=8/1", "sequences=9/10/9", "tps=22.500/20.000",
+		"tps_ready=true", "policy_revision=0", "suppressed=0",
 	} {
 		if !strings.Contains(line, required) {
 			t.Fatalf("admission log missing %q: %s", required, line)
+		}
+	}
+	for _, detail := range []string{
+		"maximum_sequence_input_tokens=", "base_prompt_count=",
+		"first_byte_pending_prefill_input_tokens=", "cache_evidence_tokens=",
+		"maximum_sequence_kv_reservation_input_tokens=", "observation_sequence=",
+		"controller_sequence=", "runtime_epoch=", "observed_at=",
+	} {
+		if strings.Contains(line, detail) {
+			t.Fatalf("default admission log contains debug-only %q: %s", detail, line)
+		}
+	}
+	if len(line) > 768 {
+		t.Fatalf("default admission log is not compact: bytes=%d line=%s", len(line), line)
+	}
+}
+
+func TestAdmissionDecisionLogRateLimitsEachSignatureIndependently(t *testing.T) {
+	var state admissionDecisionLogState
+	interval := 5 * time.Second
+	started := time.Unix(100, 0)
+	event := admissionDecisionLogEvent{
+		Mode: "enforce", Enforced: true,
+		Decision: coreadmission.DecisionRecord{
+			Action: coreadmission.ActionProtect,
+			Reason: coreadmission.ReasonKVCapacity,
+			Scope:  coreadmission.ProtectionLoad,
+		},
+	}
+	if got := state.Claim(started, interval, event); got == nil {
+		t.Fatal("first KV protection was suppressed")
+	}
+	other := event
+	other.Decision.Reason = coreadmission.ReasonTPSReference
+	if got := state.Claim(started.Add(time.Second), interval, other); got == nil {
+		t.Fatal("first TPS protection was suppressed")
+	}
+	if got := state.Claim(started.Add(2*time.Second), interval, event); got != nil {
+		t.Fatalf("alternating reason bypassed per-signature rate limit: %+v", got)
+	}
+	got := state.Claim(started.Add(6*time.Second), interval, event)
+	if got == nil || got.Suppressed != 1 {
+		t.Fatalf("KV summary after interval=%+v, want one suppressed event", got)
+	}
+}
+
+func TestAdmissionDecisionDebugLogRetainsBoundedDiagnostics(t *testing.T) {
+	line := admissionDecisionDetailLogLine(admissionDecisionLogEvent{
+		Mode: "shadow", ObservedAt: time.Unix(1, 0),
+		Decision: coreadmission.DecisionRecord{
+			Action: coreadmission.ActionProtect,
+			Reason: coreadmission.ReasonPrefillBudget,
+			Scope:  coreadmission.ProtectionRequest,
+			Estimate: domainpredictive.RequestEstimate{
+				MaximumSequenceInputTokens: 900,
+			},
+			ObservationSequence: 7,
+			ControllerSequence:  8,
+			RuntimeEpoch:        9,
+		},
+	})
+	for _, required := range []string{
+		"level=debug", "event=protection_detail",
+		"maximum_sequence_input_tokens=900", "observation_sequence=7",
+		"controller_sequence=8", "runtime_epoch=9", "observed_at=",
+	} {
+		if !strings.Contains(line, required) {
+			t.Fatalf("debug admission log missing %q: %s", required, line)
 		}
 	}
 }

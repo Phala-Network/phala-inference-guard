@@ -41,6 +41,9 @@ func Validate(cfg Config) error {
 	if cfg.StatusLogInterval < 0 {
 		return fmt.Errorf("PIG_STATUS_LOG_INTERVAL_SECONDS must be >= 0")
 	}
+	if cfg.LogLevel != "info" && cfg.LogLevel != "debug" {
+		return fmt.Errorf("PIG_LOG_LEVEL must be info or debug")
+	}
 	if cfg.AttestationEnabled && cfg.AttestationNVIDIACommandTimeout <= 0 {
 		return fmt.Errorf("ATTESTATION_NVIDIA_COMMAND_TIMEOUT_SECONDS must be > 0 when ATTESTATION_ENABLED=true")
 	}

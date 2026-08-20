@@ -69,6 +69,10 @@ proxy and latest generation delta are diagnostics only. They are distinct from
 the qualified sustained window consumed by `TPSGate` when a positive reference
 is configured.
 
+PIG does not parse or aggregate backend TTFT histograms and exports no derived
+`pig_backend_observed_ttft_*` zero placeholders. TTFT is not an admission gate;
+when operational TTFT analysis is needed, use the backend's native metrics.
+
 A partial scrape does not immediately zero gauges or close intake. PIG retains
 the last coherent observation until freshness expires. A coherent replacement
 sample recovers current state without a separate cooldown or timer.
@@ -196,17 +200,66 @@ request-count controller. No other retired dynamic-QoS behavior is authoritative
 
 ## Logs and cross-surface agreement
 
-The startup line records build identity, mode, 500-ms default observation
-cadence, and freshness. Capability initialization logs the frozen profile and
-its source/reason. Bounded decision logs include enforced state, runtime and
-HTTP reasons, scope, request class/estimate, KV counterfactual, current
-running/waiting, the watermark-bounded unobserved sequence reservation, TPS
-diagnostics, and pending Prefill state.
+All runtime records use three stable leading fields:
 
-The periodic status line includes mode, attempts, outcomes, actual enforced
-rejects, reservations, last action/reason, Prefill class/estimate, KV values,
-TPS telemetry, current Router scope/capacity, observer validity, and the six
-compatibility values.
+```text
+level=<info|warn|debug|error> component=<runtime|capability|controller|admission|policy> event=<name>
+```
+
+The Go logger supplies one UTC timestamp with microsecond precision. Ordinary
+records do not repeat a second `observed_at` timestamp.
+
+The startup record contains build identity, mode, observation cadence,
+freshness, status interval, TPS reference, and effective log level. Capability
+initialization is a one-time record of the frozen profile and its source/reason.
+Policy updates are separate `component=policy event=update` records.
+Fatal startup or serving errors use `level=error component=runtime event=exit`.
+
+Default admission records are emitted only for policy protections. They use
+`event=protection`, `warn` for an enforced reject, and `info` for a shadow
+counterfactual. The compact fields are:
+
+```text
+mode enforced action reason scope prefill_class input_estimate_confidence
+input_tokens prefill_compute_tokens cache_credit_tokens
+kv_tokens=<effective/post-admit/remaining>
+backend=<running/waiting>
+sequences=<current/post-admit/limit>
+tps=<mean-active/reference> tps_ready policy_revision suppressed
+```
+
+Each bounded action/reason/scope/enforcement signature emits at most once per
+five seconds. Alternating reasons cannot reset another signature's interval.
+`suppressed` reports how many equivalent records were omitted since that
+signature's previous line. Admission counters and metrics are never sampled or
+suppressed by logging.
+
+`PIG_LOG_LEVEL=debug` keeps the compact record and adds
+`event=protection_detail` with the complete numeric decision snapshot. Debug is
+for short diagnostic windows; the default is `info`. Neither form contains
+prompts, request bodies, credentials, request IDs, or endpoint hosts.
+
+The compact periodic `component=controller event=status` line defaults to one
+record every 30 seconds. Its slash-delimited groups are documented in order:
+
+```text
+counts=<attempts/admitted/request-protected/load-protected/availability-protected>
+last=<last-action/last-reason>
+capacity=<current-action/current-reason>
+prefill=<current-canonical-class/current-canonical-input>
+kv=<current-effective/current-canonical-post-admit/current-canonical-remaining>
+cache=<valid/hit-fraction/credit-fraction>
+tps=<mean-active/reference>
+sequences=<current/post-admit/limit>
+router=<active/scope/inspect-capacity>
+observer=<fresh/intake-open>
+backend=<running/waiting>
+```
+
+The current Controller snapshot, not the last request, supplies capacity, KV,
+cache, TPS, sequence, Router, observer, and backend groups. The last request is
+limited to the explicitly named `last` group. Detailed compatibility gauges
+remain in metrics instead of being repeated in every status line.
 
 For every enforce protection, audit agreement across:
 

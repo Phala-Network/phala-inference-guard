@@ -45,7 +45,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		return nil, err
 	}
 	log.Printf(
-		"predictive_capability event=profile_initialized backend_kind=%s prefill_execution=%s input_kv_sharing=%s first_byte_coverage=%s schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
+		"level=info component=capability event=initialized backend_kind=%s prefill_execution=%s input_kv_sharing=%s first_byte_coverage=%s schema=%s source=%s reason=%s kv_capacity_tokens=%d kv_block_size=%d kv_hard_limit_tokens=%d max_model_len_tokens=%d maximum_admissible_input_tokens=%d prefill_regular_tokens=%d prefill_exclusive_tokens=%d prefill_quiescent_tokens=%d prefill_contended_budget_tokens=%d prefill_aggregate_budget_tokens=%d tps_reference=%.6f",
 		startup.BackendKind,
 		workProfile.PrefillExecution,
 		workProfile.InputKVSharing,
@@ -114,7 +114,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	}
 	runtime, err := newAdmissionRuntime(
 		controller,
-		newAdmissionReporter(defaultAdmissionDecisionLogInterval, logAdmissionDecision),
+		newAdmissionReporter(defaultAdmissionDecisionLogInterval, newAdmissionDecisionLogger(cfg.LogLevel)),
 		profile,
 		initialization.Reason,
 		startup.BackendKind,

@@ -188,7 +188,7 @@ func TestV01215PredictivePolicyAPIAppliesCASAndExportsMetricsAndStatus(t *testin
 		t.Fatalf("policy metrics missing or inconsistent:\n%s", metricsBody)
 	}
 	status := srv.statusLogLine()
-	if !strings.Contains(status, "policy=2/runtime_api") || !strings.Contains(status, "reference=25.000") {
+	if !strings.Contains(status, "policy=2/runtime_api") || !strings.Contains(status, "tps=0.000/25.000") {
 		t.Fatalf("status does not expose policy revision: %s", status)
 	}
 	if backendCalls.Load() != 0 {

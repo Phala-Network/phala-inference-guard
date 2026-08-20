@@ -8,6 +8,7 @@ import (
 )
 
 func Run() (runErr error) {
+	configureRuntimeLogging()
 	cfg, err := loadConfig()
 	if err != nil {
 		return err
@@ -17,10 +18,11 @@ func Run() (runErr error) {
 		return err
 	}
 	defer func() { runErr = errors.Join(runErr, srv.Close()) }()
-	log.Printf("phala-inference-guard %s listen=%s upstream=%s metrics=%s observer=%s freshness=%s predictive_admission=%s tps_reference=%.6f upstream_error_classification=%t",
+	log.Printf("level=info component=runtime event=startup version=%s listen=%s upstream=%s metrics=%s observer=%s freshness=%s predictive_admission=%s tps_reference=%.6f status_interval=%s log_level=%s upstream_error_classification=%t",
 		version, cfg.Listen, cfg.Upstream, cfg.PredictiveMetricsURL,
 		cfg.PredictiveObservationPollInterval, cfg.PredictiveMaximumMetricsAge,
-		cfg.PredictiveAdmissionMode, cfg.PredictiveTPSReference, cfg.UpstreamErrorClassificationEnabled)
+		cfg.PredictiveAdmissionMode, cfg.PredictiveTPSReference, cfg.StatusLogInterval,
+		cfg.LogLevel, cfg.UpstreamErrorClassificationEnabled)
 	log.Print(srv.statusLogLine())
 	if cfg.StatusLogInterval > 0 {
 		go srv.statusLogLoop()

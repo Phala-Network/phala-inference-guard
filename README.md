@@ -6,10 +6,11 @@ upstream call, combines that estimate with one Controller-owned coherent backend
 observation and every live reservation, and decides whether the post-admit state
 can preserve service quality.
 
-Current candidate source identity: `PIG-v0.12.16`. Published `PIG-v0.12.15` is
-held from production because its TPS gate can preserve unused capacity. The
-accepted v0.12.16 image is published by digest as
+Current maintenance candidate identity: `PIG-v0.12.17`. Published `PIG-v0.12.15`
+is held from production because its TPS gate can preserve unused capacity. The
+current accepted image remains v0.12.16, published by digest as
 `ghcr.io/phala-network/phala-inference-guard@sha256:1a3f85875a436cbd33c5ddc77a2c81084cac41a70ef11869ad2b815e1353e2e0`.
+The v0.12.17 source identity does not imply an accepted or published image.
 Source and image acceptance do not by themselves imply a production deployment.
 
 The objective is QoS-constrained throughput, not a fixed request-count limit.
@@ -97,6 +98,12 @@ upper ratio. This safety bound is not a production Compose variable.
 the deployment. A production manifest may contain a real non-default policy
 choice, but it must not copy the full test matrix into Compose.
 
+Runtime logs default to compact `info` events. Admission protections are
+rate-limited independently by action, reason, scope, and enforcement state;
+periodic Controller status defaults to 30 seconds. Metrics retain the complete
+low-cardinality state. Use `PIG_LOG_LEVEL=debug` only for a bounded diagnostic
+window when the full numeric decision record is required.
+
 `PREDICTIVE_TPS_REFERENCE` is the one intended production QoS override. Its
 unit is output tokens per second per active Decode sequence. Omit it (or set
 `0`) to preserve the v0.12.12 Context/KV/Prefill admission behavior. A positive
@@ -181,8 +188,6 @@ red test. `PIG-v0.12.16` passed source and isolated image acceptance before
 publication. No Compose, deployment, Router, or live-traffic action is implied
 by source or registry identity alone.
 
-- [v0.12.13 sustained TPS reference and branch cleanup](docs/PIG_V0_12_13_SUSTAINED_TPS_REFERENCE_AND_BRANCH_CLEANUP_PLAN.md)
-- [v0.12.14 vLLM and SGLang backend adapters](docs/PIG_V0_12_14_VLLM_SGLANG_ADAPTER_PLAN.md)
-- [v0.12.15 cache-aware backend contract and release](docs/PIG_V0_12_15_SGLANG_KV_GAP_PLAN.md)
+- [Documentation map](docs/README.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

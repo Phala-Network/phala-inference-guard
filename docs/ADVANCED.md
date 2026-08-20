@@ -1,7 +1,7 @@
 # PIG Advanced Configuration
 
-This document describes the `PIG-v0.12.16` candidate source contract. The assigned
-source identity does not by itself imply an accepted registry image or production
+This document describes the current configuration contract. An assigned source
+identity does not by itself imply an accepted registry image or production
 deployment. The loader exposes bounded overrides for controlled tests, but
 parser capability does not define what belongs in production Compose.
 
@@ -38,13 +38,20 @@ with a fresh live Compose and audit every explicit `PREDICTIVE_*` value.
 | `API_AUTH_ENABLED` | true when `TOKEN` is set | Require bearer authentication |
 | `API_AUTH_PATHS` | `PIG_PATHS` | Authenticated generation paths |
 | `PROXY_TIMEOUT_SECONDS` | `1800` | End-to-end upstream timeout |
-| `PIG_STATUS_LOG_INTERVAL_SECONDS` | `5` | Status log interval; `0` disables periodic lines |
+| `PIG_STATUS_LOG_INTERVAL_SECONDS` | `30` | Compact Controller status interval; `0` disables periodic lines |
+| `PIG_LOG_LEVEL` | `info` | `info` emits compact events; `debug` also emits decision detail |
 | `UPSTREAM_ERROR_CLASSIFICATION_ENABLED` | `true` | Preserve the bounded upstream error classifier |
 
 Attestation infrastructure remains configurable with `ATTESTATION_ENABLED`,
 `ATTESTATION_DSTACK_ENDPOINT`, `TLS_CERT_PATH`, `ATTESTATION_GPU_ARCH`, the
 NVIDIA evidence command/payload settings, and their timeout. These values do
 not alter admission policy.
+
+Keep `PIG_LOG_LEVEL` absent in normal production Compose. A temporary
+`PIG_LOG_LEVEL=debug` adds one extended numeric record after each already
+rate-limited protection summary; it does not log prompts, request bodies,
+credentials, request IDs, or endpoint hosts. Remove the override after the
+diagnostic window. Prefer `/pig/metrics` for continuous high-detail analysis.
 
 ## Predictive source defaults
 

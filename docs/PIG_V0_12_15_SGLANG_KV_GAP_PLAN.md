@@ -1,5 +1,9 @@
 # PIG v0.12.15 Cache-Aware Backend Contract And Release Plan
 
+Status: historical v0.12.15/v0.12.16 design, correction, and release evidence.
+It is retained for provenance, not as a current configuration or deployment
+guide. See `docs/README.md` for the current contract documents.
+
 ## 1. Objective
 
 Maximize sustained aggregate throughput subject to bounded QoS degradation.

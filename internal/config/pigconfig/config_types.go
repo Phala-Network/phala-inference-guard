@@ -20,6 +20,7 @@ type Config struct {
 	PathSuffixMatch                    bool
 	ProxyTimeout                       time.Duration
 	StatusLogInterval                  time.Duration
+	LogLevel                           string
 	UpstreamErrorClassificationEnabled bool
 
 	AttestationEnabled               bool
