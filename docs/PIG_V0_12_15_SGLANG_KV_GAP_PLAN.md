@@ -2152,3 +2152,145 @@ would ignore bursty demand and the fact that protection intervals were already
 GPU-busy. Continue ordinary monitoring, but require a repeated time-aligned
 healthy-TPS, idle-GPU, request-fit protection pattern before starting a new
 red-test/release loop.
+
+### v0.12.16 vLLM H200 reference-25 and `use1-4c` normalized comparison
+
+This later section is a separate vLLM/H200 live-traffic evaluation on dev CVM
+`311bbcdb-e348-4922-b37d-541755b09ff7` (`gemma4-31b-it-use1-dev`, Router name
+`use1-19`). It does not replace or reinterpret the preceding SGLang evidence.
+The exact running PIG image remained
+`ghcr.io/phala-network/phala-inference-guard:0.12.16@sha256:1a3f85875a436cbd33c5ddc77a2c81084cac41a70ef11869ad2b815e1353e2e0`,
+source revision `031b9ce441ff90a7c1767b727f8c8579d3082e93`. No PIG, vLLM,
+HAProxy, ingress, or CVM restart occurred during either accepted window.
+
+The initial authoritative 30-minute window ran from
+`2026-08-20T01:43:20.446Z` through `02:13:20.446Z` with reference 45. All 360
+samples were complete. It measured 52.482 mean-active TPS, 44.300 p05,
+113.890 completed-output tokens/s, 738 accepted and 735 completed requests,
+41.94% backpressure occupancy, zero waiting, zero preemptions, 72.52% mean GPU
+utilization, and 84.65% mean GPU utilization while protected. This proved that
+45 was conservative for this traffic window.
+
+The authenticated runtime policy API then changed only the TPS reference from
+45 to 25 at `2026-08-20T02:39:02.520Z`, revision 2, source `runtime_api`.
+The host Compose was independently synchronized to
+`PREDICTIVE_TPS_REFERENCE=25` without recreating a container; its SHA-256 became
+`b604668038ccad365f0a3c53f5b781aa4c74543b2e73c99d1a6bc674a699f721`.
+Restart still restores the startup file, while a future control-plane redeploy
+must first refresh the dev-host Compose because the older control-plane
+snapshot can still show 45. A mixed 45/25 collector was explicitly marked
+aborted and is not performance evidence.
+
+The independent reference-25 window ran from `2026-08-20T02:40:52.539Z`
+through `03:10:52.539Z`. All 360 samples and every frozen evidence checksum
+verified. The 1,795-second counter interval measured:
+
+```text
+TPS reference                                      25.000
+ready mean-active TPS mean/p05/min                 45.486 / 35.208 / 29.771
+ready samples below 25 / below 22.5                0 / 0
+completed output-token goodput                     177.094 tokens/s
+accepted / completed / failed requests             1,789 / 1,771 / 0
+PIG proxy errors / vLLM preemptions                 0 / 0
+vLLM waiting mean/p95/max                          0.017 / 0 / 2
+backpressure occupancy                             17.22%
+GPU utilization mean / protected mean              63.10% / 85.39%
+healthy-TPS protected samples below 50% GPU         0
+KV usage mean/p95/max                              1.97% / 7.05% / 10.15%
+backend running mean/p95/max                       4.07 / 15 / 22
+backend prefix-cache token hit share               40.92%
+PIG cache-evidence-valid sample share              9.72%
+pre-forward mean latency                           0.328 ms
+```
+
+Suppression-weighted decision logs contained approximately 2,514 TPS-reference,
+1,845 Prefill-budget, and 38 input-limit protections. All protected requests
+declared a finite output limit and about 95.9% used 65,536; no rejected decision
+was marked as spending a QoS surplus lease. This is not by itself proof that
+the declared limit should be ignored: the realized completion cohort was much
+shorter, but any one admitted request can still consume its declared lifetime.
+Replacing the bound with an observed-average output length would add a learned
+workload assumption that is not authorized by the current design. Likewise,
+the 40.92% backend-wide cache-hit share cannot safely be credited to every next
+request when request-specific prefix identity is unavailable. The current cold
+fallback remains the safe interpretation of invalid or sparse cache evidence.
+
+To test the visual claim that the new PIG was stricter than old PIG, a separate
+read-only collector sampled authenticated vLLM, PIG, and Router metrics for
+`use1-19` and `use1-4c` on the same five-second clock from
+`2026-08-20T02:54:27.541Z` through `03:14:27.543Z`. All 240 paired samples were
+complete. This is a production control, not a controlled A/B: both endpoints
+serve the same model identity and 262,144-token context on one H200, but
+`use1-19` uses a newer vLLM build, FP8 KV, 0.98 GPU memory utilization and
+2,006,777 KV tokens, while `use1-4c` uses auto/BF16 KV, 0.91 GPU memory
+utilization and 862,437 KV tokens. Their active requests also had radically
+different output lifetimes.
+
+```text
+metric                                      use1-19 v0.12.16    use1-4c legacy
+completed output-token goodput                    225.305             435.558 tok/s
+backend running mean/p95/max                   6.19/20/26          20.61/23.1/38
+tokens/active-sequence-second                       36.421              21.180
+same metric when running >=20                       31.187              20.647
+KV usage mean/max                                3.05%/11.60%        77.50%/94.64%
+prefix-cache token hit share                        37.01%              26.08%
+Router attempts / 429                          4,613/3,312          2,561/2,481
+Router non-429 attempts                              1,301                  80
+PIG accepted / completed                         1,302/1,291               81/70
+Router selectable sample share                       83.33%              18.33%
+waiting mean / preemption delta                    0.025/0                 0/0
+window generation tokens per completed request       208.6             7,435.6
+```
+
+The final ratio is cohort-level context, not request-by-request attribution.
+It proves why raw output-token curves cannot diagnose admission strictness:
+`use1-4c` entered the window carrying roughly twenty long Decode streams, while
+`use1-19` completed many more short requests. The legacy node produced 1.93x
+the aggregate output goodput but admitted only 1/16 as many successful new
+attempts and ran at about 21.18 tokens/s per active sequence, below the 25
+reference. The new node was materially more available and more permissive.
+
+The new node still has a bounded optimization margin: at running >=20 it
+delivered about 31.19 tokens/s per active sequence, and it reached 26 running
+with zero preemptions. A linear ceiling estimate therefore suggests capacity
+near 28 sequences for that particular Decode-heavy segment. That is a small
+candidate margin, not evidence for copying the legacy limit or disabling the
+TPS gate. The mature idle-refill hypothesis also did not explain the observed
+rejections: only 12 of 2,514 suppression-weighted TPS-reference protections had
+backend running zero and a sequence limit at or below two. All genuinely idle,
+low-GPU samples were open.
+
+Three review passes therefore retain v0.12.16 and reference 25 without a new
+source or image revision:
+
+1. Model and causality: time-aligned non-429 attempts, completed-output tokens,
+   active sequence-seconds, request-cohort lifetime, cache counters, and KV
+   capacity were separated. The raw graph difference is dominated by long
+   Decode backlog on `use1-4c`; it does not show that v0.12.16 rejects more.
+   Reference 25 released substantial capacity relative to 45, while the new
+   node's loaded per-sequence TPS remained above the target.
+2. Safety and lifecycle: the reference-25 window had no TPS violation,
+   preemption, proxy failure, fatal marker, OOM, or restart. Protection samples
+   were GPU-busy and there was no sustained healthy-TPS, idle-GPU lock. Atomic
+   reservations, long-output liability, Prefill protection, and conservative
+   cache fallback must not be removed merely to raise a utilization graph.
+3. Evidence and release: both accepted collectors were read-only, complete,
+   error-free, and hash-verified. This evidence does not justify a v0.12.17
+   red-test/release loop. Reopen source work only if a repeated matched-workload
+   window shows SLO-compliant protected capacity remaining unused, or a
+   controlled candidate raises completed-output goodput while retaining
+   long-run TPS, zero preemptions, and lifecycle safety.
+
+Material local evidence SHA-256 values are:
+
+```text
+reference-45 samples   c02a3edefb63a1ac6d8b8c0a79ac99dde7afe21ab543515aed1e3c352224c884
+reference-45 summary   cc4947f28464df0f338d7ba20529d74dc9567fca9ba1149eecb505de2f503504
+reference-25 samples   fe1eb98330b18ef8c57a7d4c250af7f12b86357c976b1442fa6456397337d15e
+reference-25 summary   4cb35c72a5b270cec3cfe6a48b09de3992256febd3e051cc6f0defcfb8a27e41
+reference-25 logs      bb99cd70d4b4ed9168f7933d4633bea90d3099f32de9d0629d7fc06acf559924
+reference-25 manifest  33550e33cc2f34c5fca6ebb7d7519dcccc7a706304ac9f282cb6eb0f4d9b37af
+paired samples         9fae50520b59ca912920f5d64dc301ce6dbae5c1abc6b4685d26948890d729fe
+paired summary         7010079532a02fef1547b7863c40f1e848ce974b4b6482a538a990183bb62a23
+paired metadata        d0ba26b59306aa10f02284f3fec3a7ecb1eb7b0cc7ab949edc352db49619499b
+```
