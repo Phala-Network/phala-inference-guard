@@ -36,6 +36,14 @@ Status: accepted and published image, PIG-only deployment, Router contract, and
 `0091241bc9edc30f0f7ff50010504225d3fa14c8`; later documentation-only commits do
 not change that image identity.
 
+A later read-only audit found one vLLM host-memory OOM more than three hours
+after the formal window. PIG, HAProxy, and ingress did not restart; PIG closed
+on stale backend observations and reopened after vLLM recovered. This does not
+change the complete formal-window result or PIG executable identity, but the
+serving chain must not be described as lifecycle-clean beyond that measured
+window. The versioned release plan records the exact boundary and current
+recovery state.
+
 Plan and progress:
 
 1. Audit current source, documentation, log emitters, and retained history:

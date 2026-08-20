@@ -2432,3 +2432,47 @@ HAProxy log             aed047f5ccb1616efc1ea0b236360381c10b902a93c8d2e566790a5f
 manifest                88700abe69de4c1a86f15ce5b8e7ab58e3f1d61e98b134fff2f06fa87eb0aab9
 manifest verification   07338bbb23d0ac823ec34717f7d8bb6d92ed052c0bfaacabd1f5a8f59c79488e
 ```
+
+### v0.12.17 post-window backend OOM and recovery boundary
+
+A final read-only audit at `2026-08-20T23:52Z` found one material event after
+the accepted window. At `19:44:24Z`, more than three hours after the formal
+window ended, the host global OOM killer selected vLLM's `VLLM::EngineCore`.
+The Docker event is `oom` for the unchanged vLLM container
+`f2c4c324fb4c076d027c5a25ccb180cdbbf1a7a53250a41b2c202334c0cb0903`;
+the kernel recorded `183,789,812` KiB anonymous RSS for the victim process.
+Docker restarted vLLM once at `19:44:34Z`. This is outside every counter,
+lifecycle, and log assertion made for the authoritative 30-minute window, but
+it prevents extending that window's zero-OOM conclusion to the later lifetime
+of the complete serving chain.
+
+The time-aligned evidence does not identify a PIG admission defect. Immediately
+before the OOM, vLLM reported 19 running, zero waiting, 15.8% GPU KV use, and
+zero preemptions. At `19:43:07Z`, PIG rejected an estimated 1,276,173-token
+request as `input_limit`; it was not forwarded. The kernel victim consumed
+about 175 GiB of anonymous host memory, while PIG used approximately 18 MiB at
+the final audit. The source of the vLLM host-RSS expansion is not proven and
+must not be inferred from GPU KV use, request count, or the process that made
+the final failing allocation.
+
+PIG's recovery path behaved as designed without a restart. After backend
+metrics disappeared it reported `observation_stale`, removed live admission
+reservations, and projected availability protection to Router. After vLLM
+finished loading, PIG accepted coherent observations again and reopened. At
+the final audit:
+
+- host Compose SHA-256 remained
+  `657ec752b94fe0100dcb3de99f4a22c27094ce3f5503f32239741f089a0f9bcd`;
+- PIG, HAProxy, and ingress remained on their accepted container identities
+  with restart count zero and no OOM;
+- vLLM health returned 200 and its current process used about 11.05 GiB after
+  more than four hours without another OOM event, but its restart count is one;
+- PIG remained `PIG-v0.12.17`, enforce, TPS reference 25, with capability
+  geometry `1,977,660 / 64 / 262,144` matching the recovered backend;
+- Router metrics were fresh (`ok=true`, `stale=false`) and the enabled set
+  remained exactly `["use1-19","use1-4c"]`.
+
+Therefore v0.12.17 remains accepted as the measured PIG release; no PIG source
+change or rollback is supported by this event. The r12/vLLM host-memory event is
+a separate backend incident. If it recurs, investigate and bound that memory
+path with backend evidence rather than weakening or complicating PIG admission.
