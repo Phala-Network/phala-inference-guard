@@ -63,6 +63,7 @@ type proxyServer struct {
 	backendUnavailable        atomic.Uint64
 	predictiveEnforcedRejects atomic.Uint64
 	admissionFailures         admissionFailureCounters
+	requestEvidence           requestEvidence
 	policyUpdates             predictivePolicyUpdateCounters
 	decisionDuration          durationHistogram
 	bodyReadDuration          durationHistogram

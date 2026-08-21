@@ -26,8 +26,13 @@ type Classifier struct {
 }
 
 type Classification struct {
-	Cost   kvadmission.Cost
-	Timing ClassificationTiming
+	Cost              kvadmission.Cost
+	Timing            ClassificationTiming
+	JSONFieldsKnown   bool
+	StreamingPresent  bool
+	StreamingKnown    bool
+	Streaming         bool
+	DecodeSequences   int64
 }
 
 type ClassificationTiming struct {

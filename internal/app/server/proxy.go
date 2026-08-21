@@ -47,6 +47,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	decisionStart := time.Now()
 	classification, protocolError := s.requestClassifier.ClassifyRequest(r)
+	s.requestEvidence.Record(classification)
 	if classification.Timing.BodyReadMeasured {
 		s.bodyReadDuration.Observe(classification.Timing.BodyRead)
 	}

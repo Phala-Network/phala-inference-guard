@@ -22,6 +22,9 @@ type JSONFields struct {
 	MaximumExplicitPromptTokens    int64
 	DecodeSequences                int64
 	ShapeSupported                 bool
+	StreamingPresent               bool
+	StreamingKnown                 bool
+	Streaming                      bool
 }
 
 type promptElementKind uint8
@@ -126,6 +129,18 @@ func (p *jsonFieldParser) parseRootObject(fields []string) (JSONFields, bool) {
 				decodeCandidates = int64(candidate)
 			}
 		}
+		if jsonStringSpanEquals(key, "stream") {
+			streaming, valid := parseJSONBoolean(value)
+			switch {
+			case !result.StreamingPresent:
+				result.StreamingPresent = true
+				result.StreamingKnown = valid
+				result.Streaming = streaming
+			case !valid || !result.StreamingKnown || result.Streaming != streaming:
+				result.StreamingKnown = false
+				result.Streaming = false
+			}
+		}
 
 		p.skipSpace()
 		switch {
@@ -146,15 +161,30 @@ func finalizeJSONFields(result JSONFields, decodeCandidates int64) JSONFields {
 	if !result.ShapeSupported || result.PromptBatchSize <= 0 || decodeCandidates <= 0 ||
 		result.PromptBatchSize > math.MaxInt64/decodeCandidates {
 		return JSONFields{
-			OutputTokens:    result.OutputTokens,
-			HasOutputTokens: result.HasOutputTokens,
-			PromptBatchSize: 1,
-			ShapeSupported:  false,
-			DecodeSequences: 0,
+			OutputTokens:     result.OutputTokens,
+			HasOutputTokens:  result.HasOutputTokens,
+			PromptBatchSize:  1,
+			ShapeSupported:   false,
+			DecodeSequences:  0,
+			StreamingPresent: result.StreamingPresent,
+			StreamingKnown:   result.StreamingKnown,
+			Streaming:        result.Streaming,
 		}
 	}
 	result.DecodeSequences = result.PromptBatchSize * decodeCandidates
 	return result
+}
+
+func parseJSONBoolean(value []byte) (bool, bool) {
+	if len(value) == len("true") &&
+		value[0] == 't' && value[1] == 'r' && value[2] == 'u' && value[3] == 'e' {
+		return true, true
+	}
+	if len(value) == len("false") &&
+		value[0] == 'f' && value[1] == 'a' && value[2] == 'l' && value[3] == 's' && value[4] == 'e' {
+		return false, true
+	}
+	return false, false
 }
 
 func (p *jsonFieldParser) parseValue() bool {

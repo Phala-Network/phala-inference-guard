@@ -89,25 +89,34 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 	r.ContentLength = originalLength
 
 	estimatorStarted := time.Now()
-	var protocolError *ProtocolError
-	classification.Cost, protocolError = c.classifyBufferedJSON(body)
-	classification.Timing.Estimator = time.Since(estimatorStarted)
-	classification.Timing.EstimatorMeasured = true
-	return classification, protocolError
+	classified, protocolError := c.classifyBufferedJSON(body)
+	classified.Timing = classification.Timing
+	classified.Timing.Estimator = time.Since(estimatorStarted)
+	classified.Timing.EstimatorMeasured = true
+	return classified, protocolError
 }
 
-func (c *Classifier) classifyBufferedJSON(body []byte) (kvadmission.Cost, *ProtocolError) {
+func (c *Classifier) classifyBufferedJSON(body []byte) (Classification, *ProtocolError) {
 	fields, valid := domainrequest.ParseJSONFields(body, c.cfg.OutputTokenFields)
 	if !valid {
 		if !json.Valid(body) {
-			return kvadmission.Cost{UnsupportedReason: "invalid_json"}, &ProtocolError{Reason: "invalid_json"}
+			return Classification{Cost: kvadmission.Cost{UnsupportedReason: "invalid_json"}},
+				&ProtocolError{Reason: "invalid_json"}
 		}
-		return kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}, nil
+		return Classification{Cost: kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}}, nil
+	}
+	classification := Classification{
+		JSONFieldsKnown:  true,
+		StreamingPresent: fields.StreamingPresent,
+		StreamingKnown:   fields.StreamingKnown,
+		Streaming:        fields.Streaming,
+		DecodeSequences:  fields.DecodeSequences,
 	}
 	if !fields.ShapeSupported {
-		return kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}, nil
+		classification.Cost = kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}
+		return classification, nil
 	}
-	cost := kvadmission.EstimateValidatedJSONWithShape(
+	classification.Cost = kvadmission.EstimateValidatedJSONWithShape(
 		body,
 		fields.OutputTokens,
 		fields.HasOutputTokens,
@@ -123,7 +132,7 @@ func (c *Classifier) classifyBufferedJSON(body []byte) (kvadmission.Cost, *Proto
 		},
 		c.cfg.Estimator,
 	)
-	return cost, nil
+	return classification, nil
 }
 
 func (c *Classifier) readBoundedRequestBody(body io.Reader, contentLength, maximum int64) (*bytes.Buffer, error) {

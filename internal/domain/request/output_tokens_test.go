@@ -20,6 +20,34 @@ func TestParseJSONFieldsExtractsOutputTokens(t *testing.T) {
 	}
 }
 
+func TestV01218ParseJSONFieldsPreservesTopLevelStreamingEvidenceWithoutChangingShape(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		present   bool
+		known     bool
+		streaming bool
+	}{
+		{name: "true", body: `{"stream":true,"prompt":"x"}`, present: true, known: true, streaming: true},
+		{name: "false", body: `{"stream":false,"prompt":"x"}`, present: true, known: true},
+		{name: "unspecified", body: `{"prompt":"x"}`},
+		{name: "invalid type", body: `{"stream":"yes","prompt":"x"}`, present: true},
+		{name: "nested is not root", body: `{"messages":[{"stream":true}]}`},
+		{name: "same duplicate", body: `{"stream":true,"stream":true}`, present: true, known: true, streaming: true},
+		{name: "conflicting duplicate", body: `{"stream":true,"stream":false}`, present: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fields, valid := ParseJSONFields([]byte(test.body), nil)
+			if !valid || !fields.ShapeSupported || fields.DecodeSequences != 1 ||
+				fields.StreamingPresent != test.present || fields.StreamingKnown != test.known ||
+				fields.Streaming != test.streaming {
+				t.Fatalf("streaming evidence=%+v valid=%t", fields, valid)
+			}
+		})
+	}
+}
+
 func TestV01215ParseJSONFieldsDerivesDecodeMultiplicityAndExplicitPromptTokens(t *testing.T) {
 	tests := []struct {
 		name           string
