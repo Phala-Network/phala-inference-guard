@@ -367,21 +367,21 @@ func TestV01218EndpointEstimatorPreservesExactTokenIDPromptShape(t *testing.T) {
 
 func TestV01218EndpointEstimatorValidatesCompletionFanoutFields(t *testing.T) {
 	tests := []struct {
-		name       string
-		body       string
-		supported  bool
+		name      string
+		body      string
+		supported bool
 		sequences int64
 	}{
 		{
-			name:       "null best of is unspecified",
-			body:       `{"prompt":["one","two"],"best_of":null,"max_tokens":32}`,
-			supported:  true,
+			name:      "null best of is unspecified",
+			body:      `{"prompt":["one","two"],"best_of":null,"max_tokens":32}`,
+			supported: true,
 			sequences: 2,
 		},
 		{
-			name:       "same best of duplicate",
-			body:       `{"prompt":["one","two"],"best_of":2,"best_of":2,"max_tokens":32}`,
-			supported:  true,
+			name:      "same best of duplicate",
+			body:      `{"prompt":["one","two"],"best_of":2,"best_of":2,"max_tokens":32}`,
+			supported: true,
 			sequences: 4,
 		},
 		{
