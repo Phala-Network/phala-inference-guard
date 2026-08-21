@@ -91,6 +91,50 @@ func TestV01215ClassifierIdleBodyRetentionIsBounded(t *testing.T) {
 	}
 }
 
+func TestV01218ClassifierBoundsUnknownLengthOutstandingBodyBytes(t *testing.T) {
+	const body = `{"prompt":"hello","max_tokens":8}`
+	classifier := New(Config{
+		MaximumBodyBytes:  4 * 1024 * 1024,
+		MaximumConcurrent: 64,
+		OutputTokenFields: []string{"max_tokens"},
+		Estimator:         kvadmission.DefaultEstimatorConfig(),
+	})
+
+	requests := make([]*http.Request, 0, 9)
+	defer func() {
+		for _, request := range requests {
+			_ = request.Body.Close()
+		}
+	}()
+	newUnknownLengthRequest := func() *http.Request {
+		request := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(body))
+		request.ContentLength = -1
+		requests = append(requests, request)
+		return request
+	}
+
+	for index := 0; index < 8; index++ {
+		classification, protocolError := classifier.ClassifyRequest(newUnknownLengthRequest())
+		if protocolError != nil || !classification.Cost.Supported {
+			t.Fatalf("unknown-length request %d was not classified: protocol=%+v cost=%+v", index, protocolError, classification.Cost)
+		}
+	}
+
+	saturated, protocolError := classifier.ClassifyRequest(newUnknownLengthRequest())
+	if protocolError != nil || saturated.Cost.Supported ||
+		saturated.Cost.UnsupportedReason != "classifier_saturated" || classifier.Rejected() != 1 {
+		t.Fatalf("ninth maximum-weight body was not bounded: protocol=%+v cost=%+v rejected=%d", protocolError, saturated.Cost, classifier.Rejected())
+	}
+
+	if err := requests[0].Body.Close(); err != nil {
+		t.Fatalf("close first preserved body: %v", err)
+	}
+	replacement, protocolError := classifier.ClassifyRequest(newUnknownLengthRequest())
+	if protocolError != nil || !replacement.Cost.Supported {
+		t.Fatalf("released byte budget did not admit replacement: protocol=%+v cost=%+v", protocolError, replacement.Cost)
+	}
+}
+
 func TestV0121UnsupportedContentTypePrecedesJSONSyntaxClassification(t *testing.T) {
 	const body = `not-json-but-owned-by-the-upstream`
 	classifier := New(Config{
