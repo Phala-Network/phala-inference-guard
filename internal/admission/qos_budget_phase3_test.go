@@ -94,6 +94,56 @@ func TestV01218ProductionControllerUsesBoundedTPSDebtHorizon(t *testing.T) {
 	}
 }
 
+func TestV01218TPSDebtSimulationRetainsDeclaredLifetimeBaseline(t *testing.T) {
+	start := time.Unix(11_950, 0)
+	clock := &manualAdmissionClock{at: start}
+	capability := testCapability()
+	controller, err := NewTPSDebtSimulationController(ControllerConfig{
+		Capability: capability, WorkProfile: testRequestWorkProfile(),
+		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+
+	publishObservation(t, controller, testObservation(capability, start, 0, 7, 0, 0, 0))
+	for step := 1; step <= 4; step++ {
+		at := start.Add(time.Duration(step) * 500 * time.Millisecond)
+		clock.Set(at)
+		publishObservation(t, controller, testObservation(
+			capability,
+			at,
+			0,
+			7,
+			0,
+			uint64(step*75),
+			0,
+		))
+	}
+
+	estimate := testEstimate(1, 1, 16)
+	estimate.OutputLimitTokens = 95_000
+	estimate.OutputLimitKnown = true
+	decision := controller.Admit(clock.Now(), estimate).Decision
+	if decision.Admitted() || decision.TPSQoSBudgeted ||
+		decision.TPSDecisionSubreason != TPSDecisionSubreasonQoSBudgetLifetime {
+		t.Fatalf("declared-lifetime simulation baseline changed: %+v", decision)
+	}
+}
+
+func TestV01218TPSDebtSimulationRejectsInvalidControlHorizon(t *testing.T) {
+	config := ControllerConfig{
+		Capability: testCapability(), WorkProfile: testRequestWorkProfile(),
+		TPS: TPSPolicyConfig{Reference: 20},
+	}
+	for _, horizon := range []time.Duration{-time.Nanosecond, tpsWindowDuration + time.Nanosecond} {
+		if _, err := NewTPSDebtSimulationController(config, horizon); err == nil {
+			t.Fatalf("invalid control horizon %s was accepted", horizon)
+		}
+	}
+}
+
 func TestV01218BoundedQoSBudgetSimulationStillRequiresEnoughHorizonSurplus(t *testing.T) {
 	state := ProjectedState{
 		RawRunning:               7,
@@ -132,7 +182,7 @@ func TestV01218BoundedQoSBudgetLeaseDoesNotExpireAtSoftHorizon(t *testing.T) {
 			start := time.Unix(12_000, 0)
 			clock := &manualAdmissionClock{at: start}
 			capability := testCapability()
-			controller, err := NewBoundedTPSDebtSimulationController(ControllerConfig{
+			controller, err := NewTPSDebtSimulationController(ControllerConfig{
 				Capability: capability, WorkProfile: testRequestWorkProfile(),
 				TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
 			}, time.Second)

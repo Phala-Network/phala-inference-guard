@@ -5,11 +5,17 @@ import (
 	"time"
 )
 
+const defaultTPSDebtControlHorizon = 10 * time.Second
+
 // qosBudgetForecast spends rolling per-sequence TPS surplus only when the
-// selected forecast duration fits the remaining budget. Its zero value keeps
-// the production complete-declared-lifetime policy.
+// selected forecast duration fits the remaining budget. Its zero value is the
+// explicit complete-declared-lifetime simulation baseline.
 type qosBudgetForecast struct {
 	controlHorizon time.Duration
+}
+
+func defaultQoSBudgetForecast() qosBudgetForecast {
+	return qosBudgetForecast{controlHorizon: defaultTPSDebtControlHorizon}
 }
 
 func (f qosBudgetForecast) sequenceLimit(

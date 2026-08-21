@@ -41,7 +41,7 @@ func newAdmissionPolicy(
 	capability Capability,
 	workProfile predictive.BackendExecutionProfile,
 ) (admissionPolicy, error) {
-	return newAdmissionPolicyWithQoSBudget(capability, workProfile, qosBudgetForecast{})
+	return newAdmissionPolicyWithQoSBudget(capability, workProfile, defaultQoSBudgetForecast())
 }
 
 func newAdmissionPolicyWithQoSBudget(

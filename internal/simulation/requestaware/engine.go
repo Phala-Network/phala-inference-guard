@@ -141,16 +141,10 @@ func runScenarioWithTPSDebtHorizon(
 			TPS:         coreadmission.TPSPolicyConfig{Reference: tpsReference},
 			Now:         func() time.Time { return runner.now },
 		}
-		var controller *coreadmission.AdmissionController
-		var controllerErr error
-		if controlHorizon > 0 {
-			controller, controllerErr = coreadmission.NewBoundedTPSDebtSimulationController(
-				controllerConfig,
-				controlHorizon,
-			)
-		} else {
-			controller, controllerErr = coreadmission.NewAdmissionController(controllerConfig)
-		}
+		controller, controllerErr := coreadmission.NewTPSDebtSimulationController(
+			controllerConfig,
+			controlHorizon,
+		)
 		if controllerErr != nil {
 			return Metrics{}, 0, fmt.Errorf("construct candidate AdmissionController: %w", controllerErr)
 		}
