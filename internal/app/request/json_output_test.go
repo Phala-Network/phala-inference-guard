@@ -579,6 +579,14 @@ func TestV01218EndpointEstimatorHandlesResponsesVisibleAndHiddenContext(t *testi
 		t.Fatalf("nested Responses item reference was treated as visible context: %+v", nestedReference.Cost)
 	}
 
+}
+
+func TestV01218EndpointEstimatorTreatsWhitespaceEmptyExternalContextAsEmpty(t *testing.T) {
+	base := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		`{"instructions":"guide","input":"hello","max_output_tokens":32}`,
+	)
 	emptyReference := classifyEndpointFixture(
 		t,
 		"/v1/responses",
