@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -171,6 +172,82 @@ func TestV01218TPSMetricsExposeDecisionAndDenominatorSourcesWithoutChangingAdmis
 	} {
 		if !strings.Contains(metricsBody, want) {
 			t.Fatalf("cumulative TPS evidence missing %q\nmetrics:\n%s", want, metricsBody)
+		}
+	}
+}
+
+func TestV01218ResponseUsageEvidenceDistinguishesAvailableUnavailableMalformedAndCensored(t *testing.T) {
+	responses := []string{
+		`{"choices":[{}],"usage":{"prompt_tokens":10,"completion_tokens":50}}`,
+		`{"choices":[{}]}`,
+		`{"choices":[{}],"usage":{"completion_tokens":"bad"}}`,
+	}
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := int(backendCalls.Add(1)) - 1
+		if call < 0 || call >= len(responses) {
+			t.Fatalf("unexpected response-usage upstream call %d", call)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(responses[call]))
+	}))
+	defer backend.Close()
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+
+	serve := func(content string, outputLimit int) *httptest.ResponseRecorder {
+		t.Helper()
+		body := fmt.Sprintf(
+			`{"model":"model-agnostic","messages":[{"role":"user","content":%q}],"max_tokens":%d}`,
+			content,
+			outputLimit,
+		)
+		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		srv.ServeHTTP(response, request)
+		return response
+	}
+
+	for index, outputLimit := range []int{64, 256, 1_024} {
+		response := serve("usage evidence", outputLimit)
+		if response.Code != http.StatusOK || response.Body.String() != responses[index] {
+			t.Fatalf(
+				"response-usage fixture %d changed proxy response: status=%d body=%q",
+				index,
+				response.Code,
+				response.Body.String(),
+			)
+		}
+	}
+	protected := serve(strings.Repeat("x ", 10_000), 4_096)
+	if protected.Code != http.StatusTooManyRequests || backendCalls.Load() != 3 {
+		t.Fatalf(
+			"censored fixture changed admission: status=%d backend_calls=%d body=%q",
+			protected.Code,
+			backendCalls.Load(),
+			protected.Body.String(),
+		)
+	}
+
+	var output bytes.Buffer
+	srv.writeLocalMetrics(&output)
+	metricsBody := output.String()
+	for _, want := range []string{
+		`pig_predictive_response_usage_outcomes_total{outcome="available"} 1`,
+		`pig_predictive_response_usage_outcomes_total{outcome="unavailable"} 1`,
+		`pig_predictive_response_usage_outcomes_total{outcome="malformed"} 1`,
+		`pig_predictive_response_usage_outcomes_total{outcome="censored"} 1`,
+		`pig_predictive_output_limit_comparison_total{actual_bucket="le_64",declared_bucket="le_64"} 1`,
+		`pig_predictive_output_limit_comparison_total{actual_bucket="unavailable",declared_bucket="le_256"} 1`,
+		`pig_predictive_output_limit_comparison_total{actual_bucket="malformed",declared_bucket="le_1024"} 1`,
+		`pig_predictive_output_limit_comparison_total{actual_bucket="censored",declared_bucket="le_4096"} 1`,
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("bounded response-usage evidence missing %q\nmetrics:\n%s", want, metricsBody)
 		}
 	}
 }
