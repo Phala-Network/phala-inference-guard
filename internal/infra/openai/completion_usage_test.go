@@ -452,6 +452,40 @@ func BenchmarkCompletionUsageBodyNonStreamKnownLength(b *testing.B) {
 	}
 }
 
+func BenchmarkCompletionUsageEvidenceNonStream(b *testing.B) {
+	for _, size := range []int{2 * 1024, 64 * 1024, 1024 * 1024, 4 * 1024 * 1024} {
+		b.Run(fmt.Sprintf("bytes_%d", size), func(b *testing.B) {
+			prefix := `{"choices":[{}],"usage":{"completion_tokens":9},"padding":"`
+			suffix := `"}`
+			padding := size - len(prefix) - len(suffix)
+			if padding < 0 {
+				b.Fatal("benchmark payload size is too small")
+			}
+			payload := prefix + strings.Repeat("x", padding) + suffix
+			b.ReportAllocs()
+			b.SetBytes(int64(len(payload)))
+			b.ResetTimer()
+			for b.Loop() {
+				calls := 0
+				body := ObserveCompletionUsageEvidenceBody(
+					io.NopCloser(strings.NewReader(payload)),
+					false,
+					func(evidence CompletionUsageEvidence) {
+						if evidence.Outcome != CompletionUsageAvailable {
+							b.Fatalf("completion usage outcome = %d", evidence.Outcome)
+						}
+						calls++
+					},
+				)
+				_, _ = io.Copy(io.Discard, body)
+				if calls != 1 {
+					b.Fatalf("completion evidence callbacks = %d", calls)
+				}
+			}
+		})
+	}
+}
+
 type chunkedReadCloser struct {
 	chunks []string
 }
