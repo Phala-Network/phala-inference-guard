@@ -177,7 +177,7 @@ func TestV01218TPSDebtAcceptanceRejectsQoSAndSafetyRegressions(t *testing.T) {
 		{name: "preemption", mutate: func(metrics *Metrics) { metrics.Preemptions++ }},
 		{name: "second lease", mutate: func(metrics *Metrics) { metrics.MaximumQoSBudgetLeases = 2 }},
 		{name: "mean TPS", mutate: func(metrics *Metrics) { metrics.MeanActiveTPS = TPSDebtSimulationReference - 1 }},
-		{name: "queue", mutate: func(metrics *Metrics) { metrics.QueueWaitP95Seconds += time.Second }},
+		{name: "queue", mutate: func(metrics *Metrics) { metrics.QueueWaitP95Seconds += time.Second.Seconds() }},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			suite, err := RunTPSDebtSuite()
