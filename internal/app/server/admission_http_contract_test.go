@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -14,6 +15,49 @@ import (
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
+
+func TestV01218AdmissionMetricsAccumulateBoundedRequestEvidenceWithoutChangingDecisions(t *testing.T) {
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"completion","choices":[]}`))
+	}))
+	defer backend.Close()
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+
+	protected := serveAdmissionRequest(t, srv, strings.Repeat("x ", 5_000))
+	admitted := serveAdmissionRequest(t, srv, "small")
+	if protected.Code != http.StatusTooManyRequests || admitted.Code != http.StatusOK ||
+		backendCalls.Load() != 1 {
+		t.Fatalf(
+			"evidence setup changed decisions: protected=%d admitted=%d backend_calls=%d",
+			protected.Code,
+			admitted.Code,
+			backendCalls.Load(),
+		)
+	}
+
+	var output bytes.Buffer
+	srv.writeLocalMetrics(&output)
+	metricsBody := output.String()
+	for _, want := range []string{
+		`pig_predictive_admission_outcomes_total{outcome="admitted"} 1`,
+		`pig_predictive_admission_outcomes_total{outcome="request_protected"} 1`,
+		`pig_predictive_admission_protections_total{reason="input_limit",scope="request"} 1`,
+		`pig_predictive_admission_estimate_confidence_total{confidence="lexical",outcome="admitted"} 1`,
+		`pig_predictive_admission_prefill_class_total{outcome="admitted",prefill_class="regular"} 1`,
+		`pig_predictive_admission_decode_fanout_total{bucket="1",outcome="admitted"} 1`,
+		`pig_predictive_admission_selection_input_tokens_bucket{le="1024",outcome="admitted"} 1`,
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("cumulative bounded admission evidence missing %q\nmetrics:\n%s", want, metricsBody)
+		}
+	}
+}
 
 func TestAdmissionHTTPInputEstimateChangesPreForwardDecision(t *testing.T) {
 	type outcome struct {
