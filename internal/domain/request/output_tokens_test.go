@@ -174,6 +174,25 @@ func TestV01218EndpointParserEscapedKeysDoNotAllocateCompleteStrings(t *testing.
 	}
 }
 
+func TestV01218EndpointParserEscapedOutputLimitDoesNotAllocateCompleteString(t *testing.T) {
+	body := []byte(`{"messages":[],"max_tokens":"\u0032\u0035"}`)
+	fields := []string{"max_tokens"}
+	allocations := testing.AllocsPerRun(10, func() {
+		benchmarkEndpointJSONFields, benchmarkJSONFieldsOK = ParseEndpointJSONFields(
+			body,
+			fields,
+			EndpointChatCompletions,
+		)
+	})
+	if !benchmarkJSONFieldsOK || !benchmarkEndpointJSONFields.ShapeSupported ||
+		!benchmarkEndpointJSONFields.HasOutputTokens || benchmarkEndpointJSONFields.OutputTokens != 25 {
+		t.Fatalf("escaped output-limit fields=%+v/%t", benchmarkEndpointJSONFields, benchmarkJSONFieldsOK)
+	}
+	if allocations != 0 {
+		t.Fatalf("escaped output-limit allocations=%.1f want 0", allocations)
+	}
+}
+
 func BenchmarkV0121ParseJSONFields4MiB(b *testing.B) {
 	prefix := []byte(`{"messages":[{"role":"user","content":"`)
 	suffix := []byte(`"}],"max_tokens":256,"stream":true}`)
