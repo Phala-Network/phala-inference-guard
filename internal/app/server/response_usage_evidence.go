@@ -111,11 +111,11 @@ func (e *responseUsageEvidence) Begin(classification apprequest.Classification) 
 		declared = declaredOutputTokenBucketFor(estimate.OutputLimitTokens)
 	}
 	return &responseUsageRequestEvidence{
-		owner:          e,
-		declared:       declared,
+		owner:    e,
+		declared: declared,
 		streamingKnown: classification.JSONFieldsKnown &&
 			(!classification.StreamingPresent || classification.StreamingKnown),
-		streaming:      classification.Streaming,
+		streaming: classification.Streaming,
 	}
 }
 
