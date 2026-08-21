@@ -19,11 +19,11 @@ type SemanticInputFeatures struct {
 }
 
 type SemanticRequestShape struct {
-	BodyBytes        int
-	BasePromptCount  int64
-	DecodeSequences  int64
-	Aggregate        SemanticInputFeatures
-	MaximumSequence  SemanticInputFeatures
+	BodyBytes       int
+	BasePromptCount int64
+	DecodeSequences int64
+	Aggregate       SemanticInputFeatures
+	MaximumSequence SemanticInputFeatures
 }
 
 func EstimateSemanticRequest(

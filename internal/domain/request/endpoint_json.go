@@ -20,17 +20,17 @@ type EndpointInputFeatures struct {
 }
 
 type EndpointJSONFields struct {
-	OutputTokens        int
-	HasOutputTokens     bool
-	BasePromptCount     int64
-	DecodeSequences     int64
-	ShapeSupported      bool
-	UnsupportedReason   string
-	StreamingPresent    bool
-	StreamingKnown      bool
-	Streaming           bool
-	Aggregate           EndpointInputFeatures
-	MaximumSequence     EndpointInputFeatures
+	OutputTokens      int
+	HasOutputTokens   bool
+	BasePromptCount   int64
+	DecodeSequences   int64
+	ShapeSupported    bool
+	UnsupportedReason string
+	StreamingPresent  bool
+	StreamingKnown    bool
+	Streaming         bool
+	Aggregate         EndpointInputFeatures
+	MaximumSequence   EndpointInputFeatures
 }
 
 type endpointFieldState struct {
