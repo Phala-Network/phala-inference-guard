@@ -195,9 +195,9 @@ func TestApproximateJSONStringTokensChargesEachShortLexicalRun(t *testing.T) {
 
 func TestApproximateJSONStringTokensChargesWhitespaceInsideTheString(t *testing.T) {
 	const spaces = 64 * 1024
-	const spaceBytesPerToken = 32
+	const portableSpaceBytesPerToken = 16
 	tokens, known := approximateJSONStringTokens([]byte(strings.Repeat(" ", spaces)))
-	want := int64(ceilDiv(spaces, spaceBytesPerToken))
+	want := int64(ceilDiv(spaces, portableSpaceBytesPerToken))
 	if !known || tokens != want {
 		t.Fatalf("string whitespace=%d/%t want %d/true", tokens, known, want)
 	}
