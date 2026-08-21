@@ -408,7 +408,13 @@ func decodeCompletionUsageEvidence(payload []byte, streaming bool) (CompletionUs
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
 	var choices []json.RawMessage
-	if json.Unmarshal(choicesPayload, &choices) != nil || (streaming && len(choices) != 0) || (!streaming && len(choices) != 1) {
+	if json.Unmarshal(choicesPayload, &choices) != nil {
+		return CompletionUsage{}, CompletionUsageMalformed
+	}
+	if streaming && len(choices) != 0 {
+		return CompletionUsage{}, CompletionUsageUnavailable
+	}
+	if !streaming && len(choices) != 1 {
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
 	usage := CompletionUsage{CompletionTokens: *envelope.Usage.CompletionTokens}

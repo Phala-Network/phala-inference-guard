@@ -17,7 +17,7 @@ func TestV01218ResponseUsageEvidenceIsFixedCardinalityAndExactOnce(t *testing.T)
 
 	request := evidence.Begin(apprequest.Classification{
 		Cost: kvadmission.Cost{Supported: true, Estimate: domainpredictive.RequestEstimate{
-			OutputLimitKnown: true,
+			OutputLimitKnown:  true,
 			OutputLimitTokens: 1_024,
 		}},
 	})

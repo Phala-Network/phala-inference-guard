@@ -113,7 +113,8 @@ func (e *responseUsageEvidence) Begin(classification apprequest.Classification) 
 	return &responseUsageRequestEvidence{
 		owner:          e,
 		declared:       declared,
-		streamingKnown: classification.JSONFieldsKnown && classification.StreamingKnown,
+		streamingKnown: classification.JSONFieldsKnown &&
+			(!classification.StreamingPresent || classification.StreamingKnown),
 		streaming:      classification.Streaming,
 	}
 }
