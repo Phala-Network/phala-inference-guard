@@ -618,7 +618,7 @@ Plan commit and push                                    complete (`c520a18`)
 Phase 0 fixed-cardinality evidence source               complete (six slices green)
 Phase 0 complete acceptance gates                       complete (`b5a53f6` executable source)
 Phase 1 endpoint-aware estimator                        complete (`87cf1e0` executable source)
-Phase 2 cross-tokenizer offline oracle                  pending
+Phase 2 cross-tokenizer offline oracle                  complete (`7eefd41` source acceptance)
 Phase 3 bounded TPS-debt simulation                     pending
 Phase 4 Prefill lifecycle decision                      pending
 Phase 5 portability/resource hardening                  pending
@@ -1020,8 +1020,146 @@ go vet ./...           e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7
 go build ./...         e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
-This closes Phase 1 source acceptance only. Phase 2 offline cross-tokenizer
-oracle, bounded TPS-debt simulation, Prefill lifecycle decision, portability
-hardening, executable identity, image, registry publication, Compose change,
-deployment, Router mutation, and live-traffic acceptance remain unverified or
-not started.
+This closes Phase 1 source acceptance only. Phase 2 evidence is recorded below;
+bounded TPS-debt simulation, Prefill lifecycle decision, portability hardening,
+executable identity, image, registry publication, Compose change, deployment,
+Router mutation, and live-traffic acceptance remain unverified or not started.
+
+### Phase 2 final acceptance and review closure
+
+Phase 2 replaces the obsolete single-Gemma exact-token test with a pinned,
+offline cross-tokenizer oracle. The production PIG binary does not load the
+manifest, tokenizer assets, model revisions, or any model-specific vocabulary.
+The production estimator remains a model-neutral bounded syntax and lexical
+walk; exact tokenizers are test-only measurement instruments.
+
+The final oracle generator source is `8700326`. Its source archive SHA-256 was
+`853818b6a26b04182bafe1fb5bb8343870387edf697c94a2daf63c505e5ba1e2`.
+The accepted manifest SHA-256 was
+`1375bb0f1d803cbfdd12f34e6a1c03d7c875ae14af7606d84effd51cc86f8dea`.
+It used Python 3.12.3, Transformers 5.15.0, tokenizers 0.22.2, and the isolated
+image
+`ghcr.io/phala-network/vllm-openai@sha256:a4b6403697a8d39da60c0ba4e326a71cd6fd1c7c94637330c8be6067fa435d0c`.
+The pinned oracle families were Qwen BPE, Mistral BPE, DeepSeek, and
+Gemma/SentencePiece. Gemma is one of four offline test families and is not a
+production algorithm parameter.
+
+Two earlier generator results were explicitly rejected. The first omitted
+`docker run -i`, so Python read EOF from stdin and produced an empty, invalid
+success. The second treated a Transformers 5.15 `BatchEncoding` mapping length
+as token count. `ab0a368` normalized Mapping, sequence, and shaped outputs and
+added a large-text sanity check. Only the manifest hash above is accepted.
+
+The hard-bound test was committed red as `031a2cf`. Its archive SHA-256 was
+`5bd5d86b29a27ee91803b1e7d7a4408fd61c555133a59eb771e8f251f6215e75`
+and red-log SHA-256 was
+`2a089f8a9ac34e46f0337d7ac1718ad7a366fb3ca1080dc827c4dab833a0dc32`.
+It failed for Mistral repeated spaces, Mistral and DeepSeek mixed whitespace,
+and a short metadata-heavy Chat request whose template overhead exceeded the
+old estimate. The focused portable-whitespace test was committed red as
+`64c4a13`; archive SHA-256 was
+`186447c3e511603805c1f96ff85d427b8f9ffd014e31a7fc89c3fe99583b75ea`
+and red-log SHA-256 was
+`6bed44d9b5ba791db04121b97c2a5c18e5cb22422728e987b47e653d854ad37f`.
+It failed only because pure spaces still used one token per 32 bytes.
+
+`f1fbb7b` added model-neutral portable whitespace bounds, a fixed internal Chat
+template base, and a denser tool-schema Selection estimate while preserving an
+independent conservative KV upper bound. `622739b` updated the superseded
+one-token-per-32-spaces unit contract. `e60a168` added a pinned v0.12.17
+comparison gate, representative-corpus allocation and concurrency gates, and a
+hot-path benchmark. `bb6d8bb` removed the obsolete single-Gemma oracle. The
+final `7eefd41` short-circuits whitespace-shape checks after the first ordinary
+character, removing unnecessary work from the common prose path without
+weakening pure-whitespace bounds.
+
+The v0.12.17 executable baseline was recomputed from exact commit
+`0091241bc9edc30f0f7ff50010504225d3fa14c8` in the same remote runner. The
+baseline archive SHA-256 was
+`091ca81b140d44912ec1259371344e46aae826667bf8d4bd80eb2c1564994537`;
+the formatted measurement harness SHA-256 was
+`cd50fbbe5ee15afb1501e078d839087ad8c4d79ec5905215cdbf7951e7715995`;
+and the baseline log SHA-256 was
+`24585b715728e30ce9828079345d7de09f035aef030ce6e9d3e4b11e9b92edcf`.
+For escaped CJK, metadata-heavy, and tool-schema fixtures, v0.12.17 KV
+reservations were 26,175, 18,446, and 13,310 tokens. The final candidate values
+were 7,826, 40, and 9,479 tokens while remaining above every declared hard KV
+oracle. Across the twelve fixture/family comparisons, KV overestimate median
+and p95 fell from 18,436/21,047 tokens to 2,677/3,527 tokens.
+
+The final Phase 2 executable source is
+`7eefd416081dc4140b5a41567acbed5ca86470eb`. Its source archive SHA-256 was
+`3c3630ed15050798fcddd915d16974d8ebb2c0af552f3b2cce973564065a04e0`.
+All final executable gates ran on f563 in
+`golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`
+with Go 1.24.13, one CPU, 4 GiB memory, 512 PIDs, `GOMAXPROCS=1`, read-only
+source, and shared module/build caches.
+
+The representative 14-fixture production estimator, including endpoint parse
+and semantic estimation but excluding prebuilt test-body construction, ran five
+samples at 79.507--80.332 microseconds per request with zero bytes and zero
+allocations per operation. The 64-worker mixed small/large corpus passed both
+native and race builds. Acceptance, acceptance-race, and benchmark log SHA-256
+values were:
+
+```text
+acceptance            8d690f883b8cd345f641f485c5fead8074a94ff3b3721c7de8592b3f7853e97c
+acceptance race       dfb742e59dca0a69e5be999ec24a019074200cc21150863c849c02fb2dc0da4e
+representative bench  f8ee7d3526baf37ac0f9c8a8cc7790a6957432c1f947a3c3bf0a16ed6bd8cb59
+```
+
+The final 4 MiB plain and escaped classifier p50/p99 results were
+24.740/27.015 ms and 28.376/29.848 ms. The common plain-body benchmark ran five
+samples at 24.643--24.899 ms/op, 88,195--101,305 B/op, and 17 allocations/op.
+All extreme estimator fixtures remained below 100 ms p99 with zero estimator
+allocations. Estimator, classifier-latency, and classifier-benchmark log
+SHA-256 values were:
+
+```text
+estimator maximum body  17af50fda3dc49a74730480647c4fda02bc5b0aa534e0987edcc2863dee8b994
+classifier latency      165ce2bd758cd1015c59576603298da041c47ca316d6d4d9a712d545ba40ed8c
+classifier benchmark    4f8955bd4ee0dabb5674cb351b6269fe51d6fd01d29127a2300b0bec431c61a7
+```
+
+Review pass 1, model and causality: Chat Completions, Completions, and Responses
+are parsed before forwarding; their endpoint-aware cost becomes
+`RequestEstimate`, is passed by `proxy.go` to the admission runtime, and is
+consumed by the Controller's atomic `Admit` decision and reservation. The
+offline oracle is embedded only by a `_test.go` file. No tokenizer asset,
+tokenizer revision, or model-specific rule enters the production binary. The
+new estimates therefore change the pre-forward counterfactual rather than
+creating disconnected telemetry. Status: complete.
+
+Review pass 2, safety and lifecycle: the hard KV reservation remained
+independent from Selection and exceeded all declared oracle counts; explicit
+token arrays remained exact at aggregate/maximum 384/256; pure spaces use at
+least one token per 16 bytes; decoded mixed whitespace uses one token per byte;
+ordinary prose retained its prior tight range. Checked arithmetic, request-body
+preservation, bounded parser depth/body size, unsupported-shape fallbacks,
+zero estimator allocations, 64-worker concurrency, and race gates all passed.
+This phase changes request-local estimation only and does not alter reservation
+release, cancellation, timeout, backend-epoch, or shutdown lifecycle. Final
+five-package and five-package-race log SHA-256 values were:
+
+```text
+five packages       349150d25f09247f4198996466fee49019d25a6c6fbc3262f015b33d32a7c302
+five packages race  bf408ae3a62185ed3c3a0b663195a75dae089db5247329faa229c88490b92159
+```
+
+Review pass 3, evidence and release: intended red causes, invalid oracle runs,
+the exact v0.12.17 baseline, final source/archive identity, performance,
+allocation, race, and complete repository gates were reviewed separately. The
+final complete repository gates all exited zero:
+
+```text
+gofmt                  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+go test ./...           d2410cb9c24f1efc743b3e06813594d26e82d1421e3b6a99740f948d5c18c2be
+go test -race ./...     a3d97e6598bf8b7200492f39b8aa0c28148d5f3267e92c42042efa3fa5335274
+go vet ./...            e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+go build ./...          e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+Status: Phase 2 source acceptance complete. This does not assign the
+`PIG-v0.12.18` executable identity and does not authorize an image build,
+registry publication, Compose change, deployment, Router mutation, or live
+traffic. The next implementation phase is Phase 3 bounded TPS-debt simulation.
