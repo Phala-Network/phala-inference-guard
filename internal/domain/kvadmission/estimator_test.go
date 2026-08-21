@@ -527,7 +527,7 @@ func estimatorEntropyText(size int) string {
 }
 
 func TestApproximateInputTokenHintExcludesTrailingJSONWhitespace(t *testing.T) {
-	trimmedBody := []byte(`{"model":"model-agnostic","prompt":"Return exactly OK.","max_tokens":8,"temperature":0}`)
+	trimmedBody := []byte(`{"model":"model-neutral-fixture","prompt":"Return exactly OK.","max_tokens":8,"temperature":0}`)
 	body := append(bytes.Clone(trimmedBody), bytes.Repeat([]byte(" "), 1_600_000)...)
 	cost := EstimateJSON(body, 8, true, DefaultEstimatorConfig())
 	trimmedCost := EstimateJSON(trimmedBody, 8, true, DefaultEstimatorConfig())
