@@ -685,3 +685,26 @@ and the complete `internal/domain/request`, `internal/app/request`, and
 Top-level streaming evidence remains observational only and preserves true,
 false, unspecified, invalid, conflicting-duplicate, and unavailable states
 without changing request bytes or admission behavior.
+
+The TPS-attribution red test was committed and pushed as
+`2ff510f739b541ecde5ca62c796c53123b785885`. Its exact archive SHA-256 was
+`bd93786e7e282b030e327fc950922e924b656aa5b1f29f8ddc7294445fe9b036`;
+the deterministic warming request remained admitted and forwarded once, and the
+test exited 1 only for the missing TPS decision metric. The red log SHA-256 was
+`d145b78b80dc18aaaab577b04241f2f1f25626dbc9983ae9948ec54ed321cf8b`.
+
+The first TPS implementation commit `6a7b32c` passed focused behavior tests but
+had non-empty formatting output, so it is not green evidence. The mechanically
+formatted final pushed source is
+`30c6939b942c90c35db48068d36824c26e5bc986`, exact archive SHA-256
+`8956c3f56c1b9d1c18829b25a52b34a6625a229147fec2cfe11d87cc540152cd`.
+On that exact source, `gofmt -d` was empty; focused tests passed with log
+SHA-256 `0ce64b38e68daed5ee3bdd3bfc4cde3a9410c674990c45b12ef4651f0a3089a8`;
+complete `internal/admission` plus `internal/app/server` race passed with log
+SHA-256 `fadaba9b0bb233cde64cd71b1dd58c6b98c6ba8208b830b2bc62a45beefa5c6e`;
+and admission, server, observability metrics, and request-aware simulation
+packages passed with log SHA-256
+`0dbd36345bde41ba40e62abb23360b623c09ffcdc2341938f264e2c591b58c40`.
+The slice records TPS gate result/subreason and raw/selected denominator source
+seconds while preserving the existing limit, forecast, maximum-denominator,
+reservation, and request behavior.
