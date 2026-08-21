@@ -392,24 +392,28 @@ func TestAdmissionHTTPInputEstimateChangesPreForwardDecision(t *testing.T) {
 func TestV01215AdmissionHTTPChargesAllDecodeSequencesBeforeForward(t *testing.T) {
 	tests := []struct {
 		name             string
+		path             string
 		body             string
 		decodeSequences  int64
 		minimumInputWork int64
 	}{
 		{
 			name: "chat n",
+			path: "/v1/chat/completions",
 			body: `{"model":"model-agnostic","messages":[{"role":"user","content":"hello"}],` +
 				`"n":8,"max_tokens":256}`,
 			decodeSequences: 8,
 		},
 		{
-			name: "string prompt batch ignores best of",
+			name: "completion string prompt batch charges best of",
+			path: "/v1/completions",
 			body: `{"model":"model-agnostic","prompt":["one","two","three"],` +
 				`"n":2,"best_of":4,"max_tokens":256}`,
-			decodeSequences: 6,
+			decodeSequences: 12,
 		},
 		{
-			name: "token id prompt batch",
+			name: "completion token id prompt batch",
+			path: "/v1/completions",
 			body: `{"model":"model-agnostic","prompt":[[1,2,3],[4,5]],` +
 				`"n":2,"max_tokens":256}`,
 			decodeSequences:  4,
@@ -428,7 +432,7 @@ func TestV01215AdmissionHTTPChargesAllDecodeSequencesBeforeForward(t *testing.T)
 				Mode: "enforce", TPSReference: 50,
 			})
 			srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
-			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(test.body))
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
 			request.Header.Set("Authorization", "Bearer secret")
 			request.Header.Set("Content-Type", "application/json")
 			response := httptest.NewRecorder()

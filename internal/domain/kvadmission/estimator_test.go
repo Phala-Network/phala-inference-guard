@@ -140,6 +140,28 @@ func TestFixedMarginTokensRejectsInvalidAndOverflowingInputs(t *testing.T) {
 	}
 }
 
+func TestV01218SemanticBatchReservationUsesTighterMaximumSequenceBound(t *testing.T) {
+	cost := Cost{
+		ApproximateInputTokens: 10,
+		EstimatedInputHigh:      10,
+		BoundedDecodeTokens:     1,
+		BasePromptCount:         2,
+		DecodeSequences:         2,
+	}
+
+	if !setSemanticPredictiveEstimate(&cost, 5, 5, false) {
+		t.Fatalf("valid batch estimate was rejected: %+v", cost)
+	}
+	estimate := cost.Estimate
+	if estimate.KVReservationInputTokens != 12 ||
+		estimate.MaximumSequenceKVReservationInputTokens != 6 {
+		t.Fatalf("batch reservation did not use the tighter per-sequence upper bound: %+v", estimate)
+	}
+	if err := estimate.Validate(); err != nil {
+		t.Fatalf("batch reservation invariant: %v estimate=%+v", err, estimate)
+	}
+}
+
 func TestApproximateJSONStringTokensSmallPrefixDoesNotDominate(t *testing.T) {
 	plain := []byte(strings.Repeat("word ", 8*1024))
 	prefixed := append([]byte(nil), plain...)
