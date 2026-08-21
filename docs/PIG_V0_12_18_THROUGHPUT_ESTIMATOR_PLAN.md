@@ -696,7 +696,8 @@ Phase 3 bounded TPS-debt simulation                     complete (`3f39bd3` exec
 Phase 4 Prefill lifecycle decision                      complete (no behavior change)
 Phase 5.1 weighted scanner body budget                  complete (`4a38fb6` executable source)
 Phase 5.2 Prefill initialization / Decode horizon       complete (no behavior change)
-Phase 5 portability/resource hardening                  in progress
+Phase 5.3 backend aggregation contracts                 complete (no behavior change)
+Phase 5 portability/resource hardening                  complete
 Complete remote source gates                            pending
 v0.12.18 executable identity                            not assigned
 Published image                                         none
@@ -1735,3 +1736,71 @@ Phase 5.2 status: complete with no executable-source change. Phase 5.3 now audit
 vLLM multi-engine/DP and SGLang DP metric aggregation. It must prefer a
 conservative no-change result over summing independent KV capacities or inferring
 request placement without an upstream contract.
+
+### Phase 5.3 vLLM multi-engine and SGLang DP aggregation decision
+
+The framework adapters intentionally do not share one rank-aggregation rule.
+The running vLLM image
+`ghcr.io/phala-network/vllm-openai:main-aa9903490-cu130-ubuntu2404-gemma4-pth-toolfix-r13`
+creates scheduler and counter series per `engine`. Its installed source labels
+each engine explicitly and states that `cache_config_info.kv_cache_size_tokens`
+is a per-engine value that must not be summed across DP. PIG therefore:
+
+- sums running, waiting, generation, preemption, and prefix-cache counters across
+  independent engine series;
+- requires one identical logical KV capacity and block size instead of
+  multiplying either by engine count;
+- uses the maximum KV usage fraction as the worst observed engine;
+- applies PIG's still-unabsorbed request reservations conservatively against
+  that per-engine geometry.
+
+This can under-admit a multi-engine backend because PIG does not know which
+engine will receive each forwarded request. Summing capacity or distributing
+reservations would be valid only if the upstream exposed a stable request
+placement/fit contract. PIG is not a router and must not predict a placement it
+does not control. Aggregate generation divided by aggregate active-sequence
+exposure remains the endpoint's long-window TPS signal; it is not a claim that
+every DP engine has identical instantaneous TPS. The inspected live backend has
+only `engine="0"`, so no multi-engine assumption affects the current target.
+
+Current SGLang source commit
+`dad6fd0f04556a9a2c09fc08388ecee45ed5a33f` emits scheduler metrics with
+`engine_type`, `tp_rank`, `pp_rank`, and an optional `dp_rank`. By default only
+the attention TP rank zero scheduler reports, while the optional all-scheduler
+mode produces duplicated views of the same replica. A different `dp_rank`
+represents an independent scheduler and KV pool. PIG consequently takes the
+maximum duplicated TP/PP gauges and counters, requires coherent identical KV
+geometry/absolute state, and rejects multiple DP identities as one admission
+capacity. Cache counters must match the admitted DP identity. This is stricter
+than vLLM's centrally exposed engine set because SGLang does not provide PIG a
+portable cross-DP placement contract.
+
+Phase 5.3 review 1, model and causality: request/counter totals are additive, but
+the ability of one request to fit is local to one KV pool. vLLM's worst-engine
+KV projection and SGLang's single-DP identity preserve that distinction. An
+aggregate free-token sum would improve a dashboard number without proving that
+the next request fits where the backend places it. Status: passed with no
+behavior change.
+
+Phase 5.3 review 2, safety and lifecycle: all unabsorbed reservations remain in
+the same atomic Controller transaction. No synthetic per-engine reservation is
+created, so cancellation, completion, reset, and timeout ownership remain
+unchanged. A SGLang topology identity mismatch fails closed; a vLLM multi-engine
+sample remains conservative. The backend adapters stay separate from framework-
+neutral admission policy, preserving the existing SOLID boundary. Status:
+passed.
+
+Phase 5.3 review 3, evidence and release: the audit used the exact installed
+vLLM source and metrics on the authorized CVM plus a read-only shallow SGLang
+source snapshot at the commit above. Existing focused fixtures already prove
+vLLM sum/maximum/unique-geometry aggregation and SGLang multiple-DP rejection.
+No inference request, local Go executable, image build, registry write, process
+restart, Compose change, Router mutation, or CVM mutation occurred. The audit
+does not claim live multi-DP performance evidence. Status: passed.
+
+Phase 5.3 and Phase 5 status: complete with no executable-source change after
+Phase 5.1. The bounded response-usage parser remains wired only to fixed-
+cardinality Phase 0 evidence and does not alter admission or reservation; it is
+not unused production policy code and should not be removed. The next action is
+the final three-pass source review and the complete remote acceptance matrix on
+the exact candidate before assigning `PIG-v0.12.18`.
