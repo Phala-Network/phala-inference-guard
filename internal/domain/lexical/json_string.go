@@ -54,11 +54,13 @@ func EstimateJSONStringTokensWithRisk(raw []byte) (tokens int64, conservative bo
 		if value == '\\' || value >= 0x80 {
 			hasEscapeOrNonASCII = true
 		}
-		if !isJSONSpace(value) {
-			whitespaceOnly = false
-		}
-		if value != ' ' {
-			spacesOnly = false
+		if whitespaceOnly {
+			if !isJSONSpace(value) {
+				whitespaceOnly = false
+				spacesOnly = false
+			} else if value != ' ' {
+				spacesOnly = false
+			}
 		}
 		if value < 0x80 && isASCIIDigit(value) {
 			if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) ||
@@ -255,11 +257,13 @@ func (e *jsonStringTokenEstimator) add(value byte) bool {
 	e.previous = value
 	e.hasPrevious = true
 	e.decodedBytes++
-	if !isJSONSpace(value) {
-		e.whitespaceOnly = false
-	}
-	if value != ' ' {
-		e.spacesOnly = false
+	if e.whitespaceOnly {
+		if !isJSONSpace(value) {
+			e.whitespaceOnly = false
+			e.spacesOnly = false
+		} else if value != ' ' {
+			e.spacesOnly = false
+		}
 	}
 
 	if value < 0x80 && isASCIIDigit(value) {
