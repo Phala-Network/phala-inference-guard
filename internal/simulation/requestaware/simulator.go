@@ -31,8 +31,8 @@ type Metrics struct {
 	Preemptions                  int     `json:"preemptions"`
 	TPSFloorViolationSeconds     float64 `json:"tps_floor_violation_seconds"`
 	WaitingSeconds               float64 `json:"waiting_seconds"`
-	QueueWaitP95Seconds           float64 `json:"queue_wait_p95_seconds"`
-	QueueWaitMaximumSeconds       float64 `json:"queue_wait_maximum_seconds"`
+	QueueWaitP95Seconds          float64 `json:"queue_wait_p95_seconds"`
+	QueueWaitMaximumSeconds      float64 `json:"queue_wait_maximum_seconds"`
 	MaximumIdleWithDemandSeconds float64 `json:"maximum_idle_with_demand_seconds"`
 	HardFitIdleRejects           int     `json:"hard_fit_idle_rejects"`
 	PeakKVTokens                 int64   `json:"peak_kv_tokens"`

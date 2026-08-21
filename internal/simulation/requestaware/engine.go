@@ -21,17 +21,17 @@ const (
 )
 
 type activeRequest struct {
-	spec             requestSpec
-	admittedAt       time.Duration
-	prefillRemaining float64
-	outputRemaining  float64
-	generated        float64
-	unabsorbed       bool
-	materialized     bool
+	spec              requestSpec
+	admittedAt        time.Duration
+	prefillRemaining  float64
+	outputRemaining   float64
+	generated         float64
+	unabsorbed        bool
+	materialized      bool
 	queueWaitRecorded bool
-	prefillComplete  bool
-	terminalAt       time.Duration
-	terminalCause    coreadmission.TerminalCause
+	prefillComplete   bool
+	terminalAt        time.Duration
+	terminalCause     coreadmission.TerminalCause
 }
 
 type scheduledRequest struct {

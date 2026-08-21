@@ -185,12 +185,11 @@ func newTPSDebtPreemptionScenario() scenarioSpec {
 func newTPSDebtStaleRecoveryScenario() scenarioSpec {
 	scenario := newTPSDebtScenario("bounded-debt-stale-recovery", "stale", 30*time.Second,
 		tpsDebtRequest("stale-protected", 12100*time.Millisecond, 273, 95_000, false),
-		tpsDebtRequest("stale-recovered", 13100*time.Millisecond, 273, 95_000, false),
+		tpsDebtRequest("stale-recovered", 13600*time.Millisecond, 273, 95_000, false),
 	)
 	scenario.staleMetrics = []timeWindow{{start: 12 * time.Second, end: 13 * time.Second}}
 	return scenario
 }
-
 func newTPSDebtDistributionShiftScenario(name string, longFirst bool) scenarioSpec {
 	short := tpsDebtRequest(name+"-short", 55*time.Second, 273, 95_000, false)
 	long := tpsDebtRequest(name+"-long", 30*time.Second, 1_500, 95_000, false)
@@ -213,4 +212,3 @@ func newTPSDebtLowFlowScenario() scenarioSpec {
 		},
 	}
 }
-

@@ -57,7 +57,6 @@ func TestV01218TPSDebtSuiteExercisesBoundedForecastAndLeaseLifecycle(t *testing.
 		}
 	}
 }
-
 func TestV01218TPSDebtSuitePreservesPressureBrakesAndSafetyBounds(t *testing.T) {
 	suite, err := RunTPSDebtSuite()
 	if err != nil {
@@ -135,4 +134,3 @@ func tpsDebtScenarioByName(t *testing.T, suite TPSDebtSuite, name string) TPSDeb
 	t.Fatalf("TPS debt scenario %q is missing", name)
 	return TPSDebtScenarioResult{}
 }
-

@@ -58,23 +58,23 @@ type workerPoolSpec struct {
 }
 
 type scenarioSpec struct {
-	name               string
-	category           string
-	duration           time.Duration
-	initialKVTokens    int64
-	backgroundRunning  int
-	requests           []requestSpec
-	workerPools        []workerPoolSpec
-	forcedWaiting      []timeWindow
-	staleMetrics       []timeWindow
-	preemptionCooldown []timeWindow
-	preemptionAt       time.Duration
-	aggregateTPSCap    float64
+	name                  string
+	category              string
+	duration              time.Duration
+	initialKVTokens       int64
+	backgroundRunning     int
+	requests              []requestSpec
+	workerPools           []workerPoolSpec
+	forcedWaiting         []timeWindow
+	staleMetrics          []timeWindow
+	preemptionCooldown    []timeWindow
+	preemptionAt          time.Duration
+	aggregateTPSCap       float64
 	aggregateTPSByRunning []float64
-	capacityTokens     int64
-	maxModelLen        int64
-	maximumNoWait      int
-	cacheMetrics       bool
+	capacityTokens        int64
+	maxModelLen           int64
+	maximumNoWait         int
+	cacheMetrics          bool
 }
 
 type requestShape uint8
