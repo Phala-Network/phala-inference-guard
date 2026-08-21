@@ -508,6 +508,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		perUserTPS = aggregateTPS / float64(decodeSequences)
 	}
 	backgroundGenerated := perUserTPS * float64(r.spec.backgroundRunning) * seconds
+	generated := backgroundGenerated
 	requestGenerated := float64(0)
 	for _, active := range ready {
 		requestTokens := math.Min(active.outputRemaining, perUserTPS*seconds)
@@ -517,8 +518,8 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		active.outputRemaining -= requestTokens
 		active.generated += requestTokens
 		requestGenerated += requestTokens
+		generated += requestTokens
 	}
-	generated := backgroundGenerated + requestGenerated
 	r.metrics.CompletionTokens += generated
 	r.metrics.BackgroundOutputTokens += backgroundGenerated
 	r.metrics.RequestOutputTokens += requestGenerated
