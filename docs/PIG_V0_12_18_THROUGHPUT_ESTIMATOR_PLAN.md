@@ -565,8 +565,8 @@ step.
 ```text
 Plan and evidence consolidation                         complete
 Three plan reviews                                      complete
-Plan commit and push                                    pending
-Phase 0 fixed-cardinality evidence                      pending
+Plan commit and push                                    complete (`c520a18`)
+Phase 0 fixed-cardinality evidence                      in progress (base slice green)
 Phase 1 endpoint-aware estimator                        pending
 Phase 2 cross-tokenizer offline oracle                  pending
 Phase 3 bounded TPS-debt simulation                     pending
@@ -578,9 +578,12 @@ Published image                                         none
 Compose integration / deployment / live acceptance     not started
 ```
 
-Next action after the three plan reviews: commit and push this plan, then begin
-Phase 0 with focused metrics-contract tests that prove fixed cardinality and
-decision-behavior equivalence before modifying runtime admission policy.
+The first Phase 0 slice now exposes cumulative outcome, protection reason and
+scope, estimate confidence, Prefill class, Decode fan-out, and Selection input
+token buckets. It does not change admission, reservation, proxy, response, or
+logging decisions. The next Phase 0 slice must add classifier/streaming shape,
+TPS decision subreason, denominator-source, and response-usage evidence before
+any estimator or TPS policy change.
 
 ## 11. Plan Review Record
 
@@ -631,3 +634,31 @@ production deploy, backend/CVM restart, Router mutation, or image publication
 before its explicit later gate.
 
 Pass 3 status: complete after revision.
+
+## 12. Execution Evidence
+
+The first metrics-contract red test was committed and pushed as
+`c390c647fca2e7bc1f3c4153a34de7c79635ed2e`. On the approved f563 isolated
+workbench, the exact GitHub archive SHA-256 was
+`0d442a1e40d2b6510659df9a962e7736e859fb827796e7b81c20f58dfb8838e7`.
+With Go 1.24.13 image
+`sha256:e0cffc405270b9114fac7706d07c373727d1b42b0e47c525b9cd1ab1097779ff`,
+the focused test exited 1 for the intended missing bounded-metric assertion.
+The red log SHA-256 was
+`efb353574803e0ab22187153a88cbafe72fb72a396e40a5d1f0969f4c363aeb6`.
+There was no compile, dependency, fixture, or harness failure. The official Go
+image's configured PATH is lost under this guest's `sh -lc` profile; all valid
+gates therefore invoke `/usr/local/go/bin/go` or `/usr/local/go/bin/gofmt`
+explicitly. The earlier exit-127 runner attempt is not red evidence.
+
+The base evidence implementation was committed and pushed as
+`c29d4746120a8d303237640e00d2761abf4e4d69`; its exact archive SHA-256 was
+`35600e13d88d64141e5272cd7b5a9a64820fa49ce31b8d148463cab41766cdea`.
+Remote `gofmt -d` returned zero bytes. The three focused tests passed with log
+SHA-256 `8b07d96504d921fb2683668bd5b4c5948705f2dda1f87f658d3f84f4449912a4`;
+their focused race run passed with log SHA-256
+`16cb051d62aeb27110035bc2f0e474a6c3d1de286cea32f21f9e6ff1c4f44b56`;
+and the complete `internal/app/server` package passed with log SHA-256
+`b5aaed2477a405509b84938d98b753f460a6c4db83e5a5e3e89e5ca4678f755b`.
+This is focused source evidence only: no executable identity, image, registry,
+Compose, deployment, Router, or live-traffic claim exists yet.
