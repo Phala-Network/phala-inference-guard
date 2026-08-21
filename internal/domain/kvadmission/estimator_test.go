@@ -506,7 +506,7 @@ func TestApproximateInputTokenHintMaximumBodyFixtureIsDeterministic(t *testing.T
 
 func TestApproximateInputTokenHintInspectsTheCompleteString(t *testing.T) {
 	const size = 256 * 1024
-	raw := []byte(exactEntropyText(size))
+	raw := []byte(estimatorEntropyText(size))
 	for _, start := range []int{0, size/3 - 32, 2*size/3 - 32, size - 64} {
 		copy(raw[start:start+64], bytes.Repeat([]byte{'a'}, 64))
 	}
@@ -516,8 +516,18 @@ func TestApproximateInputTokenHintInspectsTheCompleteString(t *testing.T) {
 	}
 }
 
+func estimatorEntropyText(size int) string {
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	var builder strings.Builder
+	builder.Grow(size)
+	for index := 0; index < size; index++ {
+		builder.WriteByte(alphabet[(index*29+index/7)%len(alphabet)])
+	}
+	return builder.String()
+}
+
 func TestApproximateInputTokenHintExcludesTrailingJSONWhitespace(t *testing.T) {
-	trimmedBody := []byte(`{"model":"google/gemma-4-31B-it","prompt":"Return exactly OK.","max_tokens":8,"temperature":0}`)
+	trimmedBody := []byte(`{"model":"model-agnostic","prompt":"Return exactly OK.","max_tokens":8,"temperature":0}`)
 	body := append(bytes.Clone(trimmedBody), bytes.Repeat([]byte(" "), 1_600_000)...)
 	cost := EstimateJSON(body, 8, true, DefaultEstimatorConfig())
 	trimmedCost := EstimateJSON(trimmedBody, 8, true, DefaultEstimatorConfig())
