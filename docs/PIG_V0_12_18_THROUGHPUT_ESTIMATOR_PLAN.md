@@ -617,7 +617,7 @@ Three plan reviews                                      complete
 Plan commit and push                                    complete (`c520a18`)
 Phase 0 fixed-cardinality evidence source               complete (six slices green)
 Phase 0 complete acceptance gates                       complete (`b5a53f6` executable source)
-Phase 1 endpoint-aware estimator                        in progress
+Phase 1 endpoint-aware estimator                        complete (`87cf1e0` executable source)
 Phase 2 cross-tokenizer offline oracle                  pending
 Phase 3 bounded TPS-debt simulation                     pending
 Phase 4 Prefill lifecycle decision                      pending
@@ -639,12 +639,12 @@ also supplies replacement PromQL and explicitly rejects the obsolete
 `running / pig_dynamic_global_limit` interpretation. Phase 0 now requires its
 complete deterministic equivalence, cardinality, remote test/race/static/build,
 and hot-path performance gates before any estimator or TPS policy change. The
-first complete acceptance run on `727bc3e` passed all functional, race, static,
-build, simulation-equivalence, and HTTP byte-contract gates, but it exposed two
-response-observer defects: valid non-streaming multi-choice usage is classified
-as malformed, and a 4 MiB response allocates about 39.5 MiB. Phase 0 therefore
-remains open until a test-first protocol correction and allocation-bounded
-implementation pass the complete matrix again.
+first complete acceptance run on `727bc3e` exposed two response-observer
+defects: valid non-streaming multi-choice usage was classified as malformed,
+and a 4 MiB response allocated about 39.5 MiB. Both were corrected test-first;
+the final `b5a53f6` executable source subsequently passed the complete Phase 0
+functional, race, static, build, simulation-equivalence, HTTP byte-contract,
+allocation, and latency matrix recorded below.
 
 ## 11. Plan Review Record
 
@@ -938,3 +938,90 @@ and log hashes. This closes Phase 0 source acceptance only. No v0.12.18
 executable identity, image, registry artifact, Compose change, deployment,
 Router mutation, backend restart, or live-traffic claim exists. Status:
 complete.
+
+### Phase 1 final acceptance and review closure
+
+The accepted Phase 1 executable source is
+`87cf1e0cba4d9abe8b55821d994de2af1902517c`; archive SHA-256 is
+`fcbcd5ba74e5b12a906fe3c52c2b836f386a529961b9bfae5c9bf775514610b7`.
+It was tested on f563 in the pinned Go 1.24.13 image with one CPU, 4 GiB memory,
+512 PIDs, `GOMAXPROCS=1`, read-only source, and shared module/build caches.
+
+The endpoint-aware production HTTP path now performs one bounded syntax walk
+for Chat Completions, Completions, and Responses. It returns independent
+aggregate Selection, maximum-sequence Context, and KV-reservation features;
+keeps endpoint-local output controls and audited fan-out semantics; estimates
+decoded JSON strings without complete decoded allocations; excludes ignored
+controls and typed multimodal transport payloads; and closes visible versus
+body-external Responses context explicitly. Request and response bytes remain
+unchanged.
+
+The escaped output-limit allocation test was introduced in `078c562` and
+failed because the previous `strconv.Unquote` plus `strconv.Atoi` path allocated
+twice. `dd62837` replaced it with incremental ASCII JSON-escape and checked
+decimal parsing. The final focused allocation/strictness run passed with log
+SHA-256
+`b720c897bb93323fb6bf5f48f1c097a33bff7cd019a2877aa4ee6f85580ee310`.
+
+Review pass 1 found three additional Responses semantic gaps after the first
+green matrix: `input_file.file_data` inflated Prompt/KV with base64 transport
+bytes; nested `item_reference` was incorrectly treated as visible context; and
+whitespace-formatted empty `previous_input_messages` incorrectly forced the
+external-context fallback. The first two red tests were committed as `08c0168`;
+archive SHA-256 was
+`aefc440ff7382f4087d825b3618d198659bd1f6b21c65a15cc2f083ef909b60e`
+and red-log SHA-256 was
+`fb2acc5c58c158cc72f5d3156f1ca94a96c6696988303ea5eabb6763e81610a9`.
+The isolated empty-context red test was committed as `690e927`; archive
+SHA-256 was
+`02e14c552ff8e89d24bbd13d77e09bc53e5edbd42336fee7a26a71ce974f36e5`
+and red-log SHA-256 was
+`6e1d7b465e907e66206726899ca6d06271cb28cf1a0286f314ccf5233fb3d6bb`.
+`87cf1e0` fixed all three without broadening dynamic labels. Focused green and
+five-package green log SHA-256 values were
+`34ed2e7ae2e8a39c820393b1f58bc798113ecb068c8be186a1aacaee6016bc01`
+and
+`047476b7ebea836f2137378d74171186c54cb006da0b3ad1f7b6432732ea1020`.
+
+Review pass 1, model and causality: endpoint-specific Prompt fields, decoded
+text, tools, modality parts, Completion batching/suffix/`max(n,best_of)`, Chat
+`n`, Responses single-sequence behavior, output-limit locality, aggregate versus
+maximum sequence estimates, and tighter batch reservation rounding were traced
+from the HTTP classifier through `RequestEstimate`. The three defects above
+were corrected and rerun. Status: complete.
+
+Review pass 2, safety and lifecycle: the parser retains the 128-depth and 4 MiB
+bounds, performs no complete decoded-string allocation, preserves the request
+body and Content-Length, uses fixed unsupported-reason labels, propagates hidden
+context only inside request classification, and does not change reservation
+release or Controller lifecycle. The final five-package race log SHA-256 was
+`67af9861807ed36e6002062a69dec0af60957f121fa18efed0ffd55f4e198834`.
+Status: complete.
+
+Review pass 3, evidence and release: all new behavioral corrections have
+intended red causes, exact green source/archive provenance, and final-HEAD
+performance and full-repository evidence. The final 4 MiB plain and escaped
+classifier p50/p99 results were 24.901/26.879 ms and 25.003/26.026 ms; latency
+log SHA-256 was
+`e827ed788e3b1da14764eca80cd985b240df7d176fb4c5b1a7877afe5705dc6f`.
+The five benchmark samples were 24.982--28.331 ms/op, 88,194--97,153 B/op,
+and 17 allocations/op; benchmark log SHA-256 was
+`a96c7b9fdba4dabfd0e711e2adde43d135b0a1297a923a8a7ff939b344499890`.
+Status: complete.
+
+The final complete repository gates all exited zero. Material log SHA-256
+values were:
+
+```text
+gofmt -d .            e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+go test ./...          56135ac06bd85845079f2c667da94e736365f2c2bc778e04ac8dbe5d483e526c
+go test -race ./...    c3edf074e7cf05e5907ae39993da9e2c9e43aafcb493b0ba7edc59bc321f2993
+go vet ./...           e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+go build ./...         e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+This closes Phase 1 source acceptance only. Phase 2 offline cross-tokenizer
+oracle, bounded TPS-debt simulation, Prefill lifecycle decision, portability
+hardening, executable identity, image, registry publication, Compose change,
+deployment, Router mutation, and live-traffic acceptance remain unverified or
+not started.
