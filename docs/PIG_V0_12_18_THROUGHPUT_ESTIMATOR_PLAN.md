@@ -1,7 +1,8 @@
 # PIG v0.12.18 QoS-Constrained Throughput Optimization Plan
 
-Status: active design and execution plan. No v0.12.18 executable identity,
-image, deployment, or live acceptance exists yet.
+Status: active release execution. The behavior candidate and exact-source
+remote gates are complete at `d2aa6fb`; no v0.12.18 executable identity, image,
+deployment, or live acceptance exists yet.
 
 This plan supersedes the v0.12.17 maintenance conclusion only for the new
 optimization work described below. It does not invalidate the measured
@@ -698,7 +699,8 @@ Phase 5.1 weighted scanner body budget                  complete (`4a38fb6` exec
 Phase 5.2 Prefill initialization / Decode horizon       complete (no behavior change)
 Phase 5.3 backend aggregation contracts                 complete (no behavior change)
 Phase 5 portability/resource hardening                  complete
-Complete remote source gates                            pending
+Final three candidate reviews                           complete
+Complete remote source gates                            complete (`d2aa6fb` exact HEAD)
 v0.12.18 executable identity                            not assigned
 Published image                                         none
 Compose integration / deployment / live acceptance     not started
@@ -1804,3 +1806,76 @@ cardinality Phase 0 evidence and does not alter admission or reservation; it is
 not unused production policy code and should not be removed. The next action is
 the final three-pass source review and the complete remote acceptance matrix on
 the exact candidate before assigning `PIG-v0.12.18`.
+
+### Final candidate review and exact-source acceptance
+
+The final candidate before version assignment is documentation HEAD
+`d2aa6fb1d2f7102f116645b5b5d057137456566f`; its executable files are the
+accepted Phase 5.1 source at
+`4a38fb6c6075ea48b280790b034539d36fef1e2c`. The final source review found no
+new executable defect. It corrected one README mismatch: normal cold warm-up is
+bounded at two sequences, but the existing gate permits exactly one
+third-sequence probe when two sequences are running, no qualified TPS sample or
+sequence-second exists, and waiting and preemption are both zero. Atomic
+same-snapshot reservations still bound the probe. This is the tested v0.12.17
+low-flow unlock behavior, not a v0.12.18 policy change.
+
+Final review 1, model and causality: endpoint-aware semantic estimation is
+consumed by the pre-forward selection and KV reservation path. It remains a
+model-neutral proxy with fixed uncertainty rather than a tokenizer-parity or
+cache-prefix claim. Prefill/KV initialization and the 256-token Decode horizon
+remain fixed portable fallbacks; TPS observations update only future decisions.
+The third-sequence cold probe and bounded 10-second QoS debt prevent permanent
+low-flow protection while keeping one active budget lease. Status: passed.
+
+Final review 2, safety and lifecycle: the classifier reads at most the configured
+4 MiB default, holds a weighted aggregate body lease capped at 32 MiB, and uses
+an exact-once preserving-body close. Its recursive endpoint parser is capped at
+128 JSON levels; byte scanning is bounded by the body limit, and an unsupported
+or over-deep shape falls back without an unbounded recursion or allocation.
+Admission check and reservation remain one Controller transaction. Forward,
+first-byte, success, error, cancellation, observation reset, residual debt, and
+body-close paths retain their tested ownership and bounded state. Status:
+passed.
+
+Final review 3, evidence and release: exact HEAD was archived and run in the
+pinned read-only isolated runner on CVM
+`311bbcdb-e348-4922-b37d-541755b09ff7`:
+
+```text
+evidence root
+/var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+  d2aa6fb1d2f7102f116645b5b5d057137456566f-final-source-acceptance
+
+source archive SHA-256
+86d3f4b9b59ac516c02a3fe1548a9551806c367dee0172f4f59e0d4b56afaca9
+
+runner
+golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+Go 1.24.13, GOMAXPROCS=1, --cpus=1, --memory=4g, --pids-limit=512,
+source mounted read-only
+
+gofmt=0
+test=0
+race=0
+vet=0
+build=0
+tps_debt_simulation=0
+```
+
+Material log SHA-256 values are:
+
+```text
+environment                         ff07bc463c89c5fd5089bb82106eef9c422a156f7a759d8053065f163c720466
+go test -count=1 ./...              3e09a340473947450cf26a32514eb246cc5e4b34afc9abf46da4cfbfe8450d10
+go test -race -count=1 ./...        6fcf5915cbcd74e3f08746e3213ba56af1ed78e4ac21be2885a1dc9815a7826c
+empty gofmt/vet/build/sim stderr     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+TPS deterministic report            5629b5b993fe445e4316e1ead73f92f73f9ca6c57ddc87fef4f8a9a78f07cea5
+```
+
+A read-only post-check still showed PIG v0.12.17, vLLM, HAProxy, and ingress up
+for nine hours. No inference request, image build/upload, Compose or Router
+mutation, process restart, or CVM restart occurred. Status: passed for source
+acceptance only. The next action is to assign `PIG-v0.12.18`, rerun every
+identity-bearing gate on that exact source, commit and push it, and only then
+build and isolate-accept the exact-revision image before publication.

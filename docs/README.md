@@ -16,8 +16,10 @@ standing instructions.
 - [Internal algorithm flow](PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md): package
   ownership, admission transaction, gates, reservations, and backend adapters.
 - [v0.12.18 active optimization plan](PIG_V0_12_18_THROUGHPUT_ESTIMATOR_PLAN.md):
-  current estimator, TPS, Prefill-lifecycle, evidence, and release work. This is
-  an active plan; it is not evidence of an executable version or deployment.
+  current estimator, TPS, Prefill-lifecycle, evidence, and release work. The
+  behavior candidate and exact-source remote gates are complete; the executable
+  version identity, image, deployment, and live acceptance remain separate and
+  incomplete.
 
 ## Historical release evidence
 
@@ -34,7 +36,9 @@ remain separate evidence layers.
 
 Branch: `codex/pig-v0.12.18-throughput-estimator`
 Status: v0.12.17 remains the accepted and published runtime while the separate
-v0.12.18 optimization plan is at design/plan stage. v0.12.17 PIG-only
+v0.12.18 behavior candidate has completed its implementation, three final
+reviews, and exact-source remote gates at commit `d2aa6fb`; it has not yet been
+assigned an executable version or built as an image. v0.12.17 PIG-only
 deployment, Router contract, and 30-minute live-traffic acceptance are complete
 on development CVM
 `311bbcdb-e348-4922-b37d-541755b09ff7` (`use1-19`). Executable image revision is

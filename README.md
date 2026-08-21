@@ -113,14 +113,16 @@ unit is output tokens per second per active Decode sequence. Omit it (or set
 `0`) to preserve the v0.12.12 Context/KV/Prefill admission behavior. A positive
 finite value enables a 60-second sequence-second-weighted controller: it warms
 from qualified Decode observations, protects only before forwarding, and uses
-feedback solely to update the next prediction. During window warming it admits
-at most two total sequences (or preserves a larger already-running upstream
-population without adding to it), which gives the controller one bounded
-batching observation without allowing an unlimited same-snapshot burst. Once
-ready, it permits at most one exploration sequence when both current headroom
-and the projected base-plus-one TPS remain within five percent of the
-reference. It is a long-run operating target, not a promise that every request
-or every 500-ms interval stays above the value.
+feedback solely to update the next prediction. Normal cold warm-up admits at
+most two total sequences (or preserves a larger already-running upstream
+population without adding to it). When exactly two sequences are already
+running, no qualified sample or sequence-second exists, and there is no waiting
+or preemption, it permits one third-sequence probe to avoid a low-flow lock;
+same-snapshot reservations still prevent an unlimited burst. Once ready, it
+permits at most one exploration sequence when both current headroom and the
+projected base-plus-one TPS remain within five percent of the reference. It is
+a long-run operating target, not a promise that every request or every 500-ms
+interval stays above the value.
 
 The pre-forward sequence counter includes backend running and waiting plus
 watermark-bounded local reservations that may not yet be visible in metrics.
