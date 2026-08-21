@@ -581,7 +581,7 @@ Plan and evidence consolidation                         complete
 Three plan reviews                                      complete
 Plan commit and push                                    complete (`c520a18`)
 Phase 0 fixed-cardinality evidence source               complete (six slices green)
-Phase 0 complete acceptance gates                       in progress
+Phase 0 complete acceptance gates                       complete (`b5a53f6` executable source)
 Phase 1 endpoint-aware estimator                        pending
 Phase 2 cross-tokenizer offline oracle                  pending
 Phase 3 bounded TPS-debt simulation                     pending
@@ -820,3 +820,86 @@ focused race passed with log SHA-256
 `67d99ba7e7066cc7adc99750605e82d3b0b3cb40322ae54febc0f708f83e9cc9`;
 and the complete `internal/app/server` package passed with log SHA-256
 `6d8cc13ef14c1d11ee83b62ca85697fa8858fca8aa50334514b335a355259c27`.
+
+### Phase 0 final acceptance and review closure
+
+The Phase 0 complete-matrix run on `727bc3e` was functionally green but was not
+accepted: its non-streaming response parser rejected valid aggregate usage for
+`n > 1`, and its 4 MiB benchmark allocated about 39.52 MiB/op. The corrective
+multi-choice contract was pushed as
+`f5efe3e2da319126012df79ac1125cea63672296`; archive SHA-256
+`70656f90e2f40aa740ef4e293696bc9b12e051e139252631523b5db36e3435ee`.
+On f563 it exited 1 only because the old parser returned `malformed`; red-log
+SHA-256 was
+`4fe8228c80f5addc647835a403b138625decb41479c37fa14f99dae2df4c9e33`.
+
+The allocation correction was pushed as
+`ba8909f5215e7a20fae90dcf58491dcc35098dcc`. It uses a bounded upstream
+Content-Length only for preallocation, a doubling bounded buffer when length is
+unknown, `json.Unmarshal` into narrow envelopes, and a non-retaining
+`choices` shape validator. It accepts non-empty multi-choice arrays without
+mistaking choice count for usage, while streaming final Chat/Completions usage
+still requires an empty `choices` array. Its archive SHA-256 was
+`6caa0fc16e1a2ae4b61c3413496f3562dc3e0b324fd361b4fc4d2467b4d1fddc`;
+focused, focused-race, complete-package, and benchmark log SHA-256 values were
+`6770158b497a435b081dce01dc2350d51a925e3b426c0ca6f754b5145c3e0548`,
+`f24fd376d3f00a065c90dbae0580d682202b3696536e813ee84a3d56068de93d`,
+`2b3096f04b5edcc1ead2461d198e59aa4bc40aa0bfa78e01546bbdbb43c1f6cf`,
+and `43cf5fd74c58de08344a92502e5c69a78df16e3044cbfec35e38d417ff362fab`.
+
+The final benchmark source is
+`b5a53f69fdd7a4d969202348a51e04d55d49ef44`, which puts large data in actual
+Chat/Completions `choices[].message.content` and Responses
+`output[].content[].text` fields rather than an ignored padding field. Its
+archive SHA-256 was
+`52eda55a4e0112811d99f8a518568be25cf84fdf82f830bde3c7ec7987d656a7`.
+Across three one-second samples on the pinned single-CPU Go 1.24.13 runner, the
+worst 4 MiB unknown-length result was 8,381,483 B/op and 27.576 ms/op; the worst
+known-length result was 4,195,323 B/op and 26.461 ms/op. The corresponding 1
+MiB maxima were 2,089,851 B/op and 1,049,404 B/op. Chat and Responses both pass
+the plan's independent allocation bounds and the 100 ms extreme-input ceiling.
+Focused and benchmark log SHA-256 values were
+`4089d818ee04106f5042cb9df1e77a3333f5a3f8b26bcd6718edba509341a577`
+and `c826bb3d26cffed63dc781ccec5865f55e6410bde755b03d194da39ee541f7df`.
+
+The complete Phase 0 acceptance directory is
+`/var/volatile/dstack/persistent/pig-v01218-workbench/b5a53f6-phase0-final-acceptance`.
+The exact v0.12.17 baseline archive SHA-256 was
+`9e818de439a75fc5c983fde53f480ff900bec203684be2cf9a19fb1739fe47b9`.
+All exits were zero for repository formatting, `go test ./...`,
+`go test -race ./...`, `go vet ./...`, `go build ./...`, both deterministic
+simulations, byte comparison, current/baseline shared HTTP byte contracts, and
+estimator/classifier benchmarks. Material log SHA-256 values were:
+
+```text
+go test ./...       f6f462091f8a28b3642892972dbe04b8a90d1acf071d67ce79beeb0d3d48ec27
+go test -race ./... b9790d91d26548131537438340db1c86240ffcffb3caa435702102255b872d8f
+gofmt/vet/build      e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+HTTP current         6ddfa1a0028f1d34f64a99895efd3b89471dcc45b2a968206a71c869f2dbe924
+HTTP baseline        7436abf2bb00a038fd5fe990820de0fd25c0b2c5b69d73409e7e6a8ff6036ee4
+estimator benchmark  3db9b507da2ad10e5161509cebb558b41a4db30c4c1f2653a6342aecfabed97f
+classifier benchmark dd4c6908d9d4cab69cac001bdbea24cdc21adc17cf0414e491a565d43e990407
+```
+
+The candidate and baseline simulation artifacts are byte-identical, both with
+SHA-256
+`2f29cb429523018c4f68f01fea03179e219b8d0919e32e97140450b6fced30e1`.
+
+Final review pass 1, model and causality: response usage remains optional
+calibration evidence and is not consumed by admission. The unchanged
+simulation artifact and shared HTTP contracts confirm that Phase 0 does not
+change request decisions, reservations, or bytes. Status: complete.
+
+Final review pass 2, safety and lifecycle: retained JSON is capped at 4 MiB;
+known-length preallocation is bounded; unknown length has bounded geometric
+growth; large `choices` and `output` are not retained a second time. Truncated,
+errored, disconnected, and unconsumed responses still remain censored rather
+than accuracy samples. Complete race passed and fixed-cardinality metrics did
+not change. Status: complete.
+
+Final review pass 3, evidence and release: red failure had the intended protocol
+cause; all green evidence names exact commits, archive hashes, runner limits,
+and log hashes. This closes Phase 0 source acceptance only. No v0.12.18
+executable identity, image, registry artifact, Compose change, deployment,
+Router mutation, backend restart, or live-traffic claim exists. Status:
+complete.
