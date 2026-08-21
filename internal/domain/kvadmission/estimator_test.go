@@ -143,10 +143,10 @@ func TestFixedMarginTokensRejectsInvalidAndOverflowingInputs(t *testing.T) {
 func TestV01218SemanticBatchReservationUsesTighterMaximumSequenceBound(t *testing.T) {
 	cost := Cost{
 		ApproximateInputTokens: 10,
-		EstimatedInputHigh:      10,
-		BoundedDecodeTokens:     1,
-		BasePromptCount:         2,
-		DecodeSequences:         2,
+		EstimatedInputHigh:     10,
+		BoundedDecodeTokens:    1,
+		BasePromptCount:        2,
+		DecodeSequences:        2,
 	}
 
 	if !setSemanticPredictiveEstimate(&cost, 5, 5, false) {
