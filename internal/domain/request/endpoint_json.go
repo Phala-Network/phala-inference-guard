@@ -459,7 +459,14 @@ func (p *jsonFieldParser) parseExternalContextValue() (bool, bool) {
 }
 
 func endpointFeaturesForString(value jsonStringSpan) (EndpointInputFeatures, bool) {
-	tokens, decodedBytes, conservative, known := lexical.EstimateDecodedJSONStringTokensWithRisk(value.raw)
+	decodedBytes := int64(len(value.raw))
+	var tokens int64
+	var conservative, known bool
+	if value.escaped {
+		tokens, decodedBytes, conservative, known = lexical.EstimateDecodedJSONStringTokensWithRisk(value.raw)
+	} else {
+		tokens, conservative, known = lexical.EstimateJSONStringTokensWithRisk(value.raw)
+	}
 	if !known || decodedBytes > math.MaxInt64-2 {
 		return EndpointInputFeatures{}, false
 	}

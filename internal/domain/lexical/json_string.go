@@ -22,16 +22,114 @@ func EstimateJSONStringTokens(raw []byte) (int64, bool) {
 // EstimateJSONStringTokensWithRisk also reports lexical shapes for which a
 // narrow fixed margin is not a suitable hard KV or Context estimate.
 func EstimateJSONStringTokensWithRisk(raw []byte) (tokens int64, conservative bool, valid bool) {
-	estimator := jsonStringTokenEstimator{}
-	for _, value := range raw {
-		if value == '\\' || value >= 0x80 {
-			estimator.conservative = true
+	if len(raw) == 0 {
+		return 0, false, true
+	}
+	if len(raw) <= 3 {
+		for _, value := range raw {
+			if value == '\\' || value >= 0x80 {
+				conservative = true
+			}
 		}
-		if !estimator.add(value) {
+		return 1, conservative, true
+	}
+
+	var quarterTokenUnits int64
+	var asciiWordRunBytes int64
+	var stringSpaceBytes int64
+	var seenLow uint64
+	var seenHigh uint64
+	denseASCIIBytes := 0
+	transitions := 0
+	hasEscapeOrNonASCII := false
+	previous := raw[0]
+	for index, value := range raw {
+		if index > 0 && value != previous {
+			transitions++
+		}
+		previous = value
+		if value == '\\' || value >= 0x80 {
+			hasEscapeOrNonASCII = true
+		}
+		if value < 0x80 && isASCIIDigit(value) {
+			if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) ||
+				!addQuarterTokenUnits(&quarterTokenUnits, ASCIIBytesPerToken) {
+				return 0, false, false
+			}
+			asciiWordRunBytes = 0
+			denseASCIIBytes++
+			if value < 64 {
+				seenLow |= uint64(1) << value
+			} else {
+				seenHigh |= uint64(1) << (value - 64)
+			}
+			continue
+		}
+		if value < 0x80 && isASCIIWord(value) {
+			if asciiWordRunBytes == math.MaxInt64 {
+				return 0, false, false
+			}
+			asciiWordRunBytes++
+			denseASCIIBytes++
+			if value < 64 {
+				seenLow |= uint64(1) << value
+			} else {
+				seenHigh |= uint64(1) << (value - 64)
+			}
+			continue
+		}
+		if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) {
 			return 0, false, false
 		}
+		asciiWordRunBytes = 0
+		switch {
+		case value < 0x80 && isDenseASCII(value):
+			if !addQuarterTokenUnits(&quarterTokenUnits, ASCIIBytesPerToken) {
+				return 0, false, false
+			}
+			denseASCIIBytes++
+			seenLow |= uint64(1) << value
+		case value < 0x80 && isJSONSpace(value):
+			if stringSpaceBytes == math.MaxInt64 {
+				return 0, false, false
+			}
+			stringSpaceBytes++
+		case value < 0x80:
+			if !addQuarterTokenUnits(&quarterTokenUnits, ASCIIBytesPerToken) {
+				return 0, false, false
+			}
+		case value&0xc0 != 0x80:
+			if !addQuarterTokenUnits(&quarterTokenUnits, ASCIIBytesPerToken) {
+				return 0, false, false
+			}
+		}
 	}
-	return estimator.finish()
+	if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) ||
+		!addRoundedRun(&quarterTokenUnits, stringSpaceBytes, spaceBytesPerToken) {
+		return 0, false, false
+	}
+
+	distinct := bits.OnesCount64(seenLow) + bits.OnesCount64(seenHigh)
+	possibleTransitions := len(raw) - 1
+	minimumDenseTransitions := possibleTransitions - possibleTransitions/4
+	denseUnbrokenASCII := len(raw) >= denseMinimumLength &&
+		denseASCIIBytes == len(raw) && distinct >= denseMinimumDistinct &&
+		transitions >= minimumDenseTransitions
+	if denseUnbrokenASCII {
+		if int64(len(raw)) > math.MaxInt64/3 {
+			return 0, false, false
+		}
+		denseUnits := int64(len(raw)) * 3
+		if quarterTokenUnits < denseUnits {
+			quarterTokenUnits = denseUnits
+		}
+	}
+	if quarterTokenUnits <= 0 || quarterTokenUnits > math.MaxInt64-(ASCIIBytesPerToken-1) {
+		return 0, false, quarterTokenUnits == 0
+	}
+	return (quarterTokenUnits + ASCIIBytesPerToken - 1) / ASCIIBytesPerToken,
+		hasEscapeOrNonASCII || denseUnbrokenASCII,
+		true
 }
 
 // EstimateDecodedJSONStringTokensWithRisk estimates the decoded JSON string
