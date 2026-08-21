@@ -659,8 +659,8 @@ Phase 0 complete acceptance gates                       complete (`b5a53f6` exec
 Phase 1 endpoint-aware estimator                        complete (`87cf1e0` executable source)
 Phase 2 cross-tokenizer offline oracle                  complete (`7eefd41` source acceptance)
 Phase 3 bounded TPS-debt simulation                     complete (`3f39bd3` executable source)
-Phase 4 Prefill lifecycle decision                      in progress
-Phase 5 portability/resource hardening                  pending
+Phase 4 Prefill lifecycle decision                      complete (no behavior change)
+Phase 5 portability/resource hardening                  in progress
 Complete remote source gates                            pending
 v0.12.18 executable identity                            not assigned
 Published image                                         none
@@ -1461,3 +1461,57 @@ authorize image publication or deployment. Phase 4 now decides from the
 already collected Prefill lifecycle evidence whether a correction is justified;
 absence of trustworthy backend evidence must result in no behavior change, not
 a timer heuristic.
+
+### Phase 4 Prefill lifecycle decision
+
+Phase 0 established that the fixed-cardinality Prefill lifecycle collector is
+correct and non-mutating. It did not establish a production distribution for
+streaming mode, Prompt batch, Decode fan-out, first-byte-to-terminal duration,
+or their correlation with Prefill protection. The current traffic-bearing CVM
+was therefore inspected read-only before choosing a release change:
+
+```text
+CVM
+311bbcdb-e348-4922-b37d-541755b09ff7
+
+running PIG image
+ghcr.io/phala-network/phala-inference-guard:0.12.17
+
+authenticated /pig/metrics response size
+12822 bytes
+
+pig_predictive_prefill_lifecycle_total lines
+0
+
+pig_predictive_prefill_first_byte_to_terminal_seconds lines
+0
+```
+
+The running v0.12.17 image predates the Phase 0 collector, so no trustworthy
+live lifecycle sample exists. Unit and HTTP-contract fixtures prove collector
+semantics, not real traffic materiality. They cannot justify shortening the
+reservation lifecycle.
+
+Phase 4 review 1, model and causality: no data currently quantifies whether
+non-streaming or multi-sequence Prefill liability materially contributes to
+protection, nor identifies a backend event that proves every child has completed
+Prefill. Response usage reports final aggregate output after the fact and is
+not such a release signal. Status: insufficient evidence for a behavior change.
+
+Phase 4 review 2, safety and lifecycle: releasing on a fixed duration, rewriting
+requests to streaming, treating the first HTTP byte as proof for every child,
+or using terminal usage to retroactively free live debt can under-account KV or
+Prefill work. The existing first-byte transition and conservative remaining
+child/residual liabilities stay unchanged. Status: passed with no source change.
+
+Phase 4 review 3, evidence and release: the only live action was an authenticated
+read of the existing PIG metrics endpoint. No request was sent, and no image,
+Compose, process, Router, backend, or CVM state changed. Lifecycle metrics in
+the v0.12.18 source will become useful only after an independently accepted and
+authorized runtime produces real observations. Status: passed.
+
+Phase 4 status: complete as an explicit no-change decision. This is not a claim
+that the conservative lifecycle is optimal; it records that a correction would
+currently be an unsupported timer heuristic. Phase 5 now evaluates the planned
+portability and bounded-resource items independently and must omit any item that
+lacks a trustworthy portable contract or material benefit.
