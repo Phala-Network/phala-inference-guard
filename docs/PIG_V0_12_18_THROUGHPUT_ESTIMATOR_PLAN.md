@@ -490,6 +490,45 @@ Promotion thresholds versus the exact v0.12.17 simulation baseline:
 Do not select a horizon solely because it maximizes admissions. If no candidate
 beats the current policy under these thresholds, retain the v0.12.17 TPS gate.
 
+Phase 3 uses one narrow experimental seam rather than a production setting.
+`NewAdmissionController` and every production caller retain the complete
+declared-lifetime policy byte-for-byte. A separately named simulation-only
+constructor may inject a bounded horizon into the same Controller transaction;
+the horizon must not be exposed through environment variables, the dynamic
+policy API, Compose, or request fields during this phase.
+
+Keep horizon selection and budget accounting as separate responsibilities. The
+budget gate continues to derive rolling surplus, the post-admit rate, and the
+`base + 1` wave limit. A small horizon policy returns only the forecast duration:
+
+```text
+declared-lifetime policy:
+  known output   -> declared_tokens / projected_per_sequence_TPS
+  unknown output -> ineligible
+
+bounded experimental policy:
+  known output   -> min(declared_lifetime, control_horizon)
+  unknown output -> control_horizon
+```
+
+The control horizon never expires a lease. A granted lease stays attached to
+the live reservation even when the request runs longer than the soft horizon;
+terminal success, cancel, error, disconnect, or timeout moves it through the
+existing residual-debt path, and only a covering observation releases it. Thus
+one live/terminal liability prevents a second marginal lease and prevents the
+same rolling surplus from being spent twice.
+
+Run a horizon matrix rather than selecting a constant in code first. Compare
+the exact current policy with bounded candidates over declared and unknown
+outputs, short actual completions under large declared limits, actual outputs
+that exceed the soft horizon, burst and replacement waves, low flow, waiting,
+preemption, stale observations, epoch reset, recovery, and short-to-long and
+long-to-short distribution shifts. Record completion goodput, output-token
+goodput, sufficiently-long mean-active TPS, sub-reference exposure, scheduler
+queue-wait P95, sustained waiting, preemptions, KV fit, maximum running, budget
+grants, maximum outstanding leases, leaks, and controller failures. Candidate
+admissions are evidence only when these QoS and safety measures also pass.
+
 ### Phase 4: Prefill lifecycle evidence and conditional correction
 
 Use Phase 0 measurements before choosing a change. If non-streaming or
@@ -619,7 +658,7 @@ Phase 0 fixed-cardinality evidence source               complete (six slices gre
 Phase 0 complete acceptance gates                       complete (`b5a53f6` executable source)
 Phase 1 endpoint-aware estimator                        complete (`87cf1e0` executable source)
 Phase 2 cross-tokenizer offline oracle                  complete (`7eefd41` source acceptance)
-Phase 3 bounded TPS-debt simulation                     pending
+Phase 3 bounded TPS-debt simulation                     in progress
 Phase 4 Prefill lifecycle decision                      pending
 Phase 5 portability/resource hardening                  pending
 Complete remote source gates                            pending
