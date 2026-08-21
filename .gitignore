@@ -11,6 +11,11 @@
 # Go unit test source belongs in the repository.
 !**/*_test.go
 
+# The committed v0.12.18 oracle contains only pinned counts and provenance, not
+# tokenizer assets or generated model files.
+!internal/domain/kvadmission/testdata/
+!internal/domain/kvadmission/testdata/v01218_cross_tokenizer_oracle.json
+
 # Local go build outputs from the repository root.
 /phala-inference-guard
 /phala-inference-guard.exe
