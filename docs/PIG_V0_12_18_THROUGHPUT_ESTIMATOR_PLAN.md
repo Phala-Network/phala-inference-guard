@@ -566,7 +566,7 @@ step.
 Plan and evidence consolidation                         complete
 Three plan reviews                                      complete
 Plan commit and push                                    complete (`c520a18`)
-Phase 0 fixed-cardinality evidence                      in progress (four slices green)
+Phase 0 fixed-cardinality evidence                      in progress (five slices green)
 Phase 1 endpoint-aware estimator                        pending
 Phase 2 cross-tokenizer offline oracle                  pending
 Phase 3 bounded TPS-debt simulation                     pending
@@ -581,11 +581,11 @@ Compose integration / deployment / live acceptance     not started
 The completed Phase 0 slices expose cumulative admission outcome, protection
 reason and scope, estimate confidence, Prefill class, Decode fan-out, Selection
 input-token buckets, classifier/streaming shape, TPS decision subreason,
-denominator source, and per-kind estimator validation. They do not change
-admission, reservation, proxy, response, or logging decisions. The remaining
-Phase 0 source work is response-usage/output-limit evidence, Prefill lifecycle
-evidence, and truthful compatibility-metric documentation before any estimator
-or TPS policy change.
+denominator source, per-kind estimator validation, and bounded response usage
+versus declared output-limit evidence. They do not change admission,
+reservation, request bytes, response bytes, or logging decisions. The remaining
+Phase 0 source work is Prefill lifecycle evidence and truthful
+compatibility-metric documentation before any estimator or TPS policy change.
 
 ## 11. Plan Review Record
 
@@ -736,3 +736,41 @@ and the complete `internal/app/server` package passed with log SHA-256
 The evidence distinguishes known and unavailable Selection input, per-sequence
 Context upper-bound input, and KV-reservation estimates using only closed labels;
 it does not alter HTTP behavior or admission policy.
+
+The response-usage contract red test was pushed as
+`fdb3548bca23c39cd84ab1f0d5ef10c2f1364936`. Its exact archive SHA-256 was
+`c5b6d3c2a599dfd0da16f8ff8a269cafb86fc81adbf08e206f248c68dbd14cc2`;
+the test preserved three successful response bodies byte-for-byte, kept one
+protected request out of the upstream, and exited 1 only for missing usage
+evidence. The red log SHA-256 was
+`475034c07d8cfcfeec06a82073d47f71f89fc795372b9a4c59562322023ef5c8`.
+
+The first production wiring at `dd30da2` is not green: its remote run exposed
+both formatting drift and two protocol defects. Omitted `stream` was incorrectly
+treated as unknown instead of the protocol default `false`, and an intermediate
+SSE usage event could invalidate the final usage event. Those defects were
+corrected and the completions-only source became green at `d761868`, but the
+second protocol review found that default QoS scope also includes
+`/v1/responses`. A separate Responses API red test was pushed as
+`83ac9792f07f1c57978400d871522e9ffdf06f5c`; archive SHA-256
+`bb5a404bc3a41afb45451fc20aece7eb223d11b15ea94a0f3e7ac1e16238f57a`,
+test exit 1, and red log SHA-256
+`cb5ff48b6847464298ded2e763749876f13373bee0ab3dd868d3443f0ef5d9e2`.
+
+The final pushed response-evidence source is
+`ec89bd89b203dc6696a715c0e600565aba74c770`, exact archive SHA-256
+`716a008ef3be7262a4166c5269d98265ed13fa79cc6baccdf6baa52062e16987`.
+It selects a closed parser contract for Chat/Completions versus Responses,
+supports bounded JSON and SSE usage, preserves upstream bytes, never forces
+usage through request mutation, and records unavailable, malformed, and
+censored samples separately from valid observations. `gofmt -d` was empty;
+focused tests passed with log SHA-256
+`feb83ca27262df5b9fca68bd53bb8378d830b61beeaab070eff1f8056d007ec2`;
+focused race passed with log SHA-256
+`25228b157d67cc0ca85703155ab6ed2d0368920899f16896be3c304eba6be9f2`;
+and complete `internal/infra/openai` plus `internal/app/server` packages passed
+with log SHA-256
+`f219fab3e66aa0e93e11114c74e990bf07d63aae84fd31a4fd7ea79b83f4cfde`.
+These metrics are calibration evidence only: successful responses that omit
+usage remain `unavailable`, pre-forward rejects and interrupted responses remain
+`censored`, and neither class is counted as estimator accuracy.
