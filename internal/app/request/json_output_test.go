@@ -346,24 +346,45 @@ func TestV01218EndpointEstimatorIgnoresEndpointForeignFanoutAndOutputControls(t 
 func TestV01218EndpointEstimatorCountsDecodedJSONStringContent(t *testing.T) {
 	tests := []struct {
 		name    string
+		path    string
 		literal string
 		escaped string
 	}{
 		{
 			name:    "CJK and simple escapes",
+			path:    "/v1/chat/completions",
 			literal: `{"messages":[{"role":"user","content":"中文\nquote\""}],"max_tokens":32}`,
 			escaped: `{"messages":[{"role":"user","content":"\u4e2d\u6587\nquote\""}],"max_tokens":32}`,
 		},
 		{
 			name:    "surrogate pair",
+			path:    "/v1/chat/completions",
 			literal: `{"messages":[{"role":"user","content":"😀"}],"max_tokens":32}`,
 			escaped: `{"messages":[{"role":"user","content":"\ud83d\ude00"}],"max_tokens":32}`,
+		},
+		{
+			name:    "completion CJK and simple escapes",
+			path:    "/v1/completions",
+			literal: `{"prompt":"中文\nquote\"","max_tokens":32}`,
+			escaped: `{"prompt":"\u4e2d\u6587\nquote\"","max_tokens":32}`,
+		},
+		{
+			name:    "completion surrogate pair",
+			path:    "/v1/completions",
+			literal: `{"prompt":"😀","max_tokens":32}`,
+			escaped: `{"prompt":"\ud83d\ude00","max_tokens":32}`,
+		},
+		{
+			name:    "escaped semantic key",
+			path:    "/v1/chat/completions",
+			literal: `{"messages":[{"role":"user","name":"caller","content":"hello"}],"max_tokens":32}`,
+			escaped: `{"messages":[{"role":"user","\u006eame":"caller","content":"hello"}],"max_tokens":32}`,
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			literal := classifyEndpointFixture(t, "/v1/chat/completions", test.literal)
-			escaped := classifyEndpointFixture(t, "/v1/chat/completions", test.escaped)
+			literal := classifyEndpointFixture(t, test.path, test.literal)
+			escaped := classifyEndpointFixture(t, test.path, test.escaped)
 			if !literal.Cost.Supported || !escaped.Cost.Supported ||
 				literal.Cost.TextBytes != escaped.Cost.TextBytes ||
 				literal.Cost.Estimate != escaped.Cost.Estimate {
