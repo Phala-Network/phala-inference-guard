@@ -59,6 +59,68 @@ func TestV01218AdmissionMetricsAccumulateBoundedRequestEvidenceWithoutChangingDe
 	}
 }
 
+func TestV01218RequestShapeEvidenceCoversStreamingClassifierAndFanoutWithoutChangingProxyBehavior(t *testing.T) {
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"completion","choices":[]}`))
+	}))
+	defer backend.Close()
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+
+	bodies := []string{
+		`{"model":"model-agnostic","messages":[{"role":"user","content":"true"}],"stream":true,"n":2,"max_tokens":8}`,
+		`{"model":"model-agnostic","messages":[{"role":"user","content":"false"}],"stream":false,"max_tokens":8}`,
+		`{"model":"model-agnostic","messages":[{"role":"user","content":"unspecified"}],"max_tokens":8}`,
+		`{"model":"model-agnostic","messages":[{"role":"user","content":"invalid stream"}],"stream":"yes","max_tokens":8}`,
+		`{"messages":[}`,
+	}
+	wantStatus := []int{
+		http.StatusOK,
+		http.StatusOK,
+		http.StatusOK,
+		http.StatusOK,
+		http.StatusBadRequest,
+	}
+	for index, body := range bodies {
+		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		srv.ServeHTTP(response, request)
+		if response.Code != wantStatus[index] {
+			t.Fatalf("shape fixture %d status=%d body=%q, want %d", index, response.Code, response.Body.String(), wantStatus[index])
+		}
+	}
+	if backendCalls.Load() != 4 {
+		t.Fatalf("shape evidence changed proxy behavior: backend_calls=%d want=4", backendCalls.Load())
+	}
+
+	var output bytes.Buffer
+	srv.writeLocalMetrics(&output)
+	metricsBody := output.String()
+	for _, want := range []string{
+		`pig_predictive_classifier_outcomes_total{outcome="supported"} 4`,
+		`pig_predictive_classifier_outcomes_total{outcome="invalid_json"} 1`,
+		`pig_predictive_request_streaming_total{state="true"} 1`,
+		`pig_predictive_request_streaming_total{state="false"} 1`,
+		`pig_predictive_request_streaming_total{state="unspecified"} 1`,
+		`pig_predictive_request_streaming_total{state="invalid"} 1`,
+		`pig_predictive_request_streaming_total{state="unknown"} 1`,
+		`pig_predictive_request_decode_fanout_total{bucket="unknown"} 1`,
+		`pig_predictive_request_decode_fanout_total{bucket="1"} 3`,
+		`pig_predictive_request_decode_fanout_total{bucket="2"} 1`,
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("cumulative request-shape evidence missing %q\nmetrics:\n%s", want, metricsBody)
+		}
+	}
+}
+
 func TestAdmissionHTTPInputEstimateChangesPreForwardDecision(t *testing.T) {
 	type outcome struct {
 		status       int
