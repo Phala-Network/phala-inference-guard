@@ -214,10 +214,12 @@ func finalizeEndpointJSONFields(
 		result.Aggregate.PromptBytes = promptShape.stringBytes
 		result.Aggregate.ApproximateInputTokens = promptShape.approximateTokens
 		result.Aggregate.ExplicitPromptTokens = promptShape.explicitTokens
+		result.Aggregate.Conservative = promptShape.conservative
 		result.MaximumSequence.TextBytes = promptShape.maximumStringBytes
 		result.MaximumSequence.PromptBytes = promptShape.maximumStringBytes
 		result.MaximumSequence.ApproximateInputTokens = promptShape.maximumApproximateTokens
 		result.MaximumSequence.ExplicitPromptTokens = promptShape.maximumExplicitTokens
+		result.MaximumSequence.Conservative = promptShape.conservative
 		if scaled, ok := scaleEndpointFeatures(suffix, result.BasePromptCount); ok {
 			result.ShapeSupported = result.ShapeSupported && mergeEndpointFeatures(&result.Aggregate, scaled)
 		} else {
@@ -375,7 +377,9 @@ func (p *jsonFieldParser) parseSemanticObject() (EndpointInputFeatures, bool) {
 			var value EndpointInputFeatures
 			value, ok = p.parseSemanticValue()
 			if ok {
-				ok = addEndpointFeatureValue(&features.PromptBytes, int64(len(key.quoted)+1)) &&
+				var keyBytes int64
+				keyBytes, ok = endpointJSONStringBytes(key)
+				ok = ok && addEndpointFeatureValue(&features.PromptBytes, keyBytes+1) &&
 					mergeEndpointFeatures(&features, value)
 			}
 		}
@@ -476,6 +480,21 @@ func endpointFeaturesForString(value jsonStringSpan) (EndpointInputFeatures, boo
 		ApproximateInputTokens: tokens,
 		Conservative:           conservative,
 	}, true
+}
+
+func endpointJSONStringBytes(value jsonStringSpan) (int64, bool) {
+	decodedBytes := int64(len(value.raw))
+	if value.escaped {
+		_, estimatedBytes, _, known := lexical.EstimateDecodedJSONStringTokensWithRisk(value.raw)
+		if !known {
+			return 0, false
+		}
+		decodedBytes = estimatedBytes
+	}
+	if decodedBytes > math.MaxInt64-2 {
+		return 0, false
+	}
+	return decodedBytes + 2, true
 }
 
 func updatePositiveEndpointField(state *endpointFieldState, value []byte) bool {
