@@ -84,3 +84,27 @@ func TestV01218DecodedJSONStringEstimateDoesNotAllocate(t *testing.T) {
 		t.Fatalf("decoded JSON string allocations=%g want 0", allocations)
 	}
 }
+
+func TestV01218WhitespaceOnlyStringsUseTokenizerPortableBounds(t *testing.T) {
+	spaces := []byte(strings.Repeat(" ", 12*1024))
+	spaceTokens, conservative, valid := EstimateJSONStringTokensWithRisk(spaces)
+	if !valid || conservative || spaceTokens < int64(len(spaces)/16) {
+		t.Fatalf("space-only estimate=%d/%t/%t, want at least one token per 16 spaces", spaceTokens, conservative, valid)
+	}
+
+	escapedWhitespace := []byte(strings.Repeat(` \t\n`, 4*1024))
+	whitespaceTokens, decodedBytes, conservative, valid :=
+		EstimateDecodedJSONStringTokensWithRisk(escapedWhitespace)
+	if !valid || !conservative || decodedBytes != 3*4*1024 || whitespaceTokens < decodedBytes {
+		t.Fatalf("mixed whitespace estimate=%d/%d/%t/%t, want one token per decoded byte",
+			whitespaceTokens, decodedBytes, conservative, valid)
+	}
+}
+
+func TestV01218WhitespacePortabilityDoesNotInflateOrdinaryProse(t *testing.T) {
+	raw := []byte(strings.Repeat("word ", 2*1024))
+	tokens, _, valid := EstimateJSONStringTokensWithRisk(raw)
+	if !valid || tokens < 2*1024 || tokens > 2200 {
+		t.Fatalf("ordinary prose estimate=%d/%t, want 2048..2200", tokens, valid)
+	}
+}
