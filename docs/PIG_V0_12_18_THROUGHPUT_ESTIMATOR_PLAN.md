@@ -1,14 +1,23 @@
 # PIG v0.12.18 QoS-Constrained Throughput Optimization Plan
 
-Status: source and isolated-image release layers complete. The executable
-source is `80b7f05`, and the published image digest is
+Status: source, published image, PIG-only Compose integration, deployed runtime,
+Router restoration, and one 30-minute live-traffic acceptance are complete. The
+executable source is `80b7f05`, and the published and deployed image digest is
 `sha256:7de28db7b46eade3440358479b30c27000f2c7d0d6acacf2fae6c20f0aaf6b20`.
-No v0.12.18 Compose integration, deployment, or live acceptance exists yet.
+PIG v0.12.18 is live on traffic-bearing dev CVM
+`311bbcdb-e348-4922-b37d-541755b09ff7` as Router upstream `use1-19`.
 
 This plan supersedes the v0.12.17 maintenance conclusion only for the new
 optimization work described below. It does not invalidate the measured
-v0.12.17 release evidence, change the current production deployment, or
-authorize a production mutation by itself.
+v0.12.17 release evidence or authorize any future production mutation by
+itself. The one live mutation recorded in Section 13 was separately authorized
+on 2026-08-21. The host runtime now uses v0.12.18, while the Phala control-plane
+Compose snapshot still names v0.12.17; that persistence boundary is explicit in
+the acceptance conclusion.
+
+Point-in-time status statements inside the Phase audit history describe the
+checkpoint at which they were written. They are retained for provenance but do
+not override this header or the final acceptance in Section 13.
 
 ## 1. Objective
 
@@ -26,10 +35,10 @@ single-upstream admission proxy. It does not route, mutate requests, require a
 model-specific tokenizer asset, duplicate backend request-legality validation,
 or reintroduce TTFT as a gate.
 
-The intended next version is v0.12.18. Assign the executable version only after
-the behavior-bearing source and its focused gates are coherent. A plan commit,
+The released version is v0.12.18. Its executable version was assigned only after
+the behavior-bearing source and focused gates were coherent. A plan commit,
 source commit, passing test, local image, published image, Compose candidate,
-deployed container, and live acceptance are separate completion layers.
+deployed container, and live acceptance remain separate completion layers.
 
 ## 2. Current Truth And Evidence Boundary
 
@@ -637,7 +646,7 @@ registry pullability, Compose diff, PIG-only replacement, Router state, and the
 exact live observation window. Do not promote an unmatched Grafana improvement
 or a microbenchmark as end-to-end goodput evidence.
 
-## 8. Release And Live Validation Boundary
+## 8. Release And Live Validation Procedure
 
 When and only when the source candidate passes all prior gates:
 
@@ -665,8 +674,9 @@ When and only when the source candidate passes all prior gates:
 10. If a material correctness, QoS, visibility, lifecycle, or goodput defect is
     observed, restore the exact fallback and begin a new red-test iteration.
 
-No production deployment or Router mutation is part of the current plan-writing
-step.
+Steps 4 through 10 were later authorized and executed once for the deployment
+recorded in Section 13. This procedure and its evidence are not standing
+authorization for another deployment, Router mutation, or parameter change.
 
 ## 9. Explicit Non-Goals
 
@@ -705,7 +715,7 @@ Complete remote source gates                            complete (`d2aa6fb` exac
 v0.12.18 executable identity                            complete (`80b7f05`)
 Identity-specific remote source gates                   complete (`80b7f05` exact source)
 Published image                                         complete (`sha256:7de28db7...f6b20`)
-Compose integration / deployment / live acceptance     not started
+Compose integration / deployment / live acceptance     complete (`use1-19`, 2026-08-21)
 ```
 
 The completed Phase 0 slices expose cumulative admission outcome, protection
@@ -1100,10 +1110,10 @@ go vet ./...           e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7
 go build ./...         e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
 ```
 
-This closes Phase 1 source acceptance only. Phase 2 evidence is recorded below;
+This closed Phase 1 source acceptance only. At that checkpoint, Phase 2,
 bounded TPS-debt simulation, Prefill lifecycle decision, portability hardening,
 executable identity, image, registry publication, Compose change, deployment,
-Router mutation, and live-traffic acceptance remain unverified or not started.
+Router mutation, and live-traffic acceptance were unverified or not started.
 
 ### Phase 2 final acceptance and review closure
 
@@ -1984,6 +1994,299 @@ identity gates, local image ID, OCI identity, runtime defaults, two registry
 tags, common digest, anonymous pull, and post-pull image identity agree. Status:
 passed for published-image acceptance only.
 
-The completed layer is now pushed source plus published pullable image. Compose
-integration, deployment, Router mutation, 30-minute live traffic, and production
-acceptance were not authorized or performed. Production remains on v0.12.17.
+At this image-stage checkpoint, the completed layer was pushed source plus a
+published pullable image. Compose integration, deployment, Router mutation, and
+live traffic had not yet been authorized or performed. The later, separately
+authorized runtime work is recorded below.
+
+## 13. Authorized PIG-Only Deployment And Live Acceptance
+
+### 13.1 Target, candidate, fallback, and persistence boundary
+
+The user separately authorized an SSH-based PIG update on 2026-08-21. The exact
+target was:
+
+```text
+CVM UUID        311bbcdb-e348-4922-b37d-541755b09ff7
+internal ID     cvm_OwA63zjB
+name            gemma4-31b-it-use1-dev
+instance        h200.small
+OS              dstack-nvidia-dev-0.5.9
+os.is_dev       true
+Router upstream use1-19
+```
+
+Because this is a dev CVM, the live Compose authority was read over SSH from
+`/var/volatile/dstack/docker-compose.yaml`. Its pre-change SHA-256 was
+`7b1d59c83b930db3270705ed5623c43bc9b63e4eb6ff0b4b1848c02557c8724e`.
+The candidate changed exactly one line: the PIG image changed from the pinned
+v0.12.17 image to:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:0.12.18
+  @sha256:7de28db7b46eade3440358479b30c27000f2c7d0d6acacf2fae6c20f0aaf6b20
+```
+
+The deployed Compose SHA-256 is
+`b5b0a6674ce1cb38105e5958126aab412993b89efa37b26e330966d2fa1c7d4e`.
+The production configuration remained minimal: it retained `TOKEN`, `UPSTREAM`,
+`TLS_CERT_PATH`, and the single intentional policy setting
+`PREDICTIVE_TPS_REFERENCE=25`; every other PIG policy value remained an image
+default or automatically derived capability value.
+
+A complete v0.8.13 fallback Compose was generated and validated before route
+mutation. It used the pinned image:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:v0.8.13
+  @sha256:aec805d6e7bbfd82375199d7950ecfbf6148e501c64822dcb46102a9e24a2ea4
+```
+
+Both candidate and fallback images were pulled by digest before the drain. The
+deployment and observation evidence roots are:
+
+```text
+/var/volatile/dstack/persistent/pig-v01218-workbench-20260821T132701Z/
+  deploy-20260821T133334Z
+
+/var/volatile/dstack/persistent/.cache/pig-live-observe-host/
+  20260821T134619Z
+```
+
+The complete observation directory was copied locally and all 28 entries in its
+`SHA256SUMS.txt` were independently re-hashed successfully. The current Phala
+control-plane Compose snapshot was re-read after acceptance and still names the
+pinned v0.12.17 image. Therefore the accepted state is the current live host
+state, not a persisted control-plane update. A whole-CVM rebuild or restore can
+reapply v0.12.17 until that snapshot is separately reviewed and updated.
+
+### 13.2 Drain, fallback proof, candidate deployment, and Router restore
+
+The exact pre-change enabled set was `['use1-19','use1-4c']`. Only `use1-19`
+was disabled. The drain began with approximately 33 running requests and let the
+last long Decode finish naturally. Router running, pending reservations, and
+unreconciled dispatches; PIG backend, scanner, reservation, and pending-Prefill
+counters; and vLLM running and waiting all reached zero for three consecutive
+checks before replacement.
+
+Only `phala-inference-guard` was recreated. The traffic-bearing PIG first ran the
+complete v0.8.13 fallback and passed readiness. It was then recreated from the
+v0.12.18 candidate. vLLM, HAProxy, ingress, and the CVM were not restarted or
+recreated. Their container IDs, start timestamps, restart counts, OOM flags,
+and running states were byte-identical before and after the PIG deployment.
+
+The first Router restoration attempt exposed an acceptance-script error: the
+script initially recognized only `request_aware_protected`, while a healthy open
+PIG correctly reports `selectable=true` with `request_aware_open`. Its failure
+trap immediately disabled `use1-19`. This was not a PIG or Router protocol
+failure. The assertion was corrected to accept either a healthy open state or a
+protected state with applied backpressure, the target was drained again, and the
+restoration succeeded. The final enabled set exactly matched the original set:
+`['use1-19','use1-4c']`.
+
+### 13.3 Runtime identity and readiness
+
+The deployed runtime identity is:
+
+```text
+PIG container ID   7ce76341a38a56397e5690c14186b1077521e8c6133cf5514591f51fe92c0ae3
+image ID           sha256:865e2cced68feef9600bf1db9f870e0c85370ee8d69d0f4362c9aefa63c7db1c
+OCI version        0.12.18
+OCI revision       80b7f0581f03fbaa8490c9245c3f55771ea0ec42
+restart count      0
+OOM killed         false
+state              running
+```
+
+Readiness passed unauthenticated metrics `401`, authenticated metrics `200`,
+`/v1/models` `200`, a normal chat completion `200`, and a streaming completion
+`200` ending in `data: [DONE]`. Metrics proved `PIG-v0.12.18`, default
+`enforce`, default 500-ms observation, and TPS reference 25. There is no TTFT
+gate or TTFT compatibility metric.
+
+The automatic request-aware capability profile agreed with the vLLM backend:
+
+```text
+schema                    request-aware-capability-v3
+KV capacity               1,977,660 tokens
+KV block size             64 tokens
+maximum model length      262,144 tokens
+automatic KV hard limit   1,740,288 tokens
+maximum admissible input    261,888 tokens
+```
+
+Router accepted both supported protocol states. In the final open state it saw
+`pig_ok=true`, `stale=false`, `selectable=true`, and
+`capacity_protocol=request_aware_open`.
+
+### 13.4 Thirty-minute live observation
+
+The uninterrupted exact counter window was:
+
+```text
+start             2026-08-21T13:46:19.968Z
+finish            2026-08-21T14:16:19.968Z
+duration          1,800.0 seconds
+sample cadence    5 seconds
+samples           360 / 360 complete
+collection errors 0
+```
+
+The Compose hash was constant for the full window. Router kept `use1-19`
+enabled for 100% of samples. PIG, vLLM, HAProxy, and ingress had no restart, OOM,
+or non-running sample. Capability geometry remained identical to backend
+geometry. The final log scan found zero fatal-pattern lines, zero secret-pattern
+lines, and zero verbose protection-detail lines.
+
+QoS and backend throughput were:
+
+```text
+TPS reference                              25.00 tok/s/active sequence
+mean-active TPS mean / p05 / p50 / p95    113.95 / 78.02 / 117.03 / 142.40
+mean-active TPS minimum                    59.80
+ready samples below reference              0 / 360
+ready samples below 90% of reference       0 / 360
+vLLM waiting mean / maximum                0.019 / 3
+vLLM preemptions                           0
+generation tokens / throughput             946,730 / 525.96 tok/s
+prompt tokens / throughput               5,477,366 / 3,042.98 tok/s
+finish reason stop / length              2,144 / 221
+finish reason abort / error / repetition      0 / 0 / 0
+```
+
+The exact PIG counter window contained 2,517 classified requests: 2,389 fit and
+128 risk decisions, or 94.91% fit and 5.09% enforce protection. Backend accepted
+2,390 requests and completed 2,399; those lifecycle counters include requests
+crossing the window boundary and are not required to equal the classifier
+domain. Backend failed and proxy-error deltas were both zero. Every
+`pig_predictive_admission_failures_total` phase (`decide`, `prefill`, `forward`,
+`terminal`, and `close`) remained zero.
+
+Exact request-level protection reasons were:
+
+```text
+input_limit / request             12
+prefill_budget / request          74
+prefill_budget / load             23
+tps_reference / load              19
+total enforce protection         128
+```
+
+All three estimator contracts, `selection_input`, `kv_reservation`, and
+`context_upper_bound`, returned `known` for all 2,517 classified requests. No
+unsupported, invalid, overflow, too-large-body, failed-read, saturated,
+external-context, or unknown validation outcome occurred. Confidence/outcome
+counts were 2,297 conservative admits, 92 lexical admits, 86 conservative
+request protections, and 42 conservative load protections; no unknown
+confidence was used.
+
+TPS decisions were mostly normal base-rate admits. The bounded surplus path
+granted only two QoS-budget admits. TPS-specific protections were two cold-idle
+guards, twelve unobserved-liability guards, and five waiting guards. This is
+evidence that the new ten-second bounded liability was active but did not turn
+the soft TPS reference into a hard instantaneous ceiling.
+
+Response telemetry observed 2,365 usage-bearing terminal responses and 161
+censored responses, with zero malformed or unavailable usage. It confirms that
+the response parser is live, but aggregate counters do not correlate each input
+estimate with the backend's exact prompt-token ground truth. Therefore this
+window validates estimator availability and control-path use, not exact live
+input-token error. The offline cross-tokenizer oracle remains the accuracy
+evidence boundary.
+
+Router visibility used common five-second sample boundaries. On that common
+domain, PIG enforce protection increased by 126 and Router recorded exactly 126
+`use1-19` upstream 429s. Router recorded 2,491 attempts and 2,482 processed
+requests. Backpressure occupied 8 of 360 samples, or 2.22%. Protected-sample GPU
+utilization averaged 95.13%, with a minimum of 83% and maximum of 100%; there
+were no protected samples below 20%, 40%, or 50% GPU utilization. This rejects
+the tested low-flow self-lock and hidden-protection failure modes.
+
+Compact logs intentionally aggregate repeated events. They represented 112
+logical protection events in 63 physical lines, whereas the exact request-level
+metric counted 128 enforce protections. Metrics and Router 429 counters are the
+request-level authorities; compact logs are the human diagnostic view. Their
+different domains are expected and must not be reported as a lost signal.
+
+Resource and cache observations were:
+
+```text
+GPU utilization mean / p50 / p95       75.72% / 78.00% / 92.05%
+KV use mean / maximum                   4.22% / 12.72%
+vLLM running mean / p95                 4.36 / 11
+prefix query / hit tokens           5,477,366 / 3,286,528
+prefix hit share                         60.00%
+PIG cache observation valid samples      13.61%
+```
+
+Low KV use in this window reflects its traffic shape, not a persistent PIG
+closure: Router was enabled throughout, backpressure occupied only 2.22%, and
+there was no low-GPU protected sample. Aggregate cache hit remains observation
+context; it is not treated as proof that a particular new request will hit.
+
+Measured prediction overhead was well inside the accepted budget:
+
+```text
+prediction mean       0.0210 ms
+body-read mean        0.1922 ms
+estimator mean        0.1881 ms
+complete pre-forward  0.4128 ms
+```
+
+### 13.5 Comparison boundary and acceptance decision
+
+The preceding v0.12.17 30-minute reference window ran from
+2026-08-20T15:51:11.596Z through 16:21:11.597Z. It had 17,991 Router attempts,
+while the v0.12.18 window had only 2,491, a 7.22-times offered-load difference.
+The observed values were:
+
+```text
+metric                               v0.12.17       v0.12.18
+Router attempts                         17,991          2,491
+sampled PIG fit / risk             3,521 / 14,469  2,366 / 126
+backpressure occupancy                    42.22%          2.22%
+mean-active TPS mean / minimum       34.66 / 20.59  113.95 / 59.80
+generation throughput                   895.92         525.96 tok/s
+GPU utilization mean                     90.99%         75.72%
+KV use mean / maximum               18.61% / 40.84% 4.22% / 12.72%
+prefix hit share                          45.55%         60.00%
+pre-forward mean                           0.439 ms       0.413 ms
+preemptions / failures / proxy errors       0 / 0 / 0     0 / 0 / 0
+```
+
+The lower v0.12.18 raw output TPS and GPU utilization are not evidence of a
+regression because the arrival streams are not matched. Likewise, its higher
+per-active TPS and much lower protection occupancy cannot be attributed solely
+to the new algorithm. The live evidence proves readiness, QoS margin, visible
+protection, absence of low-flow locking, and bounded overhead under the observed
+traffic. It does not yet prove greater peak completion goodput at equal offered
+load. That claim requires a controlled A/B or a future naturally comparable
+high-arrival cohort.
+
+Review 1, model and causality: the endpoint-aware estimator was known on every
+classified request and its estimates changed pre-forward admission and
+reservation outcomes. Feedback and response usage affected later evidence only.
+No tokenizer asset, per-model branch, request mutation, routing decision, or
+TTFT gate entered the runtime. Status: passed, with exact live input-error
+correlation explicitly unproven.
+
+Review 2, safety and lifecycle: all admission failure phases were zero, scanner
+and body-byte gauges returned to zero, no preemption, failure, proxy error, OOM,
+restart, stale capability, or low-flow lock occurred, and protection was visible
+to Router. The PIG-only replacement left every non-PIG container untouched.
+Status: passed.
+
+Review 3, evidence and release: source, OCI revision, image ID, registry digest,
+candidate Compose, live Compose hash, fallback, Router set, runtime identity,
+HTTP readiness, exact counters, sampled QoS, logs, and 28 locally reverified
+artifact hashes agree. The unmatched-load comparison is labeled and does not
+claim a throughput win. Status: passed.
+
+Acceptance decision: retain v0.12.18 on the current live host with
+`PREDICTIVE_TPS_REFERENCE=25` and no additional explicit tuning parameters. No
+rollback or immediate algorithm/parameter change is justified by this window.
+The remaining operational action is a separately authorized control-plane
+Compose synchronization so a future CVM rebuild does not silently restore
+v0.12.17. The remaining performance question is equal-offered-load peak
+completion goodput; it is monitoring evidence for a future iteration, not a
+v0.12.18 acceptance blocker.

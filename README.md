@@ -6,23 +6,18 @@ upstream call, combines that estimate with one Controller-owned coherent backend
 observation and every live reservation, and decides whether the post-admit state
 can preserve service quality.
 
-Current accepted maintenance identity: `PIG-v0.12.17`, executable source
-revision `0091241bc9edc30f0f7ff50010504225d3fa14c8`. Its accepted published image
-is
-`ghcr.io/phala-network/phala-inference-guard:0.12.17@sha256:e96b3a5a0864f8d8c57f39dbfa289402ecac0a7eb0eee42efaa9a23825e504f8`.
-The image passed a PIG-only deployment and a complete 30-minute vLLM/H200 live
-window on `use1-19`; this is acceptance for that measured serving chain, not a
-claim that every backend or workload has been revalidated. Published
-`PIG-v0.12.15` remains held because its TPS gate can preserve unused capacity;
-v0.12.16 is the prior accepted release. Source, image, deployment, and live
-acceptance remain separate evidence layers.
-
-Current development candidate: `PIG-v0.12.18`, executable source revision
+Current accepted measured-chain identity: `PIG-v0.12.18`, executable source
+revision
 `80b7f0581f03fbaa8490c9245c3f55771ea0ec42`. Its accepted published image is
 `ghcr.io/phala-network/phala-inference-guard:0.12.18@sha256:7de28db7b46eade3440358479b30c27000f2c7d0d6acacf2fae6c20f0aaf6b20`.
-This is source and isolated-image acceptance only; no v0.12.18 Compose
-integration, deployment, or live-traffic acceptance exists. v0.12.17 remains
-the accepted running release until those layers are completed independently.
+It passed PIG-only deployment, Router contract restoration, and a complete
+30-minute vLLM/H200 live window on `use1-19`. This is acceptance for that exact
+serving chain and observed workload, not a claim that every backend, workload,
+or equal-load peak throughput has been revalidated. Source, image, deployment,
+and live acceptance remain separate evidence layers. The dev-CVM host runs
+v0.12.18, but its Phala control-plane Compose snapshot still names v0.12.17;
+whole-CVM recovery can restore the prior image until that snapshot is separately
+synchronized.
 
 The objective is QoS-constrained throughput, not a fixed request-count limit.
 Small requests can still fit while a larger request is protected under the same
@@ -195,16 +190,19 @@ Metrics and administrative endpoints require the configured bearer token.
 ## Development gates
 
 Executable Go tests, race checks, simulations, benchmarks, and image acceptance
-run in an isolated temporary workbench on f563. Published `PIG-v0.12.15` remains
+run in approved isolated remote workbenches. Published `PIG-v0.12.15` remains
 immutable and is not the production candidate after the throughput-objective
-red test. `PIG-v0.12.17` passed exact-source image acceptance, PIG-only
+red test. `PIG-v0.12.18` passed exact-source and image acceptance, PIG-only
 deployment, Router contract validation, and a complete 30-minute live window on
 CVM `311bbcdb-e348-4922-b37d-541755b09ff7`. That window had 360/360 complete
-five-second samples, 34.66 mean-active tokens/s per sequence against reference
-25, 895.92 completed-output tokens/s, 90.99% mean GPU utilization, and zero
-preemptions, proxy failures, restarts, OOMs, or fatal log matches. See the
-versioned release evidence for scope and hashes. No future Compose, deployment,
-Router, or live-traffic action is implied by source or registry identity alone.
+five-second samples, 113.95 mean-active tokens/s per sequence against reference
+25, 525.96 completed-output tokens/s, 75.72% mean GPU utilization, and zero
+preemptions, proxy failures, admission lifecycle failures, restarts, OOMs, or
+fatal log matches. Offered load was about 7.22 times lower than the preceding
+v0.12.17 reference window, so this is live acceptance rather than proof of
+greater peak throughput. See the versioned release evidence for scope and
+hashes. No future Compose, deployment, Router, or live-traffic action is implied
+by source or registry identity alone.
 
 - [Documentation map](docs/README.md)
 - [Observability](docs/OBSERVABILITY.md)

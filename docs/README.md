@@ -17,9 +17,10 @@ standing instructions.
   ownership, admission transaction, gates, reservations, and backend adapters.
 - [v0.12.18 active optimization plan](PIG_V0_12_18_THROUGHPUT_ESTIMATOR_PLAN.md):
   current estimator, TPS, Prefill-lifecycle, evidence, and release work. The
-  behavior candidate and exact-source remote gates are complete; the executable
-  version identity, image, deployment, and live acceptance remain separate and
-  incomplete.
+  behavior candidate, exact-source remote gates, executable identity, published
+  image, PIG-only deployment, Router restoration, and one 30-minute live
+  acceptance are complete. Equal-offered-load peak throughput remains
+  unproven.
 
 ## Historical release evidence
 
@@ -35,19 +36,19 @@ remain separate evidence layers.
 ## Active maintenance
 
 Branch: `codex/pig-v0.12.18-throughput-estimator`
-Status: v0.12.17 remains the accepted and published runtime while the separate
-v0.12.18 behavior candidate has completed its implementation, three final
-reviews, and pre-identity exact-source remote gates at commit `d2aa6fb`. Its
-executable source `80b7f05` has now passed identity-specific remote gates and
+Status: v0.12.18 is the accepted runtime on the measured `use1-19` vLLM/H200
+chain. Its executable source `80b7f05` passed identity-specific remote gates and
 isolated image acceptance; both published tags resolve to digest
 `sha256:7de28db7b46eade3440358479b30c27000f2c7d0d6acacf2fae6c20f0aaf6b20`.
-No v0.12.18 Compose integration, deployment, or live acceptance exists.
-v0.12.17 PIG-only
-deployment, Router contract, and 30-minute live-traffic acceptance are complete
-on development CVM
-`311bbcdb-e348-4922-b37d-541755b09ff7` (`use1-19`). Executable image revision is
-`0091241bc9edc30f0f7ff50010504225d3fa14c8`; later documentation-only commits do
-not change that image identity.
+Its PIG-only deployment, Router contract, and 30-minute live-traffic acceptance
+are complete on development CVM
+`311bbcdb-e348-4922-b37d-541755b09ff7` (`use1-19`). The host live Compose uses
+v0.12.18, while the Phala control-plane snapshot still names v0.12.17; that
+persistence gap requires a separately authorized synchronization. The accepted
+window had zero preemption, proxy failure, admission lifecycle failure, restart,
+OOM, fatal match, hidden protection, or low-flow self-lock. Because offered load
+was materially below the preceding v0.12.17 window, equal-load peak completion
+goodput remains an explicit evidence gap rather than a claimed win.
 
 A later read-only audit found one vLLM host-memory OOM more than three hours
 after the formal window. PIG, HAProxy, and ingress did not restart; PIG closed
