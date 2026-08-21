@@ -1202,3 +1202,122 @@ Status: Phase 2 source acceptance complete. This does not assign the
 `PIG-v0.12.18` executable identity and does not authorize an image build,
 registry publication, Compose change, deployment, Router mutation, or live
 traffic. The next implementation phase is Phase 3 bounded TPS-debt simulation.
+
+### Phase 3 bounded-debt candidate acceptance and pre-promotion reviews
+
+The final simulation-only source for this checkpoint is:
+
+```text
+source commit
+9dbe630deb3b9552f35371b654eb4c93a98b9dec
+
+source archive SHA-256
+8dd2a8730e1d1bd472861518bf7db8e0dbb7200f9588b419c3e0a68f26059d23
+
+remote evidence roots
+/var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+  9dbe630deb3b9552f35371b654eb4c93a98b9dec-phase3-final
+/var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+  9dbe630deb3b9552f35371b654eb4c93a98b9dec-phase3-baseline
+
+runner
+golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+Go 1.24.13, GOMAXPROCS=1, --cpus=1, --memory=4g, --pids-limit=512,
+source mounted read-only
+```
+
+The final focused run used the real admission Controller transaction and the
+deterministic request-aware scheduler:
+
+```text
+gofmt -l over tracked Go source                 PASS (empty)
+admission Phase 3 focused tests                 PASS
+request-aware Phase 3 focused tests             PASS
+pig-tps-debt-sim acceptance                     PASS
+report stderr                                   empty
+
+admission focused SHA-256
+41a0c179fd568ebb8f974fc0c0014d266e3899f42ead3b23350c07b97551863e
+
+request-aware focused SHA-256
+bf48f1c2efc0f9ad74481d2e3479da445f752f89984e38bc888bdae3a02a18a0
+
+acceptance report SHA-256
+5629b5b993fe445e4316e1ead73f92f73f9ca6c57ddc87fef4f8a9a78f07cea5
+```
+
+The accepted deterministic matrix selected `bounded_10s`:
+
+```text
+simulation duration                              900s
+baseline completion output tokens                131380.8388888889
+bounded_10s completion output tokens             133719.10555555573
+total output goodput ratio                       1.0177976232032158
+successful completions                           3 -> 16
+successful request output tokens                 144 -> 6834
+candidate mean-active TPS                        20.48644220424626
+candidate sub-reference exposure                 397.7999999999986s
+preemptions                                      1 -> 1
+maximum outstanding QoS-budget leases            1
+maximum running                                  8
+aggregate queue-wait P95                         0.1s
+maximum idle with demand                         0s
+```
+
+These numbers are synthetic causal evidence under the explicitly recorded
+throughput curve. They do not claim that a real GPU will gain 1.78 percent or
+that every backend has that sequence-scaling curve. The production claim still
+requires image, Compose, deployment, and matched live evidence after all source
+gates and separate authorization.
+
+The exact v0.12.17 comparison used baseline commit
+`0091241bc9edc30f0f7ff50010504225d3fa14c8` with archive SHA-256
+`091ca81b140d44912ec1259371344e46aae826667bf8d4bd80eb2c1564994537`.
+Both baseline and current source returned zero for the focused admission tests,
+the inherited TPS simulation tests, and the full request-aware package. The raw
+admission logs differed only in Go's nondeterministic package duration
+(`0.004s` versus `0.005s`); after normalizing elapsed-time text they were
+byte-identical with SHA-256
+`7a65c4becb646597a18d6295e96605578ee89e60f0138923c8d90273f8edae28`.
+After removing only the newly added Phase 0/3 metric fields and elapsed-time
+text, the inherited TPS simulation logs were byte-identical with SHA-256
+`833c3faec000e31fa99c5d8bf8a3487a8cec91943752ae73765eb7bb2ab53928`.
+This supersedes the earlier, weaker statement that happened to obtain identical
+raw admission hashes because both runs rounded to the same duration.
+
+Phase 3 pre-promotion review 1, model and causality: the matrix changes only
+the forecast duration used to decide whether rolling TPS surplus can fund one
+marginal sequence. It keeps the current sequence-seconds denominator, rolling
+window, conservative aggregate rate, TPS reference, and request work estimate.
+The candidate is exercised through the same Controller decision and atomic
+reservation path as production. It improves both completed-request count and
+successful request-output tokens, not admissions alone. Status: passed for a
+source promotion experiment; real-backend performance remains unproved.
+
+Phase 3 pre-promotion review 2, safety and lifecycle: the bounded horizon is
+not a lease TTL. A granted lease remains attached through reserved, forwarded
+Prefill, active Decode, and terminal residual-debt states until a covering
+observation. Therefore a request that runs beyond ten seconds cannot cause the
+same surplus to be spent again. Existing checks still allow at most one
+outstanding lease, one sequence above the base limit, and one-sequence demand;
+waiting, preemption, stale/missing observations, unobserved reservations,
+multi-sequence requests, invalid rates, KV fit, Prefill gates, backend reset,
+close, and counter bounds remain unchanged. Status: passed.
+
+Phase 3 pre-promotion review 3, evidence and release: the final report is
+reproducible from the exact source archive, the red/green cause is attributable,
+and inherited behavior is equal after normalizing only newly added observability
+fields and nondeterministic test duration. No image, registry, Compose, Router,
+backend, CVM, or production-traffic mutation occurred. Status: passed for the
+next source step only.
+
+Promotion decision: test-first promote `bounded_10s` to the internal production
+default. It must remain a code default, not an environment variable, Compose
+field, dynamic TPS API property, or request parameter. Retain an explicitly
+named simulation seam for the declared-lifetime baseline and alternative
+horizons. First add a focused red test proving that `NewAdmissionController`
+still rejects the 95K-declared and unknown-output fixtures; then implement the
+default and rerun focused, lifecycle, policy-update, race, complete repository,
+simulation, static, and build gates. Phase 3 remains in progress until that
+matrix and the three post-implementation reviews pass. No v0.12.18 executable
+identity is assigned at this checkpoint.
