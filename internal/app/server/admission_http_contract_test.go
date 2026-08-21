@@ -121,6 +121,54 @@ func TestV01218RequestShapeEvidenceCoversStreamingClassifierAndFanoutWithoutChan
 	}
 }
 
+func TestV01218TPSMetricsExposeDecisionAndDenominatorSourcesWithoutChangingAdmission(t *testing.T) {
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"completion","choices":[]}`))
+	}))
+	defer backend.Close()
+	runtime, controller, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", Running: 1, Generation: 100, TPSReference: 25,
+	})
+	clock.Advance(time.Second)
+	publishAdmissionObservationForTest(t, controller, runtime.profile, coreadmission.BackendObservation{
+		CapabilityFingerprint: runtime.profile.ModelIdentitySHA256,
+		MaxModelLenTokens:     runtime.profile.MaxModelLenTokens,
+		KVCapacityTokens:      runtime.profile.KVCapacityTokens,
+		KVBlockSize:           runtime.profile.KVBlockSize,
+		ObservedAt:            clock.Now(),
+		MaximumAge:            time.Hour,
+		Running:               1,
+		GenerationTokensTotal: 150,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+	response := serveAdmissionRequest(t, srv, "warming")
+	if response.Code != http.StatusOK || backendCalls.Load() != 1 {
+		t.Fatalf(
+			"TPS evidence changed warming admission: status=%d backend_calls=%d body=%q",
+			response.Code,
+			backendCalls.Load(),
+			response.Body.String(),
+		)
+	}
+
+	var output bytes.Buffer
+	srv.writeLocalMetrics(&output)
+	metricsBody := output.String()
+	for _, want := range []string{
+		`pig_predictive_tps_decisions_total{result="admit",subreason="warming"} 1`,
+		`pig_predictive_tps_denominator_selections_total{source="endpoint"} 1`,
+		`pig_predictive_tps_denominator_sequence_seconds_total{source="endpoint"} 1.000000`,
+		`pig_predictive_tps_denominator_sequence_seconds_total{source="selected"} 1.000000`,
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("cumulative TPS evidence missing %q\nmetrics:\n%s", want, metricsBody)
+		}
+	}
+}
+
 func TestAdmissionHTTPInputEstimateChangesPreForwardDecision(t *testing.T) {
 	type outcome struct {
 		status       int
