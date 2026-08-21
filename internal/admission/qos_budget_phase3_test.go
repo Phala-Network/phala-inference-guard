@@ -43,6 +43,57 @@ func TestV01218BoundedQoSBudgetSimulationChangesOnlyForecastLifetime(t *testing.
 	}
 }
 
+func TestV01218ProductionControllerUsesBoundedTPSDebtHorizon(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		knownLimit bool
+	}{
+		{name: "large declared output", knownLimit: true},
+		{name: "unknown output"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			start := time.Unix(11_900, 0)
+			clock := &manualAdmissionClock{at: start}
+			capability := testCapability()
+			controller, err := NewAdmissionController(ControllerConfig{
+				Capability: capability, WorkProfile: testRequestWorkProfile(),
+				TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer controller.Close()
+
+			publishObservation(t, controller, testObservation(capability, start, 0, 7, 0, 0, 0))
+			for step := 1; step <= 4; step++ {
+				at := start.Add(time.Duration(step) * 500 * time.Millisecond)
+				clock.Set(at)
+				publishObservation(t, controller, testObservation(
+					capability,
+					at,
+					0,
+					7,
+					0,
+					uint64(step*75),
+					0,
+				))
+			}
+
+			estimate := testEstimate(1, 1, 16)
+			if test.knownLimit {
+				estimate.OutputLimitTokens = 95_000
+				estimate.OutputLimitKnown = true
+			}
+			admitted := controller.Admit(clock.Now(), estimate)
+			if !admitted.Decision.Admitted() || !admitted.Decision.TPSQoSBudgeted ||
+				admitted.Decision.TPSSequenceLimit != 8 ||
+				admitted.Decision.TPSDecisionSubreason != TPSDecisionSubreasonQoSBudgetGranted {
+				t.Fatalf("production Controller did not use bounded TPS debt: %+v", admitted.Decision)
+			}
+		})
+	}
+}
+
 func TestV01218BoundedQoSBudgetSimulationStillRequiresEnoughHorizonSurplus(t *testing.T) {
 	state := ProjectedState{
 		RawRunning:               7,
