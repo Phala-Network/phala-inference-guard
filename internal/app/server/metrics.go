@@ -61,6 +61,7 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "failed", s.policyUpdates.failed.Load())
 	fmt.Fprintf(w, "pig_client_protocol_errors_total{reason=%q} %d\n", "invalid_json", s.clientProtocolInvalidJSON.Load())
 	fmt.Fprintf(w, "pig_predictive_scanner_inflight %d\n", s.requestClassifier.Inflight())
+	fmt.Fprintf(w, "pig_predictive_scanner_reserved_body_bytes %d\n", s.requestClassifier.ReservedBodyBytes())
 	fmt.Fprintf(w, "pig_predictive_scanner_saturated_total %d\n", s.requestClassifier.Rejected())
 	writeRequestEvidenceMetrics(w, s.requestEvidence.Snapshot())
 	writeResponseUsageEvidenceMetrics(w, s.responseUsageEvidence.Snapshot())

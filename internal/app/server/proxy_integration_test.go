@@ -91,6 +91,9 @@ func TestPredictiveTimingSeparatesBodyReadEstimatorAndPreForwardDecision(t *test
 	if preForward < bodyRead+estimator {
 		t.Fatalf("pre-forward duration=%f, want at least body-read+estimator=%f", preForward, bodyRead+estimator)
 	}
+	if reserved := requirePrometheusMetric(t, metricsBody, "pig_predictive_scanner_reserved_body_bytes"); reserved != 0 {
+		t.Fatalf("scanner reserved body bytes=%f after proxy completion, want zero", reserved)
+	}
 	for _, name := range []string{
 		"pig_predictive_admission_body_read_duration_seconds_count",
 		"pig_predictive_admission_estimator_duration_seconds_count",

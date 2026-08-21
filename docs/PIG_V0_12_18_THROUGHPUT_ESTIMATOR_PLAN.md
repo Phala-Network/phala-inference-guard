@@ -553,6 +553,39 @@ After the primary goodput changes are decided:
 
 Do not bundle these lower-priority changes into the estimator/TPS causal A/B.
 
+#### Phase 5.1: weighted scanner body budget
+
+The first Phase 5 slice bounds the classifier's outstanding preserved request
+bodies without turning the existing 64-request scanner limit into another
+coarse request-count gate:
+
+- keep the production defaults at 64 scanner workers and a 4 MiB per-body
+  ceiling, with no new environment variable or dynamic-policy field;
+- cap aggregate outstanding body reservations at 32 MiB in code;
+- charge a positive trustworthy `Content-Length` by its declared bytes and
+  charge unknown, zero, negative, or otherwise untrusted lengths at the full
+  per-body ceiling;
+- release the short scanner-worker slot when classification ends, but retain
+  the independent byte reservation until the preserved body is closed after
+  forwarding or a local terminal response;
+- make body close, buffer recycling, and byte release idempotent and ensure the
+  HTTP handler closes the classified body on every 400/429/error path so local
+  protection cannot create a low-flow self-lock;
+- expose only the current fixed-cardinality gauge
+  `pig_predictive_scanner_reserved_body_bytes`; it reports conservative
+  reservation weight, not exact heap allocation or request content;
+- prove that 64 small known-length bodies remain eligible, eight maximum-weight
+  unknown bodies consume the 32 MiB budget, a ninth is rejected without being
+  read or modified, one close admits one replacement, concurrent check/reserve
+  cannot exceed the cap, and all close/read-error/local-reject paths return the
+  gauge to zero.
+
+The 32 MiB bound intentionally limits retained request-body liability rather
+than GPU admission. `classifier_saturated` remains request-scoped and must be
+visible in the existing scanner saturation metric. Its benchmark acceptance is
+no material regression in the known-length hot path and a 4 MiB p99 below the
+user-approved 100-ms extreme-input ceiling on the approved remote runner.
+
 ## 6. Test-First And Remote Execution Contract
 
 For each behavior-bearing phase:

@@ -19,6 +19,7 @@ type preservingReadCloser struct {
 	original io.Closer
 	buffer   *bytes.Buffer
 	owner    *Classifier
+	reservedBodyBytes int64
 	once     sync.Once
 	err      error
 }
@@ -34,6 +35,10 @@ func (r *preservingReadCloser) Close() error {
 		if r.owner != nil && r.buffer != nil {
 			r.owner.releaseBodyBuffer(r.buffer)
 			r.buffer = nil
+		}
+		if r.owner != nil && r.reservedBodyBytes > 0 {
+			_ = r.owner.releaseBodyBytes(r.reservedBodyBytes)
+			r.reservedBodyBytes = 0
 		}
 	})
 	return r.err
@@ -66,12 +71,19 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 		classification.Cost = unsupported
 		return classification, nil
 	}
-	if !c.acquire() {
+	reservedBodyBytes, acquired := c.acquire(r.ContentLength)
+	if !acquired {
 		unsupported.UnsupportedReason = "classifier_saturated"
 		classification.Cost = unsupported
 		return classification, nil
 	}
-	defer c.release()
+	defer c.releaseScanner()
+	bodyLeaseTransferred := false
+	defer func() {
+		if !bodyLeaseTransferred {
+			_ = c.releaseBodyBytes(reservedBodyBytes)
+		}
+	}()
 
 	originalBody := r.Body
 	originalLength := r.ContentLength
@@ -81,20 +93,23 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 	classification.Timing.BodyRead = time.Since(readStarted)
 	classification.Timing.BodyReadMeasured = true
 	if err != nil {
-		r.Body = c.preserveBody(io.MultiReader(bytes.NewReader(body), originalBody), originalBody, buffer)
+		r.Body = c.preserveBody(io.MultiReader(bytes.NewReader(body), originalBody), originalBody, buffer, reservedBodyBytes)
+		bodyLeaseTransferred = true
 		r.ContentLength = originalLength
 		unsupported.UnsupportedReason = "body_read_failed"
 		classification.Cost = unsupported
 		return classification, nil
 	}
 	if int64(len(body)) > c.cfg.MaximumBodyBytes {
-		r.Body = c.preserveBody(io.MultiReader(bytes.NewReader(body), originalBody), originalBody, buffer)
+		r.Body = c.preserveBody(io.MultiReader(bytes.NewReader(body), originalBody), originalBody, buffer, reservedBodyBytes)
+		bodyLeaseTransferred = true
 		r.ContentLength = originalLength
 		unsupported.UnsupportedReason = "body_too_large"
 		classification.Cost = unsupported
 		return classification, nil
 	}
-	r.Body = c.preserveBody(bytes.NewReader(body), originalBody, buffer)
+	r.Body = c.preserveBody(bytes.NewReader(body), originalBody, buffer, reservedBodyBytes)
+	bodyLeaseTransferred = true
 	r.ContentLength = originalLength
 
 	estimatorStarted := time.Now()
@@ -247,12 +262,18 @@ func (c *Classifier) releaseBodyBuffer(buffer *bytes.Buffer) {
 	}
 }
 
-func (c *Classifier) preserveBody(reader io.Reader, original io.Closer, buffer *bytes.Buffer) io.ReadCloser {
+func (c *Classifier) preserveBody(
+	reader io.Reader,
+	original io.Closer,
+	buffer *bytes.Buffer,
+	reservedBytes int64,
+) io.ReadCloser {
 	return &preservingReadCloser{
-		Reader:   reader,
-		original: original,
-		buffer:   buffer,
-		owner:    c,
+		Reader:            reader,
+		original:          original,
+		buffer:            buffer,
+		owner:             c,
+		reservedBodyBytes: reservedBytes,
 	}
 }
 

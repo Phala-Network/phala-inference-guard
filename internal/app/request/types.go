@@ -18,11 +18,13 @@ type Config struct {
 }
 
 type Classifier struct {
-	cfg      Config
-	tokens   chan struct{}
-	bodyPool chan *bytes.Buffer
-	inflight atomic.Int64
-	rejected atomic.Uint64
+	cfg                      Config
+	tokens                   chan struct{}
+	bodyPool                 chan *bytes.Buffer
+	maximumReservedBodyBytes int64
+	inflight                 atomic.Int64
+	reservedBodyBytes        atomic.Int64
+	rejected                 atomic.Uint64
 }
 
 type Classification struct {

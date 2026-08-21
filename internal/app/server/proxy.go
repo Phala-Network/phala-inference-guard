@@ -47,6 +47,9 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	decisionStart := time.Now()
 	classification, protocolError := s.requestClassifier.ClassifyRequest(r)
+	if r.Body != nil {
+		defer r.Body.Close()
+	}
 	s.requestEvidence.Record(classification)
 	responseEvidence := s.responseUsageEvidence.Begin(classification, r.URL.Path, s.cfg.PathSuffixMatch)
 	defer responseEvidence.Censor()

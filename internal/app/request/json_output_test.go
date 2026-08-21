@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
@@ -17,6 +18,41 @@ type closeTrackingBody struct {
 }
 
 func (b *closeTrackingBody) Close() error {
+	b.closes++
+	return nil
+}
+
+type readTrackingBody struct {
+	reader io.Reader
+	reads  int
+	closes int
+}
+
+func (b *readTrackingBody) Read(buffer []byte) (int, error) {
+	b.reads++
+	return b.reader.Read(buffer)
+}
+
+func (b *readTrackingBody) Close() error {
+	b.closes++
+	return nil
+}
+
+type erroringBody struct {
+	data   []byte
+	read   bool
+	closes int
+}
+
+func (b *erroringBody) Read(buffer []byte) (int, error) {
+	if b.read {
+		return 0, io.EOF
+	}
+	b.read = true
+	return copy(buffer, b.data), io.ErrUnexpectedEOF
+}
+
+func (b *erroringBody) Close() error {
 	b.closes++
 	return nil
 }
@@ -45,6 +81,9 @@ func TestClassifierRecyclesBodyBufferOnlyAfterIdempotentClose(t *testing.T) {
 	if !ok || preserved.buffer == nil || len(classifier.bodyPool) != 0 {
 		t.Fatalf("body buffer was recycled before request close: body=%T pool=%d", request.Body, len(classifier.bodyPool))
 	}
+	if classifier.ReservedBodyBytes() != int64(len(body)) {
+		t.Fatalf("reserved body bytes=%d want %d before close", classifier.ReservedBodyBytes(), len(body))
+	}
 	wantBuffer := preserved.buffer
 	forwarded, err := io.ReadAll(request.Body)
 	if err != nil || !bytes.Equal(forwarded, body) {
@@ -58,6 +97,9 @@ func TestClassifierRecyclesBodyBufferOnlyAfterIdempotentClose(t *testing.T) {
 	}
 	if original.closes != 1 || len(classifier.bodyPool) != 1 {
 		t.Fatalf("close count/pool=%d/%d want 1/1", original.closes, len(classifier.bodyPool))
+	}
+	if classifier.ReservedBodyBytes() != 0 {
+		t.Fatalf("closed body retained %d reserved bytes", classifier.ReservedBodyBytes())
 	}
 	reused := classifier.acquireBodyBuffer(len(body))
 	if reused != wantBuffer {
@@ -89,6 +131,9 @@ func TestV01215ClassifierIdleBodyRetentionIsBounded(t *testing.T) {
 	if cap(classifier.tokens) != maximumConcurrent {
 		t.Fatalf("scanner concurrency=%d want %d", cap(classifier.tokens), maximumConcurrent)
 	}
+	if classifier.maximumReservedBodyBytes != maximumRetainedPayload {
+		t.Fatalf("outstanding body budget=%d want %d", classifier.maximumReservedBodyBytes, maximumRetainedPayload)
+	}
 }
 
 func TestV01218ClassifierBoundsUnknownLengthOutstandingBodyBytes(t *testing.T) {
@@ -119,19 +164,155 @@ func TestV01218ClassifierBoundsUnknownLengthOutstandingBodyBytes(t *testing.T) {
 			t.Fatalf("unknown-length request %d was not classified: protocol=%+v cost=%+v", index, protocolError, classification.Cost)
 		}
 	}
+	if classifier.Inflight() != 0 || classifier.ReservedBodyBytes() != 32*1024*1024 {
+		t.Fatalf("scanner state after eight bodies: inflight=%d reserved=%d", classifier.Inflight(), classifier.ReservedBodyBytes())
+	}
 
-	saturated, protocolError := classifier.ClassifyRequest(newUnknownLengthRequest())
+	saturatedBody := &readTrackingBody{reader: strings.NewReader(body)}
+	saturatedRequest := httptest.NewRequest(http.MethodPost, "/v1/completions", nil)
+	saturatedRequest.Body = saturatedBody
+	saturatedRequest.ContentLength = -1
+	requests = append(requests, saturatedRequest)
+	saturated, protocolError := classifier.ClassifyRequest(saturatedRequest)
 	if protocolError != nil || saturated.Cost.Supported ||
 		saturated.Cost.UnsupportedReason != "classifier_saturated" || classifier.Rejected() != 1 {
 		t.Fatalf("ninth maximum-weight body was not bounded: protocol=%+v cost=%+v rejected=%d", protocolError, saturated.Cost, classifier.Rejected())
+	}
+	if saturatedRequest.Body != saturatedBody || saturatedBody.reads != 0 {
+		t.Fatalf("saturated request body was consumed or replaced: body=%T reads=%d", saturatedRequest.Body, saturatedBody.reads)
 	}
 
 	if err := requests[0].Body.Close(); err != nil {
 		t.Fatalf("close first preserved body: %v", err)
 	}
+	if classifier.ReservedBodyBytes() != 28*1024*1024 {
+		t.Fatalf("released body left %d reserved bytes, want %d", classifier.ReservedBodyBytes(), 28*1024*1024)
+	}
 	replacement, protocolError := classifier.ClassifyRequest(newUnknownLengthRequest())
 	if protocolError != nil || !replacement.Cost.Supported {
 		t.Fatalf("released byte budget did not admit replacement: protocol=%+v cost=%+v", protocolError, replacement.Cost)
+	}
+	for _, request := range requests {
+		_ = request.Body.Close()
+	}
+	if classifier.ReservedBodyBytes() != 0 {
+		t.Fatalf("closed requests retained %d reserved bytes", classifier.ReservedBodyBytes())
+	}
+}
+
+func TestV01218ClassifierWeightsKnownLengthOutstandingBodies(t *testing.T) {
+	const body = `{"prompt":"hello","max_tokens":8}`
+	const requestCount = 64
+	classifier := New(Config{
+		MaximumBodyBytes:  4 * 1024 * 1024,
+		MaximumConcurrent: requestCount,
+		OutputTokenFields: []string{"max_tokens"},
+		Estimator:         kvadmission.DefaultEstimatorConfig(),
+	})
+	requests := make([]*http.Request, requestCount)
+	for index := range requests {
+		requests[index] = httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(body))
+		classification, protocolError := classifier.ClassifyRequest(requests[index])
+		if protocolError != nil || !classification.Cost.Supported {
+			t.Fatalf("known-length request %d was not classified: protocol=%+v cost=%+v", index, protocolError, classification.Cost)
+		}
+	}
+	if got, want := classifier.ReservedBodyBytes(), int64(requestCount*len(body)); got != want {
+		t.Fatalf("known-length reservations=%d want %d", got, want)
+	}
+	for _, request := range requests {
+		_ = request.Body.Close()
+	}
+	if classifier.ReservedBodyBytes() != 0 {
+		t.Fatalf("closed known-length requests retained %d reserved bytes", classifier.ReservedBodyBytes())
+	}
+}
+
+func TestV01218ClassifierConcurrentUnknownLengthBudgetIsAtomic(t *testing.T) {
+	const body = `{"prompt":"hello","max_tokens":8}`
+	const requestCount = 64
+	classifier := New(Config{
+		MaximumBodyBytes:  4 * 1024 * 1024,
+		MaximumConcurrent: requestCount,
+		OutputTokenFields: []string{"max_tokens"},
+		Estimator:         kvadmission.DefaultEstimatorConfig(),
+	})
+	requests := make([]*http.Request, requestCount)
+	results := make(chan Classification, requestCount)
+	start := make(chan struct{})
+	var workers sync.WaitGroup
+	for index := range requests {
+		request := httptest.NewRequest(http.MethodPost, "/v1/completions", strings.NewReader(body))
+		request.ContentLength = -1
+		requests[index] = request
+		workers.Add(1)
+		go func(request *http.Request) {
+			defer workers.Done()
+			<-start
+			classification, protocolError := classifier.ClassifyRequest(request)
+			if protocolError != nil {
+				t.Errorf("concurrent classification protocol error: %+v", protocolError)
+			}
+			results <- classification
+		}(request)
+	}
+	close(start)
+	workers.Wait()
+	close(results)
+	supported := 0
+	saturated := 0
+	for classification := range results {
+		switch {
+		case classification.Cost.Supported:
+			supported++
+		case classification.Cost.UnsupportedReason == "classifier_saturated":
+			saturated++
+		default:
+			t.Fatalf("unexpected concurrent classification: %+v", classification.Cost)
+		}
+	}
+	if supported != 8 || saturated != requestCount-8 || classifier.Rejected() != requestCount-8 {
+		t.Fatalf("concurrent results supported=%d saturated=%d rejected=%d", supported, saturated, classifier.Rejected())
+	}
+	if got := classifier.ReservedBodyBytes(); got != 32*1024*1024 {
+		t.Fatalf("concurrent reservations=%d want %d", got, 32*1024*1024)
+	}
+	for _, request := range requests {
+		_ = request.Body.Close()
+	}
+	if classifier.ReservedBodyBytes() != 0 {
+		t.Fatalf("closed concurrent requests retained %d reserved bytes", classifier.ReservedBodyBytes())
+	}
+}
+
+func TestV01218ClassifierReadErrorLeaseReleasesExactlyOnce(t *testing.T) {
+	body := &erroringBody{data: []byte(`{"prompt":"partial`)}
+	classifier := New(Config{
+		MaximumBodyBytes:  4 * 1024 * 1024,
+		MaximumConcurrent: 1,
+		OutputTokenFields: []string{"max_tokens"},
+		Estimator:         kvadmission.DefaultEstimatorConfig(),
+	})
+	request := httptest.NewRequest(http.MethodPost, "/v1/completions", nil)
+	request.Body = body
+	request.ContentLength = -1
+
+	classification, protocolError := classifier.ClassifyRequest(request)
+	if protocolError != nil || classification.Cost.Supported ||
+		classification.Cost.UnsupportedReason != "body_read_failed" {
+		t.Fatalf("read error classification: protocol=%+v cost=%+v", protocolError, classification.Cost)
+	}
+	if got := classifier.ReservedBodyBytes(); got != 4*1024*1024 {
+		t.Fatalf("read error reservation=%d want %d", got, 4*1024*1024)
+	}
+	if err := request.Body.Close(); err != nil {
+		t.Fatalf("close read-error body: %v", err)
+	}
+	if err := request.Body.Close(); err != nil {
+		t.Fatalf("close read-error body twice: %v", err)
+	}
+	if body.closes != 1 || classifier.ReservedBodyBytes() != 0 {
+		t.Fatalf("read-error release closes=%d reserved=%d", body.closes, classifier.ReservedBodyBytes())
 	}
 }
 

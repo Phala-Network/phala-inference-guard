@@ -165,6 +165,7 @@ func TestV01218RequestShapeEvidenceCoversStreamingClassifierAndFanoutWithoutChan
 	for _, want := range []string{
 		`pig_predictive_classifier_outcomes_total{outcome="supported"} 4`,
 		`pig_predictive_classifier_outcomes_total{outcome="invalid_json"} 1`,
+		`pig_predictive_scanner_reserved_body_bytes 0`,
 		`pig_predictive_request_streaming_total{state="true"} 1`,
 		`pig_predictive_request_streaming_total{state="false"} 1`,
 		`pig_predictive_request_streaming_total{state="unspecified"} 1`,
