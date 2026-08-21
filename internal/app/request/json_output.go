@@ -16,12 +16,12 @@ import (
 
 type preservingReadCloser struct {
 	io.Reader
-	original io.Closer
-	buffer   *bytes.Buffer
-	owner    *Classifier
+	original          io.Closer
+	buffer            *bytes.Buffer
+	owner             *Classifier
 	reservedBodyBytes int64
-	once     sync.Once
-	err      error
+	once              sync.Once
+	err               error
 }
 
 func (r *preservingReadCloser) Close() error {
