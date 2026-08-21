@@ -66,4 +66,3 @@ func TestV01218BoundedQoSBudgetSimulationStillRequiresEnoughHorizonSurplus(t *te
 		t.Fatalf("bounded horizon spent surplus it does not have: %+v", decision)
 	}
 }
-
