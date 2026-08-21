@@ -198,6 +198,43 @@ pig_dynamic_global_limit
 They are a read-only projection of the predictive snapshot, not a retained
 request-count controller. No other retired dynamic-QoS behavior is authoritative.
 
+In particular, `pig_dynamic_global_limit` is the Router compatibility value
+needed to represent the current open/closed projection. It is not the number of
+arbitrary requests that the GPU can safely hold, and its meaning is not
+comparable to the retired request-count limiter. Do not use either of these as a
+cross-version utilization or saturation query:
+
+```promql
+pig_dynamic_observed_running / pig_dynamic_global_limit
+pig_dynamic_observed_running_raw / pig_dynamic_global_limit_raw
+```
+
+Use the metric that represents the question instead. Examples:
+
+```promql
+# Current backend work, without the compatibility projection.
+pig_backend_observed_running{name="upstream"}
+pig_backend_observed_waiting{name="upstream"}
+
+# Backend KV occupancy.
+pig_backend_kv_active_tokens{name="upstream"}
+/
+clamp_min(pig_backend_kv_capacity_tokens{name="upstream"}, 1)
+
+# Whether the current canonical minimum request is under Router backpressure.
+pig_predictive_router_backpressure_active
+
+# Cumulative admission outcomes and bounded protection attribution.
+sum by (outcome) (rate(pig_predictive_admission_outcomes_total[5m]))
+sum by (reason, scope) (rate(pig_predictive_admission_protections_total[5m]))
+```
+
+The first two queries describe backend work and KV load. The backpressure gauge
+describes the current Router-facing state. The cumulative rates describe what
+PIG admitted or protected over the selected window, including request-specific
+protection that deliberately leaves the node open for smaller work. They must
+not be collapsed into one synthetic `running / global_limit` percentage.
+
 ## Logs and cross-surface agreement
 
 All runtime records use three stable leading fields:

@@ -566,7 +566,8 @@ step.
 Plan and evidence consolidation                         complete
 Three plan reviews                                      complete
 Plan commit and push                                    complete (`c520a18`)
-Phase 0 fixed-cardinality evidence                      in progress (five slices green)
+Phase 0 fixed-cardinality evidence source               complete (six slices green)
+Phase 0 complete acceptance gates                       in progress
 Phase 1 endpoint-aware estimator                        pending
 Phase 2 cross-tokenizer offline oracle                  pending
 Phase 3 bounded TPS-debt simulation                     pending
@@ -581,11 +582,14 @@ Compose integration / deployment / live acceptance     not started
 The completed Phase 0 slices expose cumulative admission outcome, protection
 reason and scope, estimate confidence, Prefill class, Decode fan-out, Selection
 input-token buckets, classifier/streaming shape, TPS decision subreason,
-denominator source, per-kind estimator validation, and bounded response usage
-versus declared output-limit evidence. They do not change admission,
-reservation, request bytes, response bytes, or logging decisions. The remaining
-Phase 0 source work is Prefill lifecycle evidence and truthful
-compatibility-metric documentation before any estimator or TPS policy change.
+denominator source, per-kind estimator validation, bounded response usage versus
+declared output-limit evidence, and Prefill response lifecycle evidence. They do
+not change admission, reservation, request bytes, response bytes, Controller
+reconciliation, or logging decisions. The compatibility-metric documentation
+also supplies replacement PromQL and explicitly rejects the obsolete
+`running / pig_dynamic_global_limit` interpretation. Phase 0 now requires its
+complete deterministic equivalence, cardinality, remote test/race/static/build,
+and hot-path performance gates before any estimator or TPS policy change.
 
 ## 11. Plan Review Record
 
@@ -774,3 +778,25 @@ with log SHA-256
 These metrics are calibration evidence only: successful responses that omit
 usage remain `unavailable`, pre-forward rejects and interrupted responses remain
 `censored`, and neither class is counted as estimator accuracy.
+
+The Prefill-lifecycle contract red test was pushed as
+`d89dfee0c1970d140612f2f8c1702bdafda19323`. Its exact archive SHA-256 was
+`72f509e140dfb56966df03dd402a8a25f64989efcf6e5eb6bf3e21da76a69020`;
+the HTTP fixture preserved one body-bearing success, one bodyless forwarded
+success, one pre-forward protection, and exactly two upstream calls. It exited
+1 only for missing lifecycle metrics; red log SHA-256
+`99b2076507114114c841ab5e114a712adea26e8ea6dc878033380f34a98799b3`.
+
+The final pushed Prefill-lifecycle source is
+`2ab1dfcd269f907339cbcbffb563be4308bee06e`, exact archive SHA-256
+`485ef67945691cf6e5b8963544fc52358c9fb1c5e3e75d1ad8cc9fd96f1bf836`.
+It measures response-body first-byte-to-terminal duration and separately counts
+forwarded terminal-before-first-byte and pre-forward terminal cases across
+single, single-Prompt fan-out, Prompt batch, and batch-plus-fan-out shapes.
+It does not release or shorten Prefill/KV debt. `gofmt -d` was empty; focused
+tests passed with log SHA-256
+`19354b3313a2e2682de4e9ec4df52f5fecf37841a6cffca1315381f8899732de`;
+focused race passed with log SHA-256
+`67d99ba7e7066cc7adc99750605e82d3b0b3cb40322ae54febc0f708f83e9cc9`;
+and the complete `internal/app/server` package passed with log SHA-256
+`6d8cc13ef14c1d11ee83b62ca85697fa8858fca8aa50334514b335a355259c27`.
