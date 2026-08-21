@@ -38,6 +38,9 @@ func TestV01218RequestEvidenceNormalizesUnknownClassifierReasons(t *testing.T) {
 		`pig_predictive_classifier_outcomes_total{outcome="unknown"} 1`,
 		`pig_predictive_request_streaming_total{state="invalid"} 1`,
 		`pig_predictive_request_decode_fanout_total{bucket=">16"} 1`,
+		`pig_predictive_estimator_validation_total{estimate_kind="selection_input",result="unknown"} 1`,
+		`pig_predictive_estimator_validation_total{estimate_kind="context_upper_bound",result="unknown"} 1`,
+		`pig_predictive_estimator_validation_total{estimate_kind="kv_reservation",result="unknown"} 1`,
 	} {
 		if !strings.Contains(metricsBody, want) {
 			t.Fatalf("normalized request evidence missing %q", want)

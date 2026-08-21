@@ -114,6 +114,12 @@ func TestV01218RequestShapeEvidenceCoversStreamingClassifierAndFanoutWithoutChan
 		`pig_predictive_request_decode_fanout_total{bucket="unknown"} 1`,
 		`pig_predictive_request_decode_fanout_total{bucket="1"} 3`,
 		`pig_predictive_request_decode_fanout_total{bucket="2"} 1`,
+		`pig_predictive_estimator_validation_total{estimate_kind="selection_input",result="known"} 4`,
+		`pig_predictive_estimator_validation_total{estimate_kind="context_upper_bound",result="known"} 4`,
+		`pig_predictive_estimator_validation_total{estimate_kind="kv_reservation",result="known"} 4`,
+		`pig_predictive_estimator_validation_total{estimate_kind="selection_input",result="invalid_json"} 1`,
+		`pig_predictive_estimator_validation_total{estimate_kind="context_upper_bound",result="invalid_json"} 1`,
+		`pig_predictive_estimator_validation_total{estimate_kind="kv_reservation",result="invalid_json"} 1`,
 	} {
 		if !strings.Contains(metricsBody, want) {
 			t.Fatalf("cumulative request-shape evidence missing %q\nmetrics:\n%s", want, metricsBody)
