@@ -198,6 +198,7 @@ func newTPSDebtStaleRecoveryScenario() scenarioSpec {
 
 func newTPSDebtBackendResetScenario() scenarioSpec {
 	recovery := tpsDebtRequest("epoch-reset-recovery", 16100*time.Millisecond, 16, 16, false)
+	recovery.decodeHorizon = 16
 	scenario := newTPSDebtScenario("bounded-debt-backend-epoch-reset", "epoch-reset", 25*time.Second,
 		tpsDebtRequest("epoch-reset-dropped", 12*time.Second, 1_500, 95_000, false),
 		recovery,

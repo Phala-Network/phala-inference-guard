@@ -18,34 +18,34 @@ const (
 )
 
 type Metrics struct {
-	Arrivals                     int     `json:"arrivals"`
-	Admitted                     int     `json:"admitted"`
-	Rejected                     int     `json:"rejected"`
-	HardProtects                 int     `json:"hard_protects"`
-	SizeProtects                 int     `json:"size_protects"`
-	Completed                    int     `json:"completed"`
-	CompletionTokens             float64 `json:"completion_tokens"`
-	BackgroundOutputTokens       float64 `json:"background_output_tokens"`
-	RequestOutputTokens          float64 `json:"request_output_tokens"`
+	Arrivals                      int     `json:"arrivals"`
+	Admitted                      int     `json:"admitted"`
+	Rejected                      int     `json:"rejected"`
+	HardProtects                  int     `json:"hard_protects"`
+	SizeProtects                  int     `json:"size_protects"`
+	Completed                     int     `json:"completed"`
+	CompletionTokens              float64 `json:"completion_tokens"`
+	BackgroundOutputTokens        float64 `json:"background_output_tokens"`
+	RequestOutputTokens           float64 `json:"request_output_tokens"`
 	SuccessfulRequestOutputTokens float64 `json:"successful_request_output_tokens"`
-	SLOCompletionTokens          float64 `json:"slo_completion_tokens"`
-	CompletionTokensPerSecond    float64 `json:"completion_tokens_per_second"`
-	SLOCompletionTokensPerSecond float64 `json:"slo_completion_tokens_per_second"`
-	Preemptions                  int     `json:"preemptions"`
-	BackendResets                int     `json:"backend_resets"`
-	ResetDroppedRequests         int     `json:"reset_dropped_requests"`
-	TPSFloorViolationSeconds     float64 `json:"tps_floor_violation_seconds"`
-	WaitingSeconds               float64 `json:"waiting_seconds"`
-	QueueWaitP95Seconds          float64 `json:"queue_wait_p95_seconds"`
-	QueueWaitMaximumSeconds      float64 `json:"queue_wait_maximum_seconds"`
-	MaximumIdleWithDemandSeconds float64 `json:"maximum_idle_with_demand_seconds"`
-	HardFitIdleRejects           int     `json:"hard_fit_idle_rejects"`
-	PeakKVTokens                 int64   `json:"peak_kv_tokens"`
-	MaximumRunning               int     `json:"maximum_running"`
-	TPSQoSBudgetAdmissions       int     `json:"tps_qos_budget_admissions"`
-	MaximumQoSBudgetLeases       int     `json:"maximum_qos_budget_leases"`
-	DecodeSequenceSeconds        float64 `json:"decode_sequence_seconds"`
-	MeanActiveTPS                float64 `json:"mean_active_tps"`
+	SLOCompletionTokens           float64 `json:"slo_completion_tokens"`
+	CompletionTokensPerSecond     float64 `json:"completion_tokens_per_second"`
+	SLOCompletionTokensPerSecond  float64 `json:"slo_completion_tokens_per_second"`
+	Preemptions                   int     `json:"preemptions"`
+	BackendResets                 int     `json:"backend_resets"`
+	ResetDroppedRequests          int     `json:"reset_dropped_requests"`
+	TPSFloorViolationSeconds      float64 `json:"tps_floor_violation_seconds"`
+	WaitingSeconds                float64 `json:"waiting_seconds"`
+	QueueWaitP95Seconds           float64 `json:"queue_wait_p95_seconds"`
+	QueueWaitMaximumSeconds       float64 `json:"queue_wait_maximum_seconds"`
+	MaximumIdleWithDemandSeconds  float64 `json:"maximum_idle_with_demand_seconds"`
+	HardFitIdleRejects            int     `json:"hard_fit_idle_rejects"`
+	PeakKVTokens                  int64   `json:"peak_kv_tokens"`
+	MaximumRunning                int     `json:"maximum_running"`
+	TPSQoSBudgetAdmissions        int     `json:"tps_qos_budget_admissions"`
+	MaximumQoSBudgetLeases        int     `json:"maximum_qos_budget_leases"`
+	DecodeSequenceSeconds         float64 `json:"decode_sequence_seconds"`
+	MeanActiveTPS                 float64 `json:"mean_active_tps"`
 }
 
 type ScenarioResult struct {
