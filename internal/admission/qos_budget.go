@@ -5,13 +5,14 @@ import (
 	"time"
 )
 
-// qosBudgetForecast spends rolling per-sequence TPS surplus only when a
-// request-bounded Decode lifetime fits the remaining budget.
+// qosBudgetForecast spends rolling per-sequence TPS surplus only when the
+// selected forecast duration fits the remaining budget. Its zero value keeps
+// the production complete-declared-lifetime policy.
 type qosBudgetForecast struct {
 	controlHorizon time.Duration
 }
 
-func (qosBudgetForecast) sequenceLimit(
+func (f qosBudgetForecast) sequenceLimit(
 	state ProjectedState,
 	currentSequences int64,
 	nonBudgetLimit int64,
@@ -35,7 +36,8 @@ func (qosBudgetForecast) sequenceLimit(
 	if demand.additionalSequences != 1 {
 		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetMultiSequence
 	}
-	if !demand.outputLimitKnown || demand.outputLimitTokens < 0 {
+	if (!demand.outputLimitKnown && f.controlHorizon == 0) ||
+		(demand.outputLimitKnown && demand.outputLimitTokens < 0) {
 		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetOutputUnknown
 	}
 	postAdmit, ok := addNonnegativeInt64(currentSequences, demand.additionalSequences)
@@ -73,7 +75,13 @@ func (qosBudgetForecast) sequenceLimit(
 	if deficitRate < 0 {
 		deficitRate = 0
 	}
-	forecastSeconds := float64(demand.outputLimitTokens) / projectedPerSequence
+	forecastSeconds, forecastSubreason, forecastValid := f.forecastSeconds(
+		demand,
+		projectedPerSequence,
+	)
+	if !forecastValid {
+		return nonBudgetLimit, false, forecastSubreason
+	}
 	requiredSurplus := deficitRate * forecastSeconds
 	if !finiteNonnegative(deficitRate) || !finiteNonnegative(forecastSeconds) ||
 		!finiteNonnegative(requiredSurplus) {
@@ -83,4 +91,40 @@ func (qosBudgetForecast) sequenceLimit(
 		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetLifetime
 	}
 	return waveLimit, true, TPSDecisionSubreasonQoSBudgetGranted
+}
+
+func (f qosBudgetForecast) forecastSeconds(
+	demand tpsAdmissionDemand,
+	projectedPerSequence float64,
+) (float64, TPSDecisionSubreason, bool) {
+	if !finiteNonnegative(projectedPerSequence) || projectedPerSequence <= 0 ||
+		f.controlHorizon < 0 {
+		return 0, TPSDecisionSubreasonQoSBudgetInvalidRate, false
+	}
+	if f.controlHorizon == 0 {
+		if !demand.outputLimitKnown || demand.outputLimitTokens < 0 {
+			return 0, TPSDecisionSubreasonQoSBudgetOutputUnknown, false
+		}
+		seconds := float64(demand.outputLimitTokens) / projectedPerSequence
+		if !finiteNonnegative(seconds) {
+			return 0, TPSDecisionSubreasonQoSBudgetInvalidRate, false
+		}
+		return seconds, TPSDecisionSubreasonQoSBudgetGranted, true
+	}
+
+	horizonSeconds := f.controlHorizon.Seconds()
+	if !finiteNonnegative(horizonSeconds) || horizonSeconds <= 0 {
+		return 0, TPSDecisionSubreasonQoSBudgetInvalidRate, false
+	}
+	if !demand.outputLimitKnown {
+		return horizonSeconds, TPSDecisionSubreasonQoSBudgetGranted, true
+	}
+	if demand.outputLimitTokens < 0 {
+		return 0, TPSDecisionSubreasonQoSBudgetOutputUnknown, false
+	}
+	declaredSeconds := float64(demand.outputLimitTokens) / projectedPerSequence
+	if !finiteNonnegative(declaredSeconds) {
+		return 0, TPSDecisionSubreasonQoSBudgetInvalidRate, false
+	}
+	return math.Min(declaredSeconds, horizonSeconds), TPSDecisionSubreasonQoSBudgetGranted, true
 }
