@@ -61,30 +61,7 @@ func TestV01218CrossTokenizerOracleRejectsDangerousKVUnderestimate(t *testing.T)
 	validateCrossTokenizerOracleManifest(t, manifest)
 	for _, fixture := range manifest.Fixtures {
 		t.Run(fixture.Name, func(t *testing.T) {
-			body := crossTokenizerOracleBody(t, fixture)
-			fields, valid := domainrequest.ParseEndpointJSONFields(
-				body,
-				[]string{"max_tokens", "max_completion_tokens", "max_output_tokens"},
-				domainrequest.EndpointForPath(fixture.Endpoint, false),
-			)
-			if !valid || !fields.ShapeSupported {
-				t.Fatalf("endpoint fields=%+v valid=%t", fields, valid)
-			}
-			cost := EstimateSemanticRequest(
-				SemanticRequestShape{
-					BodyBytes:       len(body),
-					BasePromptCount: fields.BasePromptCount,
-					DecodeSequences: fields.DecodeSequences,
-					Aggregate:       crossTokenizerSemanticFeatures(fields.Aggregate),
-					MaximumSequence: crossTokenizerSemanticFeatures(fields.MaximumSequence),
-				},
-				fields.OutputTokens,
-				fields.HasOutputTokens,
-				DefaultEstimatorConfig(),
-			)
-			if !cost.Supported {
-				t.Fatalf("semantic estimate unsupported: %+v", cost)
-			}
+			cost := crossTokenizerEstimate(t, fixture)
 			for _, oracle := range fixture.Oracle {
 				if cost.Estimate.KVReservationInputTokens < oracle.AggregateInputTokens {
 					t.Errorf(
@@ -128,7 +105,41 @@ func TestV01218CrossTokenizerOracleRejectsDangerousKVUnderestimate(t *testing.T)
 	}
 }
 
-func loadCrossTokenizerOracleManifest(t *testing.T) crossTokenizerOracleManifest {
+func crossTokenizerEstimate(t testing.TB, fixture crossTokenizerOracleFixture) Cost {
+	t.Helper()
+	body := crossTokenizerOracleBody(t, fixture)
+	cost, valid := crossTokenizerEstimateBody(fixture.Endpoint, body)
+	if !valid {
+		t.Fatalf("semantic estimate unsupported: %+v", cost)
+	}
+	return cost
+}
+
+func crossTokenizerEstimateBody(endpoint string, body []byte) (Cost, bool) {
+	fields, valid := domainrequest.ParseEndpointJSONFields(
+		body,
+		[]string{"max_tokens", "max_completion_tokens", "max_output_tokens"},
+		domainrequest.EndpointForPath(endpoint, false),
+	)
+	if !valid || !fields.ShapeSupported {
+		return Cost{}, false
+	}
+	cost := EstimateSemanticRequest(
+		SemanticRequestShape{
+			BodyBytes:       len(body),
+			BasePromptCount: fields.BasePromptCount,
+			DecodeSequences: fields.DecodeSequences,
+			Aggregate:       crossTokenizerSemanticFeatures(fields.Aggregate),
+			MaximumSequence: crossTokenizerSemanticFeatures(fields.MaximumSequence),
+		},
+		fields.OutputTokens,
+		fields.HasOutputTokens,
+		DefaultEstimatorConfig(),
+	)
+	return cost, cost.Supported
+}
+
+func loadCrossTokenizerOracleManifest(t testing.TB) crossTokenizerOracleManifest {
 	t.Helper()
 	data := []byte(crossTokenizerOracleManifestJSON)
 	var manifest crossTokenizerOracleManifest
@@ -141,7 +152,7 @@ func loadCrossTokenizerOracleManifest(t *testing.T) crossTokenizerOracleManifest
 //go:embed testdata/v01218_cross_tokenizer_oracle.json
 var crossTokenizerOracleManifestJSON string
 
-func validateCrossTokenizerOracleManifest(t *testing.T, manifest crossTokenizerOracleManifest) {
+func validateCrossTokenizerOracleManifest(t testing.TB, manifest crossTokenizerOracleManifest) {
 	t.Helper()
 	if manifest.SchemaVersion != 1 || manifest.Purpose != "offline_cross_tokenizer_acceptance_only" ||
 		manifest.ProductionRuntimeConsumesManifest || len(manifest.Tokenizers) != 4 ||
@@ -176,7 +187,7 @@ func crossTokenizerSemanticFeatures(features domainrequest.EndpointInputFeatures
 	}
 }
 
-func crossTokenizerOracleBody(t *testing.T, fixture crossTokenizerOracleFixture) []byte {
+func crossTokenizerOracleBody(t testing.TB, fixture crossTokenizerOracleFixture) []byte {
 	t.Helper()
 	payload := crossTokenizerOraclePayload(t, fixture)
 	body, err := json.Marshal(payload)
@@ -196,7 +207,7 @@ func crossTokenizerOracleBody(t *testing.T, fixture crossTokenizerOracleFixture)
 	return body
 }
 
-func crossTokenizerOraclePayload(t *testing.T, fixture crossTokenizerOracleFixture) map[string]any {
+func crossTokenizerOraclePayload(t testing.TB, fixture crossTokenizerOracleFixture) map[string]any {
 	t.Helper()
 	parameters := fixture.Parameters
 	switch fixture.Kind {
