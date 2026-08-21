@@ -39,6 +39,17 @@ func TestV01218TPSDebtSuiteExercisesBoundedForecastAndLeaseLifecycle(t *testing.
 		t.Fatalf("bounded burst spent surplus more than once: %+v", burst)
 	}
 
+	twoSecond := tpsDebtScenarioByName(t, suite, "mature-surplus-2s")
+	if twoSecond.Policies[TPSDebtPolicyBounded2Seconds].Admitted != 1 ||
+		twoSecond.Policies[TPSDebtPolicyBounded5Seconds].Admitted != 0 {
+		t.Fatalf("two-second surplus did not distinguish horizons: %+v", twoSecond.Policies)
+	}
+	fiveSecond := tpsDebtScenarioByName(t, suite, "mature-surplus-5s")
+	if fiveSecond.Policies[TPSDebtPolicyBounded5Seconds].Admitted != 1 ||
+		fiveSecond.Policies[TPSDebtPolicyBounded10Seconds].Admitted != 0 {
+		t.Fatalf("five-second surplus did not distinguish horizons: %+v", fiveSecond.Policies)
+	}
+
 	prePoll := tpsDebtScenarioByName(t, suite, "completion-before-next-poll-debt").Policies[TPSDebtPolicyBounded10Seconds]
 	if prePoll.Admitted != 2 || prePoll.Rejected != 1 || prePoll.TPSQoSBudgetAdmissions != 2 ||
 		prePoll.MaximumQoSBudgetLeases != 1 {
@@ -97,6 +108,17 @@ func TestV01218TPSDebtSuitePreservesPressureBrakesAndSafetyBounds(t *testing.T) 
 			metrics.MaximumIdleWithDemandSeconds > simulationPollInterval.Seconds()+simulationDurationEpsilon {
 			t.Fatalf("low-flow policy %s self-locked: %+v", policy.Name, metrics)
 		}
+	}
+
+	reset := tpsDebtScenarioByName(t, suite, "bounded-debt-backend-epoch-reset")
+	currentReset := reset.Policies[TPSDebtPolicyDeclaredLifetime]
+	boundedReset := reset.Policies[TPSDebtPolicyBounded10Seconds]
+	if currentReset.BackendResets != 1 || boundedReset.BackendResets != 1 ||
+		currentReset.ResetDroppedRequests != 0 || boundedReset.ResetDroppedRequests != 1 ||
+		currentReset.Admitted != 1 || boundedReset.Admitted != 2 ||
+		boundedReset.MaximumQoSBudgetLeases != 1 {
+		t.Fatalf("backend epoch reset did not clear the old lease: current=%+v bounded=%+v",
+			currentReset, boundedReset)
 	}
 }
 

@@ -96,6 +96,10 @@ func tpsDebtPolicies() []TPSDebtPolicy {
 
 func tpsDebtScenarios() []scenarioSpec {
 	return []scenarioSpec{
+		newTPSDebtScenario("mature-surplus-2s", "horizon-sensitivity", 30*time.Second,
+			tpsDebtRequest("surplus-2s", 2100*time.Millisecond, 273, 95_000, false)),
+		newTPSDebtScenario("mature-surplus-5s", "horizon-sensitivity", 35*time.Second,
+			tpsDebtRequest("surplus-5s", 5100*time.Millisecond, 273, 95_000, false)),
 		newTPSDebtScenario("declared-95k-actual-273", "declared-short", 40*time.Second,
 			tpsDebtRequest("declared-short", 12*time.Second, 273, 95_000, false)),
 		newTPSDebtScenario("unknown-limit-actual-273", "unknown-short", 40*time.Second,
@@ -117,6 +121,7 @@ func tpsDebtScenarios() []scenarioSpec {
 		newTPSDebtWaitingScenario(),
 		newTPSDebtPreemptionScenario(),
 		newTPSDebtStaleRecoveryScenario(),
+		newTPSDebtBackendResetScenario(),
 		newTPSDebtDistributionShiftScenario("short-to-long-shift", false),
 		newTPSDebtDistributionShiftScenario("long-to-short-shift", true),
 		newTPSDebtLowFlowScenario(),
@@ -188,6 +193,16 @@ func newTPSDebtStaleRecoveryScenario() scenarioSpec {
 		tpsDebtRequest("stale-recovered", 13600*time.Millisecond, 273, 95_000, false),
 	)
 	scenario.staleMetrics = []timeWindow{{start: 12 * time.Second, end: 13 * time.Second}}
+	return scenario
+}
+
+func newTPSDebtBackendResetScenario() scenarioSpec {
+	recovery := tpsDebtRequest("epoch-reset-recovery", 16100*time.Millisecond, 16, 16, false)
+	scenario := newTPSDebtScenario("bounded-debt-backend-epoch-reset", "epoch-reset", 25*time.Second,
+		tpsDebtRequest("epoch-reset-dropped", 12*time.Second, 1_500, 95_000, false),
+		recovery,
+	)
+	scenario.backendResetAt = 14 * time.Second
 	return scenario
 }
 func newTPSDebtDistributionShiftScenario(name string, longFirst bool) scenarioSpec {

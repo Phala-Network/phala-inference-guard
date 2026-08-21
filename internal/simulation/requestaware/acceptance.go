@@ -91,7 +91,8 @@ func ValidateAcceptance(suite Suite) error {
 func validateSimulationMetrics(name string, policy PolicyName, metrics Metrics) error {
 	if metrics.Arrivals < 0 || metrics.Admitted < 0 || metrics.Rejected < 0 ||
 		metrics.HardProtects < 0 || metrics.SizeProtects < 0 || metrics.Completed < 0 ||
-		metrics.Preemptions < 0 || metrics.HardFitIdleRejects < 0 || metrics.PeakKVTokens < 0 ||
+		metrics.Preemptions < 0 || metrics.BackendResets < 0 || metrics.ResetDroppedRequests < 0 ||
+		metrics.HardFitIdleRejects < 0 || metrics.PeakKVTokens < 0 ||
 		metrics.MaximumRunning < 0 || metrics.TPSQoSBudgetAdmissions < 0 ||
 		metrics.MaximumQoSBudgetLeases < 0 {
 		return fmt.Errorf("scenario %s policy %s contains a negative counter", name, policy)
@@ -111,6 +112,9 @@ func validateSimulationMetrics(name string, policy PolicyName, metrics Metrics) 
 	}
 	values := []float64{
 		metrics.CompletionTokens,
+		metrics.BackgroundOutputTokens,
+		metrics.RequestOutputTokens,
+		metrics.SuccessfulRequestOutputTokens,
 		metrics.SLOCompletionTokens,
 		metrics.CompletionTokensPerSecond,
 		metrics.SLOCompletionTokensPerSecond,
@@ -127,9 +131,14 @@ func validateSimulationMetrics(name string, policy PolicyName, metrics Metrics) 
 			return fmt.Errorf("scenario %s policy %s contains an invalid metric", name, policy)
 		}
 	}
+	breakdownProvided := metrics.BackgroundOutputTokens > 0 || metrics.RequestOutputTokens > 0 ||
+		metrics.SuccessfulRequestOutputTokens > 0
 	if metrics.SLOCompletionTokens > metrics.CompletionTokens+simulationFloatTolerance ||
-		metrics.SLOCompletionTokensPerSecond > metrics.CompletionTokensPerSecond+simulationFloatTolerance {
-		return fmt.Errorf("scenario %s policy %s SLO goodput exceeds raw goodput", name, policy)
+		metrics.SLOCompletionTokensPerSecond > metrics.CompletionTokensPerSecond+simulationFloatTolerance ||
+		metrics.SuccessfulRequestOutputTokens > metrics.RequestOutputTokens+simulationFloatTolerance ||
+		metrics.RequestOutputTokens > metrics.CompletionTokens+simulationFloatTolerance ||
+		(breakdownProvided && math.Abs(metrics.BackgroundOutputTokens+metrics.RequestOutputTokens-metrics.CompletionTokens) > simulationFloatTolerance) {
+		return fmt.Errorf("scenario %s policy %s contains inconsistent output-token goodput", name, policy)
 	}
 	return nil
 }

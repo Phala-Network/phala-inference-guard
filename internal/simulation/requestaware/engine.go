@@ -73,6 +73,9 @@ type scenarioRunner struct {
 	idleDemandStarted      time.Duration
 	idleDemandActive       bool
 	externalPreemptionSeen bool
+	backendResetSeen       bool
+	backendRuntimeStart    float64
+	generationCounterBase  float64
 	cacheQueryTokens       uint64
 	cacheHitTokens         uint64
 	queueWaitSamples       []float64
@@ -108,7 +111,9 @@ func runScenarioWithTPSDebtHorizon(
 		capacity = simulationCapacityTokens
 	}
 	if spec.duration <= 0 || spec.initialKVTokens < 0 || spec.initialKVTokens >= capacity ||
-		spec.backgroundRunning < 0 || controlHorizon < 0 || !validAggregateTPSCurve(spec.aggregateTPSByRunning) {
+		spec.backgroundRunning < 0 || controlHorizon < 0 ||
+		(spec.backendResetAt < 0 || spec.backendResetAt >= spec.duration) ||
+		!validAggregateTPSCurve(spec.aggregateTPSByRunning) {
 		return Metrics{}, 0, fmt.Errorf("invalid scenario")
 	}
 	runner := &scenarioRunner{
@@ -122,7 +127,8 @@ func runScenarioWithTPSDebtHorizon(
 			usedTokens: spec.initialKVTokens,
 			running:    spec.backgroundRunning,
 		},
-		now: time.Unix(0, 0),
+		now:                 time.Unix(0, 0),
+		backendRuntimeStart: 1,
 	}
 	if policyName == PolicyV01210 {
 		return Metrics{}, 0, fmt.Errorf("historical v0.12.10 must be loaded from its frozen fixture")
@@ -162,6 +168,9 @@ func runScenarioWithTPSDebtHorizon(
 		}
 		if at > 0 {
 			runner.advance(at, simulationTick)
+		}
+		if !runner.backendResetSeen && spec.backendResetAt > 0 && at >= spec.backendResetAt {
+			runner.applyBackendReset(at)
 		}
 		if at%simulationPollInterval == 0 {
 			runner.poll(at)
@@ -498,7 +507,8 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	if decodeSequences > 0 {
 		perUserTPS = aggregateTPS / float64(decodeSequences)
 	}
-	generated := perUserTPS * float64(r.spec.backgroundRunning) * seconds
+	backgroundGenerated := perUserTPS * float64(r.spec.backgroundRunning) * seconds
+	requestGenerated := float64(0)
 	for _, active := range ready {
 		requestTokens := math.Min(active.outputRemaining, perUserTPS*seconds)
 		if requestTokens < 0 {
@@ -506,9 +516,12 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		}
 		active.outputRemaining -= requestTokens
 		active.generated += requestTokens
-		generated += requestTokens
+		requestGenerated += requestTokens
 	}
+	generated := backgroundGenerated + requestGenerated
 	r.metrics.CompletionTokens += generated
+	r.metrics.BackgroundOutputTokens += backgroundGenerated
+	r.metrics.RequestOutputTokens += requestGenerated
 	r.metrics.DecodeSequenceSeconds += float64(decodeSequences) * seconds
 	if decodeSequences > 0 && perUserTPS+simulationFloatTolerance >= simulationTPSFloor {
 		r.metrics.SLOCompletionTokens += generated
@@ -519,6 +532,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		active := r.active[id]
 		if active != nil && active.outputRemaining <= simulationFloatTolerance {
 			r.metrics.Completed++
+			r.metrics.SuccessfulRequestOutputTokens += active.generated
 			r.removeActive(at, id, coreadmission.TerminalSuccess)
 			r.processArrivals(at)
 		}
@@ -618,7 +632,8 @@ func (r *scenarioRunner) publishControllerObservationWindow(
 		UsedKVTokens:          used,
 		Running:               int64(running),
 		Waiting:               int64(waiting),
-		GenerationTokensTotal: uint64(math.Floor(r.metrics.CompletionTokens)),
+		RuntimeStartTime:      r.backendRuntimeStart,
+		GenerationTokensTotal: uint64(math.Floor(r.metrics.CompletionTokens - r.generationCounterBase)),
 		PreemptionsTotal:      uint64(r.metrics.Preemptions),
 		CacheQueryTokensTotal: r.cacheQueryTokens,
 		CacheHitTokensTotal:   r.cacheHitTokens,
@@ -777,6 +792,31 @@ func (r *scenarioRunner) enforceHardKV(at time.Duration) {
 		r.processArrivals(at)
 		r.metrics.Preemptions++
 	}
+}
+
+func (r *scenarioRunner) applyBackendReset(at time.Duration) {
+	ids := make([]string, 0, len(r.active))
+	for id := range r.active {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		active := r.active[id]
+		if active != nil && !active.materialized {
+			r.recordQueueWait(active, at)
+		}
+		delete(r.active, id)
+		r.releaseWorkerPoolSlot(at, id)
+	}
+	r.order = nil
+	if r.controllerHandles != nil {
+		r.controllerHandles = make(map[string]coreadmission.ReservationHandle)
+	}
+	r.backendResetSeen = true
+	r.backendRuntimeStart++
+	r.generationCounterBase = r.metrics.CompletionTokens
+	r.metrics.BackendResets++
+	r.metrics.ResetDroppedRequests += len(ids)
 }
 
 func (r *scenarioRunner) removeActive(at time.Duration, id string, cause coreadmission.TerminalCause) {

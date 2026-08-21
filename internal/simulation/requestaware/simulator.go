@@ -25,10 +25,15 @@ type Metrics struct {
 	SizeProtects                 int     `json:"size_protects"`
 	Completed                    int     `json:"completed"`
 	CompletionTokens             float64 `json:"completion_tokens"`
+	BackgroundOutputTokens       float64 `json:"background_output_tokens"`
+	RequestOutputTokens          float64 `json:"request_output_tokens"`
+	SuccessfulRequestOutputTokens float64 `json:"successful_request_output_tokens"`
 	SLOCompletionTokens          float64 `json:"slo_completion_tokens"`
 	CompletionTokensPerSecond    float64 `json:"completion_tokens_per_second"`
 	SLOCompletionTokensPerSecond float64 `json:"slo_completion_tokens_per_second"`
 	Preemptions                  int     `json:"preemptions"`
+	BackendResets                int     `json:"backend_resets"`
+	ResetDroppedRequests         int     `json:"reset_dropped_requests"`
 	TPSFloorViolationSeconds     float64 `json:"tps_floor_violation_seconds"`
 	WaitingSeconds               float64 `json:"waiting_seconds"`
 	QueueWaitP95Seconds          float64 `json:"queue_wait_p95_seconds"`
@@ -179,8 +184,13 @@ func (s Suite) Aggregate(policy PolicyName) Metrics {
 		total.SizeProtects += metrics.SizeProtects
 		total.Completed += metrics.Completed
 		total.CompletionTokens += metrics.CompletionTokens
+		total.BackgroundOutputTokens += metrics.BackgroundOutputTokens
+		total.RequestOutputTokens += metrics.RequestOutputTokens
+		total.SuccessfulRequestOutputTokens += metrics.SuccessfulRequestOutputTokens
 		total.SLOCompletionTokens += metrics.SLOCompletionTokens
 		total.Preemptions += metrics.Preemptions
+		total.BackendResets += metrics.BackendResets
+		total.ResetDroppedRequests += metrics.ResetDroppedRequests
 		total.TPSFloorViolationSeconds += metrics.TPSFloorViolationSeconds
 		total.WaitingSeconds += metrics.WaitingSeconds
 		total.DecodeSequenceSeconds += metrics.DecodeSequenceSeconds

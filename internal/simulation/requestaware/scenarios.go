@@ -69,6 +69,7 @@ type scenarioSpec struct {
 	staleMetrics          []timeWindow
 	preemptionCooldown    []timeWindow
 	preemptionAt          time.Duration
+	backendResetAt        time.Duration
 	aggregateTPSCap       float64
 	aggregateTPSByRunning []float64
 	capacityTokens        int64
