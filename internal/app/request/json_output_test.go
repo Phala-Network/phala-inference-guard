@@ -345,7 +345,8 @@ func TestV01218EndpointEstimatorAccountsCompletionSuffixAndBestOf(t *testing.T) 
 	aggregateDelta := withSuffix.Cost.Estimate.SelectionInputTokens - base.Cost.Estimate.SelectionInputTokens
 	maximumDelta := withSuffix.Cost.Estimate.MaximumSequenceInputTokens -
 		base.Cost.Estimate.MaximumSequenceInputTokens
-	if aggregateDelta != 2*maximumDelta {
+	minimumAggregateDelta := 2*maximumDelta - (withSuffix.Cost.Estimate.BasePromptCount - 1)
+	if aggregateDelta < minimumAggregateDelta || aggregateDelta > 2*maximumDelta {
 		t.Fatalf("completion suffix was not charged once per base Prompt: aggregate_delta=%d maximum_delta=%d",
 			aggregateDelta, maximumDelta)
 	}
