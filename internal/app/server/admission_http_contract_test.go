@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -16,6 +17,63 @@ import (
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
+
+func TestV01218EndpointEstimatorDoesNotChangeRequestOrResponseBytes(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{
+			name: "chat",
+			path: "/v1/chat/completions",
+			body: `{"model":"model-agnostic","messages":[{"role":"user","content":"hello"}],"max_tokens":8}`,
+		},
+		{
+			name: "completions",
+			path: "/v1/completions",
+			body: `{"model":"model-agnostic","prompt":"hello","max_tokens":8}`,
+		},
+		{
+			name: "responses",
+			path: "/v1/responses",
+			body: `{"model":"model-agnostic","input":"hello","max_output_tokens":8}`,
+		},
+	}
+	const responseBody = " \n{\"id\":\"byte-contract\",\"choices\":[]} \t"
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var forwardedPath, forwardedBody string
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				forwardedPath = request.URL.Path
+				body, err := io.ReadAll(request.Body)
+				if err != nil {
+					t.Errorf("read forwarded request: %v", err)
+				}
+				forwardedBody = string(body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(responseBody))
+			}))
+			defer backend.Close()
+			runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+				Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+			})
+			srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer secret")
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+
+			srv.ServeHTTP(response, request)
+
+			if response.Code != http.StatusOK || forwardedPath != test.path || forwardedBody != test.body ||
+				response.Body.String() != responseBody {
+				t.Fatalf("endpoint byte contract changed: status=%d path=%q body=%q response=%q",
+					response.Code, forwardedPath, forwardedBody, response.Body.String())
+			}
+		})
+	}
+}
 
 func TestV01218AdmissionMetricsAccumulateBoundedRequestEvidenceWithoutChangingDecisions(t *testing.T) {
 	var backendCalls atomic.Int64

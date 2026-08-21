@@ -342,6 +342,77 @@ func TestV01218EndpointEstimatorAccountsCompletionSuffixAndBestOf(t *testing.T) 
 		withSuffix.Cost.Estimate.SelectionInputTokens <= base.Cost.Estimate.SelectionInputTokens {
 		t.Fatalf("completion shape estimate: base=%+v suffix=%+v", base.Cost, withSuffix.Cost)
 	}
+	aggregateDelta := withSuffix.Cost.Estimate.SelectionInputTokens - base.Cost.Estimate.SelectionInputTokens
+	maximumDelta := withSuffix.Cost.Estimate.MaximumSequenceInputTokens -
+		base.Cost.Estimate.MaximumSequenceInputTokens
+	if aggregateDelta != 2*maximumDelta {
+		t.Fatalf("completion suffix was not charged once per base Prompt: aggregate_delta=%d maximum_delta=%d",
+			aggregateDelta, maximumDelta)
+	}
+}
+
+func TestV01218EndpointEstimatorPreservesExactTokenIDPromptShape(t *testing.T) {
+	classification := classifyEndpointFixture(
+		t,
+		"/v1/completions",
+		`{"prompt":[[1,2,3],[4,5]],"n":2,"max_tokens":32}`,
+	)
+	estimate := classification.Cost.Estimate
+	if !classification.Cost.Supported || classification.Cost.ExplicitPromptTokens != 5 ||
+		estimate.SelectionInputTokens != 5 || estimate.MaximumSequenceInputTokens != 3 ||
+		estimate.BasePromptCount != 2 || estimate.DecodeSequences != 4 {
+		t.Fatalf("token-id Prompt shape lost exactness: cost=%+v", classification.Cost)
+	}
+}
+
+func TestV01218EndpointEstimatorValidatesCompletionFanoutFields(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       string
+		supported  bool
+		sequences int64
+	}{
+		{
+			name:       "null best of is unspecified",
+			body:       `{"prompt":["one","two"],"best_of":null,"max_tokens":32}`,
+			supported:  true,
+			sequences: 2,
+		},
+		{
+			name:       "same best of duplicate",
+			body:       `{"prompt":["one","two"],"best_of":2,"best_of":2,"max_tokens":32}`,
+			supported:  true,
+			sequences: 4,
+		},
+		{
+			name: "conflicting n duplicate",
+			body: `{"prompt":"hello","n":2,"n":3,"max_tokens":32}`,
+		},
+		{
+			name: "conflicting best of duplicate",
+			body: `{"prompt":"hello","best_of":2,"best_of":3,"max_tokens":32}`,
+		},
+		{
+			name: "unknown best of value",
+			body: `{"prompt":"hello","best_of":"many","max_tokens":32}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			classification := classifyEndpointFixture(t, "/v1/completions", test.body)
+			if test.supported {
+				if !classification.Cost.Supported ||
+					classification.Cost.Estimate.DecodeSequences != test.sequences {
+					t.Fatalf("valid fan-out field was rejected: %+v", classification.Cost)
+				}
+				return
+			}
+			if classification.Cost.Supported ||
+				classification.Cost.UnsupportedReason != "unsupported_request_shape" {
+				t.Fatalf("invalid fan-out field was accepted: %+v", classification.Cost)
+			}
+		})
+	}
 }
 
 func TestV01218EndpointEstimatorHandlesResponsesVisibleAndHiddenContext(t *testing.T) {
