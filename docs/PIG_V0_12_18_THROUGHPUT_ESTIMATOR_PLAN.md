@@ -357,7 +357,7 @@ selected by the normalized supported endpoint:
   messages/content/name/prior tool_calls/tools and audited fan-out fields
 
 /v1/completions
-  prompt and audited completion fan-out fields
+  prompt/suffix and audited completion fan-out fields
 
 /v1/responses
   instructions/input/tools and audited response fan-out fields
@@ -370,6 +370,41 @@ escapes for lexical estimation without allocating complete decoded strings.
 Charge tool schema values and structure once. Treat `response_format` according
 to verified vLLM and SGLang request semantics; do not automatically charge it as
 Prompt/KV.
+
+The protocol audit is pinned to vLLM
+`0a21947d710f5aedb1865038ebef20e141b29c58` and SGLang
+`8ff9c2b2276e388f94c88be08c644554fa384b6f` as design references, not as a
+claim about every deployed revision. Both expose `n` for Chat and Completions;
+SGLang Completions additionally exposes `best_of`. For Completions, charge
+`suffix` as input context and derive Decode fan-out as
+`prompt_batch * max(n, best_of)` when those fields are valid. Unknown or
+conflicting duplicate fan-out values are unsupported rather than silently
+under-counted. `parallel_tool_calls` describes allowed output shape and is not
+a fixed count of Decode sequences.
+
+Both audited frameworks convert `response_format` or equivalent structured
+output configuration into constrained-decoding/sampling state, not Prompt KV.
+The endpoint estimator therefore ignores it for Prompt size. If a later backend
+revision injects such a value into its rendered Prompt, that revision must add
+oracle evidence before the production contract changes.
+
+Responses state references need a hard semantic boundary. A non-empty
+`previous_response_id`, `previous_input_messages`, reusable `prompt`,
+conversation reference, or another body-external context source can add input
+that PIG cannot observe. Classify it with a closed unsupported reason and use
+the existing conservative request-scoped fallback; do not estimate only the
+visible delta and call context/KV known.
+
+Implement the parser as one bounded syntax walk which returns endpoint-neutral
+semantic features to the estimator: relevant raw Prompt bytes, lexical text
+tokens, tool-schema bytes, message/template count, typed modality count,
+explicit token-array shape, output limit, streaming state, and Decode fan-out.
+The estimator may apply bounds and margins to those features but must not scan
+the body again. Replace the current whole-body upper floor with a relevant
+Prompt-subtree floor so ignored model/user/metadata/sampling/debug payloads
+cannot manufacture KV pressure. Keep standalone generic estimator helpers only
+if a non-production caller still needs them; the HTTP path must use the
+endpoint-aware result.
 
 The endpoint-aware field set is a semantic proxy, not a claim of exact backend
 chat-template serialization. Backend revisions can add special tokens, reorder
@@ -582,7 +617,7 @@ Three plan reviews                                      complete
 Plan commit and push                                    complete (`c520a18`)
 Phase 0 fixed-cardinality evidence source               complete (six slices green)
 Phase 0 complete acceptance gates                       complete (`b5a53f6` executable source)
-Phase 1 endpoint-aware estimator                        pending
+Phase 1 endpoint-aware estimator                        in progress
 Phase 2 cross-tokenizer offline oracle                  pending
 Phase 3 bounded TPS-debt simulation                     pending
 Phase 4 Prefill lifecycle decision                      pending
