@@ -38,9 +38,118 @@ type tpsBucket struct {
 	sequenceSamples uint64
 }
 
+type tpsDenominatorSource uint8
+
+const (
+	tpsDenominatorEndpoint tpsDenominatorSource = iota
+	tpsDenominatorLocalForwarded
+	tpsDenominatorLocalResponse
+	tpsDenominatorFallbackLiability
+	tpsDenominatorTie
+	tpsDenominatorNone
+)
+
+type tpsDenominatorEvidence struct {
+	snapshot TPSDenominatorEvidence
+}
+
+func (e *tpsDenominatorEvidence) observe(
+	endpoint,
+	localForwarded,
+	localResponse,
+	fallbackLiability,
+	selected float64,
+) {
+	if e == nil {
+		return
+	}
+	e.snapshot.EndpointSequenceSeconds = addTPSDenominatorSeconds(
+		e.snapshot.EndpointSequenceSeconds,
+		endpoint,
+	)
+	e.snapshot.LocalForwardedSeconds = addTPSDenominatorSeconds(
+		e.snapshot.LocalForwardedSeconds,
+		localForwarded,
+	)
+	e.snapshot.LocalResponseSeconds = addTPSDenominatorSeconds(
+		e.snapshot.LocalResponseSeconds,
+		localResponse,
+	)
+	e.snapshot.FallbackLiabilitySeconds = addTPSDenominatorSeconds(
+		e.snapshot.FallbackLiabilitySeconds,
+		fallbackLiability,
+	)
+	e.snapshot.SelectedSequenceSeconds = addTPSDenominatorSeconds(
+		e.snapshot.SelectedSequenceSeconds,
+		selected,
+	)
+	switch tpsDenominatorSourceFor(endpoint, localForwarded, localResponse, fallbackLiability, selected) {
+	case tpsDenominatorEndpoint:
+		incrementTPSDenominatorSelection(&e.snapshot.EndpointSelections)
+	case tpsDenominatorLocalForwarded:
+		incrementTPSDenominatorSelection(&e.snapshot.LocalForwardedSelections)
+	case tpsDenominatorLocalResponse:
+		incrementTPSDenominatorSelection(&e.snapshot.LocalResponseSelections)
+	case tpsDenominatorFallbackLiability:
+		incrementTPSDenominatorSelection(&e.snapshot.FallbackLiabilitySelections)
+	case tpsDenominatorTie:
+		incrementTPSDenominatorSelection(&e.snapshot.TieSelections)
+	default:
+		incrementTPSDenominatorSelection(&e.snapshot.NoneSelections)
+	}
+}
+
+func tpsDenominatorSourceFor(
+	endpoint,
+	localForwarded,
+	localResponse,
+	fallbackLiability,
+	selected float64,
+) tpsDenominatorSource {
+	if selected <= 0 || !finiteNonnegative(selected) {
+		return tpsDenominatorNone
+	}
+	values := [...]struct {
+		source tpsDenominatorSource
+		value  float64
+	}{
+		{source: tpsDenominatorEndpoint, value: endpoint},
+		{source: tpsDenominatorLocalForwarded, value: localForwarded},
+		{source: tpsDenominatorLocalResponse, value: localResponse},
+		{source: tpsDenominatorFallbackLiability, value: fallbackLiability},
+	}
+	matched := tpsDenominatorNone
+	matches := 0
+	for _, candidate := range values {
+		if candidate.value > 0 && candidate.value == selected {
+			matched = candidate.source
+			matches++
+		}
+	}
+	if matches == 1 {
+		return matched
+	}
+	return tpsDenominatorTie
+}
+
+func addTPSDenominatorSeconds(current, increment float64) float64 {
+	if !finiteNonnegative(current) || !finiteNonnegative(increment) ||
+		increment > math.MaxFloat64-current {
+		return current
+	}
+	return current + increment
+}
+
+func incrementTPSDenominatorSelection(value *uint64) {
+	if value != nil && *value < math.MaxUint64 {
+		*value = *value + 1
+	}
+}
+
 type tpsWindow struct {
-	reference float64
-	buckets   [tpsWindowBucketCount]tpsBucket
+	reference   float64
+	buckets     [tpsWindowBucketCount]tpsBucket
+	denominator tpsDenominatorEvidence
 }
 
 func newTPSWindow(reference float64) tpsWindow {
@@ -107,9 +216,10 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		sample.localForwardedSequenceSeconds,
 		sample.localResponseSequenceSeconds,
 	)
+	fallbackSequenceSeconds := float64(0)
 	if !sample.localExposureMeasured && sample.localForwardedSequenceSeconds == 0 &&
 		sample.localResponseSequenceSeconds == 0 {
-		fallbackSequenceSeconds := intervalSeconds * float64(sample.forwardedSequenceLiabilities)
+		fallbackSequenceSeconds = intervalSeconds * float64(sample.forwardedSequenceLiabilities)
 		if !finiteNonnegative(fallbackSequenceSeconds) {
 			return false
 		}
@@ -159,6 +269,13 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		}
 		cursor = segmentEnd
 	}
+	w.denominator.observe(
+		endpointSequenceSeconds,
+		sample.localForwardedSequenceSeconds,
+		sample.localResponseSequenceSeconds,
+		fallbackSequenceSeconds,
+		sequenceSecondsTotal,
+	)
 	return true
 }
 
@@ -166,7 +283,8 @@ func (w *tpsWindow) snapshot(now time.Time) TPSSnapshot {
 	if w == nil {
 		return TPSSnapshot{}
 	}
-	snapshot := TPSSnapshot{Reference: w.reference, Enabled: w.enabled()}
+	denominator := w.denominator.snapshot
+	snapshot := TPSSnapshot{Reference: w.reference, Enabled: w.enabled(), Denominator: denominator}
 	if !snapshot.Enabled {
 		return snapshot
 	}
@@ -175,10 +293,10 @@ func (w *tpsWindow) snapshot(now time.Time) TPSSnapshot {
 			continue
 		}
 		if math.MaxUint64-snapshot.QualifiedSamples < bucket.samples {
-			return TPSSnapshot{Reference: w.reference, Enabled: true}
+			return TPSSnapshot{Reference: w.reference, Enabled: true, Denominator: denominator}
 		}
 		if math.MaxUint64-snapshot.QualifiedSequenceSamples < bucket.sequenceSamples {
-			return TPSSnapshot{Reference: w.reference, Enabled: true}
+			return TPSSnapshot{Reference: w.reference, Enabled: true, Denominator: denominator}
 		}
 		snapshot.QualifiedSamples += bucket.samples
 		snapshot.QualifiedTokens += bucket.tokens
@@ -188,7 +306,7 @@ func (w *tpsWindow) snapshot(now time.Time) TPSSnapshot {
 		snapshot.QualifiedSequenceSeconds += bucket.sequenceSeconds
 	}
 	if !validTPSSnapshot(snapshot) {
-		return TPSSnapshot{Reference: w.reference, Enabled: true}
+		return TPSSnapshot{Reference: w.reference, Enabled: true, Denominator: denominator}
 	}
 	if snapshot.QualifiedActiveSeconds > 0 {
 		snapshot.AggregateTPS = snapshot.QualifiedTokens / snapshot.QualifiedActiveSeconds
@@ -197,7 +315,7 @@ func (w *tpsWindow) snapshot(now time.Time) TPSSnapshot {
 		snapshot.MeanActiveTPS = snapshot.QualifiedSequenceTokens / snapshot.QualifiedSequenceSeconds
 	}
 	if !finiteNonnegative(snapshot.AggregateTPS) || !finiteNonnegative(snapshot.MeanActiveTPS) {
-		return TPSSnapshot{Reference: w.reference, Enabled: true}
+		return TPSSnapshot{Reference: w.reference, Enabled: true, Denominator: denominator}
 	}
 	snapshot.Ready = snapshot.QualifiedSequenceSamples >= tpsWindowMinimumQualifiedSamples &&
 		snapshot.QualifiedSequenceSeconds >= tpsWindowMinimumQualifiedSeqSeconds

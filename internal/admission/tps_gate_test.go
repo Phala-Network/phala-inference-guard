@@ -451,3 +451,69 @@ func TestV01215TPSGateAllowsBoundedIdleRefillWithoutCurrentGeneration(t *testing
 		t.Fatalf("bounded idle refill first=%+v second=%+v third=%+v", first, second, third)
 	}
 }
+
+func TestV01218TPSGateAttributesProtectionAndBudgetSubreasonsWithoutChangingLimits(t *testing.T) {
+	disabled := (tpsGate{}).evaluate(ProjectedState{})
+	if disabled.result != TPSDecisionResultDisabled || disabled.subreason != TPSDecisionSubreasonDisabled ||
+		!disabled.fits {
+		t.Fatalf("disabled attribution=%+v", disabled)
+	}
+	warming := (tpsGate{}).evaluate(ProjectedState{
+		PendingPrefillSequences: 2,
+		TPS: TPSSnapshot{Enabled: true, Reference: 20},
+	})
+	if warming.result != TPSDecisionResultProtect || warming.subreason != TPSDecisionSubreasonWarming ||
+		warming.fits || warming.sequenceLimit != 2 {
+		t.Fatalf("warming attribution=%+v", warming)
+	}
+	waiting := (tpsGate{}).evaluate(ProjectedState{
+		RawRunning: 1,
+		RawWaiting: 1,
+		TPS: TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 100},
+	})
+	if waiting.result != TPSDecisionResultProtect || waiting.subreason != TPSDecisionSubreasonWaiting || waiting.fits {
+		t.Fatalf("waiting attribution=%+v", waiting)
+	}
+	preemption := (tpsGate{}).evaluate(ProjectedState{
+		RawRunning: 1,
+		PreemptionDelta: 1,
+		TPS: TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 100},
+	})
+	if preemption.result != TPSDecisionResultProtect ||
+		preemption.subreason != TPSDecisionSubreasonPreemption || preemption.fits {
+		t.Fatalf("preemption attribution=%+v", preemption)
+	}
+
+	snapshot := TPSSnapshot{
+		Enabled: true, Ready: true, Reference: 20,
+		QualifiedSamples: 20, QualifiedTokens: 2_400,
+		QualifiedSequenceSamples: 20, QualifiedSequenceTokens: 2_400,
+		QualifiedSequenceSeconds: 100, AggregateTPS: 150, MeanActiveTPS: 24,
+	}
+	state := ProjectedState{
+		RawRunning: 7, GenerationDelta: 75,
+		ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true,
+		TPS: snapshot,
+	}
+	granted := (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{
+		additionalSequences: 1, outputLimitTokens: 256, outputLimitKnown: true,
+	})
+	if granted.result != TPSDecisionResultAdmit ||
+		granted.subreason != TPSDecisionSubreasonQoSBudgetGranted ||
+		!granted.fits || !granted.qosBudgeted || granted.sequenceLimit != 8 {
+		t.Fatalf("budget grant attribution=%+v", granted)
+	}
+	lifetime := (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{
+		additionalSequences: 1, outputLimitTokens: 10_000, outputLimitKnown: true,
+	})
+	if lifetime.result != TPSDecisionResultProtect ||
+		lifetime.subreason != TPSDecisionSubreasonQoSBudgetLifetime ||
+		lifetime.fits || lifetime.sequenceLimit != 7 {
+		t.Fatalf("budget lifetime attribution=%+v", lifetime)
+	}
+	unknown := (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{additionalSequences: 1})
+	if unknown.result != TPSDecisionResultProtect ||
+		unknown.subreason != TPSDecisionSubreasonQoSBudgetOutputUnknown || unknown.fits {
+		t.Fatalf("unknown output attribution=%+v", unknown)
+	}
+}

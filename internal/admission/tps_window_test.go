@@ -268,3 +268,58 @@ func TestTPSWindowRejectsMissedIntervalExpiresBucketsAndResets(t *testing.T) {
 		t.Fatalf("reset snapshot=%+v", got)
 	}
 }
+
+func TestV01218TPSWindowAttributesRawAndSelectedDenominatorEvidence(t *testing.T) {
+	window := newTPSWindow(20)
+	start := time.Unix(50_000, 0)
+	samples := []tpsSample{
+		{
+			start: start, end: start.Add(time.Second), maximumInterval: 2 * time.Second,
+			generatedTokens: 10, previousRunning: 2, running: 2,
+			localExposureMeasured: true, localForwardedSequenceSeconds: 1, localResponseSequenceSeconds: 0.5,
+		},
+		{
+			start: start.Add(time.Second), end: start.Add(2 * time.Second), maximumInterval: 2 * time.Second,
+			generatedTokens: 10, previousRunning: 1, running: 1,
+			localExposureMeasured: true, localForwardedSequenceSeconds: 3, localResponseSequenceSeconds: 2,
+		},
+		{
+			start: start.Add(2 * time.Second), end: start.Add(3 * time.Second), maximumInterval: 2 * time.Second,
+			generatedTokens: 10,
+			localExposureMeasured: true, localForwardedSequenceSeconds: 0.5, localResponseSequenceSeconds: 1,
+		},
+		{
+			start: start.Add(3 * time.Second), end: start.Add(4 * time.Second), maximumInterval: 2 * time.Second,
+			generatedTokens: 10, forwardedSequenceLiabilities: 2,
+		},
+		{
+			start: start.Add(4 * time.Second), end: start.Add(5 * time.Second), maximumInterval: 2 * time.Second,
+			generatedTokens: 10, previousRunning: 1, running: 1,
+			localExposureMeasured: true, localForwardedSequenceSeconds: 1, localResponseSequenceSeconds: 0.5,
+		},
+		{
+			start: start.Add(5 * time.Second), end: start.Add(6 * time.Second), maximumInterval: 2 * time.Second,
+			generatedTokens: 10, localExposureMeasured: true,
+		},
+	}
+	for _, sample := range samples {
+		if !window.observe(sample) {
+			t.Fatalf("denominator evidence sample failed: %+v", sample)
+		}
+	}
+	evidence := window.snapshot(start.Add(6 * time.Second)).Denominator
+	if evidence.EndpointSelections != 1 || evidence.LocalForwardedSelections != 1 ||
+		evidence.LocalResponseSelections != 1 || evidence.FallbackLiabilitySelections != 1 ||
+		evidence.TieSelections != 1 || evidence.NoneSelections != 1 ||
+		math.Abs(evidence.EndpointSequenceSeconds-4) > 1e-9 ||
+		math.Abs(evidence.LocalForwardedSeconds-5.5) > 1e-9 ||
+		math.Abs(evidence.LocalResponseSeconds-4) > 1e-9 ||
+		math.Abs(evidence.FallbackLiabilitySeconds-2) > 1e-9 ||
+		math.Abs(evidence.SelectedSequenceSeconds-9) > 1e-9 {
+		t.Fatalf("denominator evidence=%+v", evidence)
+	}
+	window.reset()
+	if afterReset := window.snapshot(start.Add(6 * time.Second)).Denominator; afterReset != evidence {
+		t.Fatalf("rolling-window reset decreased process-lifetime denominator evidence: before=%+v after=%+v", evidence, afterReset)
+	}
+}

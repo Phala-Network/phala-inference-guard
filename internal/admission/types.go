@@ -97,7 +97,56 @@ type TPSSnapshot struct {
 	QualifiedSequenceSeconds float64
 	AggregateTPS             float64
 	MeanActiveTPS            float64
+	Denominator              TPSDenominatorEvidence
 }
+
+type TPSDenominatorEvidence struct {
+	EndpointSelections          uint64
+	LocalForwardedSelections    uint64
+	LocalResponseSelections     uint64
+	FallbackLiabilitySelections uint64
+	TieSelections               uint64
+	NoneSelections              uint64
+	EndpointSequenceSeconds     float64
+	LocalForwardedSeconds       float64
+	LocalResponseSeconds        float64
+	FallbackLiabilitySeconds    float64
+	SelectedSequenceSeconds     float64
+}
+
+type TPSDecisionResult uint8
+
+const (
+	TPSDecisionResultUnknown TPSDecisionResult = iota
+	TPSDecisionResultDisabled
+	TPSDecisionResultAdmit
+	TPSDecisionResultProtect
+	TPSDecisionResultInvalid
+)
+
+type TPSDecisionSubreason uint8
+
+const (
+	TPSDecisionSubreasonUnknown TPSDecisionSubreason = iota
+	TPSDecisionSubreasonDisabled
+	TPSDecisionSubreasonInvalidState
+	TPSDecisionSubreasonWaiting
+	TPSDecisionSubreasonPreemption
+	TPSDecisionSubreasonWarming
+	TPSDecisionSubreasonIdle
+	TPSDecisionSubreasonBaseRate
+	TPSDecisionSubreasonCurrentRate
+	TPSDecisionSubreasonQoSBudgetGranted
+	TPSDecisionSubreasonQoSBudgetOutputUnknown
+	TPSDecisionSubreasonQoSBudgetMultiSequence
+	TPSDecisionSubreasonQoSBudgetUnobserved
+	TPSDecisionSubreasonQoSBudgetActiveLease
+	TPSDecisionSubreasonQoSBudgetWaveLimit
+	TPSDecisionSubreasonQoSBudgetNoSurplus
+	TPSDecisionSubreasonQoSBudgetInvalidRate
+	TPSDecisionSubreasonQoSBudgetLifetime
+	TPSDecisionSubreasonQoSBudgetIneligible
+)
 
 type TPSPolicyConfig struct {
 	Reference float64
@@ -127,6 +176,8 @@ type DecisionRecord struct {
 	TPSCurrentSequences        int64
 	TPSPostAdmitSequences      int64
 	TPSQoSBudgeted             bool
+	TPSDecisionResult          TPSDecisionResult
+	TPSDecisionSubreason       TPSDecisionSubreason
 	ObservationSequence        uint64
 	ControllerSequence         uint64
 	RuntimeEpoch               uint64

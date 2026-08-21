@@ -57,7 +57,9 @@ func (c *AdmissionController) UpdateTPSPolicy(update TPSPolicyUpdate) (TPSPolicy
 	c.policyUpdatedAt = update.UpdatedAt
 	if result.WindowReset {
 		c.tpsPolicyEpoch++
-		c.tpsWindow = newTPSWindow(update.Reference)
+		nextWindow := newTPSWindow(update.Reference)
+		nextWindow.denominator = c.tpsWindow.denominator
+		c.tpsWindow = nextWindow
 	}
 	result.Policy = c.tpsPolicySnapshotLocked()
 	return result, nil

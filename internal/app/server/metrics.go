@@ -66,6 +66,8 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	metrics.WriteBackends(w, s.backendMetricsInput(snapshot, now))
 	metrics.WritePredictiveAdmission(w, input)
 	writeAdmissionEvidenceMetrics(w, snapshot.Report.Evidence)
+	writeTPSDecisionEvidenceMetrics(w, snapshot.Report.TPSEvidence)
+	writeTPSDenominatorEvidenceMetrics(w, snapshot.Capacity.State.TPS.Denominator)
 	metrics.WriteRouterCapacityCompatibility(w, compatibility)
 }
 

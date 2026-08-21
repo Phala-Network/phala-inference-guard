@@ -583,6 +583,8 @@ func (c *AdmissionController) decisionLocked(policy policyDecision, estimate pre
 		TPSCurrentSequences:        policy.tpsCurrentSequences,
 		TPSPostAdmitSequences:      policy.tpsPostAdmitSequences,
 		TPSQoSBudgeted:             policy.action == ActionAdmit && policy.tpsQoSBudgeted,
+		TPSDecisionResult:          policy.tpsDecisionResult,
+		TPSDecisionSubreason:       policy.tpsDecisionSubreason,
 		ObservationSequence:        c.observationSequence,
 		ControllerSequence:         c.eventSequence,
 		RuntimeEpoch:               c.runtimeEpoch,

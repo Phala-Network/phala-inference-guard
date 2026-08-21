@@ -33,6 +33,8 @@ type policyDecision struct {
 	tpsCurrentSequences       int64
 	tpsPostAdmitSequences     int64
 	tpsQoSBudgeted            bool
+	tpsDecisionResult         TPSDecisionResult
+	tpsDecisionSubreason      TPSDecisionSubreason
 }
 
 func newAdmissionPolicy(
@@ -96,6 +98,8 @@ func (p admissionPolicy) evaluateCandidate(state ProjectedState, work predictive
 		tpsCurrentSequences:       tps.currentSequences,
 		tpsPostAdmitSequences:     tps.postAdmitSequences,
 		tpsQoSBudgeted:            tps.qosBudgeted,
+		tpsDecisionResult:         tps.result,
+		tpsDecisionSubreason:      tps.subreason,
 	}
 	if context := p.contextGate.evaluate(work); !context.fits {
 		decision.reason = context.reason

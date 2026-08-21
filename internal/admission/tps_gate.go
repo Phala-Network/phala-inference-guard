@@ -14,6 +14,8 @@ type tpsGateDecision struct {
 	currentSequences   int64
 	postAdmitSequences int64
 	qosBudgeted        bool
+	result             TPSDecisionResult
+	subreason          TPSDecisionSubreason
 }
 
 type tpsGate struct{}
@@ -31,26 +33,39 @@ func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 func (tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDemand) tpsGateDecision {
 	decision := tpsGateDecision{
 		gateDecision: gateDecision{fits: true, reason: ReasonOpen},
+		result:       TPSDecisionResultDisabled,
+		subreason:    TPSDecisionSubreasonDisabled,
 	}
 	snapshot := state.TPS
 	if !snapshot.Enabled {
 		return decision
 	}
+	decision.result = TPSDecisionResultAdmit
+	decision.subreason = TPSDecisionSubreasonBaseRate
 	current, postAdmit, valid := projectedTPSSequences(state, demand.additionalSequences)
 	decision.currentSequences = current
 	decision.postAdmitSequences = postAdmit
 	if !valid || !validTPSSnapshot(snapshot) || snapshot.Reference <= 0 {
 		decision.fits = false
 		decision.reason = ReasonResourceExhausted
+		decision.result = TPSDecisionResultInvalid
+		decision.subreason = TPSDecisionSubreasonInvalidState
 		return decision
 	}
 	if state.RawWaiting > 0 || state.PreemptionDelta > 0 {
 		decision.sequenceLimit = current
 		decision.fits = false
 		decision.reason = ReasonTPSReference
+		decision.result = TPSDecisionResultProtect
+		if state.PreemptionDelta > 0 {
+			decision.subreason = TPSDecisionSubreasonPreemption
+		} else {
+			decision.subreason = TPSDecisionSubreasonWaiting
+		}
 		return decision
 	}
 	if !snapshot.Ready {
+		decision.subreason = TPSDecisionSubreasonWarming
 		decision.sequenceLimit = state.RawRunning
 		if decision.sequenceLimit < tpsWarmingSequenceLimit {
 			decision.sequenceLimit = tpsWarmingSequenceLimit
@@ -68,20 +83,33 @@ func (tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDeman
 		}
 		decision.fits = false
 		decision.reason = ReasonTPSReference
+		decision.result = TPSDecisionResultProtect
 		return decision
 	}
 	decision.sequenceLimit = rateDerivedBaseSequenceLimit(snapshot)
 	if state.RawRunning == 0 && state.GenerationDelta == 0 {
+		decision.subreason = TPSDecisionSubreasonIdle
 		if decision.sequenceLimit > tpsWarmingSequenceLimit {
 			decision.sequenceLimit = tpsWarmingSequenceLimit
 		}
 	} else {
 		if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
 			decision.sequenceLimit = currentRateLimit
+			decision.subreason = TPSDecisionSubreasonCurrentRate
 		}
-		if budgetLimit, budgeted := (qosBudgetForecast{}).sequenceLimit(state, current, decision.sequenceLimit, demand); budgetLimit > decision.sequenceLimit {
+		budgetLimit, budgeted, budgetSubreason := (qosBudgetForecast{}).sequenceLimit(
+			state,
+			current,
+			decision.sequenceLimit,
+			demand,
+		)
+		if budgetLimit > decision.sequenceLimit {
 			decision.sequenceLimit = budgetLimit
 			decision.qosBudgeted = budgeted && postAdmit <= budgetLimit
+			decision.subreason = TPSDecisionSubreasonQoSBudgetGranted
+		} else if postAdmit > decision.sequenceLimit &&
+			budgetSubreason != TPSDecisionSubreasonBaseRate {
+			decision.subreason = budgetSubreason
 		}
 	}
 	if current == 0 || postAdmit <= decision.sequenceLimit {
@@ -89,6 +117,7 @@ func (tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDeman
 	}
 	decision.fits = false
 	decision.reason = ReasonTPSReference
+	decision.result = TPSDecisionResultProtect
 	return decision
 }
 
