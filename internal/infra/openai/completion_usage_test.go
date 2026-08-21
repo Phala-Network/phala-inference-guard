@@ -182,6 +182,24 @@ func TestCompletionUsageObserverIncludesPromptTokens(t *testing.T) {
 	}
 }
 
+func TestCompletionUsageEvidenceAcceptsAggregateUsageForMultipleNonStreamChoices(t *testing.T) {
+	payload := `{"choices":[{"index":0,"message":{"content":"first"}},{"index":1,"message":{"content":"second"}}],"usage":{"prompt_tokens":17,"completion_tokens":11}}`
+	var observed []CompletionUsageEvidence
+	body := ObserveCompletionUsageEvidenceBody(
+		io.NopCloser(strings.NewReader(payload)),
+		false,
+		func(evidence CompletionUsageEvidence) { observed = append(observed, evidence) },
+	)
+	got, err := io.ReadAll(body)
+	if err != nil || string(got) != payload {
+		t.Fatalf("observed body=%q err=%v", got, err)
+	}
+	if len(observed) != 1 || observed[0].Outcome != CompletionUsageAvailable ||
+		observed[0].Usage.PromptTokens != 17 || observed[0].Usage.CompletionTokens != 11 {
+		t.Fatalf("multi-choice aggregate usage=%+v", observed)
+	}
+}
+
 func TestCompletionUsageEvidenceClassifiesBoundedBodiesWithoutChangingBytes(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -303,7 +321,6 @@ func TestCompletionUsageObserverRejectsContinuousMalformedAndOversizedSignals(t 
 	}{
 		{name: "continuous usage", streaming: true, payload: "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}],\"usage\":{\"completion_tokens\":5}}\n\n"},
 		{name: "null final choices", streaming: true, payload: "data: {\"choices\":null,\"usage\":{\"completion_tokens\":5}}\n\n"},
-		{name: "multiple non-stream choices", streaming: false, payload: `{"choices":[{},{}],"usage":{"completion_tokens":5}}`},
 		{name: "fractional tokens", streaming: false, payload: `{"choices":[{}],"usage":{"completion_tokens":1.5}}`},
 		{name: "invalid timing", streaming: false, payload: `{"choices":[{}],"usage":{"completion_tokens":5},"metrics":{"mean_itl_ms":-1}}`},
 		{name: "trailing json", streaming: false, payload: `{"choices":[{}],"usage":{"completion_tokens":5}} {}`},

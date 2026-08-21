@@ -331,7 +331,21 @@ compatibility projection is not interpreted as an absolute dynamic limit.
 Changing an external Grafana dashboard requires separate authority and is not a
 PIG source task. Phase 0 acceptance requires byte-identical admission decisions
 for a deterministic baseline corpus and no unbounded metric labels or log
-volume.
+volume. Response-usage evidence must also accept the protocol-valid aggregate
+`usage` attached to non-streaming Chat/Completions responses with `n > 1`; the
+number of `choices` is not the completion-token count and must not invalidate
+that aggregate.
+
+The response observer is optional evidence on the response forwarding path, so
+its resource cost must not become a new QoS bottleneck. For 1 MiB and 4 MiB
+non-streaming fixtures, the final remote benchmark must report both known and
+unknown Content-Length cases. The implementation must use the bounded known
+length for preallocation when available, avoid retaining duplicate copies of
+large `choices`/`output` payloads, and keep total allocations within
+`1.25 * payload + 256 KiB` for known length and
+`2.25 * payload + 256 KiB` for unknown length on the pinned Go 1.24 runner.
+Latency must remain below the already accepted 100 ms extreme-input ceiling;
+the allocation gate is independent and cannot be waived by a low ns/op result.
 
 ### Phase 1: Endpoint-aware one-pass estimator
 
@@ -589,7 +603,13 @@ reconciliation, or logging decisions. The compatibility-metric documentation
 also supplies replacement PromQL and explicitly rejects the obsolete
 `running / pig_dynamic_global_limit` interpretation. Phase 0 now requires its
 complete deterministic equivalence, cardinality, remote test/race/static/build,
-and hot-path performance gates before any estimator or TPS policy change.
+and hot-path performance gates before any estimator or TPS policy change. The
+first complete acceptance run on `727bc3e` passed all functional, race, static,
+build, simulation-equivalence, and HTTP byte-contract gates, but it exposed two
+response-observer defects: valid non-streaming multi-choice usage is classified
+as malformed, and a 4 MiB response allocates about 39.5 MiB. Phase 0 therefore
+remains open until a test-first protocol correction and allocation-bounded
+implementation pass the complete matrix again.
 
 ## 11. Plan Review Record
 
