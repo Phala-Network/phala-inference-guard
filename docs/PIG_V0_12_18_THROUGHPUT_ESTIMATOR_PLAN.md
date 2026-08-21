@@ -662,3 +662,26 @@ and the complete `internal/app/server` package passed with log SHA-256
 `b5aaed2477a405509b84938d98b753f460a6c4db83e5a5e3e89e5ca4678f755b`.
 This is focused source evidence only: no executable identity, image, registry,
 Compose, deployment, Router, or live-traffic claim exists yet.
+
+The request-shape metrics-contract red test was committed and pushed as
+`c5ebd47833c24edef24a32554701a3367ba6aa04`. Its exact archive SHA-256 was
+`a96f0bce43fc4f5ae489bd9ab61644fe9de636114ec11cb0c852fac2f9d3f373`;
+the test preserved four upstream forwards plus one malformed-JSON local 400 and
+exited 1 only for the missing classifier metric. The red log SHA-256 was
+`2c85ce7acaee0ce4fd665aeb66ec99986c42b161b0443b61ba76d8f8f191e6ad`.
+
+The request-shape implementation at `cbf9f89` passed its focused behavior tests
+but had a non-empty `gofmt -d`, so it is not green evidence. The mechanical
+format correction produced final pushed commit
+`b166e96790509fba267e5ebfd44b5dd498793ea9`, exact archive SHA-256
+`c533734ec3ee4d9b803e3ed73cfe423b0c94002ac2b22dc3e5fb7f88dc468086`.
+On that exact source, `gofmt -d` was empty; focused tests passed with log
+SHA-256 `6e3c7fa594267377cf54777131f3f4ac9a83bf22c1647df87913b5c327fd1793`;
+focused race passed with log SHA-256
+`f8783aeef5f5849a9814443158db3a8e53ca19db9dd702f49f7077c74fe329f1`;
+and the complete `internal/domain/request`, `internal/app/request`, and
+`internal/app/server` packages passed with log SHA-256
+`44f97e7595d01292d7867eb3f3c4db63794167a8d18dba6d70a9c25fff539c5a`.
+Top-level streaming evidence remains observational only and preserves true,
+false, unspecified, invalid, conflicting-duplicate, and unavailable states
+without changing request bytes or admission behavior.
