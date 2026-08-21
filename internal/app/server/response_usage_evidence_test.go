@@ -20,7 +20,7 @@ func TestV01218ResponseUsageEvidenceIsFixedCardinalityAndExactOnce(t *testing.T)
 			OutputLimitKnown:  true,
 			OutputLimitTokens: 1_024,
 		}},
-	})
+	}, "/v1/chat/completions", false)
 	request.Censor()
 	request.Censor()
 	request.Complete(proxyResult{status: 200})

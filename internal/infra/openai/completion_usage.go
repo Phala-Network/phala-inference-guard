@@ -38,6 +38,13 @@ type CompletionUsageEvidence struct {
 	Usage   CompletionUsage
 }
 
+type CompletionUsageFormat uint8
+
+const (
+	CompletionUsageFormatCompletions CompletionUsageFormat = iota
+	CompletionUsageFormatResponses
+)
+
 type completionUsageCallback func(CompletionUsage)
 type completionUsageTerminalCallback func()
 type completionUsageEvidenceCallback func(CompletionUsageEvidence)
@@ -52,15 +59,15 @@ type completionUsageBody struct {
 }
 
 func ObserveCompletionUsageBody(source io.ReadCloser, streaming bool, callback func(CompletionUsage)) io.ReadCloser {
-	return observeCompletionUsageBody(source, streaming, -1, callback, nil, nil)
+	return observeCompletionUsageBody(source, streaming, CompletionUsageFormatCompletions, -1, callback, nil, nil)
 }
 
 func ObserveCompletionUsageBodyWithTerminal(source io.ReadCloser, streaming bool, callback func(CompletionUsage), onTerminal func()) io.ReadCloser {
-	return observeCompletionUsageBody(source, streaming, -1, callback, onTerminal, nil)
+	return observeCompletionUsageBody(source, streaming, CompletionUsageFormatCompletions, -1, callback, onTerminal, nil)
 }
 
 func ObserveCompletionUsageBodyWithTerminalLength(source io.ReadCloser, streaming bool, contentLength int64, callback func(CompletionUsage), onTerminal func()) io.ReadCloser {
-	return observeCompletionUsageBody(source, streaming, contentLength, callback, onTerminal, nil)
+	return observeCompletionUsageBody(source, streaming, CompletionUsageFormatCompletions, contentLength, callback, onTerminal, nil)
 }
 
 func ObserveCompletionUsageEvidenceBody(
@@ -68,12 +75,27 @@ func ObserveCompletionUsageEvidenceBody(
 	streaming bool,
 	callback func(CompletionUsageEvidence),
 ) io.ReadCloser {
-	return observeCompletionUsageBody(source, streaming, -1, nil, nil, callback)
+	return ObserveCompletionUsageEvidenceBodyForFormat(
+		source,
+		streaming,
+		CompletionUsageFormatCompletions,
+		callback,
+	)
+}
+
+func ObserveCompletionUsageEvidenceBodyForFormat(
+	source io.ReadCloser,
+	streaming bool,
+	format CompletionUsageFormat,
+	callback func(CompletionUsageEvidence),
+) io.ReadCloser {
+	return observeCompletionUsageBody(source, streaming, format, -1, nil, nil, callback)
 }
 
 func observeCompletionUsageBody(
 	source io.ReadCloser,
 	streaming bool,
+	format CompletionUsageFormat,
 	contentLength int64,
 	callback func(CompletionUsage),
 	onTerminal func(),
@@ -84,7 +106,7 @@ func observeCompletionUsageBody(
 	}
 	body := &completionUsageBody{
 		source:    source,
-		observer:  newCompletionUsageObserver(streaming, callback, onTerminal, onEvidence),
+		observer:  newCompletionUsageObserver(streaming, format, callback, onTerminal, onEvidence),
 		remaining: -1,
 	}
 	if !streaming && onTerminal != nil && contentLength >= 0 {
@@ -101,11 +123,12 @@ func NewCompletionUsageObserver(streaming bool, callback func(CompletionUsage)) 
 }
 
 func NewCompletionUsageObserverWithTerminal(streaming bool, callback func(CompletionUsage), onTerminal func()) *CompletionUsageObserver {
-	return newCompletionUsageObserver(streaming, callback, onTerminal, nil)
+	return newCompletionUsageObserver(streaming, CompletionUsageFormatCompletions, callback, onTerminal, nil)
 }
 
 func newCompletionUsageObserver(
 	streaming bool,
+	format CompletionUsageFormat,
 	callback func(CompletionUsage),
 	onTerminal func(),
 	onEvidence func(CompletionUsageEvidence),
@@ -114,7 +137,7 @@ func newCompletionUsageObserver(
 		return nil
 	}
 	return &CompletionUsageObserver{
-		streaming: streaming, callback: callback, onTerminal: onTerminal, onEvidence: onEvidence,
+		streaming: streaming, format: format, callback: callback, onTerminal: onTerminal, onEvidence: onEvidence,
 	}
 }
 
@@ -165,6 +188,7 @@ func (b *completionUsageBody) Close() error {
 
 type CompletionUsageObserver struct {
 	streaming        bool
+	format           CompletionUsageFormat
 	callback         completionUsageCallback
 	onTerminal       completionUsageTerminalCallback
 	onEvidence       completionUsageEvidenceCallback
@@ -257,7 +281,7 @@ func (o *CompletionUsageObserver) finishSSEEvent() {
 		data := bytes.TrimSpace(o.eventData)
 		terminal = bytes.Equal(data, []byte("[DONE]"))
 		if len(data) > 0 && !terminal && bytes.Contains(data, []byte(`"usage"`)) {
-			usage, outcome := decodeCompletionUsageEvidence(data, true)
+			usage, outcome := decodeCompletionUsageEvidence(data, true, o.format)
 			switch outcome {
 			case CompletionUsageAvailable:
 				usage.ObservedAt = time.Now()
@@ -315,7 +339,7 @@ func (o *CompletionUsageObserver) Finish() {
 		o.emitEvidence(CompletionUsageEvidence{Outcome: CompletionUsageUnavailable})
 		return
 	}
-	usage, outcome := decodeCompletionUsageEvidence(o.jsonBody, false)
+	usage, outcome := decodeCompletionUsageEvidence(o.jsonBody, false, o.format)
 	if outcome == CompletionUsageAvailable {
 		usage.ObservedAt = time.Now()
 		o.emit(usage)
@@ -386,12 +410,37 @@ type completionMetrics struct {
 	GenerationTimeMilliseconds *float64 `json:"generation_time_ms"`
 }
 
+type responsesUsageEnvelope struct {
+	Usage *responsesUsageValue `json:"usage"`
+}
+
+type responsesUsageEvent struct {
+	Type     string                  `json:"type"`
+	Response *responsesUsageEnvelope `json:"response"`
+}
+
+type responsesUsageValue struct {
+	InputTokens  *int64 `json:"input_tokens"`
+	OutputTokens *int64 `json:"output_tokens"`
+}
+
 func decodeCompletionUsage(payload []byte, streaming bool) (CompletionUsage, bool) {
-	usage, outcome := decodeCompletionUsageEvidence(payload, streaming)
+	usage, outcome := decodeCompletionUsageEvidence(payload, streaming, CompletionUsageFormatCompletions)
 	return usage, outcome == CompletionUsageAvailable
 }
 
-func decodeCompletionUsageEvidence(payload []byte, streaming bool) (CompletionUsage, CompletionUsageEvidenceOutcome) {
+func decodeCompletionUsageEvidence(
+	payload []byte,
+	streaming bool,
+	format CompletionUsageFormat,
+) (CompletionUsage, CompletionUsageEvidenceOutcome) {
+	if format == CompletionUsageFormatResponses {
+		return decodeResponsesUsageEvidence(payload, streaming)
+	}
+	return decodeCompletionsUsageEvidence(payload, streaming)
+}
+
+func decodeCompletionsUsageEvidence(payload []byte, streaming bool) (CompletionUsage, CompletionUsageEvidenceOutcome) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	var envelope completionUsageEnvelope
 	if err := decoder.Decode(&envelope); err != nil || !jsonDecoderAtEOF(decoder) {
@@ -438,6 +487,37 @@ func decodeCompletionUsageEvidence(payload []byte, streaming bool) (CompletionUs
 				return CompletionUsage{}, CompletionUsageMalformed
 			}
 		}
+	}
+	return usage, CompletionUsageAvailable
+}
+
+func decodeResponsesUsageEvidence(payload []byte, streaming bool) (CompletionUsage, CompletionUsageEvidenceOutcome) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	var envelope *responsesUsageEnvelope
+	if streaming {
+		var event responsesUsageEvent
+		if err := decoder.Decode(&event); err != nil || !jsonDecoderAtEOF(decoder) {
+			return CompletionUsage{}, CompletionUsageMalformed
+		}
+		if event.Type != "response.completed" {
+			return CompletionUsage{}, CompletionUsageUnavailable
+		}
+		envelope = event.Response
+	} else {
+		envelope = &responsesUsageEnvelope{}
+		if err := decoder.Decode(envelope); err != nil || !jsonDecoderAtEOF(decoder) {
+			return CompletionUsage{}, CompletionUsageMalformed
+		}
+	}
+	if envelope == nil || envelope.Usage == nil {
+		return CompletionUsage{}, CompletionUsageUnavailable
+	}
+	if envelope.Usage.OutputTokens == nil || *envelope.Usage.OutputTokens <= 0 {
+		return CompletionUsage{}, CompletionUsageMalformed
+	}
+	usage := CompletionUsage{CompletionTokens: *envelope.Usage.OutputTokens}
+	if envelope.Usage.InputTokens != nil && *envelope.Usage.InputTokens > 0 {
+		usage.PromptTokens = *envelope.Usage.InputTokens
 	}
 	return usage, CompletionUsageAvailable
 }

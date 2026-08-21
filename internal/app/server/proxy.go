@@ -48,7 +48,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	decisionStart := time.Now()
 	classification, protocolError := s.requestClassifier.ClassifyRequest(r)
 	s.requestEvidence.Record(classification)
-	responseEvidence := s.responseUsageEvidence.Begin(classification)
+	responseEvidence := s.responseUsageEvidence.Begin(classification, r.URL.Path, s.cfg.PathSuffixMatch)
 	defer responseEvidence.Censor()
 	if classification.Timing.BodyReadMeasured {
 		s.bodyReadDuration.Observe(classification.Timing.BodyRead)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 
 	apprequest "github.com/Phala-Network/phala-inference-guard/internal/app/request"
@@ -94,6 +95,8 @@ type responseUsageRequestEvidence struct {
 	declared       declaredOutputTokenBucket
 	streamingKnown bool
 	streaming      bool
+	formatKnown    bool
+	format         openai.CompletionUsageFormat
 
 	mu             sync.Mutex
 	parserAttached bool
@@ -104,18 +107,25 @@ type responseUsageRequestEvidence struct {
 
 type responseUsageRequestEvidenceContextKey struct{}
 
-func (e *responseUsageEvidence) Begin(classification apprequest.Classification) *responseUsageRequestEvidence {
+func (e *responseUsageEvidence) Begin(
+	classification apprequest.Classification,
+	path string,
+	suffixMatch bool,
+) *responseUsageRequestEvidence {
 	declared := declaredOutputTokensUnknown
 	estimate := classification.Cost.Estimate
 	if estimate.OutputLimitKnown && estimate.OutputLimitTokens > 0 {
 		declared = declaredOutputTokenBucketFor(estimate.OutputLimitTokens)
 	}
+	format, formatKnown := responseUsageFormatForPath(path, suffixMatch)
 	return &responseUsageRequestEvidence{
 		owner:    e,
 		declared: declared,
 		streamingKnown: classification.JSONFieldsKnown &&
 			(!classification.StreamingPresent || classification.StreamingKnown),
-		streaming: classification.Streaming,
+		streaming:   classification.Streaming,
+		formatKnown: formatKnown,
+		format:      format,
 	}
 }
 
@@ -175,7 +185,8 @@ func writeResponseUsageEvidenceMetrics(w io.Writer, snapshot responseUsageEviden
 func (r *responseUsageRequestEvidence) WrapResponse(response *http.Response) {
 	if r == nil || response == nil || response.Body == nil ||
 		response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices ||
-		!r.streamingKnown || !openai.CompletionUsageContentTypeEligible(response.Header.Get("Content-Type"), r.streaming) {
+		!r.streamingKnown || !r.formatKnown ||
+		!openai.CompletionUsageContentTypeEligible(response.Header.Get("Content-Type"), r.streaming) {
 		return
 	}
 	r.mu.Lock()
@@ -185,7 +196,7 @@ func (r *responseUsageRequestEvidence) WrapResponse(response *http.Response) {
 	}
 	r.parserAttached = true
 	r.mu.Unlock()
-	response.Body = openai.ObserveCompletionUsageEvidenceBody(response.Body, r.streaming, r.observe)
+	response.Body = openai.ObserveCompletionUsageEvidenceBodyForFormat(response.Body, r.streaming, r.format, r.observe)
 }
 
 func (r *responseUsageRequestEvidence) observe(observation openai.CompletionUsageEvidence) {
@@ -291,6 +302,23 @@ func actualOutputTokenBucketFor(tokens int64) actualOutputTokenBucket {
 		return actualOutputTokensLE16384
 	default:
 		return actualOutputTokensGT16384
+	}
+}
+
+func responseUsageFormatForPath(
+	path string,
+	suffixMatch bool,
+) (openai.CompletionUsageFormat, bool) {
+	match := func(candidate string) bool {
+		return path == candidate || (suffixMatch && strings.HasSuffix(path, candidate))
+	}
+	switch {
+	case match("/v1/chat/completions"), match("/v1/completions"):
+		return openai.CompletionUsageFormatCompletions, true
+	case match("/v1/responses"):
+		return openai.CompletionUsageFormatResponses, true
+	default:
+		return openai.CompletionUsageFormatCompletions, false
 	}
 }
 

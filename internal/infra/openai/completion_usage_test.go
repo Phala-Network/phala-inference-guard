@@ -226,6 +226,45 @@ func TestCompletionUsageEvidenceClassifiesBoundedBodiesWithoutChangingBytes(t *t
 	}
 }
 
+func TestCompletionUsageEvidenceParsesResponsesAPIJSONAndSSE(t *testing.T) {
+	tests := []struct {
+		name      string
+		streaming bool
+		payload   string
+	}{
+		{
+			name: "json",
+			payload: `{"object":"response","usage":{` +
+				`"input_tokens":10,"output_tokens":200,"total_tokens":210}}`,
+		},
+		{
+			name:      "sse",
+			streaming: true,
+			payload: "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":200}}}\n\n" +
+				"data: [DONE]\n\n",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var observed []CompletionUsageEvidence
+			body := ObserveCompletionUsageEvidenceBodyForFormat(
+				io.NopCloser(strings.NewReader(test.payload)),
+				test.streaming,
+				CompletionUsageFormatResponses,
+				func(evidence CompletionUsageEvidence) { observed = append(observed, evidence) },
+			)
+			got, err := io.ReadAll(body)
+			if err != nil || string(got) != test.payload {
+				t.Fatalf("Responses observed body=%q err=%v", got, err)
+			}
+			if len(observed) != 1 || observed[0].Outcome != CompletionUsageAvailable ||
+				observed[0].Usage.PromptTokens != 10 || observed[0].Usage.CompletionTokens != 200 {
+				t.Fatalf("Responses evidence=%+v", observed)
+			}
+		})
+	}
+}
+
 func TestCompletionUsageObserverParsesFinalSSEUsageAtEOFWithoutBlankLine(t *testing.T) {
 	payload := "data: {\"choices\":[],\"usage\":{\"completion_tokens\":3},\"metrics\":{\"mean_itl_ms\":10}}"
 	var observed []CompletionUsage
