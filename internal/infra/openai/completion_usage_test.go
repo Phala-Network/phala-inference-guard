@@ -478,40 +478,61 @@ func BenchmarkCompletionUsageEvidenceNonStreamKnownLength(b *testing.B) {
 }
 
 func benchmarkCompletionUsageEvidenceNonStream(b *testing.B, contentLength int64) {
-	for _, size := range []int{2 * 1024, 64 * 1024, 1024 * 1024, 4 * 1024 * 1024} {
-		b.Run(fmt.Sprintf("bytes_%d", size), func(b *testing.B) {
-			prefix := `{"choices":[{}],"usage":{"completion_tokens":9},"padding":"`
-			suffix := `"}`
-			padding := size - len(prefix) - len(suffix)
-			if padding < 0 {
-				b.Fatal("benchmark payload size is too small")
-			}
-			payload := prefix + strings.Repeat("x", padding) + suffix
-			b.ReportAllocs()
-			b.SetBytes(int64(len(payload)))
-			b.ResetTimer()
-			for b.Loop() {
-				calls := 0
-				length := contentLength
-				if length >= 0 {
-					length = int64(len(payload))
-				}
-				body := ObserveCompletionUsageEvidenceBodyForFormatLength(
-					io.NopCloser(strings.NewReader(payload)),
-					false,
-					CompletionUsageFormatCompletions,
-					length,
-					func(evidence CompletionUsageEvidence) {
-						if evidence.Outcome != CompletionUsageAvailable {
-							b.Fatalf("completion usage outcome = %d", evidence.Outcome)
+	shapes := []struct {
+		name   string
+		format CompletionUsageFormat
+		prefix string
+		suffix string
+	}{
+		{
+			name:   "completions_choices",
+			format: CompletionUsageFormatCompletions,
+			prefix: `{"choices":[{"index":0,"message":{"content":"`,
+			suffix: `"}}],"usage":{"prompt_tokens":17,"completion_tokens":9}}`,
+		},
+		{
+			name:   "responses_output",
+			format: CompletionUsageFormatResponses,
+			prefix: `{"object":"response","output":[{"type":"message","content":[{"type":"output_text","text":"`,
+			suffix: `"}]}],"usage":{"input_tokens":17,"output_tokens":9}}`,
+		},
+	}
+	for _, shape := range shapes {
+		b.Run(shape.name, func(b *testing.B) {
+			for _, size := range []int{2 * 1024, 64 * 1024, 1024 * 1024, 4 * 1024 * 1024} {
+				b.Run(fmt.Sprintf("bytes_%d", size), func(b *testing.B) {
+					padding := size - len(shape.prefix) - len(shape.suffix)
+					if padding < 0 {
+						b.Fatal("benchmark payload size is too small")
+					}
+					payload := shape.prefix + strings.Repeat("x", padding) + shape.suffix
+					b.ReportAllocs()
+					b.SetBytes(int64(len(payload)))
+					b.ResetTimer()
+					for b.Loop() {
+						calls := 0
+						length := contentLength
+						if length >= 0 {
+							length = int64(len(payload))
 						}
-						calls++
-					},
-				)
-				_, _ = io.Copy(io.Discard, body)
-				if calls != 1 {
-					b.Fatalf("completion evidence callbacks = %d", calls)
-				}
+						body := ObserveCompletionUsageEvidenceBodyForFormatLength(
+							io.NopCloser(strings.NewReader(payload)),
+							false,
+							shape.format,
+							length,
+							func(evidence CompletionUsageEvidence) {
+								if evidence.Outcome != CompletionUsageAvailable {
+									b.Fatalf("completion usage outcome = %d", evidence.Outcome)
+								}
+								calls++
+							},
+						)
+						_, _ = io.Copy(io.Discard, body)
+						if calls != 1 {
+							b.Fatalf("completion evidence callbacks = %d", calls)
+						}
+					}
+				})
 			}
 		})
 	}
