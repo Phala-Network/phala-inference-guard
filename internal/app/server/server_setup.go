@@ -82,6 +82,9 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 
 func (s *proxyServer) modifyBackendResponse(response *http.Response) error {
 	s.classifyUpstreamErrorResponse(response)
+	if evidence := responseUsageRequestEvidenceFrom(response); evidence != nil {
+		evidence.WrapResponse(response)
+	}
 	if response != nil && response.Request != nil {
 		if reservation, ok := response.Request.Context().Value(admissionReservationContextKey{}).(admissionReservation); ok && reservation != nil {
 			var onComplete func()

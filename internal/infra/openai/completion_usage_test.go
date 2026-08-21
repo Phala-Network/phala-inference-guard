@@ -182,6 +182,50 @@ func TestCompletionUsageObserverIncludesPromptTokens(t *testing.T) {
 	}
 }
 
+func TestCompletionUsageEvidenceClassifiesBoundedBodiesWithoutChangingBytes(t *testing.T) {
+	tests := []struct {
+		name    string
+		payload string
+		outcome CompletionUsageEvidenceOutcome
+		tokens  int64
+	}{
+		{
+			name:    "available",
+			payload: `{"choices":[{}],"usage":{"completion_tokens":50}}`,
+			outcome: CompletionUsageAvailable,
+			tokens:  50,
+		},
+		{
+			name:    "unavailable",
+			payload: `{"choices":[{}]}`,
+			outcome: CompletionUsageUnavailable,
+		},
+		{
+			name:    "malformed",
+			payload: `{"choices":[{}],"usage":{"completion_tokens":"bad"}}`,
+			outcome: CompletionUsageMalformed,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var observed []CompletionUsageEvidence
+			body := ObserveCompletionUsageEvidenceBody(
+				io.NopCloser(strings.NewReader(test.payload)),
+				false,
+				func(evidence CompletionUsageEvidence) { observed = append(observed, evidence) },
+			)
+			got, err := io.ReadAll(body)
+			if err != nil || string(got) != test.payload {
+				t.Fatalf("observed body=%q err=%v", got, err)
+			}
+			if len(observed) != 1 || observed[0].Outcome != test.outcome ||
+				observed[0].Usage.CompletionTokens != test.tokens {
+				t.Fatalf("evidence=%+v want outcome=%d tokens=%d", observed, test.outcome, test.tokens)
+			}
+		})
+	}
+}
+
 func TestCompletionUsageObserverParsesFinalSSEUsageAtEOFWithoutBlankLine(t *testing.T) {
 	payload := "data: {\"choices\":[],\"usage\":{\"completion_tokens\":3},\"metrics\":{\"mean_itl_ms\":10}}"
 	var observed []CompletionUsage

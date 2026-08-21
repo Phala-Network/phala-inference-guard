@@ -48,6 +48,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	decisionStart := time.Now()
 	classification, protocolError := s.requestClassifier.ClassifyRequest(r)
 	s.requestEvidence.Record(classification)
+	responseEvidence := s.responseUsageEvidence.Begin(classification)
+	defer responseEvidence.Censor()
 	if classification.Timing.BodyReadMeasured {
 		s.bodyReadDuration.Observe(classification.Timing.BodyRead)
 	}
@@ -97,8 +99,10 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		r = r.WithContext(attachAdmissionReservation(r.Context(), reservation))
 	}
+	r = r.WithContext(attachResponseUsageRequestEvidence(r.Context(), responseEvidence))
 	s.decisionDuration.Observe(time.Since(decisionStart))
 	result := s.proxyRequest(s.backend, w, r)
+	responseEvidence.Complete(result)
 	terminal = admissionTerminalCause(result)
 	s.observeProxyResult(result)
 	s.observeInternalOverhead(time.Since(requestStart), 0, result.total)

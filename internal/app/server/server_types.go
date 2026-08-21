@@ -64,6 +64,7 @@ type proxyServer struct {
 	predictiveEnforcedRejects atomic.Uint64
 	admissionFailures         admissionFailureCounters
 	requestEvidence           requestEvidence
+	responseUsageEvidence      responseUsageEvidence
 	policyUpdates             predictivePolicyUpdateCounters
 	decisionDuration          durationHistogram
 	bodyReadDuration          durationHistogram
