@@ -6,10 +6,11 @@ import (
 )
 
 const (
-	ASCIIBytesPerToken   = 4
-	spaceBytesPerToken   = 32
-	denseMinimumLength   = 256
-	denseMinimumDistinct = 12
+	ASCIIBytesPerToken     = 4
+	spaceBytesPerToken     = 32
+	spaceOnlyBytesPerToken = 16
+	denseMinimumLength     = 256
+	denseMinimumDistinct   = 12
 )
 
 // EstimateJSONStringTokens returns a rough model-neutral token count for one
@@ -42,6 +43,8 @@ func EstimateJSONStringTokensWithRisk(raw []byte) (tokens int64, conservative bo
 	denseASCIIBytes := 0
 	transitions := 0
 	hasEscapeOrNonASCII := false
+	whitespaceOnly := true
+	spacesOnly := true
 	previous := raw[0]
 	for index, value := range raw {
 		if index > 0 && value != previous {
@@ -50,6 +53,12 @@ func EstimateJSONStringTokensWithRisk(raw []byte) (tokens int64, conservative bo
 		previous = value
 		if value == '\\' || value >= 0x80 {
 			hasEscapeOrNonASCII = true
+		}
+		if !isJSONSpace(value) {
+			whitespaceOnly = false
+		}
+		if value != ' ' {
+			spacesOnly = false
 		}
 		if value < 0x80 && isASCIIDigit(value) {
 			if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) ||
@@ -104,6 +113,13 @@ func EstimateJSONStringTokensWithRisk(raw []byte) (tokens int64, conservative bo
 			}
 		}
 	}
+	if whitespaceOnly {
+		tokens := int64(len(raw))
+		if spacesOnly {
+			tokens = roundedSpaceOnlyTokens(tokens)
+		}
+		return tokens, false, true
+	}
 	if !addRoundedRun(&quarterTokenUnits, asciiWordRunBytes, ASCIIBytesPerToken) ||
 		!addRoundedRun(&quarterTokenUnits, stringSpaceBytes, spaceBytesPerToken) {
 		return 0, false, false
@@ -139,7 +155,7 @@ func EstimateJSONStringTokensWithRisk(raw []byte) (tokens int64, conservative bo
 func EstimateDecodedJSONStringTokensWithRisk(
 	raw []byte,
 ) (tokens, decodedBytes int64, conservative, valid bool) {
-	estimator := jsonStringTokenEstimator{}
+	estimator := jsonStringTokenEstimator{whitespaceOnly: true, spacesOnly: true}
 	for index := 0; index < len(raw); {
 		value := raw[index]
 		if value != '\\' {
@@ -222,6 +238,8 @@ type jsonStringTokenEstimator struct {
 	previous          byte
 	hasPrevious       bool
 	conservative      bool
+	whitespaceOnly    bool
+	spacesOnly        bool
 }
 
 func (e *jsonStringTokenEstimator) add(value byte) bool {
@@ -237,6 +255,12 @@ func (e *jsonStringTokenEstimator) add(value byte) bool {
 	e.previous = value
 	e.hasPrevious = true
 	e.decodedBytes++
+	if !isJSONSpace(value) {
+		e.whitespaceOnly = false
+	}
+	if value != ' ' {
+		e.spacesOnly = false
+	}
 
 	if value < 0x80 && isASCIIDigit(value) {
 		if !addRoundedRun(&e.quarterTokenUnits, e.asciiWordRunBytes, ASCIIBytesPerToken) ||
@@ -324,6 +348,13 @@ func (e *jsonStringTokenEstimator) finish() (tokens int64, conservative, valid b
 	if e.decodedBytes <= 3 {
 		return 1, e.conservative, true
 	}
+	if e.whitespaceOnly {
+		tokens := e.decodedBytes
+		if e.spacesOnly {
+			tokens = roundedSpaceOnlyTokens(tokens)
+		}
+		return tokens, e.conservative, true
+	}
 	if !addRoundedRun(&e.quarterTokenUnits, e.asciiWordRunBytes, ASCIIBytesPerToken) ||
 		!addRoundedRun(&e.quarterTokenUnits, e.stringSpaceBytes, spaceBytesPerToken) {
 		return 0, false, false
@@ -349,6 +380,14 @@ func (e *jsonStringTokenEstimator) finish() (tokens int64, conservative, valid b
 	return (e.quarterTokenUnits + ASCIIBytesPerToken - 1) / ASCIIBytesPerToken,
 		e.conservative || denseUnbrokenASCII,
 		true
+}
+
+func roundedSpaceOnlyTokens(spaceBytes int64) int64 {
+	tokens := spaceBytes / spaceOnlyBytesPerToken
+	if spaceBytes%spaceOnlyBytesPerToken != 0 {
+		tokens++
+	}
+	return tokens
 }
 
 func decodedJSONStringCodeUnit(raw []byte, start int) (uint16, int, bool) {

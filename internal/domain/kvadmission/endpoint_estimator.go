@@ -6,6 +6,16 @@ import (
 	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
+const (
+	// Cross-family offline oracles show a fixed Chat template prefix that is
+	// not proportional to message count. Keep it model-neutral and internal.
+	modelNeutralTemplateBaseTokens int64 = 24
+	// Tool JSON is consistently denser than ordinary prose across the pinned
+	// offline oracle families. This affects Selection only; KV still uses its
+	// independent conservative upper bound.
+	modelNeutralToolSelectionBytesPerToken int64 = 3
+)
+
 type SemanticInputFeatures struct {
 	PromptBytes            int64
 	TextBytes              int64
@@ -127,6 +137,10 @@ func estimateSemanticInput(features SemanticInputFeatures, cfg EstimatorConfig) 
 	if !ok {
 		return semanticInputEstimate{}, false
 	}
+	templateBase := int64(0)
+	if features.MessageCount > 0 {
+		templateBase = modelNeutralTemplateBaseTokens
+	}
 	modalityLow, ok := semanticMultiply(features.ModalityCount, int64(cfg.ModalityTokensLow))
 	if !ok {
 		return semanticInputEstimate{}, false
@@ -135,11 +149,11 @@ func estimateSemanticInput(features SemanticInputFeatures, cfg EstimatorConfig) 
 	if !ok {
 		return semanticInputEstimate{}, false
 	}
-	low, ok := semanticSum(textLow, toolLow, templateLow, modalityLow, features.ExplicitPromptTokens)
+	low, ok := semanticSum(textLow, toolLow, templateLow, templateBase, modalityLow, features.ExplicitPromptTokens)
 	if !ok {
 		return semanticInputEstimate{}, false
 	}
-	high, ok := semanticSum(textHigh, toolHigh, templateHigh, modalityHigh, features.ExplicitPromptTokens)
+	high, ok := semanticSum(textHigh, toolHigh, templateHigh, templateBase, modalityHigh, features.ExplicitPromptTokens)
 	if !ok {
 		return semanticInputEstimate{}, false
 	}
@@ -151,7 +165,7 @@ func estimateSemanticInput(features SemanticInputFeatures, cfg EstimatorConfig) 
 	if !ok {
 		return semanticInputEstimate{}, false
 	}
-	promptHigh, ok = semanticSum(promptHigh, templateHigh, modalityHigh, features.ExplicitPromptTokens)
+	promptHigh, ok = semanticSum(promptHigh, templateHigh, templateBase, modalityHigh, features.ExplicitPromptTokens)
 	if !ok {
 		return semanticInputEstimate{}, false
 	}
@@ -166,7 +180,7 @@ func estimateSemanticInput(features SemanticInputFeatures, cfg EstimatorConfig) 
 	if !ok {
 		return semanticInputEstimate{}, false
 	}
-	toolTokens, ok := semanticCeilDiv(features.ToolSchemaBytes, int64(approximateASCIIBytesPerToken))
+	toolTokens, ok := semanticCeilDiv(features.ToolSchemaBytes, modelNeutralToolSelectionBytesPerToken)
 	if !ok {
 		return semanticInputEstimate{}, false
 	}
@@ -180,6 +194,7 @@ func estimateSemanticInput(features SemanticInputFeatures, cfg EstimatorConfig) 
 		structureTokens,
 		toolTokens,
 		templateHint,
+		templateBase,
 	)
 	if !ok {
 		return semanticInputEstimate{}, false
