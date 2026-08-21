@@ -119,9 +119,16 @@ def fixture_definitions() -> list[dict[str, Any]]:
             "kind": "chat_text",
             "parameters": {
                 "unit": '{"id":"123e4567-e89b-12d3-a456-426614174000","value":12345678901234567890}\n',
-                "repetitions": 256,
+                "repetitions": 224,
             },
             "tags": ["json", "uuid", "numbers", "hard_bound"],
+        },
+        {
+            "name": "chat_repeated_spaces",
+            "endpoint": "/v1/chat/completions",
+            "kind": "chat_text",
+            "parameters": {"unit": " ", "repetitions": 12288},
+            "tags": ["whitespace", "spaces", "byte_fallback", "hard_bound"],
         },
         {
             "name": "chat_repeated_whitespace",
