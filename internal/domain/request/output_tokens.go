@@ -566,8 +566,7 @@ func jsonStringSpanInList(value jsonStringSpan, candidates []string) bool {
 
 func jsonStringSpanEquals(value jsonStringSpan, candidate string) bool {
 	if value.escaped {
-		decoded, err := strconv.Unquote(string(value.quoted))
-		return err == nil && decoded == candidate
+		return escapedJSONStringEqualsASCII(value.raw, candidate)
 	}
 	if len(value.raw) != len(candidate) {
 		return false
@@ -578,6 +577,59 @@ func jsonStringSpanEquals(value jsonStringSpan, candidate string) bool {
 		}
 	}
 	return true
+}
+
+func escapedJSONStringEqualsASCII(raw []byte, candidate string) bool {
+	candidateIndex := 0
+	for index := 0; index < len(raw); {
+		value := raw[index]
+		index++
+		if value == '\\' {
+			if index >= len(raw) {
+				return false
+			}
+			escape := raw[index]
+			index++
+			switch escape {
+			case '"', '\\', '/':
+				value = escape
+			case 'b':
+				value = '\b'
+			case 'f':
+				value = '\f'
+			case 'n':
+				value = '\n'
+			case 'r':
+				value = '\r'
+			case 't':
+				value = '\t'
+			case 'u':
+				if len(raw)-index < 4 {
+					return false
+				}
+				codeUnit := uint16(0)
+				for offset := 0; offset < 4; offset++ {
+					hex, ok := jsonHexValue(raw[index+offset])
+					if !ok {
+						return false
+					}
+					codeUnit = codeUnit<<4 | uint16(hex)
+				}
+				index += 4
+				if codeUnit > 0x7f {
+					return false
+				}
+				value = byte(codeUnit)
+			default:
+				return false
+			}
+		}
+		if value >= 0x80 || candidateIndex >= len(candidate) || candidate[candidateIndex] != value {
+			return false
+		}
+		candidateIndex++
+	}
+	return candidateIndex == len(candidate)
 }
 
 func parseJSONOutputTokens(value []byte) (int, bool) {
@@ -644,6 +696,19 @@ func isJSONDigit(value byte) bool {
 
 func isJSONHex(value byte) bool {
 	return isJSONDigit(value) || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
+}
+
+func jsonHexValue(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
 }
 
 func isJSONSimpleEscape(value byte) bool {

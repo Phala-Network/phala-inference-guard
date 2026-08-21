@@ -156,14 +156,14 @@ func (p *jsonFieldParser) parseEndpointRootObject(
 		}
 		value := p.body[valueStart:p.index]
 
-		if jsonStringSpanInList(key, outputTokenFields) {
+		if endpointOutputTokenField(endpoint, key) && jsonStringSpanInList(key, outputTokenFields) {
 			if outputTokens, valid := parseJSONOutputTokens(value); valid &&
 				(!result.HasOutputTokens || outputTokens > result.OutputTokens) {
 				result.OutputTokens = outputTokens
 				result.HasOutputTokens = true
 			}
 		}
-		if jsonStringSpanEquals(key, "n") {
+		if endpointUsesDecodeFanout(endpoint) && jsonStringSpanEquals(key, "n") {
 			result.ShapeSupported = result.ShapeSupported && updatePositiveEndpointField(&decodeCandidates, value)
 		}
 		if endpoint == EndpointCompletions && jsonStringSpanEquals(key, "best_of") {
@@ -459,13 +459,13 @@ func (p *jsonFieldParser) parseExternalContextValue() (bool, bool) {
 }
 
 func endpointFeaturesForString(value jsonStringSpan) (EndpointInputFeatures, bool) {
-	tokens, conservative, known := lexical.EstimateJSONStringTokensWithRisk(value.raw)
-	if !known {
+	tokens, decodedBytes, conservative, known := lexical.EstimateDecodedJSONStringTokensWithRisk(value.raw)
+	if !known || decodedBytes > math.MaxInt64-2 {
 		return EndpointInputFeatures{}, false
 	}
 	return EndpointInputFeatures{
-		PromptBytes:            int64(len(value.quoted)),
-		TextBytes:              int64(len(value.raw)),
+		PromptBytes:            decodedBytes + 2,
+		TextBytes:              decodedBytes,
 		ApproximateInputTokens: tokens,
 		Conservative:           conservative,
 	}, true
@@ -517,6 +517,24 @@ func endpointExternalContextKey(key jsonStringSpan) bool {
 		jsonStringSpanEquals(key, "previous_input_messages") ||
 		jsonStringSpanEquals(key, "prompt") ||
 		jsonStringSpanEquals(key, "conversation")
+}
+
+func endpointUsesDecodeFanout(endpoint EndpointKind) bool {
+	return endpoint == EndpointChatCompletions || endpoint == EndpointCompletions
+}
+
+func endpointOutputTokenField(endpoint EndpointKind, key jsonStringSpan) bool {
+	switch endpoint {
+	case EndpointChatCompletions:
+		return jsonStringSpanEquals(key, "max_tokens") ||
+			jsonStringSpanEquals(key, "max_completion_tokens")
+	case EndpointCompletions:
+		return jsonStringSpanEquals(key, "max_tokens")
+	case EndpointResponses:
+		return jsonStringSpanEquals(key, "max_output_tokens")
+	default:
+		return false
+	}
 }
 
 func endpointModalityPayloadKey(key jsonStringSpan) bool {
