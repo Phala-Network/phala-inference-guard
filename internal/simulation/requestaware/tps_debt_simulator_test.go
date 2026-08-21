@@ -67,6 +67,11 @@ func TestV01218TPSDebtSuiteExercisesBoundedForecastAndLeaseLifecycle(t *testing.
 			t.Fatalf("scenario %s terminal reconciliation=%+v", name, metrics)
 		}
 	}
+	sustainedWaiting := tpsDebtScenarioByName(t, suite, "bounded-debt-sustained-waiting").Policies[TPSDebtPolicyBounded10Seconds]
+	if sustainedWaiting.Admitted != 1 || sustainedWaiting.Rejected != 2 ||
+		sustainedWaiting.TPSQoSBudgetAdmissions != 1 {
+		t.Fatalf("sustained waiting did not brake and recover: %+v", sustainedWaiting)
+	}
 }
 func TestV01218TPSDebtSuitePreservesPressureBrakesAndSafetyBounds(t *testing.T) {
 	suite, err := RunTPSDebtSuite()
@@ -143,6 +148,50 @@ func TestV01218TPSDebtSuiteIsDeterministic(t *testing.T) {
 				t.Fatalf("scenario %s policy %s is nondeterministic", first.Scenarios[index].Name, policy.Name)
 			}
 		}
+	}
+}
+
+func TestV01218TPSDebtAcceptanceSelectsBalancedTenSecondHorizon(t *testing.T) {
+	suite, err := RunTPSDebtSuite()
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := ValidateTPSDebtAcceptance(suite)
+	if err != nil {
+		t.Fatalf("ValidateTPSDebtAcceptance: %v", err)
+	}
+	if report.Status != "passed" || report.SelectedPolicy != TPSDebtPolicyBounded10Seconds ||
+		report.TotalOutputGoodputGainRatio <= 1.01 || report.SuccessfulCompletionGain <= 0 ||
+		report.SuccessfulRequestOutputTokenGain <= 0 ||
+		report.CandidateMeanActiveTPS+simulationFloatTolerance < suite.Reference ||
+		report.Candidate.MaximumQoSBudgetLeases != 1 {
+		t.Fatalf("balanced TPS debt acceptance=%+v", report)
+	}
+}
+
+func TestV01218TPSDebtAcceptanceRejectsQoSAndSafetyRegressions(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		mutate func(*Metrics)
+	}{
+		{name: "preemption", mutate: func(metrics *Metrics) { metrics.Preemptions++ }},
+		{name: "second lease", mutate: func(metrics *Metrics) { metrics.MaximumQoSBudgetLeases = 2 }},
+		{name: "mean TPS", mutate: func(metrics *Metrics) { metrics.MeanActiveTPS = TPSDebtSimulationReference - 1 }},
+		{name: "queue", mutate: func(metrics *Metrics) { metrics.QueueWaitP95Seconds += time.Second }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			suite, err := RunTPSDebtSuite()
+			if err != nil {
+				t.Fatal(err)
+			}
+			scenario := &suite.Scenarios[0]
+			metrics := scenario.Policies[TPSDebtPolicyBounded10Seconds]
+			test.mutate(&metrics)
+			scenario.Policies[TPSDebtPolicyBounded10Seconds] = metrics
+			if _, err := ValidateTPSDebtAcceptance(suite); err == nil {
+				t.Fatal("regressed candidate passed TPS debt acceptance")
+			}
+		})
 	}
 }
 

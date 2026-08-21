@@ -43,6 +43,63 @@ type TPSDebtSuite struct {
 	ControllerPolicyCalls int                     `json:"controller_policy_calls"`
 }
 
+func (s TPSDebtSuite) Aggregate(policy TPSDebtPolicyName) (Metrics, float64) {
+	var total Metrics
+	var duration float64
+	for _, scenario := range s.Scenarios {
+		metrics, ok := scenario.Policies[policy]
+		if !ok {
+			continue
+		}
+		duration += scenario.DurationSeconds
+		total.Arrivals += metrics.Arrivals
+		total.Admitted += metrics.Admitted
+		total.Rejected += metrics.Rejected
+		total.HardProtects += metrics.HardProtects
+		total.SizeProtects += metrics.SizeProtects
+		total.Completed += metrics.Completed
+		total.CompletionTokens += metrics.CompletionTokens
+		total.BackgroundOutputTokens += metrics.BackgroundOutputTokens
+		total.RequestOutputTokens += metrics.RequestOutputTokens
+		total.SuccessfulRequestOutputTokens += metrics.SuccessfulRequestOutputTokens
+		total.SLOCompletionTokens += metrics.SLOCompletionTokens
+		total.Preemptions += metrics.Preemptions
+		total.BackendResets += metrics.BackendResets
+		total.ResetDroppedRequests += metrics.ResetDroppedRequests
+		total.TPSFloorViolationSeconds += metrics.TPSFloorViolationSeconds
+		total.WaitingSeconds += metrics.WaitingSeconds
+		total.DecodeSequenceSeconds += metrics.DecodeSequenceSeconds
+		total.HardFitIdleRejects += metrics.HardFitIdleRejects
+		total.TPSQoSBudgetAdmissions += metrics.TPSQoSBudgetAdmissions
+		if metrics.QueueWaitP95Seconds > total.QueueWaitP95Seconds {
+			total.QueueWaitP95Seconds = metrics.QueueWaitP95Seconds
+		}
+		if metrics.QueueWaitMaximumSeconds > total.QueueWaitMaximumSeconds {
+			total.QueueWaitMaximumSeconds = metrics.QueueWaitMaximumSeconds
+		}
+		if metrics.MaximumIdleWithDemandSeconds > total.MaximumIdleWithDemandSeconds {
+			total.MaximumIdleWithDemandSeconds = metrics.MaximumIdleWithDemandSeconds
+		}
+		if metrics.PeakKVTokens > total.PeakKVTokens {
+			total.PeakKVTokens = metrics.PeakKVTokens
+		}
+		if metrics.MaximumRunning > total.MaximumRunning {
+			total.MaximumRunning = metrics.MaximumRunning
+		}
+		if metrics.MaximumQoSBudgetLeases > total.MaximumQoSBudgetLeases {
+			total.MaximumQoSBudgetLeases = metrics.MaximumQoSBudgetLeases
+		}
+	}
+	if duration > 0 {
+		total.CompletionTokensPerSecond = total.CompletionTokens / duration
+		total.SLOCompletionTokensPerSecond = total.SLOCompletionTokens / duration
+	}
+	if total.DecodeSequenceSeconds > 0 {
+		total.MeanActiveTPS = total.CompletionTokens / total.DecodeSequenceSeconds
+	}
+	return total, duration
+}
+
 func RunTPSDebtSuite() (TPSDebtSuite, error) {
 	policies := tpsDebtPolicies()
 	suite := TPSDebtSuite{
@@ -119,6 +176,7 @@ func tpsDebtScenarios() []scenarioSpec {
 		newTPSDebtTerminalScenario("bounded-debt-error", requestTerminalError),
 		newTPSDebtTerminalScenario("bounded-debt-disconnect", requestTerminalDisconnect),
 		newTPSDebtWaitingScenario(),
+		newTPSDebtSustainedWaitingScenario(),
 		newTPSDebtPreemptionScenario(),
 		newTPSDebtStaleRecoveryScenario(),
 		newTPSDebtBackendResetScenario(),
@@ -174,6 +232,16 @@ func newTPSDebtWaitingScenario() scenarioSpec {
 		tpsDebtRequest("waiting-recovered", 13100*time.Millisecond, 273, 95_000, false),
 	)
 	scenario.forcedWaiting = []timeWindow{{start: 12 * time.Second, end: 13 * time.Second}}
+	return scenario
+}
+
+func newTPSDebtSustainedWaitingScenario() scenarioSpec {
+	scenario := newTPSDebtScenario("bounded-debt-sustained-waiting", "waiting", 35*time.Second,
+		tpsDebtRequest("sustained-waiting-protected-a", 12100*time.Millisecond, 273, 95_000, false),
+		tpsDebtRequest("sustained-waiting-protected-b", 14*time.Second, 273, 95_000, false),
+		tpsDebtRequest("sustained-waiting-recovered", 16100*time.Millisecond, 273, 95_000, false),
+	)
+	scenario.forcedWaiting = []timeWindow{{start: 12 * time.Second, end: 16 * time.Second}}
 	return scenario
 }
 
