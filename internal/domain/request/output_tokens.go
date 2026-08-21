@@ -2,8 +2,6 @@ package request
 
 import (
 	"math"
-	"strconv"
-	"strings"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/domain/lexical"
 )
@@ -603,54 +601,62 @@ func jsonStringSpanEquals(value jsonStringSpan, candidate string) bool {
 func escapedJSONStringEqualsASCII(raw []byte, candidate string) bool {
 	candidateIndex := 0
 	for index := 0; index < len(raw); {
-		value := raw[index]
-		index++
-		if value == '\\' {
-			if index >= len(raw) {
-				return false
-			}
-			escape := raw[index]
-			index++
-			switch escape {
-			case '"', '\\', '/':
-				value = escape
-			case 'b':
-				value = '\b'
-			case 'f':
-				value = '\f'
-			case 'n':
-				value = '\n'
-			case 'r':
-				value = '\r'
-			case 't':
-				value = '\t'
-			case 'u':
-				if len(raw)-index < 4 {
-					return false
-				}
-				codeUnit := uint16(0)
-				for offset := 0; offset < 4; offset++ {
-					hex, ok := jsonHexValue(raw[index+offset])
-					if !ok {
-						return false
-					}
-					codeUnit = codeUnit<<4 | uint16(hex)
-				}
-				index += 4
-				if codeUnit > 0x7f {
-					return false
-				}
-				value = byte(codeUnit)
-			default:
-				return false
-			}
-		}
-		if value >= 0x80 || candidateIndex >= len(candidate) || candidate[candidateIndex] != value {
+		value, next, ok := nextEscapedJSONStringASCII(raw, index)
+		if !ok || candidateIndex >= len(candidate) || candidate[candidateIndex] != value {
 			return false
 		}
+		index = next
 		candidateIndex++
 	}
 	return candidateIndex == len(candidate)
+}
+
+func nextEscapedJSONStringASCII(raw []byte, index int) (byte, int, bool) {
+	if index < 0 || index >= len(raw) {
+		return 0, index, false
+	}
+	value := raw[index]
+	index++
+	if value != '\\' {
+		return value, index, value < 0x80
+	}
+	if index >= len(raw) {
+		return 0, index, false
+	}
+	escape := raw[index]
+	index++
+	switch escape {
+	case '"', '\\', '/':
+		return escape, index, true
+	case 'b':
+		return '\b', index, true
+	case 'f':
+		return '\f', index, true
+	case 'n':
+		return '\n', index, true
+	case 'r':
+		return '\r', index, true
+	case 't':
+		return '\t', index, true
+	case 'u':
+		if len(raw)-index < 4 {
+			return 0, index, false
+		}
+		codeUnit := uint16(0)
+		for offset := 0; offset < 4; offset++ {
+			hex, ok := jsonHexValue(raw[index+offset])
+			if !ok {
+				return 0, index, false
+			}
+			codeUnit = codeUnit<<4 | uint16(hex)
+		}
+		if codeUnit > 0x7f {
+			return 0, index, false
+		}
+		return byte(codeUnit), index + 4, true
+	default:
+		return 0, index, false
+	}
 }
 
 func parseJSONOutputTokens(value []byte) (int, bool) {
@@ -666,12 +672,7 @@ func parseJSONOutputTokens(value []byte) (int, bool) {
 	raw := value[1 : len(value)-1]
 	for _, current := range raw {
 		if current == '\\' || current >= 0x80 {
-			decoded, err := strconv.Unquote(string(value))
-			if err != nil {
-				return 0, false
-			}
-			tokens, err := strconv.Atoi(strings.TrimSpace(decoded))
-			return tokens, err == nil && tokens >= 0
+			return parseEscapedJSONStringNonnegativeDecimal(raw)
 		}
 	}
 	start, end := 0, len(raw)
@@ -682,6 +683,34 @@ func parseJSONOutputTokens(value []byte) (int, bool) {
 		end--
 	}
 	return parseNonnegativeDecimal(raw[start:end])
+}
+
+func parseEscapedJSONStringNonnegativeDecimal(raw []byte) (int, bool) {
+	maximum := int(^uint(0) >> 1)
+	result := 0
+	digits := false
+	trailingSpace := false
+	for index := 0; index < len(raw); {
+		value, next, ok := nextEscapedJSONStringASCII(raw, index)
+		if !ok {
+			return 0, false
+		}
+		index = next
+		if isASCIIStringSpace(value) {
+			trailingSpace = digits
+			continue
+		}
+		if trailingSpace || !isJSONDigit(value) {
+			return 0, false
+		}
+		digits = true
+		digit := int(value - '0')
+		if result > (maximum-digit)/10 {
+			return 0, false
+		}
+		result = result*10 + digit
+	}
+	return result, digits
 }
 
 func parseNonnegativeDecimal(value []byte) (int, bool) {

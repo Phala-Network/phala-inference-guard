@@ -193,6 +193,36 @@ func TestV01218EndpointParserEscapedOutputLimitDoesNotAllocateCompleteString(t *
 	}
 }
 
+func TestV01218ParseJSONOutputTokensHandlesEscapedDecimalsStrictly(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  int
+		valid bool
+	}{
+		{name: "number", value: `25`, want: 25, valid: true},
+		{name: "quoted number", value: `"25"`, want: 25, valid: true},
+		{name: "escaped digits", value: `"\u0032\u0035"`, want: 25, valid: true},
+		{name: "escaped ascii whitespace", value: `"\t \u0032\u0035\f\r\n"`, want: 25, valid: true},
+		{name: "digit after trailing whitespace", value: `"2\u00205"`},
+		{name: "non digit", value: `"\u0032x"`},
+		{name: "negative number", value: `-1`},
+		{name: "quoted negative number", value: `"-1"`},
+		{name: "non ascii escape", value: `"\u00a025"`},
+		{name: "unterminated unicode escape", value: `"\u003"`},
+		{name: "unquoted overflow", value: strings.Repeat("9", 128)},
+		{name: "escaped overflow", value: `"` + strings.Repeat(`\u0039`, 128) + `"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, valid := parseJSONOutputTokens([]byte(test.value))
+			if got != test.want || valid != test.valid {
+				t.Fatalf("parseJSONOutputTokens(%q)=%d/%t, want %d/%t", test.value, got, valid, test.want, test.valid)
+			}
+		})
+	}
+}
+
 func BenchmarkV0121ParseJSONFields4MiB(b *testing.B) {
 	prefix := []byte(`{"messages":[{"role":"user","content":"`)
 	suffix := []byte(`"}],"max_tokens":256,"stream":true}`)
