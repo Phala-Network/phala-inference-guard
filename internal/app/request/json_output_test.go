@@ -413,6 +413,26 @@ func TestV01218EndpointEstimatorCountsTypedMultimodalPartsOnce(t *testing.T) {
 	}
 }
 
+func TestV01218EndpointEstimatorIgnoresResponsesInputFileTransportBytes(t *testing.T) {
+	short := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		`{"input":[{"type":"message","role":"user","content":[{"type":"input_file","filename":"input.txt","file_data":"QQ=="}]}],"max_output_tokens":32}`,
+	)
+	large := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		`{"input":[{"type":"message","role":"user","content":[{"type":"input_file","filename":"input.txt","file_data":"`+strings.Repeat("A", 16*1024)+`"}]}],"max_output_tokens":32}`,
+	)
+	if !short.Cost.Supported || !large.Cost.Supported ||
+		short.Cost.ModalityCount != 1 || large.Cost.ModalityCount != 1 {
+		t.Fatalf("Responses input_file classification: short=%+v large=%+v", short.Cost, large.Cost)
+	}
+	if short.Cost.Estimate != large.Cost.Estimate {
+		t.Fatalf("input_file transport bytes changed KV estimate: short=%+v large=%+v", short.Cost.Estimate, large.Cost.Estimate)
+	}
+}
+
 func TestV01218EndpointEstimatorAccountsCompletionSuffixAndBestOf(t *testing.T) {
 	base := classifyEndpointFixture(
 		t,
@@ -548,6 +568,24 @@ func TestV01218EndpointEstimatorHandlesResponsesVisibleAndHiddenContext(t *testi
 	)
 	if hidden.Cost.Supported || hidden.Cost.UnsupportedReason != "body_external_context" {
 		t.Fatalf("body-external Responses context was treated as known: %+v", hidden.Cost)
+	}
+
+	nestedReference := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		`{"input":[{"type":"item_reference","id":"item_hidden"}],"max_output_tokens":32}`,
+	)
+	if nestedReference.Cost.Supported || nestedReference.Cost.UnsupportedReason != "body_external_context" {
+		t.Fatalf("nested Responses item reference was treated as visible context: %+v", nestedReference.Cost)
+	}
+
+	emptyReference := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		"{\"instructions\":\"guide\",\"input\":\"hello\",\"previous_input_messages\":[ \n\t ],\"max_output_tokens\":32}",
+	)
+	if !emptyReference.Cost.Supported || emptyReference.Cost.Estimate != base.Cost.Estimate {
+		t.Fatalf("empty Responses external-context field changed estimate: base=%+v empty=%+v", base.Cost, emptyReference.Cost)
 	}
 }
 
