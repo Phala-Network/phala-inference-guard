@@ -15,6 +15,9 @@ standing instructions.
   Router projection, and cross-surface auditing.
 - [Internal algorithm flow](PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md): package
   ownership, admission transaction, gates, reservations, and backend adapters.
+- [v0.12.18 active optimization plan](PIG_V0_12_18_THROUGHPUT_ESTIMATOR_PLAN.md):
+  current estimator, TPS, Prefill-lifecycle, evidence, and release work. This is
+  an active plan; it is not evidence of an executable version or deployment.
 
 ## Historical release evidence
 
@@ -29,9 +32,11 @@ remain separate evidence layers.
 
 ## Active maintenance
 
-Branch: `codex/pig-v0.12.17-log-observability`
-Status: accepted and published image, PIG-only deployment, Router contract, and
-30-minute live-traffic acceptance are complete on development CVM
+Branch: `codex/pig-v0.12.18-throughput-estimator`
+Status: v0.12.17 remains the accepted and published runtime while the separate
+v0.12.18 optimization plan is at design/plan stage. v0.12.17 PIG-only
+deployment, Router contract, and 30-minute live-traffic acceptance are complete
+on development CVM
 `311bbcdb-e348-4922-b37d-541755b09ff7` (`use1-19`). Executable image revision is
 `0091241bc9edc30f0f7ff50010504225d3fa14c8`; later documentation-only commits do
 not change that image identity.
@@ -44,7 +49,7 @@ serving chain must not be described as lifecycle-clean beyond that measured
 window. The versioned release plan records the exact boundary and current
 recovery state.
 
-Plan and progress:
+Completed v0.12.17 plan and progress:
 
 1. Audit current source, documentation, log emitters, and retained history:
    complete.
