@@ -24,6 +24,7 @@ type admissionReportSnapshot struct {
 	HasLastReject           bool
 	LastReject              coreadmission.DecisionRecord
 	LastRejectAt            time.Time
+	Evidence                admissionEvidenceSnapshot
 }
 
 type admissionDecisionLogEvent struct {
@@ -93,6 +94,7 @@ func (s *admissionDecisionLogState) Claim(
 type admissionReporter struct {
 	mu          sync.Mutex
 	snapshot    admissionReportSnapshot
+	evidence    admissionEvidence
 	logState    admissionDecisionLogState
 	logInterval time.Duration
 	onDecision  func(admissionDecisionLogEvent)
@@ -115,6 +117,7 @@ func (r *admissionReporter) Record(now time.Time, mode string, decision coreadmi
 	enforced := mode == "enforce" && !decision.Admitted()
 	r.mu.Lock()
 	r.snapshot.Attempts++
+	r.evidence.Record(decision)
 	r.snapshot.HasLastDecision = true
 	r.snapshot.LastDecision = decision
 	if decision.Admitted() {
@@ -151,7 +154,9 @@ func (r *admissionReporter) Snapshot() admissionReportSnapshot {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.snapshot
+	snapshot := r.snapshot
+	snapshot.Evidence = r.evidence.Snapshot()
+	return snapshot
 }
 
 func emitAdmissionDecision(

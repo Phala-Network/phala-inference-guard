@@ -64,6 +64,7 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	fmt.Fprintf(w, "pig_predictive_scanner_saturated_total %d\n", s.requestClassifier.Rejected())
 	metrics.WriteBackends(w, s.backendMetricsInput(snapshot, now))
 	metrics.WritePredictiveAdmission(w, input)
+	writeAdmissionEvidenceMetrics(w, snapshot.Report.Evidence)
 	metrics.WriteRouterCapacityCompatibility(w, compatibility)
 }
 
