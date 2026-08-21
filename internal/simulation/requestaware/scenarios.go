@@ -38,7 +38,18 @@ type requestSpec struct {
 	outputLimit        int64
 	outputLimitUnknown bool
 	cancelAfter        time.Duration
+	terminalAfter      time.Duration
+	terminalKind       requestTerminalKind
 }
+
+type requestTerminalKind uint8
+
+const (
+	requestTerminalNone requestTerminalKind = iota
+	requestTerminalCancel
+	requestTerminalError
+	requestTerminalDisconnect
+)
 
 type workerPoolSpec struct {
 	at          time.Duration
@@ -59,6 +70,7 @@ type scenarioSpec struct {
 	preemptionCooldown []timeWindow
 	preemptionAt       time.Duration
 	aggregateTPSCap    float64
+	aggregateTPSByRunning []float64
 	capacityTokens     int64
 	maxModelLen        int64
 	maximumNoWait      int

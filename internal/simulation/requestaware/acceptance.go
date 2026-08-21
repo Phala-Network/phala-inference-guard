@@ -92,7 +92,8 @@ func validateSimulationMetrics(name string, policy PolicyName, metrics Metrics) 
 	if metrics.Arrivals < 0 || metrics.Admitted < 0 || metrics.Rejected < 0 ||
 		metrics.HardProtects < 0 || metrics.SizeProtects < 0 || metrics.Completed < 0 ||
 		metrics.Preemptions < 0 || metrics.HardFitIdleRejects < 0 || metrics.PeakKVTokens < 0 ||
-		metrics.MaximumRunning < 0 {
+		metrics.MaximumRunning < 0 || metrics.TPSQoSBudgetAdmissions < 0 ||
+		metrics.MaximumQoSBudgetLeases < 0 {
 		return fmt.Errorf("scenario %s policy %s contains a negative counter", name, policy)
 	}
 	if metrics.Admitted+metrics.Rejected != metrics.Arrivals {
@@ -115,6 +116,8 @@ func validateSimulationMetrics(name string, policy PolicyName, metrics Metrics) 
 		metrics.SLOCompletionTokensPerSecond,
 		metrics.TPSFloorViolationSeconds,
 		metrics.WaitingSeconds,
+		metrics.QueueWaitP95Seconds,
+		metrics.QueueWaitMaximumSeconds,
 		metrics.MaximumIdleWithDemandSeconds,
 		metrics.DecodeSequenceSeconds,
 		metrics.MeanActiveTPS,

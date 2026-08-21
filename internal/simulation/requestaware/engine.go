@@ -22,13 +22,16 @@ const (
 
 type activeRequest struct {
 	spec             requestSpec
+	admittedAt       time.Duration
 	prefillRemaining float64
 	outputRemaining  float64
 	generated        float64
 	unabsorbed       bool
 	materialized     bool
+	queueWaitRecorded bool
 	prefillComplete  bool
-	cancelAt         time.Duration
+	terminalAt       time.Duration
+	terminalCause    coreadmission.TerminalCause
 }
 
 type scheduledRequest struct {
@@ -72,6 +75,7 @@ type scenarioRunner struct {
 	externalPreemptionSeen bool
 	cacheQueryTokens       uint64
 	cacheHitTokens         uint64
+	queueWaitSamples       []float64
 	now                    time.Time
 }
 
@@ -89,11 +93,22 @@ func runScenarioWithTPSReference(
 	profile runtimepredictive.BackendCapabilityProfile,
 	tpsReference float64,
 ) (Metrics, int, error) {
+	return runScenarioWithTPSDebtHorizon(spec, policyName, profile, tpsReference, 0)
+}
+
+func runScenarioWithTPSDebtHorizon(
+	spec scenarioSpec,
+	policyName PolicyName,
+	profile runtimepredictive.BackendCapabilityProfile,
+	tpsReference float64,
+	controlHorizon time.Duration,
+) (Metrics, int, error) {
 	capacity := spec.capacityTokens
 	if capacity <= 0 {
 		capacity = simulationCapacityTokens
 	}
-	if spec.duration <= 0 || spec.initialKVTokens < 0 || spec.initialKVTokens >= capacity || spec.backgroundRunning < 0 {
+	if spec.duration <= 0 || spec.initialKVTokens < 0 || spec.initialKVTokens >= capacity ||
+		spec.backgroundRunning < 0 || controlHorizon < 0 || !validAggregateTPSCurve(spec.aggregateTPSByRunning) {
 		return Metrics{}, 0, fmt.Errorf("invalid scenario")
 	}
 	runner := &scenarioRunner{
@@ -114,12 +129,22 @@ func runScenarioWithTPSReference(
 	}
 	if policyName == PolicyCandidate {
 		capability := simulationAdmissionCapability(profile)
-		controller, controllerErr := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
+		controllerConfig := coreadmission.ControllerConfig{
 			Capability:  capability,
 			WorkProfile: simulationRequestWorkProfile(),
 			TPS:         coreadmission.TPSPolicyConfig{Reference: tpsReference},
 			Now:         func() time.Time { return runner.now },
-		})
+		}
+		var controller *coreadmission.AdmissionController
+		var controllerErr error
+		if controlHorizon > 0 {
+			controller, controllerErr = coreadmission.NewBoundedTPSDebtSimulationController(
+				controllerConfig,
+				controlHorizon,
+			)
+		} else {
+			controller, controllerErr = coreadmission.NewAdmissionController(controllerConfig)
+		}
 		if controllerErr != nil {
 			return Metrics{}, 0, fmt.Errorf("construct candidate AdmissionController: %w", controllerErr)
 		}
@@ -150,6 +175,8 @@ func runScenarioWithTPSReference(
 	if runner.idleDemandActive {
 		runner.recordIdleDuration(spec.duration)
 	}
+	runner.recordPendingQueueWaits(spec.duration)
+	runner.finalizeQueueWaitMetrics()
 	durationSeconds := spec.duration.Seconds()
 	if durationSeconds > 0 {
 		runner.metrics.CompletionTokensPerSecond = runner.metrics.CompletionTokens / durationSeconds
@@ -169,6 +196,23 @@ func runScenarioWithTPSReference(
 		runner.controller.Close()
 	}
 	return runner.metrics, runner.controllerPolicyCalls, nil
+}
+
+func validAggregateTPSCurve(curve []float64) bool {
+	if len(curve) == 0 {
+		return true
+	}
+	if curve[0] != 0 {
+		return false
+	}
+	previous := float64(0)
+	for _, value := range curve {
+		if value < previous || math.IsNaN(value) || math.IsInf(value, 0) {
+			return false
+		}
+		previous = value
+	}
+	return true
 }
 
 func simulationAdmissionCapability(profile runtimepredictive.BackendCapabilityProfile) coreadmission.Capability {
@@ -199,6 +243,11 @@ func (r *scenarioRunner) initializeArrivals() error {
 		}
 		if request.actualInput <= 0 || request.cacheHitTokens < 0 || request.cacheHitTokens > request.actualInput {
 			return fmt.Errorf("scenario request %q has invalid input/cache tokens", request.id)
+		}
+		if request.cancelAfter < 0 || request.terminalAfter < 0 ||
+			(request.cancelAfter > 0 && request.terminalAfter > 0) ||
+			!validRequestTerminal(request.terminalAfter, request.terminalKind) {
+			return fmt.Errorf("scenario request %q has invalid terminal behavior", request.id)
 		}
 		seen[request.id] = struct{}{}
 		return nil
@@ -231,6 +280,18 @@ func (r *scenarioRunner) initializeArrivals() error {
 		}
 	}
 	return nil
+}
+
+func validRequestTerminal(after time.Duration, kind requestTerminalKind) bool {
+	if after == 0 {
+		return kind == requestTerminalNone
+	}
+	switch kind {
+	case requestTerminalCancel, requestTerminalError, requestTerminalDisconnect:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *scenarioRunner) releaseWorkerPoolRequest(at time.Duration, poolIndex int) {
@@ -300,12 +361,17 @@ func (r *scenarioRunner) arrive(at time.Duration, request requestSpec) {
 	}
 	active := &activeRequest{
 		spec:             request,
+		admittedAt:       at,
 		prefillRemaining: float64(request.actualInput - request.cacheHitTokens),
 		outputRemaining:  request.actualOutput,
 		unabsorbed:       true,
 	}
-	if request.cancelAfter > 0 {
-		active.cancelAt = at + request.cancelAfter
+	if request.terminalAfter > 0 {
+		active.terminalAt = at + request.terminalAfter
+		active.terminalCause = simulationTerminalCause(request.terminalKind)
+	} else if request.cancelAfter > 0 {
+		active.terminalAt = at + request.cancelAfter
+		active.terminalCause = coreadmission.TerminalCancel
 	}
 	r.active[request.id] = active
 	r.order = append(r.order, request.id)
@@ -331,6 +397,13 @@ func (r *scenarioRunner) decide(at time.Duration, request requestSpec, effective
 		)
 		if !result.Decision.Admitted() {
 			return false, candidateHardProtection(result.Decision)
+		}
+		if result.Decision.TPSQoSBudgeted {
+			r.metrics.TPSQoSBudgetAdmissions++
+			leases := int(result.Decision.State.QoSBudgetLeases) + 1
+			if leases > r.metrics.MaximumQoSBudgetLeases {
+				r.metrics.MaximumQoSBudgetLeases = leases
+			}
 		}
 		if !result.Handle.MarkForwarded() {
 			result.Handle.Terminate(coreadmission.TerminalError)
@@ -362,8 +435,8 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	}
 	for _, id := range r.order {
 		active := r.active[id]
-		if active != nil && active.cancelAt > 0 && at >= active.cancelAt {
-			r.removeActive(at, id, coreadmission.TerminalCancel)
+		if active != nil && active.terminalAt > 0 && at >= active.terminalAt {
+			r.removeActive(at, id, active.terminalCause)
 			r.processArrivals(at)
 		}
 	}
@@ -371,6 +444,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	waitingAtStart := r.currentWaiting(at - elapsed)
 	for _, request := range scheduled {
 		if !request.active.materialized {
+			r.recordQueueWait(request.active, at)
 			r.observeCacheInput(request.active.spec)
 			request.active.materialized = true
 		}
@@ -415,11 +489,7 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 		}
 	}
 	decodeSequences := r.spec.backgroundRunning + len(ready)
-	aggregateTPSCap := r.spec.aggregateTPSCap
-	if aggregateTPSCap <= 0 {
-		aggregateTPSCap = simulationAggregateTPS
-	}
-	aggregateTPS := math.Min(aggregateTPSCap, simulationUncontendedTPS*float64(decodeSequences))
+	aggregateTPS := r.aggregateTPSForSequences(decodeSequences)
 	if prefillAtStart > 0 {
 		aggregateTPS /= 1 + 0.08*float64(prefillAtStart) +
 			0.9*prefillExcessAtStart/float64(domainpredictive.DefaultPrefillRegularTokens)
@@ -458,6 +528,19 @@ func (r *scenarioRunner) advance(at, elapsed time.Duration) {
 	}
 	r.updatePeaks(at)
 	r.enforceHardKV(at)
+}
+
+func simulationTerminalCause(kind requestTerminalKind) coreadmission.TerminalCause {
+	switch kind {
+	case requestTerminalCancel:
+		return coreadmission.TerminalCancel
+	case requestTerminalError:
+		return coreadmission.TerminalError
+	case requestTerminalDisconnect:
+		return coreadmission.TerminalDisconnect
+	default:
+		return coreadmission.TerminalError
+	}
 }
 
 func (r *scenarioRunner) poll(at time.Duration) {
@@ -772,6 +855,54 @@ func (r *scenarioRunner) recordIdleDuration(at time.Duration) {
 	if duration.Seconds() > r.metrics.MaximumIdleWithDemandSeconds {
 		r.metrics.MaximumIdleWithDemandSeconds = duration.Seconds()
 	}
+}
+
+func (r *scenarioRunner) aggregateTPSForSequences(sequences int) float64 {
+	if len(r.spec.aggregateTPSByRunning) > 0 {
+		if sequences <= 0 {
+			return 0
+		}
+		index := sequences
+		if index >= len(r.spec.aggregateTPSByRunning) {
+			index = len(r.spec.aggregateTPSByRunning) - 1
+		}
+		return r.spec.aggregateTPSByRunning[index]
+	}
+	aggregateTPSCap := r.spec.aggregateTPSCap
+	if aggregateTPSCap <= 0 {
+		aggregateTPSCap = simulationAggregateTPS
+	}
+	return math.Min(aggregateTPSCap, simulationUncontendedTPS*float64(sequences))
+}
+
+func (r *scenarioRunner) recordQueueWait(active *activeRequest, at time.Duration) {
+	if active == nil || active.queueWaitRecorded || at < active.admittedAt {
+		return
+	}
+	wait := (at - active.admittedAt).Seconds()
+	active.queueWaitRecorded = true
+	r.queueWaitSamples = append(r.queueWaitSamples, wait)
+}
+
+func (r *scenarioRunner) recordPendingQueueWaits(at time.Duration) {
+	for _, active := range r.active {
+		if active != nil && !active.materialized {
+			r.recordQueueWait(active, at)
+		}
+	}
+}
+
+func (r *scenarioRunner) finalizeQueueWaitMetrics() {
+	if len(r.queueWaitSamples) == 0 {
+		return
+	}
+	sort.Float64s(r.queueWaitSamples)
+	r.metrics.QueueWaitMaximumSeconds = r.queueWaitSamples[len(r.queueWaitSamples)-1]
+	index := int(math.Ceil(0.95*float64(len(r.queueWaitSamples)))) - 1
+	if index < 0 {
+		index = 0
+	}
+	r.metrics.QueueWaitP95Seconds = r.queueWaitSamples[index]
 }
 
 func insideAny(windows []timeWindow, at time.Duration) bool {
