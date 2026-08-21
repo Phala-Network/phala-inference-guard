@@ -50,6 +50,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.requestEvidence.Record(classification)
 	responseEvidence := s.responseUsageEvidence.Begin(classification, r.URL.Path, s.cfg.PathSuffixMatch)
 	defer responseEvidence.Censor()
+	prefillEvidence := s.prefillLifecycleEvidence.Begin(classification)
+	defer func() { prefillEvidence.Terminate(time.Now()) }()
 	if classification.Timing.BodyReadMeasured {
 		s.bodyReadDuration.Observe(classification.Timing.BodyRead)
 	}
@@ -100,6 +102,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(attachAdmissionReservation(r.Context(), reservation))
 	}
 	r = r.WithContext(attachResponseUsageRequestEvidence(r.Context(), responseEvidence))
+	r = r.WithContext(attachPrefillLifecycleRequestEvidence(r.Context(), prefillEvidence))
+	prefillEvidence.MarkForwarded()
 	s.decisionDuration.Observe(time.Since(decisionStart))
 	result := s.proxyRequest(s.backend, w, r)
 	responseEvidence.Complete(result)

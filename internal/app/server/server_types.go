@@ -65,6 +65,7 @@ type proxyServer struct {
 	admissionFailures         admissionFailureCounters
 	requestEvidence           requestEvidence
 	responseUsageEvidence     responseUsageEvidence
+	prefillLifecycleEvidence  prefillLifecycleEvidence
 	policyUpdates             predictivePolicyUpdateCounters
 	decisionDuration          durationHistogram
 	bodyReadDuration          durationHistogram

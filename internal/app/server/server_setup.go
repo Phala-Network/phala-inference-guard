@@ -86,26 +86,29 @@ func (s *proxyServer) modifyBackendResponse(response *http.Response) error {
 		evidence.WrapResponse(response)
 	}
 	if response != nil && response.Request != nil {
-		if reservation, ok := response.Request.Context().Value(admissionReservationContextKey{}).(admissionReservation); ok && reservation != nil {
-			var onComplete func()
-			if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
-				responseContext := response.Request.Context()
-				onComplete = func() {
-					if responseContext.Err() == nil && !reservation.Terminate(coreadmission.TerminalSuccess) {
-						s.admissionFailures.terminal.Add(1)
-					}
+		lifecycle := prefillLifecycleRequestEvidenceFrom(response)
+		reservation, _ := response.Request.Context().Value(admissionReservationContextKey{}).(admissionReservation)
+		var onFirst func()
+		if lifecycle != nil || reservation != nil {
+			onFirst = func() {
+				if lifecycle != nil {
+					lifecycle.MarkFirstByte(time.Now())
+				}
+				if reservation != nil && !reservation.MarkFirstByte() {
+					s.admissionFailures.firstByte.Add(1)
 				}
 			}
-			response.Body = observeAdmissionResponseBody(
-				response.Body,
-				func() {
-					if !reservation.MarkFirstByte() {
-						s.admissionFailures.firstByte.Add(1)
-					}
-				},
-				onComplete,
-			)
 		}
+		var onComplete func()
+		if reservation != nil && response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+			responseContext := response.Request.Context()
+			onComplete = func() {
+				if responseContext.Err() == nil && !reservation.Terminate(coreadmission.TerminalSuccess) {
+					s.admissionFailures.terminal.Add(1)
+				}
+			}
+		}
+		response.Body = observeAdmissionResponseBody(response.Body, onFirst, onComplete)
 	}
 	return nil
 }
