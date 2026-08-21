@@ -306,6 +306,73 @@ func TestV01218EndpointEstimatorIgnoresControlsAndChargesPromptSemantics(t *test
 	}
 }
 
+func TestV01218EndpointEstimatorIgnoresEndpointForeignFanoutAndOutputControls(t *testing.T) {
+	tests := []struct {
+		name  string
+		path  string
+		base  string
+		noisy string
+	}{
+		{
+			name:  "chat",
+			path:  "/v1/chat/completions",
+			base:  `{"messages":[{"role":"user","content":"hello"}],"max_tokens":32}`,
+			noisy: `{"messages":[{"role":"user","content":"hello"}],"max_tokens":32,"max_output_tokens":4096,"best_of":8}`,
+		},
+		{
+			name:  "completions",
+			path:  "/v1/completions",
+			base:  `{"prompt":"hello","max_tokens":32}`,
+			noisy: `{"prompt":"hello","max_tokens":32,"max_completion_tokens":4096,"max_output_tokens":4096}`,
+		},
+		{
+			name:  "responses",
+			path:  "/v1/responses",
+			base:  `{"input":"hello","max_output_tokens":32}`,
+			noisy: `{"input":"hello","max_output_tokens":32,"max_tokens":4096,"max_completion_tokens":4096,"n":8}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			base := classifyEndpointFixture(t, test.path, test.base)
+			noisy := classifyEndpointFixture(t, test.path, test.noisy)
+			if !base.Cost.Supported || !noisy.Cost.Supported || base.Cost.Estimate != noisy.Cost.Estimate {
+				t.Fatalf("endpoint-foreign controls changed estimate: base=%+v noisy=%+v", base.Cost, noisy.Cost)
+			}
+		})
+	}
+}
+
+func TestV01218EndpointEstimatorCountsDecodedJSONStringContent(t *testing.T) {
+	tests := []struct {
+		name    string
+		literal string
+		escaped string
+	}{
+		{
+			name:    "CJK and simple escapes",
+			literal: `{"messages":[{"role":"user","content":"中文\nquote\""}],"max_tokens":32}`,
+			escaped: `{"messages":[{"role":"user","content":"\u4e2d\u6587\nquote\""}],"max_tokens":32}`,
+		},
+		{
+			name:    "surrogate pair",
+			literal: `{"messages":[{"role":"user","content":"😀"}],"max_tokens":32}`,
+			escaped: `{"messages":[{"role":"user","content":"\ud83d\ude00"}],"max_tokens":32}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			literal := classifyEndpointFixture(t, "/v1/chat/completions", test.literal)
+			escaped := classifyEndpointFixture(t, "/v1/chat/completions", test.escaped)
+			if !literal.Cost.Supported || !escaped.Cost.Supported ||
+				literal.Cost.TextBytes != escaped.Cost.TextBytes ||
+				literal.Cost.Estimate != escaped.Cost.Estimate {
+				t.Fatalf("JSON encoding changed semantic estimate: literal=%+v escaped=%+v", literal.Cost, escaped.Cost)
+			}
+		})
+	}
+}
+
 func TestV01218EndpointEstimatorCountsTypedMultimodalPartsOnce(t *testing.T) {
 	short := classifyEndpointFixture(
 		t,

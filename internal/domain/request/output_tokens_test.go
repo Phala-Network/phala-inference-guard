@@ -2,12 +2,14 @@ package request
 
 import (
 	"bytes"
+	"strings"
 	"testing"
 )
 
 var (
-	benchmarkJSONFields   JSONFields
-	benchmarkJSONFieldsOK bool
+	benchmarkJSONFields         JSONFields
+	benchmarkEndpointJSONFields EndpointJSONFields
+	benchmarkJSONFieldsOK       bool
 )
 
 func TestParseJSONFieldsExtractsOutputTokens(t *testing.T) {
@@ -149,6 +151,26 @@ func TestV0121ParseJSONFieldsHotPathAllocationsAreBounded(t *testing.T) {
 	}
 	if allocations > 2 {
 		t.Fatalf("hot-path allocations=%.1f, want <=2", allocations)
+	}
+}
+
+func TestV01218EndpointParserEscapedKeysDoNotAllocateCompleteStrings(t *testing.T) {
+	body := []byte(`{"\u0061` + strings.Repeat("a", 64*1024) +
+		`":0,"\u006dessages":[{"role":"user","content":"hello"}],"\u006e":2,"max_tokens":8}`)
+	fields := []string{"max_tokens"}
+	allocations := testing.AllocsPerRun(10, func() {
+		benchmarkEndpointJSONFields, benchmarkJSONFieldsOK = ParseEndpointJSONFields(
+			body,
+			fields,
+			EndpointChatCompletions,
+		)
+	})
+	if !benchmarkJSONFieldsOK || !benchmarkEndpointJSONFields.ShapeSupported ||
+		benchmarkEndpointJSONFields.DecodeSequences != 2 {
+		t.Fatalf("escaped endpoint fields=%+v/%t", benchmarkEndpointJSONFields, benchmarkJSONFieldsOK)
+	}
+	if allocations > 1 {
+		t.Fatalf("escaped endpoint keys allocations=%.1f, want <=1", allocations)
 	}
 }
 
