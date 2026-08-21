@@ -469,7 +469,15 @@ func BenchmarkCompletionUsageBodyNonStreamKnownLength(b *testing.B) {
 	}
 }
 
-func BenchmarkCompletionUsageEvidenceNonStream(b *testing.B) {
+func BenchmarkCompletionUsageEvidenceNonStreamUnknownLength(b *testing.B) {
+	benchmarkCompletionUsageEvidenceNonStream(b, -1)
+}
+
+func BenchmarkCompletionUsageEvidenceNonStreamKnownLength(b *testing.B) {
+	benchmarkCompletionUsageEvidenceNonStream(b, 0)
+}
+
+func benchmarkCompletionUsageEvidenceNonStream(b *testing.B, contentLength int64) {
 	for _, size := range []int{2 * 1024, 64 * 1024, 1024 * 1024, 4 * 1024 * 1024} {
 		b.Run(fmt.Sprintf("bytes_%d", size), func(b *testing.B) {
 			prefix := `{"choices":[{}],"usage":{"completion_tokens":9},"padding":"`
@@ -484,9 +492,15 @@ func BenchmarkCompletionUsageEvidenceNonStream(b *testing.B) {
 			b.ResetTimer()
 			for b.Loop() {
 				calls := 0
-				body := ObserveCompletionUsageEvidenceBody(
+				length := contentLength
+				if length >= 0 {
+					length = int64(len(payload))
+				}
+				body := ObserveCompletionUsageEvidenceBodyForFormatLength(
 					io.NopCloser(strings.NewReader(payload)),
 					false,
+					CompletionUsageFormatCompletions,
+					length,
 					func(evidence CompletionUsageEvidence) {
 						if evidence.Outcome != CompletionUsageAvailable {
 							b.Fatalf("completion usage outcome = %d", evidence.Outcome)

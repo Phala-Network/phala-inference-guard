@@ -196,7 +196,13 @@ func (r *responseUsageRequestEvidence) WrapResponse(response *http.Response) {
 	}
 	r.parserAttached = true
 	r.mu.Unlock()
-	response.Body = openai.ObserveCompletionUsageEvidenceBodyForFormat(response.Body, r.streaming, r.format, r.observe)
+	response.Body = openai.ObserveCompletionUsageEvidenceBodyForFormatLength(
+		response.Body,
+		r.streaming,
+		r.format,
+		response.ContentLength,
+		r.observe,
+	)
 }
 
 func (r *responseUsageRequestEvidence) observe(observation openai.CompletionUsageEvidence) {

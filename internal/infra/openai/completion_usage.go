@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"math"
 	"mime"
@@ -89,7 +90,17 @@ func ObserveCompletionUsageEvidenceBodyForFormat(
 	format CompletionUsageFormat,
 	callback func(CompletionUsageEvidence),
 ) io.ReadCloser {
-	return observeCompletionUsageBody(source, streaming, format, -1, nil, nil, callback)
+	return ObserveCompletionUsageEvidenceBodyForFormatLength(source, streaming, format, -1, callback)
+}
+
+func ObserveCompletionUsageEvidenceBodyForFormatLength(
+	source io.ReadCloser,
+	streaming bool,
+	format CompletionUsageFormat,
+	contentLength int64,
+	callback func(CompletionUsageEvidence),
+) io.ReadCloser {
+	return observeCompletionUsageBody(source, streaming, format, contentLength, nil, nil, callback)
 }
 
 func observeCompletionUsageBody(
@@ -104,10 +115,14 @@ func observeCompletionUsageBody(
 	if source == nil || (callback == nil && onTerminal == nil && onEvidence == nil) {
 		return source
 	}
+	observer := newCompletionUsageObserver(streaming, format, callback, onTerminal, onEvidence)
 	body := &completionUsageBody{
 		source:    source,
-		observer:  newCompletionUsageObserver(streaming, format, callback, onTerminal, onEvidence),
+		observer:  observer,
 		remaining: -1,
+	}
+	if !streaming && contentLength > 0 && contentLength <= maximumCompletionUsageJSONBytes {
+		observer.jsonBody = make([]byte, 0, int(contentLength))
 	}
 	if !streaming && onTerminal != nil && contentLength >= 0 {
 		body.remaining = contentLength
@@ -243,6 +258,23 @@ func (o *CompletionUsageObserver) observeJSON(chunk []byte) {
 		o.jsonBody = nil
 		o.jsonLimited = true
 		return
+	}
+	required := len(o.jsonBody) + len(chunk)
+	if required > cap(o.jsonBody) {
+		capacity := cap(o.jsonBody)
+		if capacity == 0 {
+			capacity = 1
+		}
+		for capacity < required {
+			if capacity >= maximumCompletionUsageJSONBytes/2 {
+				capacity = maximumCompletionUsageJSONBytes
+				break
+			}
+			capacity *= 2
+		}
+		grown := make([]byte, len(o.jsonBody), capacity)
+		copy(grown, o.jsonBody)
+		o.jsonBody = grown
 	}
 	o.jsonBody = append(o.jsonBody, chunk...)
 }
@@ -395,9 +427,26 @@ func (o *CompletionUsageObserver) emitEvidence(evidence CompletionUsageEvidence)
 }
 
 type completionUsageEnvelope struct {
-	Choices json.RawMessage       `json:"choices"`
-	Usage   *completionUsageValue `json:"usage"`
-	Metrics *completionMetrics    `json:"metrics"`
+	Choices completionUsageChoices `json:"choices"`
+	Usage   *completionUsageValue  `json:"usage"`
+	Metrics *completionMetrics     `json:"metrics"`
+}
+
+var errCompletionUsageChoicesNotArray = errors.New("completion choices must be an array")
+
+type completionUsageChoices struct {
+	present bool
+	empty   bool
+}
+
+func (c *completionUsageChoices) UnmarshalJSON(payload []byte) error {
+	payload = bytes.TrimSpace(payload)
+	if len(payload) < 2 || payload[0] != '[' || payload[len(payload)-1] != ']' {
+		return errCompletionUsageChoicesNotArray
+	}
+	c.present = true
+	c.empty = len(bytes.TrimSpace(payload[1:len(payload)-1])) == 0
+	return nil
 }
 
 type completionUsageValue struct {
@@ -441,9 +490,8 @@ func decodeCompletionUsageEvidence(
 }
 
 func decodeCompletionsUsageEvidence(payload []byte, streaming bool) (CompletionUsage, CompletionUsageEvidenceOutcome) {
-	decoder := json.NewDecoder(bytes.NewReader(payload))
 	var envelope completionUsageEnvelope
-	if err := decoder.Decode(&envelope); err != nil || !jsonDecoderAtEOF(decoder) {
+	if err := json.Unmarshal(payload, &envelope); err != nil {
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
 	if envelope.Usage == nil {
@@ -452,18 +500,13 @@ func decodeCompletionsUsageEvidence(payload []byte, streaming bool) (CompletionU
 	if envelope.Usage.CompletionTokens == nil {
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
-	choicesPayload := bytes.TrimSpace(envelope.Choices)
-	if len(choicesPayload) < 2 || choicesPayload[0] != '[' || choicesPayload[len(choicesPayload)-1] != ']' {
+	if !envelope.Choices.present {
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
-	var choices []json.RawMessage
-	if json.Unmarshal(choicesPayload, &choices) != nil {
-		return CompletionUsage{}, CompletionUsageMalformed
-	}
-	if streaming && len(choices) != 0 {
+	if streaming && !envelope.Choices.empty {
 		return CompletionUsage{}, CompletionUsageUnavailable
 	}
-	if !streaming && len(choices) != 1 {
+	if !streaming && envelope.Choices.empty {
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
 	usage := CompletionUsage{CompletionTokens: *envelope.Usage.CompletionTokens}
@@ -492,11 +535,10 @@ func decodeCompletionsUsageEvidence(payload []byte, streaming bool) (CompletionU
 }
 
 func decodeResponsesUsageEvidence(payload []byte, streaming bool) (CompletionUsage, CompletionUsageEvidenceOutcome) {
-	decoder := json.NewDecoder(bytes.NewReader(payload))
 	var envelope *responsesUsageEnvelope
 	if streaming {
 		var event responsesUsageEvent
-		if err := decoder.Decode(&event); err != nil || !jsonDecoderAtEOF(decoder) {
+		if err := json.Unmarshal(payload, &event); err != nil {
 			return CompletionUsage{}, CompletionUsageMalformed
 		}
 		if event.Type != "response.completed" {
@@ -505,7 +547,7 @@ func decodeResponsesUsageEvidence(payload []byte, streaming bool) (CompletionUsa
 		envelope = event.Response
 	} else {
 		envelope = &responsesUsageEnvelope{}
-		if err := decoder.Decode(envelope); err != nil || !jsonDecoderAtEOF(decoder) {
+		if err := json.Unmarshal(payload, envelope); err != nil {
 			return CompletionUsage{}, CompletionUsageMalformed
 		}
 	}
@@ -520,11 +562,6 @@ func decodeResponsesUsageEvidence(payload []byte, streaming bool) (CompletionUsa
 		usage.PromptTokens = *envelope.Usage.InputTokens
 	}
 	return usage, CompletionUsageAvailable
-}
-
-func jsonDecoderAtEOF(decoder *json.Decoder) bool {
-	var extra any
-	return decoder.Decode(&extra) == io.EOF
 }
 
 func millisecondsDuration(value float64) (time.Duration, bool) {
