@@ -285,7 +285,7 @@ func TestV01218TPSWindowAttributesRawAndSelectedDenominatorEvidence(t *testing.T
 		},
 		{
 			start: start.Add(2 * time.Second), end: start.Add(3 * time.Second), maximumInterval: 2 * time.Second,
-			generatedTokens: 10,
+			generatedTokens:       10,
 			localExposureMeasured: true, localForwardedSequenceSeconds: 0.5, localResponseSequenceSeconds: 1,
 		},
 		{

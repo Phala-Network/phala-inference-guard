@@ -460,7 +460,7 @@ func TestV01218TPSGateAttributesProtectionAndBudgetSubreasonsWithoutChangingLimi
 	}
 	warming := (tpsGate{}).evaluate(ProjectedState{
 		PendingPrefillSequences: 2,
-		TPS: TPSSnapshot{Enabled: true, Reference: 20},
+		TPS:                     TPSSnapshot{Enabled: true, Reference: 20},
 	})
 	if warming.result != TPSDecisionResultProtect || warming.subreason != TPSDecisionSubreasonWarming ||
 		warming.fits || warming.sequenceLimit != 2 {
@@ -469,15 +469,15 @@ func TestV01218TPSGateAttributesProtectionAndBudgetSubreasonsWithoutChangingLimi
 	waiting := (tpsGate{}).evaluate(ProjectedState{
 		RawRunning: 1,
 		RawWaiting: 1,
-		TPS: TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 100},
+		TPS:        TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 100},
 	})
 	if waiting.result != TPSDecisionResultProtect || waiting.subreason != TPSDecisionSubreasonWaiting || waiting.fits {
 		t.Fatalf("waiting attribution=%+v", waiting)
 	}
 	preemption := (tpsGate{}).evaluate(ProjectedState{
-		RawRunning: 1,
+		RawRunning:      1,
 		PreemptionDelta: 1,
-		TPS: TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 100},
+		TPS:             TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 100},
 	})
 	if preemption.result != TPSDecisionResultProtect ||
 		preemption.subreason != TPSDecisionSubreasonPreemption || preemption.fits {
