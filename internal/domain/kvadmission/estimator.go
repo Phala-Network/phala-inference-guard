@@ -247,9 +247,18 @@ func setTextPredictiveEstimate(
 				maximumReservation = maximumSequenceHigh
 			}
 		}
-		if !ok || maximumReservation > reservation {
+		if !ok {
 			return false
 		}
+	}
+	var ok bool
+	reservation, ok = boundAggregateReservationByMaximumSequence(
+		reservation,
+		maximumReservation,
+		cost.BasePromptCount,
+	)
+	if !ok || maximumReservation > reservation {
+		return false
 	}
 	outputLimit, outputLimitKnown := predictiveOutputLimit(*cost)
 	cost.Estimate = predictive.RequestEstimate{
@@ -385,6 +394,22 @@ func fixedMarginTokensForSequences(
 		return 0, false
 	}
 	return margin + sequences - 1, true
+}
+
+func boundAggregateReservationByMaximumSequence(
+	aggregate,
+	maximumSequence,
+	basePromptCount int64,
+) (int64, bool) {
+	if aggregate <= 0 || maximumSequence <= 0 || basePromptCount <= 0 ||
+		maximumSequence > math.MaxInt64/basePromptCount {
+		return 0, false
+	}
+	maximumCapacity := maximumSequence * basePromptCount
+	if aggregate > maximumCapacity {
+		return maximumCapacity, true
+	}
+	return aggregate, true
 }
 
 type jsonFeatures struct {

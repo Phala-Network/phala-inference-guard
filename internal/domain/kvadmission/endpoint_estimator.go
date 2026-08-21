@@ -255,7 +255,13 @@ func setSemanticPredictiveEstimate(
 			}
 		}
 	}
-	if maximumReservation > reservation {
+	var ok bool
+	reservation, ok = boundAggregateReservationByMaximumSequence(
+		reservation,
+		maximumReservation,
+		cost.BasePromptCount,
+	)
+	if !ok || maximumReservation > reservation {
 		return false
 	}
 	outputLimit, outputLimitKnown := predictiveOutputLimit(*cost)
