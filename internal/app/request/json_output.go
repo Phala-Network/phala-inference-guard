@@ -45,6 +45,15 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 	if r == nil || c.cfg.MaximumBodyBytes <= 0 {
 		return classification, nil
 	}
+	path := ""
+	if r.URL != nil {
+		path = r.URL.Path
+	}
+	endpoint := domainrequest.EndpointForPath(path, c.cfg.SuffixMatch)
+	if path != "" && endpoint == domainrequest.EndpointUnknown {
+		classification.Cost = kvadmission.Cost{UnsupportedReason: "unsupported_endpoint"}
+		return classification, nil
+	}
 	if r.Body == nil || r.ContentLength > c.cfg.MaximumBodyBytes {
 		if r.ContentLength > c.cfg.MaximumBodyBytes {
 			unsupported.UnsupportedReason = "body_too_large"
@@ -89,11 +98,73 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 	r.ContentLength = originalLength
 
 	estimatorStarted := time.Now()
-	classified, protocolError := c.classifyBufferedJSON(body)
+	var classified Classification
+	var protocolError *ProtocolError
+	if endpoint == domainrequest.EndpointUnknown {
+		classified, protocolError = c.classifyBufferedJSON(body)
+	} else {
+		classified, protocolError = c.classifyBufferedEndpointJSON(body, endpoint)
+	}
 	classified.Timing = classification.Timing
 	classified.Timing.Estimator = time.Since(estimatorStarted)
 	classified.Timing.EstimatorMeasured = true
 	return classified, protocolError
+}
+
+func (c *Classifier) classifyBufferedEndpointJSON(
+	body []byte,
+	endpoint domainrequest.EndpointKind,
+) (Classification, *ProtocolError) {
+	fields, valid := domainrequest.ParseEndpointJSONFields(body, c.cfg.OutputTokenFields, endpoint)
+	if !valid {
+		if !json.Valid(body) {
+			return Classification{Cost: kvadmission.Cost{UnsupportedReason: "invalid_json"}},
+				&ProtocolError{Reason: "invalid_json"}
+		}
+		return Classification{Cost: kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}}, nil
+	}
+	classification := Classification{
+		JSONFieldsKnown:  true,
+		StreamingPresent: fields.StreamingPresent,
+		StreamingKnown:   fields.StreamingKnown,
+		Streaming:        fields.Streaming,
+		DecodeSequences:  fields.DecodeSequences,
+	}
+	if !fields.ShapeSupported {
+		reason := fields.UnsupportedReason
+		if reason == "" {
+			reason = "unsupported_request_shape"
+		}
+		classification.Cost = kvadmission.Cost{UnsupportedReason: reason}
+		return classification, nil
+	}
+	classification.Cost = kvadmission.EstimateSemanticRequest(
+		kvadmission.SemanticRequestShape{
+			BodyBytes:       len(body),
+			BasePromptCount: fields.BasePromptCount,
+			DecodeSequences: fields.DecodeSequences,
+			Aggregate:       semanticInputFeatures(fields.Aggregate),
+			MaximumSequence: semanticInputFeatures(fields.MaximumSequence),
+		},
+		fields.OutputTokens,
+		fields.HasOutputTokens,
+		c.cfg.Estimator,
+	)
+	return classification, nil
+}
+
+func semanticInputFeatures(features domainrequest.EndpointInputFeatures) kvadmission.SemanticInputFeatures {
+	return kvadmission.SemanticInputFeatures{
+		PromptBytes:            features.PromptBytes,
+		TextBytes:              features.TextBytes,
+		ToolSchemaBytes:        features.ToolSchemaBytes,
+		MessageCount:           features.MessageCount,
+		ToolCount:              features.ToolCount,
+		ModalityCount:          features.ModalityCount,
+		ApproximateInputTokens: features.ApproximateInputTokens,
+		ExplicitPromptTokens:   features.ExplicitPromptTokens,
+		Conservative:           features.Conservative,
+	}
 }
 
 func (c *Classifier) classifyBufferedJSON(body []byte) (Classification, *ProtocolError) {

@@ -19,6 +19,8 @@ const (
 	classifierEvidenceBodyReadFailed
 	classifierEvidenceInvalidJSON
 	classifierEvidenceUnsupportedRequestShape
+	classifierEvidenceUnsupportedEndpoint
+	classifierEvidenceBodyExternalContext
 	classifierEvidenceInvalidEstimatorConfig
 	classifierEvidenceInvalidRequestShape
 	classifierEvidenceEmptyBody
@@ -36,6 +38,8 @@ var classifierEvidenceOutcomeLabels = [...]string{
 	"body_read_failed",
 	"invalid_json",
 	"unsupported_request_shape",
+	"unsupported_endpoint",
+	"body_external_context",
 	"invalid_estimator_config",
 	"invalid_request_shape",
 	"empty_body",
@@ -89,6 +93,8 @@ const (
 	estimatorValidationBodyReadFailed
 	estimatorValidationInvalidJSON
 	estimatorValidationUnsupportedRequestShape
+	estimatorValidationUnsupportedEndpoint
+	estimatorValidationBodyExternalContext
 	estimatorValidationInvalidEstimatorConfig
 	estimatorValidationInvalidRequestShape
 	estimatorValidationEmptyBody
@@ -106,6 +112,8 @@ var estimatorValidationResultLabels = [...]string{
 	"body_read_failed",
 	"invalid_json",
 	"unsupported_request_shape",
+	"unsupported_endpoint",
+	"body_external_context",
 	"invalid_estimator_config",
 	"invalid_request_shape",
 	"empty_body",
@@ -203,6 +211,10 @@ func classifierEvidenceOutcomeFor(classification apprequest.Classification) clas
 		return classifierEvidenceInvalidJSON
 	case "unsupported_request_shape":
 		return classifierEvidenceUnsupportedRequestShape
+	case "unsupported_endpoint":
+		return classifierEvidenceUnsupportedEndpoint
+	case "body_external_context":
+		return classifierEvidenceBodyExternalContext
 	case "invalid_estimator_config":
 		return classifierEvidenceInvalidEstimatorConfig
 	case "invalid_request_shape":
@@ -273,6 +285,10 @@ func estimatorValidationUnsupportedResult(outcome classifierEvidenceOutcome) est
 		return estimatorValidationInvalidJSON
 	case classifierEvidenceUnsupportedRequestShape:
 		return estimatorValidationUnsupportedRequestShape
+	case classifierEvidenceUnsupportedEndpoint:
+		return estimatorValidationUnsupportedEndpoint
+	case classifierEvidenceBodyExternalContext:
+		return estimatorValidationBodyExternalContext
 	case classifierEvidenceInvalidEstimatorConfig:
 		return estimatorValidationInvalidEstimatorConfig
 	case classifierEvidenceInvalidRequestShape:
