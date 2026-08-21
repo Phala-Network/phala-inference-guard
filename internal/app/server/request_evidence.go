@@ -113,16 +113,16 @@ var estimatorValidationResultLabels = [...]string{
 }
 
 type requestEvidence struct {
-	classifierOutcomes [classifierEvidenceOutcomeCount]atomic.Uint64
-	streamingStates    [streamingEvidenceStateCount]atomic.Uint64
-	decodeFanout       [admissionEvidenceFanoutBucketCount]atomic.Uint64
+	classifierOutcomes  [classifierEvidenceOutcomeCount]atomic.Uint64
+	streamingStates     [streamingEvidenceStateCount]atomic.Uint64
+	decodeFanout        [admissionEvidenceFanoutBucketCount]atomic.Uint64
 	estimatorValidation [estimatorValidationKindCount][estimatorValidationResultCount]atomic.Uint64
 }
 
 type requestEvidenceSnapshot struct {
-	classifierOutcomes [classifierEvidenceOutcomeCount]uint64
-	streamingStates    [streamingEvidenceStateCount]uint64
-	decodeFanout       [admissionEvidenceFanoutBucketCount]uint64
+	classifierOutcomes  [classifierEvidenceOutcomeCount]uint64
+	streamingStates     [streamingEvidenceStateCount]uint64
+	decodeFanout        [admissionEvidenceFanoutBucketCount]uint64
 	estimatorValidation [estimatorValidationKindCount][estimatorValidationResultCount]uint64
 }
 
