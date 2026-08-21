@@ -17,6 +17,7 @@ type EndpointInputFeatures struct {
 	ApproximateInputTokens int64
 	ExplicitPromptTokens   int64
 	Conservative           bool
+	ExternalContext        bool
 }
 
 type EndpointJSONFields struct {
@@ -126,6 +127,10 @@ func (p *jsonFieldParser) parseEndpointRootObject(
 			inputSeen = true
 			var features EndpointInputFeatures
 			features, ok = p.parseSemanticValue()
+			if features.ExternalContext {
+				result.UnsupportedReason = "body_external_context"
+				result.ShapeSupported = false
+			}
 			if ok && features.MessageCount == 0 && (features.TextBytes > 0 || features.PromptBytes > 0) {
 				features.MessageCount = 1
 			}
@@ -343,6 +348,7 @@ func (p *jsonFieldParser) parseSemanticObject() (EndpointInputFeatures, bool) {
 	fields := int64(0)
 	messageObject := false
 	modalityObject := false
+	externalContextObject := false
 	for {
 		key, ok := p.parseString()
 		if !ok {
@@ -364,6 +370,7 @@ func (p *jsonFieldParser) parseSemanticObject() (EndpointInputFeatures, bool) {
 				if ok {
 					messageObject = messageObject || jsonStringSpanEquals(value, "message")
 					modalityObject = endpointModalityType(value)
+					externalContextObject = jsonStringSpanEquals(value, "item_reference")
 				}
 			} else {
 				ok = p.parseValue()
@@ -403,6 +410,7 @@ func (p *jsonFieldParser) parseSemanticObject() (EndpointInputFeatures, bool) {
 				features.ModalityCount++
 				features.Conservative = true
 			}
+			features.ExternalContext = features.ExternalContext || externalContextObject
 			return features, true
 		case p.consume(','):
 			p.skipSpace()
@@ -458,8 +466,14 @@ func (p *jsonFieldParser) parseExternalContextValue() (bool, bool) {
 		return false, false
 	}
 	value := bytes.TrimSpace(p.body[start:p.index])
-	return !bytes.Equal(value, []byte("null")) && !bytes.Equal(value, []byte(`""`)) &&
-		!bytes.Equal(value, []byte("[]")), true
+	if bytes.Equal(value, []byte("null")) || bytes.Equal(value, []byte(`""`)) {
+		return false, true
+	}
+	if len(value) >= 2 && value[0] == '[' && value[len(value)-1] == ']' &&
+		len(bytes.TrimSpace(value[1:len(value)-1])) == 0 {
+		return false, true
+	}
+	return true, true
 }
 
 func endpointFeaturesForString(value jsonStringSpan) (EndpointInputFeatures, bool) {
@@ -570,7 +584,8 @@ func endpointModalityPayloadKey(key jsonStringSpan) bool {
 		jsonStringSpanEquals(key, "input_audio") ||
 		jsonStringSpanEquals(key, "video_url") ||
 		jsonStringSpanEquals(key, "input_video") ||
-		jsonStringSpanEquals(key, "file_id")
+		jsonStringSpanEquals(key, "file_id") ||
+		jsonStringSpanEquals(key, "file_data")
 }
 
 func endpointModalityType(value jsonStringSpan) bool {
@@ -594,6 +609,7 @@ func mergeEndpointFeatures(target *EndpointInputFeatures, value EndpointInputFea
 		return false
 	}
 	target.Conservative = target.Conservative || value.Conservative
+	target.ExternalContext = target.ExternalContext || value.ExternalContext
 	return true
 }
 
