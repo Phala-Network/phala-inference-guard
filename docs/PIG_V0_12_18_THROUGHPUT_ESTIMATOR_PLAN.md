@@ -1,9 +1,9 @@
 # PIG v0.12.18 QoS-Constrained Throughput Optimization Plan
 
-Status: active release execution. The behavior candidate and pre-identity
-exact-source remote gates are complete at `d2aa6fb`; the v0.12.18 executable
-identity is assigned in source. Identity-specific remote gates are pending, and
-no v0.12.18 image, deployment, or live acceptance exists yet.
+Status: source and isolated-image release layers complete. The executable
+source is `80b7f05`, and the published image digest is
+`sha256:7de28db7b46eade3440358479b30c27000f2c7d0d6acacf2fae6c20f0aaf6b20`.
+No v0.12.18 Compose integration, deployment, or live acceptance exists yet.
 
 This plan supersedes the v0.12.17 maintenance conclusion only for the new
 optimization work described below. It does not invalidate the measured
@@ -702,9 +702,9 @@ Phase 5.3 backend aggregation contracts                 complete (no behavior ch
 Phase 5 portability/resource hardening                  complete
 Final three candidate reviews                           complete
 Complete remote source gates                            complete (`d2aa6fb` exact HEAD)
-v0.12.18 executable identity                            assigned in source
-Identity-specific remote source gates                   pending
-Published image                                         none
+v0.12.18 executable identity                            complete (`80b7f05`)
+Identity-specific remote source gates                   complete (`80b7f05` exact source)
+Published image                                         complete (`sha256:7de28db7...f6b20`)
 Compose integration / deployment / live acceptance     not started
 ```
 
@@ -1881,3 +1881,109 @@ mutation, process restart, or CVM restart occurred. Status: passed for source
 acceptance only. The next action is to assign `PIG-v0.12.18`, rerun every
 identity-bearing gate on that exact source, commit and push it, and only then
 build and isolate-accept the exact-revision image before publication.
+
+### v0.12.18 identity, image, and registry acceptance
+
+The assigned and pushed executable source is:
+
+```text
+commit
+80b7f0581f03fbaa8490c9245c3f55771ea0ec42
+
+source archive SHA-256
+84d9b9c8b24c384e4d2465980a9fbae61576a113557aaf75b05da3eba4ee788c
+
+evidence root
+/var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+  80b7f0581f03fbaa8490c9245c3f55771ea0ec42-identity-source-acceptance
+```
+
+The same pinned Go 1.24.13 runner, 1-CPU/4-GiB/512-pid limits, and read-only
+source mount passed `gofmt`, complete tests, complete race, vet, build, and the
+TPS-debt simulation with all exit codes zero. The deterministic TPS report
+remained byte-identical to the pre-identity candidate. The focused release
+contract separately passed runtime `PIG-v0.12.18` and Dockerfile OCI `0.12.18`
+agreement. Material SHA-256 values are:
+
+```text
+environment                         bf784b4c78b01f1525940784ab9208e82536f37e3782bf570e3847db0f2f0bcd
+go test -count=1 ./...              3f0dbf0e398c73c44d2d3ff6705f012e7f402dafa059416482d109445efc6caa
+go test -race -count=1 ./...        e39e4fb48fdecbe105de264b3a626a849672cf22850506c4936d2306727b90d5
+focused release identity            c42b9098dc5c1e133f2d5e796079787a3e3aa65de27631f8213ae8e78dccb289
+empty gofmt/vet/build/sim stderr     e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+TPS deterministic report            5629b5b993fe445e4316e1ead73f92f73f9ca6c57ddc87fef4f8a9a78f07cea5
+```
+
+The exact source built on CVM `311bbcdb-e348-4922-b37d-541755b09ff7` as:
+
+```text
+builder-local tag  pig-v0.12.18-candidate:80b7f05
+image ID           sha256:865e2cced68feef9600bf1db9f870e0c85370ee8d69d0f4362c9aefa63c7db1c
+OCI version        0.12.18
+OCI revision       80b7f0581f03fbaa8490c9245c3f55771ea0ec42
+```
+
+The production-image contract passed the pinned distroless, CGO/native-NVML,
+entrypoint, version, and revision assertions. A separate loopback-only candidate
+PIG joined `dstack_default`, used 1 CPU/512 MiB/256 pids and no restart policy,
+and only read the existing vLLM `/metrics` and `/v1/models`; it sent no
+generation request. With mode, observation interval, and TPS reference omitted,
+the startup and authenticated metrics proved `PIG-v0.12.18`, default `enforce`,
+default `500ms`, and reference zero. Health, authenticated metrics, policy GET,
+and upstream status returned 200; unauthenticated metrics returned 401. The
+candidate was removed, and pre/post IDs, start times, restart counts, and state
+for production PIG v0.12.17, vLLM, HAProxy, and ingress were byte-identical.
+
+Image evidence SHA-256 values are:
+
+```text
+build                               5572966614709cc48145bf28487f8bd88abbf36afee7e37dde04f253a98898d3
+identity                            8b46cad25a5cb54e89173e4a9b239889212bb1fd051cb0c73c0b470e943b3a03
+production image contract           34f7a91274d01b005eb86e215860ec053bba90b4fef94057e38977b8ec067a57
+runtime log                         dcb797fe212302ebe818f1986a79c8ff4d8a8157d9df11ac3f67e7b3957346ec
+runtime summary                     e20bf1769ad076a7adabdedd08d718c8dc6f9ef568e4b068d7f5b4fabc56013c
+pre/post production identities      8847353ab7cbccf89c10a3832c1931c6ecd8c0577a1399ada0d9ce01da4d9c80
+```
+
+After both target tags were proven absent, the already authorized GitHub
+credential was passed to Docker only through standard input and removed by
+`docker logout` immediately after publication. Both tags resolve to the same
+registry digest:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:0.12.18
+ghcr.io/phala-network/phala-inference-guard:0.12.18-80b7f0581f03
+sha256:7de28db7b46eade3440358479b30c27000f2c7d0d6acacf2fae6c20f0aaf6b20
+```
+
+With no GHCR credential present, all three release-tag, immutable-tag, and
+digest manifest reads were byte-identical, and an anonymous digest pull resolved
+to the accepted image ID and exact OCI identity. Registry evidence SHA-256
+values are:
+
+```text
+immutable push                      3eef16f38b57416cb67041f6d0f9013b53c82e221d4e070b264604cf7ee70f2e
+release push                        b2c3caa4060ed10878a83650eafaf19fd3809ea5ecbf7e4dfbd1eb72e6fa14e9
+each manifest view                  304b383bc0afc58035ce588d531725e83b85be18f904445fbbcaa81b265829d9
+anonymous pull                      d6046c1693211e2e6a3cfba1b04c297e39bf648e5308e0b55777cf63bd66d478
+pulled registry identity            4709446e6296c079eeb40c6125fd03834d46e3714d0fd57aa7fa55e21889dcd9
+```
+
+Image-stage review 1, model and causality: the runtime defaults and automatic
+vLLM capability profile match the accepted source contract; no image-only mode,
+TPS, Prefill, KV, tokenizer, cache, or routing behavior was introduced. Status:
+passed.
+
+Image-stage review 2, safety and lifecycle: the candidate was loopback-only,
+bounded, non-restarting, made no generation request, and was removed. Production
+container identity and restart evidence is unchanged; no Compose, Router,
+backend, or CVM mutation occurred. Status: passed.
+
+Image-stage review 3, evidence and release: source commit/archive, complete
+identity gates, local image ID, OCI identity, runtime defaults, two registry
+tags, common digest, anonymous pull, and post-pull image identity agree. Status:
+passed for published-image acceptance only.
+
+The completed layer is now pushed source plus published pullable image. Compose
+integration, deployment, Router mutation, 30-minute live traffic, and production
+acceptance were not authorized or performed. Production remains on v0.12.17.

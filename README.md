@@ -17,10 +17,12 @@ claim that every backend or workload has been revalidated. Published
 v0.12.16 is the prior accepted release. Source, image, deployment, and live
 acceptance remain separate evidence layers.
 
-Current development candidate: `PIG-v0.12.18`. Its executable identity is
-assigned in source, but no v0.12.18 image, deployment, or live acceptance exists
-yet; v0.12.17 remains the accepted running release until those layers are
-completed independently.
+Current development candidate: `PIG-v0.12.18`, executable source revision
+`80b7f0581f03fbaa8490c9245c3f55771ea0ec42`. Its accepted published image is
+`ghcr.io/phala-network/phala-inference-guard:0.12.18@sha256:7de28db7b46eade3440358479b30c27000f2c7d0d6acacf2fae6c20f0aaf6b20`.
+This is source and isolated-image acceptance only; no v0.12.18 Compose
+integration, deployment, or live-traffic acceptance exists. v0.12.17 remains
+the accepted running release until those layers are completed independently.
 
 The objective is QoS-constrained throughput, not a fixed request-count limit.
 Small requests can still fit while a larger request is protected under the same
