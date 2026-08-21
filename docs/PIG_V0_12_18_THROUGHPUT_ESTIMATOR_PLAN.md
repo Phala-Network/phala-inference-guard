@@ -695,6 +695,7 @@ Phase 2 cross-tokenizer offline oracle                  complete (`7eefd41` sour
 Phase 3 bounded TPS-debt simulation                     complete (`3f39bd3` executable source)
 Phase 4 Prefill lifecycle decision                      complete (no behavior change)
 Phase 5.1 weighted scanner body budget                  complete (`4a38fb6` executable source)
+Phase 5.2 Prefill initialization / Decode horizon       complete (no behavior change)
 Phase 5 portability/resource hardening                  in progress
 Complete remote source gates                            pending
 v0.12.18 executable identity                            not assigned
@@ -1673,3 +1674,64 @@ Phase 5.1 status: complete at executable source `4a38fb6`. Phase 5 remains in
 progress for the independently reviewed Prefill initialization, Decode horizon,
 and vLLM/SGLang multi-engine/DP contracts. This does not yet assign the
 `PIG-v0.12.18` executable identity or authorize an image build or deployment.
+
+### Phase 5.2 Prefill initialization and Decode-horizon decision
+
+Phase 5.2 tested whether the fixed Prefill profile and 256-token future-Decode
+floor can be replaced by an initialization-only backend capability derivation.
+The source and traffic-bearing vLLM backend were inspected without changing
+runtime state. Startup currently has a coherent portable contract for backend
+kind, model identity, logical per-engine KV capacity, KV block/page size, and
+`/v1/models.max_model_len`. Those values correctly initialize context legality,
+KV geometry, block alignment, and the maximum admissible input. They do not
+describe scheduler Prefill service time or maximum per-sequence Decode growth.
+
+The inspected vLLM process was started with `--max-num-batched-tokens=4096` and
+`--long-prefill-token-threshold=4096`, but neither value is exposed by the
+OpenAI-compatible model metadata or a stable metric consumed by PIG. The live
+metric families include `vllm:cache_config_info`, request Prefill time and
+computed-KV histograms, generation-token histograms, and requested-output-limit
+histograms. `vllm:cache_config_info` contains KV geometry and cache features but
+not the scheduler Prefill budget. The histograms are cumulative workload and
+performance outcomes; they are neither immutable scheduler capabilities nor
+portable across restarts, models, GPU types, cache states, or traffic mixes.
+Using them at startup would be hidden learning, which is outside the contract.
+
+The SGLang contract consumed by PIG similarly exposes `max_total_num_tokens`,
+page geometry, absolute KV state, scheduler request gauges, retraction/Decode
+counters, and cache counters. It does not expose a portable immutable
+`chunked_prefill_size`, `max_prefill_tokens`, or hard per-sequence Decode-rate
+capability. PIG also cannot inspect a sibling container's process arguments and
+must not add backend-specific deployment coupling to recover them.
+
+Phase 5.2 review 1, model and causality: KV capacity and maximum context constrain
+storage and legality, not Prefill compute throughput. TPS reference is a
+long-term QoS lower target, not a maximum generation rate. Aggregate generation
+TPS and request histograms are post-event observations, not initialization
+capabilities. Scaling Prefill bounds from KV capacity/context, or scaling the
+Decode horizon from TPS reference, would therefore create a false causal model.
+Status: passed with no behavior change.
+
+Phase 5.2 review 2, safety and lifecycle: automatic Prefill bounds remain the
+block-aligned 64K regular, 256K exclusive, 512K quiescent, and 256K aggregate
+fallbacks, clipped only where the existing maximum-input contract requires it.
+The minimum future-Decode horizon remains 256 tokens. Neither value is learned.
+The horizon is a conservative floor, not a universal proof for every possible
+accelerator and polling configuration; changing it requires a trustworthy
+backend upper-rate contract or an explicit separately reviewed capability.
+Missing metadata cannot silently weaken protection, create a new mandatory
+production setting, or reinterpret the TPS soft target as a hard rate ceiling.
+Status: passed.
+
+Phase 5.2 review 3, evidence and release: the executable files at final Phase 5.1
+source `4a38fb6c6075ea48b280790b034539d36fef1e2c` are byte-identical to HEAD before
+this documentation change. The only live operations were read-only SSH,
+container inspection, and a metrics scrape; no inference request was sent and
+no PIG, backend, Compose, Router, or CVM state changed. No local Go executable
+gate was run. This is an explicit no-change decision, not evidence that the
+fallbacks are performance-optimal on every backend. Status: passed.
+
+Phase 5.2 status: complete with no executable-source change. Phase 5.3 now audits
+vLLM multi-engine/DP and SGLang DP metric aggregation. It must prefer a
+conservative no-change result over summing independent KV capacities or inferring
+request placement without an upstream contract.
