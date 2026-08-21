@@ -12,6 +12,7 @@ import argparse
 import hashlib
 import json
 import platform
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -296,9 +297,13 @@ def token_count(tokenizer: Any, fixture: dict[str, Any], semantic: dict[str, Any
             tokenize=True,
             add_generation_prompt=True,
         )
-        if isinstance(input_ids, dict):
+        if isinstance(input_ids, Mapping):
             input_ids = input_ids["input_ids"]
-        count = len(input_ids)
+        count = token_sequence_length(input_ids)
+        if kind in {"chat_text", "chat_entropy"} and count <= 2:
+            raise ValueError(
+                f"implausible chat-template token count for {fixture['name']}: {count}"
+            )
         tools = semantic.get("tools") or []
         if tools:
             count += len(tokenizer.encode(compact_json(tools), add_special_tokens=False))
@@ -313,6 +318,21 @@ def token_count(tokenizer: Any, fixture: dict[str, Any], semantic: dict[str, Any
         counts = [len(prompt) for prompt in semantic["token_arrays"]]
         return sum(counts), max(counts), "explicit_token_ids"
     raise ValueError(f"unsupported fixture kind: {kind}")
+
+
+def token_sequence_length(input_ids: Any) -> int:
+    shape = getattr(input_ids, "shape", None)
+    if shape is not None:
+        if len(shape) == 0:
+            raise ValueError("chat-template input_ids has scalar shape")
+        return int(shape[-1])
+    if not isinstance(input_ids, Sequence):
+        raise TypeError(f"unsupported chat-template input_ids: {type(input_ids)!r}")
+    if input_ids and isinstance(input_ids[0], Sequence):
+        if len(input_ids) != 1:
+            raise ValueError(f"unexpected chat-template batch size: {len(input_ids)}")
+        input_ids = input_ids[0]
+    return len(input_ids)
 
 
 def load_tokenizers(gemma_path: Path, cache_dir: Path) -> list[tuple[TokenizerSpec, Any]]:
