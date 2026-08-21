@@ -252,6 +252,48 @@ func TestV01218ResponseUsageEvidenceDistinguishesAvailableUnavailableMalformedAn
 	}
 }
 
+func TestV01218ResponseUsageEvidenceUnderstandsResponsesAPIWithoutChangingBytes(t *testing.T) {
+	payload := `{"object":"response","status":"completed","output":[],` +
+		`"usage":{"input_tokens":10,"output_tokens":200,"total_tokens":210}}`
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer backend.Close()
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+	body := `{"model":"model-agnostic","input":"responses evidence","max_output_tokens":256}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != payload || backendCalls.Load() != 1 {
+		t.Fatalf(
+			"Responses usage evidence changed proxy behavior: status=%d body=%q backend_calls=%d",
+			response.Code,
+			response.Body.String(),
+			backendCalls.Load(),
+		)
+	}
+
+	var output bytes.Buffer
+	srv.writeLocalMetrics(&output)
+	metricsBody := output.String()
+	for _, want := range []string{
+		`pig_predictive_response_usage_outcomes_total{outcome="available"} 1`,
+		`pig_predictive_output_limit_comparison_total{actual_bucket="le_256",declared_bucket="le_256"} 1`,
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("Responses usage evidence missing %q\nmetrics:\n%s", want, metricsBody)
+		}
+	}
+}
+
 func TestAdmissionHTTPInputEstimateChangesPreForwardDecision(t *testing.T) {
 	type outcome struct {
 		status       int
