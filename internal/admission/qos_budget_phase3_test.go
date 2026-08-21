@@ -65,7 +65,7 @@ func TestV01218ProductionControllerUsesBoundedTPSDebtHorizon(t *testing.T) {
 			defer controller.Close()
 
 			publishObservation(t, controller, testObservation(capability, start, 0, 7, 0, 0, 0))
-			for step := 1; step <= 4; step++ {
+			for step := 1; step <= 24; step++ {
 				at := start.Add(time.Duration(step) * 500 * time.Millisecond)
 				clock.Set(at)
 				publishObservation(t, controller, testObservation(
