@@ -294,6 +294,60 @@ func TestV01218ResponseUsageEvidenceUnderstandsResponsesAPIWithoutChangingBytes(
 	}
 }
 
+func TestV01218PrefillLifecycleEvidenceSeparatesFirstByteNoFirstByteAndPreForward(t *testing.T) {
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch backendCalls.Add(1) {
+		case 1:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"choices":[{}]}`))
+		case 2:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatal("unexpected Prefill-lifecycle upstream call")
+		}
+	}))
+	defer backend.Close()
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+
+	single := serveAdmissionRequest(t, srv, "single")
+	fanoutBody := `{"model":"model-agnostic","messages":[{"role":"user","content":"fanout"}],` +
+		`"n":2,"max_tokens":8}`
+	fanoutRequest := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(fanoutBody))
+	fanoutRequest.Header.Set("Authorization", "Bearer secret")
+	fanoutRequest.Header.Set("Content-Type", "application/json")
+	fanout := httptest.NewRecorder()
+	srv.ServeHTTP(fanout, fanoutRequest)
+	protected := serveAdmissionRequest(t, srv, strings.Repeat("x ", 10_000))
+	if single.Code != http.StatusOK || fanout.Code != http.StatusNoContent ||
+		protected.Code != http.StatusTooManyRequests || backendCalls.Load() != 2 {
+		t.Fatalf(
+			"Prefill lifecycle evidence changed behavior: single=%d fanout=%d protected=%d backend_calls=%d",
+			single.Code,
+			fanout.Code,
+			protected.Code,
+			backendCalls.Load(),
+		)
+	}
+
+	var output bytes.Buffer
+	srv.writeLocalMetrics(&output)
+	metricsBody := output.String()
+	for _, want := range []string{
+		`pig_predictive_prefill_lifecycle_total{outcome="first_byte_then_terminal",sequence_shape="single"} 1`,
+		`pig_predictive_prefill_lifecycle_total{outcome="forwarded_terminal_before_first_byte",sequence_shape="single_prompt_fanout"} 1`,
+		`pig_predictive_prefill_lifecycle_total{outcome="pre_forward_terminal",sequence_shape="single"} 1`,
+		`pig_predictive_prefill_first_byte_to_terminal_seconds_count 1`,
+	} {
+		if !strings.Contains(metricsBody, want) {
+			t.Fatalf("Prefill lifecycle evidence missing %q\nmetrics:\n%s", want, metricsBody)
+		}
+	}
+}
+
 func TestAdmissionHTTPInputEstimateChangesPreForwardDecision(t *testing.T) {
 	type outcome struct {
 		status       int
