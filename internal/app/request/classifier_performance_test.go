@@ -17,12 +17,29 @@ import (
 // JSON parsing, field extraction, and estimation together. Functional
 // classifier tests continue to run under the race detector.
 func TestClassifierMaximumBodyLatency(t *testing.T) {
+	assertClassifierMaximumBodyLatency(t, maximumClassifierBody(t, []byte("word ")))
+}
+
+func TestV01218ClassifierEscapedMaximumBodyLatency(t *testing.T) {
+	assertClassifierMaximumBodyLatency(t, maximumClassifierBody(t, []byte(`\u4e2d`)))
+}
+
+func maximumClassifierBody(t *testing.T, unit []byte) []byte {
+	t.Helper()
 	prefix := []byte(`{"model":"model-agnostic","messages":[{"role":"user","content":"`)
 	suffix := []byte(`"}],"max_tokens":256}`)
+	if len(unit) == 0 || len(prefix)+len(suffix)+len(unit) > 4*1024*1024 {
+		t.Fatal("invalid maximum-body classifier unit")
+	}
 	body := make([]byte, 0, 4*1024*1024)
 	body = append(body, prefix...)
-	body = append(body, bytes.Repeat([]byte("word "), (cap(body)-len(prefix)-len(suffix))/len("word "))...)
+	body = append(body, bytes.Repeat(unit, (cap(body)-len(prefix)-len(suffix))/len(unit))...)
 	body = append(body, suffix...)
+	return body
+}
+
+func assertClassifierMaximumBodyLatency(t *testing.T, body []byte) {
+	t.Helper()
 	classifier := New(Config{
 		MaximumBodyBytes:  4 * 1024 * 1024,
 		MaximumConcurrent: 1,
