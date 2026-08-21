@@ -20,6 +20,7 @@ type TPSDebtAcceptanceReport struct {
 	CandidateSubReferenceExposureSeconds float64           `json:"candidate_sub_reference_exposure_seconds"`
 	Status                               string            `json:"status"`
 }
+
 func ValidateTPSDebtAcceptance(suite TPSDebtSuite) (TPSDebtAcceptanceReport, error) {
 	if suite.Reference <= 0 || suite.PollInterval != simulationPollInterval ||
 		suite.DenominatorExperiment != "unchanged_current_sequence_seconds" ||
