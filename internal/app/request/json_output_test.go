@@ -262,6 +262,159 @@ func TestV0121ClassifierKnownLengthAllocationsAreBounded(t *testing.T) {
 	}
 }
 
+func TestV01218EndpointEstimatorIgnoresControlsAndChargesPromptSemantics(t *testing.T) {
+	base := classifyEndpointFixture(
+		t,
+		"/v1/chat/completions",
+		`{"messages":[{"role":"user","content":"hello"}],"max_tokens":32}`,
+	)
+	ignored := strings.Repeat("ignored-control-", 512)
+	noisy := classifyEndpointFixture(
+		t,
+		"/v1/chat/completions",
+		`{"model":"`+ignored+`","messages":[{"role":"user","content":"hello"}],`+
+			`"user":"`+ignored+`","metadata":{"trace":"`+ignored+`"},`+
+			`"response_format":{"type":"json_schema","json_schema":{"schema":{"description":"`+ignored+`"}}},`+
+			`"temperature":0.7,"max_tokens":32}`,
+	)
+	if !base.Cost.Supported || !noisy.Cost.Supported {
+		t.Fatalf("chat endpoint estimate unavailable: base=%+v noisy=%+v", base.Cost, noisy.Cost)
+	}
+	if base.Cost.Estimate != noisy.Cost.Estimate || base.Cost.TextBytes != noisy.Cost.TextBytes ||
+		base.Cost.ToolSchemaBytes != noisy.Cost.ToolSchemaBytes {
+		t.Fatalf("ignored controls changed chat estimate: base=%+v noisy=%+v", base.Cost, noisy.Cost)
+	}
+
+	longMessage := classifyEndpointFixture(
+		t,
+		"/v1/chat/completions",
+		`{"messages":[{"role":"user","name":"caller","content":"`+strings.Repeat("prompt ", 512)+`"},`+
+			`{"role":"assistant","content":null,"tool_calls":[{"type":"function","function":{"name":"lookup","arguments":"{\"key\":\"value\"}"}}]}],`+
+			`"max_tokens":32}`,
+	)
+	withTools := classifyEndpointFixture(
+		t,
+		"/v1/chat/completions",
+		`{"messages":[{"role":"user","content":"hello"}],`+
+			`"tools":[{"type":"function","function":{"name":"lookup","description":"look up a value","parameters":{"type":"object","properties":{"key":{"type":"string"}}}}}],`+
+			`"max_tokens":32}`,
+	)
+	if !longMessage.Cost.Supported || !withTools.Cost.Supported ||
+		longMessage.Cost.Estimate.SelectionInputTokens <= base.Cost.Estimate.SelectionInputTokens ||
+		withTools.Cost.Estimate.SelectionInputTokens <= base.Cost.Estimate.SelectionInputTokens {
+		t.Fatalf("Prompt semantics were not charged: base=%+v message=%+v tools=%+v", base.Cost, longMessage.Cost, withTools.Cost)
+	}
+}
+
+func TestV01218EndpointEstimatorCountsTypedMultimodalPartsOnce(t *testing.T) {
+	short := classifyEndpointFixture(
+		t,
+		"/v1/chat/completions",
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"https://example.invalid/image.png"}}]}],"max_tokens":32}`,
+	)
+	large := classifyEndpointFixture(
+		t,
+		"/v1/chat/completions",
+		`{"messages":[{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"data:image/png;base64,`+strings.Repeat("A", 16*1024)+`"}}]}],"max_tokens":32}`,
+	)
+	if !short.Cost.Supported || !large.Cost.Supported || short.Cost.ModalityCount != 1 || large.Cost.ModalityCount != 1 {
+		t.Fatalf("typed modality classification: short=%+v large=%+v", short.Cost, large.Cost)
+	}
+	if short.Cost.Estimate != large.Cost.Estimate {
+		t.Fatalf("transport URL bytes changed multimodal KV estimate: short=%+v large=%+v", short.Cost.Estimate, large.Cost.Estimate)
+	}
+}
+
+func TestV01218EndpointEstimatorAccountsCompletionSuffixAndBestOf(t *testing.T) {
+	base := classifyEndpointFixture(
+		t,
+		"/v1/completions",
+		`{"prompt":["first","second"],"n":2,"best_of":3,"max_tokens":32}`,
+	)
+	withSuffix := classifyEndpointFixture(
+		t,
+		"/v1/completions",
+		`{"prompt":["first","second"],"suffix":"`+strings.Repeat("suffix ", 256)+`","n":2,"best_of":3,"max_tokens":32}`,
+	)
+	if !base.Cost.Supported || !withSuffix.Cost.Supported ||
+		base.Cost.Estimate.BasePromptCount != 2 || base.Cost.Estimate.DecodeSequences != 6 ||
+		withSuffix.Cost.Estimate.DecodeSequences != 6 ||
+		withSuffix.Cost.Estimate.SelectionInputTokens <= base.Cost.Estimate.SelectionInputTokens {
+		t.Fatalf("completion shape estimate: base=%+v suffix=%+v", base.Cost, withSuffix.Cost)
+	}
+}
+
+func TestV01218EndpointEstimatorHandlesResponsesVisibleAndHiddenContext(t *testing.T) {
+	base := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		`{"instructions":"guide","input":"hello","max_output_tokens":32}`,
+	)
+	ignored := strings.Repeat("ignored-control-", 512)
+	noisy := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		`{"model":"`+ignored+`","instructions":"guide","input":"hello",`+
+			`"metadata":{"trace":"`+ignored+`"},"user":"`+ignored+`",`+
+			`"text":{"format":{"type":"json_schema","schema":{"description":"`+ignored+`"}}},`+
+			`"temperature":0.7,"max_output_tokens":32}`,
+	)
+	if !base.Cost.Supported || !noisy.Cost.Supported || base.Cost.Estimate != noisy.Cost.Estimate ||
+		base.Cost.TextBytes != noisy.Cost.TextBytes || base.Cost.ToolSchemaBytes != noisy.Cost.ToolSchemaBytes {
+		t.Fatalf("Responses controls changed visible-context estimate: base=%+v noisy=%+v", base.Cost, noisy.Cost)
+	}
+
+	withTools := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		`{"instructions":"guide","input":"hello","tools":[{"type":"function","name":"lookup","description":"look up a value","parameters":{"type":"object","properties":{"key":{"type":"string"}}}}],"max_output_tokens":32}`,
+	)
+	if !withTools.Cost.Supported || withTools.Cost.Estimate.SelectionInputTokens <= base.Cost.Estimate.SelectionInputTokens {
+		t.Fatalf("Responses tools were not charged: base=%+v tools=%+v", base.Cost, withTools.Cost)
+	}
+
+	hidden := classifyEndpointFixture(
+		t,
+		"/v1/responses",
+		`{"input":"hello","previous_response_id":"resp_hidden","max_output_tokens":32}`,
+	)
+	if hidden.Cost.Supported || hidden.Cost.UnsupportedReason != "body_external_context" {
+		t.Fatalf("body-external Responses context was treated as known: %+v", hidden.Cost)
+	}
+}
+
+func TestV01218EndpointEstimatorRejectsUnknownConfiguredEndpoint(t *testing.T) {
+	classification := classifyEndpointFixture(t, "/custom/generate", `{"prompt":"hello","max_tokens":32}`)
+	if classification.Cost.Supported || classification.Cost.UnsupportedReason != "unsupported_endpoint" {
+		t.Fatalf("unknown endpoint classification=%+v", classification.Cost)
+	}
+}
+
+func classifyEndpointFixture(t *testing.T, path, body string) Classification {
+	t.Helper()
+	classifier := New(Config{
+		Paths:             []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/custom/generate"},
+		MaximumBodyBytes:  int64(len(body) + 1),
+		MaximumConcurrent: 1,
+		OutputTokenFields: []string{"max_tokens", "max_completion_tokens", "max_output_tokens"},
+		Estimator:         kvadmission.DefaultEstimatorConfig(),
+	})
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	classification, protocolError := classifier.ClassifyRequest(request)
+	if protocolError != nil {
+		t.Fatalf("classify %s: protocol=%+v cost=%+v", path, protocolError, classification.Cost)
+	}
+	preserved, err := io.ReadAll(request.Body)
+	if err != nil || string(preserved) != body || request.ContentLength != int64(len(body)) {
+		t.Fatalf("classify %s changed body: bytes=%d/%d length=%d error=%v", path, len(preserved), len(body), request.ContentLength, err)
+	}
+	if err := request.Body.Close(); err != nil {
+		t.Fatalf("close classified %s body: %v", path, err)
+	}
+	return classification
+}
+
 func BenchmarkV0121ClassifyJSON4MiB(b *testing.B) {
 	prefix := []byte(`{"model":"model-agnostic","messages":[{"role":"user","content":"`)
 	suffix := []byte(`"}],"max_tokens":256}`)
