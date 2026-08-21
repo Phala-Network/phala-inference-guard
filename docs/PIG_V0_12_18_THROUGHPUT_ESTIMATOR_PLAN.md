@@ -658,8 +658,8 @@ Phase 0 fixed-cardinality evidence source               complete (six slices gre
 Phase 0 complete acceptance gates                       complete (`b5a53f6` executable source)
 Phase 1 endpoint-aware estimator                        complete (`87cf1e0` executable source)
 Phase 2 cross-tokenizer offline oracle                  complete (`7eefd41` source acceptance)
-Phase 3 bounded TPS-debt simulation                     in progress
-Phase 4 Prefill lifecycle decision                      pending
+Phase 3 bounded TPS-debt simulation                     complete (`3f39bd3` executable source)
+Phase 4 Prefill lifecycle decision                      in progress
 Phase 5 portability/resource hardening                  pending
 Complete remote source gates                            pending
 v0.12.18 executable identity                            not assigned
@@ -1321,3 +1321,143 @@ default and rerun focused, lifecycle, policy-update, race, complete repository,
 simulation, static, and build gates. Phase 3 remains in progress until that
 matrix and the three post-implementation reviews pass. No v0.12.18 executable
 identity is assigned at this checkpoint.
+
+### Phase 3 production-default promotion and final acceptance
+
+The first production-constructor red test at `f36d1b0` correctly proved that
+the old default rejected both a 95K-declared output and an unknown output, but
+its fixture accumulated only 20 surplus tokens while the selected ten-second
+horizon required 100. Consequently it could not distinguish a correctly wired
+ten-second policy from an insufficient-budget rejection. The first green
+attempt at `e5a3b73` exposed this specification defect: the unknown-output
+subreason changed from `qos_budget_output_unknown` to `qos_budget_lifetime`,
+proving that the bounded forecast was active, but both cases still rejected.
+That run is excluded from acceptance rather than being relabelled green.
+
+The corrected fixture holds the same 150 aggregate TPS and seven active
+sequences for 24 half-second observations, producing 120 rolling surplus tokens.
+Its exact implementation-free red source is the separately pushed evidence
+branch `codex/pig-v0.12.18-production-red`:
+
+```text
+red source commit
+7460f8b207a906532e1fce4305bc777dd9e4b19c
+
+red source archive SHA-256
+be8426cbc90fba53af098216712af09066c71f69185d3e6b6c49a45c60b84fd4
+
+red log SHA-256
+70f1fcb91f28ae9159ad218a4bb1b71dffb4a72370a07b4f2fb9763951ddfe80
+
+red result
+large declared output -> FAIL, qos_budget_lifetime
+unknown output        -> FAIL, qos_budget_output_unknown
+```
+
+The accepted production-default implementation is:
+
+```text
+executable source commit
+3f39bd3c3d5894cf459c5a234c93da9148202ac9
+
+source archive SHA-256
+bceaf5b04fe9ed1732ddfec141bfbf90e6d79be8e5036abc364c3bb8f84f31c7
+
+evidence root
+/var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+  3f39bd3c3d5894cf459c5a234c93da9148202ac9-phase3-production-green
+```
+
+`NewAdmissionController` now selects an internal ten-second QoS-debt forecast.
+The duration is not present in `ControllerConfig`, environment parsing, Compose,
+the dynamic TPS policy API, or request fields. `NewTPSDebtSimulationController`
+is the explicit internal comparison seam: zero selects the complete-declared-
+lifetime baseline, while positive durations select bounded matrix candidates.
+This keeps production intent and experimental control separate without
+duplicating the Controller transaction.
+
+Focused acceptance for the corrected source:
+
+```text
+gofmt -l                                      PASS (empty)
+production known/unknown bounded-debt test   PASS
+declared-lifetime simulation baseline        PASS
+invalid simulation horizon bounds            PASS
+soft-horizon lifecycle tests                 PASS
+Phase 3 request-aware tests                  PASS
+TPS-debt acceptance report                   PASS
+report stderr                                empty
+
+admission focused SHA-256
+e12b246692521e32af4d7ea67ecbb6316ef800660c543e627c040861e57d3b43
+
+request-aware focused SHA-256
+ecdf1ea3d0ebfbe5ee261e72f4cc126c9196d19b7e194d9ae905013d75494b03
+
+acceptance report SHA-256
+5629b5b993fe445e4316e1ead73f92f73f9ca6c57ddc87fef4f8a9a78f07cea5
+```
+
+The unchanged report hash proves that making ten seconds the production code
+default did not silently replace the declared-lifetime comparison policy or
+change any scenario, scheduler curve, denominator, acceptance threshold, or
+candidate result.
+
+Complete source gates ran from the same read-only source archive on the pinned
+Go runner:
+
+```text
+core admission/server/request-aware packages       PASS
+core admission/server/request-aware race           PASS
+go test -count=1 ./...                              PASS
+go test -race -count=1 ./...                        PASS
+go vet ./...                                        PASS (empty)
+go build ./...                                      PASS (empty)
+
+core package log SHA-256
+c0194334d5ceb9cff8ec7b85df8a9aef5ac7a208c3c2d9d1979fc409cbc61e23
+
+core race log SHA-256
+28e349ddfd0c946356c352fed3240ef04986c4fb1d662af6b90f9daac143ac03
+
+all test log SHA-256
+87588ac9df7b0675fc5766f459224eb032bb6c61b8ad637c7c65ba7a1bd64679
+
+all race log SHA-256
+1c820b515ddc72cb8f27d6608d955f71a6883148eac99fb1ee3689192dcd12db
+
+empty vet/build SHA-256
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+Phase 3 post-implementation review 1, model and causality: the valid red and
+green differ in the production default forecast only. The simulation engine
+uses an explicit baseline/candidate constructor, and its report is byte-stable.
+The admission decision changes before forwarding for both known-large and
+unknown outputs when, and only when, the ten-second surplus is affordable.
+The TPS reference, 60-second evidence window, current and conservative rates,
+sequence-seconds denominator, KV/Prefill estimate, and acceptance objective are
+unchanged. Status: passed.
+
+Phase 3 post-implementation review 2, safety and lifecycle: the implementation
+does not add a timer or early release. A budgeted request contributes one lease
+in every live reservation phase and terminal residual debt until a covering
+observation. Atomic Controller locking still combines check, decision, and
+reservation. One active lease, multi-sequence demand, unobserved reservations,
+waiting, preemption, stale or invalid observations, backend reset, close, and
+overflow continue to stop expansion. Functional and race matrices cover these
+paths. Status: passed.
+
+Phase 3 post-implementation review 3, evidence and release: the invalid first
+green was retained as a failed specification attempt and superseded by a new
+exact red/green pair. The final executable source, archive, runner, logs, and
+hashes are recorded, and the complete repository matrix passed. No builder
+image, registry tag, Compose update, Router mutation, process restart, CVM
+restart, or inference traffic exists for this phase. Status: passed.
+
+Phase 3 status: complete at executable source `3f39bd3`. This is source
+acceptance only; it does not assign the `PIG-v0.12.18` executable identity or
+authorize image publication or deployment. Phase 4 now decides from the
+already collected Prefill lifecycle evidence whether a correction is justified;
+absence of trustworthy backend evidence must result in no behavior change, not
+a timer heuristic.
