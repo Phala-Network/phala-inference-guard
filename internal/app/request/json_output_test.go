@@ -393,6 +393,14 @@ func TestV01218EndpointEstimatorValidatesCompletionFanoutFields(t *testing.T) {
 			body: `{"prompt":"hello","best_of":2,"best_of":3,"max_tokens":32}`,
 		},
 		{
+			name: "later n cannot erase duplicate conflict",
+			body: `{"prompt":"hello","n":2,"n":3,"n":2,"max_tokens":32}`,
+		},
+		{
+			name: "later best of cannot erase duplicate conflict",
+			body: `{"prompt":"hello","best_of":2,"best_of":3,"best_of":2,"max_tokens":32}`,
+		},
+		{
 			name: "unknown best of value",
 			body: `{"prompt":"hello","best_of":"many","max_tokens":32}`,
 		},
