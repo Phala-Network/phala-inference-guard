@@ -126,10 +126,11 @@ not permission to replace a declared maximum with the observed mean.
    rewriting, Router policy, priority injection, premium/basic tiers, learning
    of Prefill/KV parameters, or a delayed feedback cooldown.
 10. Execute Go tests, race, simulations, builds, and benchmarks only in the
-    approved remote f563 workbench. Local Windows work is limited to inspection,
-    editing, formatting inspection, Git, and evidence review. Do not restart the
-    CVM or backend for PIG development; replace only PIG when a later isolated
-    image gate explicitly requires it.
+    currently approved `311bbcdb-e348-4922-b37d-541755b09ff7` workbench. Local
+    Windows work is limited to inspection, editing, formatting inspection, Git,
+    and evidence review. Historical f563 evidence remains valid only for its
+    recorded source. Do not restart the CVM or backend for PIG development;
+    replace only PIG when a later isolated image gate explicitly requires it.
 11. Commit and push every accepted plan or source revision. Build only from the
     exact pushed commit. Publish an image only after the complete source,
     simulation, race, benchmark, and three-review gates pass. Deployment and
@@ -562,9 +563,9 @@ coarse request-count gate:
 - keep the production defaults at 64 scanner workers and a 4 MiB per-body
   ceiling, with no new environment variable or dynamic-policy field;
 - cap aggregate outstanding body reservations at 32 MiB in code;
-- charge a positive trustworthy `Content-Length` by its declared bytes and
-  charge unknown, zero, negative, or otherwise untrusted lengths at the full
-  per-body ceiling;
+- charge a positive `Content-Length` at or below the scanner ceiling by its
+  declared bytes, charge unknown or nonpositive lengths at the full per-body
+  ceiling, and reject a declared length above the ceiling before reading it;
 - release the short scanner-worker slot when classification ends, but retain
   the independent byte reservation until the preserved body is closed after
   forwarding or a local terminal response;
@@ -693,6 +694,7 @@ Phase 1 endpoint-aware estimator                        complete (`87cf1e0` exec
 Phase 2 cross-tokenizer offline oracle                  complete (`7eefd41` source acceptance)
 Phase 3 bounded TPS-debt simulation                     complete (`3f39bd3` executable source)
 Phase 4 Prefill lifecycle decision                      complete (no behavior change)
+Phase 5.1 weighted scanner body budget                  complete (`4a38fb6` executable source)
 Phase 5 portability/resource hardening                  in progress
 Complete remote source gates                            pending
 v0.12.18 executable identity                            not assigned
@@ -1548,3 +1550,126 @@ that the conservative lifecycle is optimal; it records that a correction would
 currently be an unsupported timer heuristic. Phase 5 now evaluates the planned
 portability and bounded-resource items independently and must omit any item that
 lacks a trustworthy portable contract or material benefit.
+
+### Phase 5.1 weighted scanner body-budget acceptance
+
+The test-first red source was committed and pushed as
+`95950d1da7a4a74c14fea77e813c39a1df0bc55d`. Its exact archive SHA-256 was
+`098b95b63d56f937ac1964d3e57cd7da1b84336e8a219f921f179eef9c71ff87`.
+Eight unknown-length requests retained their bodies, but the ninth was also
+classified instead of returning request-scoped `classifier_saturated`; the
+focused red log SHA-256 was
+`88e92c257e1af7c7ea1d7b1ce3b6b69d4c04ef5ca52069f5993b01e731dd4666`.
+This is valid behavioral red evidence, not a compile or runner failure.
+
+The first implementation commit `40241e4` was rejected because remote
+`gofmt -l` named `internal/app/request/json_output.go`. The mechanically
+formatted `c3cb6d1` passed request focused and request race, but its server test
+looked for a local scanner gauge in the admission/router-only rendering; that
+test-view error was corrected without moving or duplicating the metric. Neither
+intermediate commit is green evidence.
+
+The accepted executable source for this slice is:
+
+```text
+source commit
+4a38fb6c6075ea48b280790b034539d36fef1e2c
+
+source archive SHA-256
+ebf3def60b7e2f7aee66b7ad3a24548ba14a18e82bab5301f98d3d77edbdf49b
+
+focused/full evidence root
+/var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+  4a38fb6c6075ea48b280790b034539d36fef1e2c-phase5-scanner-focused
+
+runner
+golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+Go 1.24.13, GOMAXPROCS=1, --cpus=1, --memory=4g, --pids-limit=512,
+source mounted read-only on 311bbcdb-e348-4922-b37d-541755b09ff7
+```
+
+The final source keeps the 64-worker and 4 MiB defaults, adds no production
+configuration, and caps aggregate body reservation weight at 32 MiB. Scanner
+worker ownership ends after classification; the independent weighted lease is
+transferred to the preserving body and is released once on body close. The HTTP
+handler also defers closing the classified body, covering invalid JSON, local
+protection, forward failure, post-classification panic unwinding, and successful
+proxy completion; the preserving wrapper makes transport plus handler close
+idempotent.
+
+Focused and package gates passed for exact-once close, eight-plus-one unknown
+length saturation, known-length weighting, concurrent atomic cap, read error,
+successful proxy completion, and invalid-JSON local 400. The source also passed
+all request/server package tests and their race variants. Material hashes:
+
+```text
+gofmt -l (empty)          e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+request focused           34ed2e7ae2e8a39c820393b1f58bc798113ecb068c8be186a1aacaee6016bc01
+request focused race      f3c00bf42ff8dfe778bffbe49fc15a83c7e51cd2dea5c4ed179f8f62b78a5b17
+server focused            4e5b9268302291d92097cefdfa21e9d47a3316ec0203aa069ebd3b75988e5f41
+server focused race       a6590729e7f37ed7e14525b843dc2667abbccaff2b9966129c0b0fcd285c2444
+request package           f8f416ee67b27ab1ff0bfeb4ebcdd20c93df87c3e8c6545978399312a9ef24b0
+request package race      e14ce7a8ec181dd94232527c5cd0758c2e0eefd8e3eebdc47aec3b2ae7b01c54
+server package            002761709807feb015abc59f702f8d3adf7c0e78d475a70dc0309ed13739815a
+server package race       4a6d80cb1d40f8e7118cb9bd510ee45007c900ab0a0ad5ce98cdb224e2151b06
+```
+
+Complete clean-source gates also passed:
+
+```text
+go test -count=1 ./...          d5faabaf06fc21168366885603b04f52253ad402c1ae648d031d43245c60a3e6
+go test -race -count=1 ./...    22628205bc00bc6840aa285857b940f12e657066ea9a0401c57993802ba03458
+go vet ./...                    e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+go build ./...                  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+TPS-debt acceptance report      5629b5b993fe445e4316e1ead73f92f73f9ca6c57ddc87fef4f8a9a78f07cea5
+TPS-debt stderr (empty)         e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+```
+
+The maximum-body native-speed gates measured ordinary JSON at p50/p99
+`25.130/27.545 ms` and escape-heavy JSON at `29.095/30.332 ms`; both remain
+well below the approved 100-ms extreme-input bound. On the same runner, the
+five-sample 4 MiB benchmark median changed from `25.006 ms/op` at the exact red
+baseline to `25.064 ms/op` at the candidate, about `+0.23%`, with `17 allocs/op`
+for both. Baseline and candidate logs were hashed as
+`90a70b05e29a82c5f0a7ab2462385b4fa1db2a289886a60bd894fea5a0ed9580`
+and `ef863b99f8cbcebe883cf5aff8981d9506b1fe3c72b5adb6578f6a098ae94945`.
+
+A separate read-only 1 KiB harness, SHA-256
+`e1e4a8352309a85a64c549551234c4234e17a356bef504eb7df325d67019e5d5`,
+was mounted into measurement overlays for the same exact sources. Across ten
+one-second samples, median latency changed from `6.864` to `7.282 us/op`, an
+absolute `0.418 us/request` and relative `6.1%`; allocations stayed at six and
+allocated bytes changed from 264 to 280 B/op. This is a measurable but small
+atomic/lifecycle cost, not a zero-overhead claim. Replacing `sync.Once` with a
+custom close state machine or charging every small request at the 4 MiB maximum
+would trade correctness or throughput for a negligible absolute saving, so no
+such optimization was accepted. Baseline/candidate log hashes were
+`e8e2fd9834af1f4c62da075ed287ae7abba3ce27824d8fe320e7411bec116e3e`
+and `2b7128bd82a69ccdf6602e9b7bc180b2518e25ae192732b54f2b98b9cb251c90`.
+
+Phase 5.1 review 1, model and causality: the change does not alter input-token,
+Prefill, KV, cache-credit, TPS, or backend-capacity forecasts. It affects only
+whether the classifier may retain another body before forwarding. Known small
+bodies remain weighted instead of consuming a coarse 4 MiB slot, while unknown
+bodies consume their maximum liability. The deterministic TPS report is byte
+identical. Status: passed.
+
+Phase 5.1 review 2, safety and lifecycle: count-slot acquisition plus byte
+reservation is rollback-safe; the atomic compare-and-swap loop cannot exceed
+the 32 MiB cap; saturation occurs before reading or replacing the body; scanner
+and body leases have separate lifetimes; read errors transfer the lease to the
+preserved body; handler and transport close converge through `sync.Once`; all
+tested terminal paths return the gauge to zero. The gauge is fixed-cardinality
+and contains no request data. Status: passed.
+
+Phase 5.1 review 3, evidence and release: the valid red, rejected intermediate
+attempts, exact final source/archive, pinned runner, focused/full/race/static/
+build/simulation gates, latency threshold, and matched microbenchmarks are
+recorded separately. No image was built or uploaded, no Compose or Router state
+changed, no PIG/backend/CVM process restarted, and no inference request was
+sent. Status: passed for this source slice only.
+
+Phase 5.1 status: complete at executable source `4a38fb6`. Phase 5 remains in
+progress for the independently reviewed Prefill initialization, Decode horizon,
+and vLLM/SGLang multi-engine/DP contracts. This does not yet assign the
+`PIG-v0.12.18` executable identity or authorize an image build or deployment.
