@@ -566,7 +566,7 @@ step.
 Plan and evidence consolidation                         complete
 Three plan reviews                                      complete
 Plan commit and push                                    complete (`c520a18`)
-Phase 0 fixed-cardinality evidence                      in progress (base slice green)
+Phase 0 fixed-cardinality evidence                      in progress (four slices green)
 Phase 1 endpoint-aware estimator                        pending
 Phase 2 cross-tokenizer offline oracle                  pending
 Phase 3 bounded TPS-debt simulation                     pending
@@ -578,12 +578,14 @@ Published image                                         none
 Compose integration / deployment / live acceptance     not started
 ```
 
-The first Phase 0 slice now exposes cumulative outcome, protection reason and
-scope, estimate confidence, Prefill class, Decode fan-out, and Selection input
-token buckets. It does not change admission, reservation, proxy, response, or
-logging decisions. The next Phase 0 slice must add classifier/streaming shape,
-TPS decision subreason, denominator-source, and response-usage evidence before
-any estimator or TPS policy change.
+The completed Phase 0 slices expose cumulative admission outcome, protection
+reason and scope, estimate confidence, Prefill class, Decode fan-out, Selection
+input-token buckets, classifier/streaming shape, TPS decision subreason,
+denominator source, and per-kind estimator validation. They do not change
+admission, reservation, proxy, response, or logging decisions. The remaining
+Phase 0 source work is response-usage/output-limit evidence, Prefill lifecycle
+evidence, and truthful compatibility-metric documentation before any estimator
+or TPS policy change.
 
 ## 11. Plan Review Record
 
@@ -641,7 +643,7 @@ The first metrics-contract red test was committed and pushed as
 `c390c647fca2e7bc1f3c4153a34de7c79635ed2e`. On the approved f563 isolated
 workbench, the exact GitHub archive SHA-256 was
 `0d442a1e40d2b6510659df9a962e7736e859fb827796e7b81c20f58dfb8838e7`.
-With Go 1.24.13 image
+With Go 1.24.13 image config ID
 `sha256:e0cffc405270b9114fac7706d07c373727d1b42b0e47c525b9cd1ab1097779ff`,
 the focused test exited 1 for the intended missing bounded-metric assertion.
 The red log SHA-256 was
@@ -708,3 +710,29 @@ packages passed with log SHA-256
 The slice records TPS gate result/subreason and raw/selected denominator source
 seconds while preserving the existing limit, forecast, maximum-denominator,
 reservation, and request behavior.
+
+The estimator-validation contract red test was pushed as
+`779c71f4a0af7ef8abd303775fe34d109db62a15`. On the approved f563 isolated
+workbench, its exact archive SHA-256 was
+`382db3b7341a4aa52c90523e0f8ca12d45941944498f9e64650a5158cc781e56`;
+the focused test exited 1 only because the three new bounded estimator metrics
+were absent. The red log SHA-256 was
+`1a393d34fb2fc32c3935bd2f5886ff6b72c6504875a9c4314965904d3a04879e`.
+
+The initial implementation `505dd86` passed focused, focused-race, and complete
+server-package tests but had a non-empty formatting diff, so it is not green
+evidence. The mechanical correction produced final pushed source
+`6a332381842e6eabad1218f76d1f3681df437395`, exact archive SHA-256
+`7df4306b39160e9380a8310a6fa38aaf77e26b9065ba9e51f1008bb337070cc9`.
+Its runner used pullable `golang:1.24-bookworm` manifest digest
+`sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`
+(Go 1.24.13, config ID `sha256:e0cffc405270b9114fac7706d07c373727d1b42b0e47c525b9cd1ab1097779ff`).
+`gofmt -d` was empty; focused tests passed with log SHA-256
+`dcbeec7ef22ce8c19612d8644db9ea8760b64c02b3f3a4d2260633186658ecd9`;
+focused race passed with log SHA-256
+`84e5aede3fcdd295053a6e6d39ba9bef893839298e63353a5beff6a85ddcd4aa`;
+and the complete `internal/app/server` package passed with log SHA-256
+`879215c014d580a76ac5ade727e885ed12f72227f9ce99676f88821ce743e585`.
+The evidence distinguishes known and unavailable Selection input, per-sequence
+Context upper-bound input, and KV-reservation estimates using only closed labels;
+it does not alter HTTP behavior or admission policy.
