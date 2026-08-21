@@ -36,6 +36,7 @@ type EndpointJSONFields struct {
 type endpointFieldState struct {
 	seen  bool
 	valid bool
+	null  bool
 	value int64
 }
 
@@ -166,7 +167,7 @@ func (p *jsonFieldParser) parseEndpointRootObject(
 			result.ShapeSupported = result.ShapeSupported && updatePositiveEndpointField(&decodeCandidates, value)
 		}
 		if endpoint == EndpointCompletions && jsonStringSpanEquals(key, "best_of") {
-			result.ShapeSupported = result.ShapeSupported && updatePositiveEndpointField(&bestOf, value)
+			result.ShapeSupported = result.ShapeSupported && updateOptionalPositiveEndpointField(&bestOf, value)
 		}
 		if jsonStringSpanEquals(key, "stream") {
 			streaming, valid := parseJSONBoolean(value)
@@ -487,6 +488,28 @@ func updatePositiveEndpointField(state *endpointFieldState, value []byte) bool {
 	state.valid = true
 	state.value = candidate
 	return true
+}
+
+func updateOptionalPositiveEndpointField(state *endpointFieldState, value []byte) bool {
+	if state == nil {
+		return false
+	}
+	if bytes.Equal(value, []byte("null")) {
+		if state.seen && !state.null {
+			state.valid = false
+			return false
+		}
+		state.seen = true
+		state.valid = true
+		state.null = true
+		state.value = 1
+		return true
+	}
+	if state.seen && state.null {
+		state.valid = false
+		return false
+	}
+	return updatePositiveEndpointField(state, value)
 }
 
 func endpointExternalContextKey(key jsonStringSpan) bool {
