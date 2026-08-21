@@ -1,10 +1,15 @@
 package admission
 
-import "math"
+import (
+	"math"
+	"time"
+)
 
 // qosBudgetForecast spends rolling per-sequence TPS surplus only when a
 // request-bounded Decode lifetime fits the remaining budget.
-type qosBudgetForecast struct{}
+type qosBudgetForecast struct {
+	controlHorizon time.Duration
+}
 
 func (qosBudgetForecast) sequenceLimit(
 	state ProjectedState,

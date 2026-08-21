@@ -72,6 +72,26 @@ type AdmissionController struct {
 }
 
 func NewAdmissionController(config ControllerConfig) (*AdmissionController, error) {
+	return newAdmissionController(config, qosBudgetForecast{})
+}
+
+// NewBoundedTPSDebtSimulationController is an internal simulation seam. It is
+// deliberately separate from ControllerConfig so a Phase 3 experiment cannot
+// become a production environment or dynamic-policy setting by accident.
+func NewBoundedTPSDebtSimulationController(
+	config ControllerConfig,
+	controlHorizon time.Duration,
+) (*AdmissionController, error) {
+	if controlHorizon <= 0 || controlHorizon > tpsWindowDuration {
+		return nil, fmt.Errorf("TPS debt simulation control horizon must be in (0, %s]", tpsWindowDuration)
+	}
+	return newAdmissionController(config, qosBudgetForecast{controlHorizon: controlHorizon})
+}
+
+func newAdmissionController(
+	config ControllerConfig,
+	qosBudget qosBudgetForecast,
+) (*AdmissionController, error) {
 	capability := config.Capability
 	if err := capability.Validate(); err != nil {
 		return nil, err
@@ -82,7 +102,7 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 	if !finiteNonnegative(config.TPS.Reference) || config.TPS.Reference > 1_000_000 {
 		return nil, fmt.Errorf("TPS reference must be finite and in [0, 1000000]")
 	}
-	policy, err := newAdmissionPolicy(capability, config.WorkProfile)
+	policy, err := newAdmissionPolicyWithQoSBudget(capability, config.WorkProfile, qosBudget)
 	if err != nil {
 		return nil, err
 	}

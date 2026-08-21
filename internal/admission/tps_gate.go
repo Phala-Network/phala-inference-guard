@@ -18,7 +18,9 @@ type tpsGateDecision struct {
 	subreason          TPSDecisionSubreason
 }
 
-type tpsGate struct{}
+type tpsGate struct {
+	qosBudget qosBudgetForecast
+}
 
 type tpsAdmissionDemand struct {
 	additionalSequences int64
@@ -26,11 +28,11 @@ type tpsAdmissionDemand struct {
 	outputLimitKnown    bool
 }
 
-func (tpsGate) evaluate(state ProjectedState) tpsGateDecision {
-	return (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{additionalSequences: 1})
+func (g tpsGate) evaluate(state ProjectedState) tpsGateDecision {
+	return g.evaluateAdditional(state, tpsAdmissionDemand{additionalSequences: 1})
 }
 
-func (tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDemand) tpsGateDecision {
+func (g tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDemand) tpsGateDecision {
 	decision := tpsGateDecision{
 		gateDecision: gateDecision{fits: true, reason: ReasonOpen},
 		result:       TPSDecisionResultDisabled,
@@ -97,7 +99,7 @@ func (tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDeman
 			decision.sequenceLimit = currentRateLimit
 			decision.subreason = TPSDecisionSubreasonCurrentRate
 		}
-		budgetLimit, budgeted, budgetSubreason := (qosBudgetForecast{}).sequenceLimit(
+		budgetLimit, budgeted, budgetSubreason := g.qosBudget.sequenceLimit(
 			state,
 			current,
 			decision.sequenceLimit,
