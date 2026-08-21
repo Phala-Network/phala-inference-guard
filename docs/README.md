@@ -15,8 +15,11 @@ standing instructions.
   Router projection, and cross-surface auditing.
 - [Internal algorithm flow](PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md): package
   ownership, admission transaction, gates, reservations, and backend adapters.
+- [Continuous QoS and throughput optimization plan](PIG_CONTINUOUS_QOS_THROUGHPUT_OPTIMIZATION_PLAN.md):
+  active observation cadence, evidence contract, diagnosis model, optimization
+  loop, release safety, and iteration ledger.
 - [v0.12.18 active optimization plan](PIG_V0_12_18_THROUGHPUT_ESTIMATOR_PLAN.md):
-  current estimator, TPS, Prefill-lifecycle, evidence, and release work. The
+  v0.12.18 estimator, TPS, Prefill-lifecycle, evidence, and release work. The
   behavior candidate, exact-source remote gates, executable identity, published
   image, PIG-only deployment, Router restoration, and one 30-minute live
   acceptance are complete. Equal-offered-load peak throughput remains
@@ -29,11 +32,11 @@ standing instructions.
 - [v0.12.15/v0.12.16/v0.12.17 cache-aware correction and release](PIG_V0_12_15_SGLANG_KV_GAP_PLAN.md)
 
 Historical plans may explain why a contract exists, but the current source,
-tests, and the four current documents above are authoritative for present
-behavior. A source commit, test result, image, deployment, and live acceptance
-remain separate evidence layers.
+tests, contract documents, and active maintenance plan above are authoritative
+for present behavior. A source commit, test result, image, deployment, and live
+acceptance remain separate evidence layers.
 
-## Active maintenance
+## Accepted runtime
 
 Branch: `codex/pig-v0.12.18-throughput-estimator`
 Status: v0.12.18 is the accepted runtime on the measured `use1-19` vLLM/H200

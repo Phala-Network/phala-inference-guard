@@ -205,5 +205,7 @@ hashes. No future Compose, deployment, Router, or live-traffic action is implied
 by source or registry identity alone.
 
 - [Documentation map](docs/README.md)
+- [Continuous QoS and throughput optimization
+  plan](docs/PIG_CONTINUOUS_QOS_THROUGHPUT_OPTIMIZATION_PLAN.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)
