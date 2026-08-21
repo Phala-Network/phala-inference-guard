@@ -37,8 +37,9 @@ remain separate evidence layers.
 Branch: `codex/pig-v0.12.18-throughput-estimator`
 Status: v0.12.17 remains the accepted and published runtime while the separate
 v0.12.18 behavior candidate has completed its implementation, three final
-reviews, and exact-source remote gates at commit `d2aa6fb`; it has not yet been
-assigned an executable version or built as an image. v0.12.17 PIG-only
+reviews, and pre-identity exact-source remote gates at commit `d2aa6fb`. Its
+executable identity is now assigned in source; identity-specific remote gates
+and image acceptance are still pending. v0.12.17 PIG-only
 deployment, Router contract, and 30-minute live-traffic acceptance are complete
 on development CVM
 `311bbcdb-e348-4922-b37d-541755b09ff7` (`use1-19`). Executable image revision is

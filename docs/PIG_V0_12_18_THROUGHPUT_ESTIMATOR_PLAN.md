@@ -1,8 +1,9 @@
 # PIG v0.12.18 QoS-Constrained Throughput Optimization Plan
 
-Status: active release execution. The behavior candidate and exact-source
-remote gates are complete at `d2aa6fb`; no v0.12.18 executable identity, image,
-deployment, or live acceptance exists yet.
+Status: active release execution. The behavior candidate and pre-identity
+exact-source remote gates are complete at `d2aa6fb`; the v0.12.18 executable
+identity is assigned in source. Identity-specific remote gates are pending, and
+no v0.12.18 image, deployment, or live acceptance exists yet.
 
 This plan supersedes the v0.12.17 maintenance conclusion only for the new
 optimization work described below. It does not invalidate the measured
@@ -701,7 +702,8 @@ Phase 5.3 backend aggregation contracts                 complete (no behavior ch
 Phase 5 portability/resource hardening                  complete
 Final three candidate reviews                           complete
 Complete remote source gates                            complete (`d2aa6fb` exact HEAD)
-v0.12.18 executable identity                            not assigned
+v0.12.18 executable identity                            assigned in source
+Identity-specific remote source gates                   pending
 Published image                                         none
 Compose integration / deployment / live acceptance     not started
 ```

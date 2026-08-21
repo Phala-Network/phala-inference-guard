@@ -12,9 +12,9 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.17 makes runtime observability compact and removes unused TTFT
-// aggregation without changing admission, backend, cache, KV, or Prefill policy.
-const version = "PIG-v0.12.17"
+// v0.12.18 adds endpoint-aware request estimation, bounded TPS debt, and
+// bounded classifier-body ownership while retaining model-neutral policy.
+const version = "PIG-v0.12.18"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 

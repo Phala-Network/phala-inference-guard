@@ -17,6 +17,11 @@ claim that every backend or workload has been revalidated. Published
 v0.12.16 is the prior accepted release. Source, image, deployment, and live
 acceptance remain separate evidence layers.
 
+Current development candidate: `PIG-v0.12.18`. Its executable identity is
+assigned in source, but no v0.12.18 image, deployment, or live acceptance exists
+yet; v0.12.17 remains the accepted running release until those layers are
+completed independently.
+
 The objective is QoS-constrained throughput, not a fixed request-count limit.
 Small requests can still fit while a larger request is protected under the same
 backend pressure.
