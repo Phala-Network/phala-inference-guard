@@ -484,7 +484,7 @@ Decision and remaining uncertainty:
 | Priority | Work | State | Completion condition |
 | ---: | --- | --- | --- |
 | 0 | Re-read live v0.12.18 identities and current health | Observing | Compose, policy, containers, Router set, backend, and 6h/24h evidence captured without service mutation |
-| 1 | Create a reusable semantic observer for the four windows | Pending | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
+| 1 | Create a reusable semantic observer for the four windows | In progress | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
 | 2 | Establish a traffic-matched v0.12.18 baseline | Pending | At least one valid demand cohort with completion goodput, weighted TPS, cache, size, running/waiting, GPU/KV, protection, and stability evidence |
 | 3 | Classify the first material bottleneck | Pending | Exactly one falsifiable hypothesis selected from Section 6, or an explicit no-change result |
 | 4 | Execute one behavior iteration if justified | Blocked on evidence | Red test, minimal implementation, three reviews, remote gates, pushed source, accepted image, safe rollout, and 30m/6h/24h result |
@@ -588,3 +588,85 @@ Priority 0 remains `Observing` until the identity-stable six-hour and 24-hour
 checkpoints are analyzed. The next parallel task is Priority 1: make the
 analysis reset-aware and source-attributed so a backend restart, counter reset,
 or incomplete scrape cannot become a false goodput result.
+
+### 2026-08-22 semantic analyzer remote gate and partial baseline
+
+Priority 1 produced a source-only operator analyzer at commit `6db02fe`, pushed
+to `pig-origin/codex/pig-v0.12.18-throughput-estimator`. It changes only
+`.gitignore` and `tools/observe`; it does not link into the PIG request path,
+change admission behavior, build an image, publish a registry tag, change
+Compose or Router, or restart a service.
+
+The implementation review found and corrected four evidence defects before
+acceptance:
+
+1. counter deltas could bridge an incomplete scrape because analysis first
+   discarded incomplete rows;
+2. one abnormally short interval could make every normal interval look like a
+   sampling gap;
+3. a container whose Docker record was readable but whose status was not
+   `running` did not invalidate the window; and
+4. internal evidence integrity was mislabeled as formal checkpoint completion,
+   allowing a healthy partial window to appear eligible before its horizon.
+
+The corrected analyzer now keeps component-specific validity beside each
+counter interval, excludes resets and identity transitions, independently
+reports evidence integrity, and requires an explicit `release`, `stability`, or
+`delayed` horizon with the plan's duration, sample-count, and cadence contract.
+It never substitutes the raw backend generation counter for successful
+completion goodput. `BACKEND_METRIC_SOURCES.md` records separate vLLM and SGLang
+names, types, labels, and aggregation rules; the current CSV remains explicitly
+vLLM-only rather than guessing or relabeling SGLang data.
+
+The code is standard-library only. Parsing, time-series calculations, horizon
+qualification, CLI/artifact hashing, and backend-source documentation remain
+separate responsibilities. Analysis cost is linear in sample count times a
+fixed metric set; the maximum planned 24-hour artifact is only 2,880 samples at
+the current 30-second cadence. No polling or work was added to PIG.
+
+The source and real partial-window gate ran remotely on CVM
+`311bbcdb-e348-4922-b37d-541755b09ff7` inside an isolated, no-network,
+read-only-root container using the already present vLLM image as the Python
+runtime. Result:
+
+```text
+unit tests                         14/14 passed
+test runtime                      0.039 seconds
+real observer samples             53/53 complete
+observed span                     1,560.001 seconds
+sampling interval                 30.000 s median; 30.001 s max
+evidence integrity                eligible
+six-hour formal checkpoint        not eligible
+formal qualification reasons      insufficient samples and observed span
+critical counter resets/missing   0 / 0
+analysis output SHA-256            260080f4602cc3080aa8af57b12c18ce8f34b0b04980e572dbcc7febe6ea736f
+input prefix SHA-256               c813e4f3a11d10793ee9ec304940704a37a1af35de165c5256833228353d5859
+```
+
+The managed observer remained running and all service identities remained
+unchanged. The partial window is health and correlation evidence only:
+
+```text
+raw generation throughput          459.44 tokens/s
+proxy completed-request rate       1.397/s
+controller trailing mean TPS       min 50.98; mean 97.87; p95 133.87
+ready/load samples below ref 25     0%
+backend waiting / preemptions       0 / 0
+KV usage                            mean 3.11%; max 11.85%
+GPU utilization                    mean 72.11%; p95 94.4%; max 99%
+backend aggregate cache hit share  41.27%
+Router backpressure duty           1.89%
+enforced/known decision share      4.55%
+over-protection screen             0 candidate intervals
+mean total pre-forward latency      0.139 ms
+```
+
+These numbers do not justify loosening or tightening admission yet. They are
+not traffic-matched against `use1-4c`, contain no success-linked output-token
+counter, and have not reached the six-hour horizon. Priority 1 remains in
+progress because the existing live CSV lacks histogram buckets for p95/p99,
+per-reason protection deltas, success-linked completion tokens, and durable
+request-shape cohorts, and an SGLang collector has been source-mapped but not
+remotely exercised in this iteration. Priority 0 remains `Observing`; the next
+formal analysis point is the six-hour checkpoint at
+`2026-08-22T10:58:39.588Z`.
