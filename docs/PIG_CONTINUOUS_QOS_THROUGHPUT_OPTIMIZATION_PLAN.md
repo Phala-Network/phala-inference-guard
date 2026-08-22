@@ -765,3 +765,46 @@ the six-hour window, the paired routing result will be split or marked
 ineligible while the independently valid backend/PIG stability evidence is
 retained. Priority 0 and Priority 2 remain `Observing`; no admission behavior
 change is authorized by this partial interval.
+
+### 2026-08-22 pre-checkpoint TPS budget architecture correction
+
+A read-only source audit at commit `82cd917` corrected an overbroad initial
+interpretation of the `qos_budget_unobserved` signal. The check in
+`internal/admission/qos_budget.go` is not a global same-poll admission lock.
+The complete order in `tps_gate.go` is:
+
+1. project current demand from raw running/waiting, local Prefill/Decode
+   liabilities, and every unobserved sequence;
+2. derive the base sequence limit from rolling aggregate TPS divided by the
+   configured per-sequence reference;
+3. retain any larger, qualified current-rate recovery limit;
+4. admit when the post-admit sequence count still fits that non-budget limit;
+   and only then
+5. consider spending rolling TPS surplus for one marginal sequence beyond the
+   non-budget limit.
+
+`UnobservedSequences > 0` and `QoSBudgetLeases > 0` block only Step 5. They do
+not block Step 4. The current tests explicitly cover mature rolling capacity
+with an unobserved sequence still admitted inside the base limit, while the
+QoS-debt simulations cap the marginal surplus path at one lease, require a
+covering observation before reuse, clear it on backend epoch reset, brake on
+waiting/preemption/staleness, and bound idle-with-demand to one 500-ms poll.
+The production forecast already uses a ten-second control horizon rather than
+charging every request's complete declared output lifetime.
+
+Therefore, the observed 67 `qos_budget_unobserved` decisions mean that a second
+marginal admission beyond the computed base/current-rate capacity was denied
+before the first marginal liability was absorbed by backend metrics. They do
+not by themselves mean that ordinary fitting capacity was idle or that PIG
+closed the node for a complete poll. The earlier hypothesis that this counter
+alone demonstrated a one-request-per-poll bottleneck is withdrawn.
+
+A future optimization of this path now requires stronger evidence: repeated
+offered fitting demand at the marginal boundary, the first leased admission
+being absorbed without a sustained TPS deficit or pressure, continued
+backend/GPU headroom, no waiting/preemption/KV/Prefill risk, and a matched
+request/cache/output cohort showing lost completion goodput from denying a
+second lease. Without all of those conditions, allowing multiple surplus
+leases would weaken the existing atomic debt bound rather than prove a useful
+throughput improvement. No source behavior, policy, version, image, runtime,
+or route was changed by this audit.
