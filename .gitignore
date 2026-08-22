@@ -11,6 +11,9 @@
 # Go unit test source belongs in the repository.
 !**/*_test.go
 
+# Durable observer unit tests belong with the operator analysis tool.
+!tools/observe/*_tests.py
+
 # The committed v0.12.18 oracle contains only pinned counts and provenance, not
 # tokenizer assets or generated model files.
 !internal/domain/kvadmission/testdata/
