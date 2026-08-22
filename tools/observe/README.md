@@ -105,8 +105,12 @@ reported as `unavailable/not_exported`, never as zero.
 
 `runtime_integrity_eligible` covers PIG/backend/Compose evidence.
 `matched_routing_eligible` independently requires a stable Router config
-identity. A Router update can therefore invalidate a matched traffic claim
-without discarding an otherwise valid backend stability observation. Raw
+identity, enabled target and comparator routes, continuous Router counters,
+and available `processed`, `upstream_attempts`, and `upstream_429` evidence.
+Any exported Router counter rollback proves a reset and invalidates the matched
+traffic interval even when the config digest is unchanged. A Router update can
+therefore invalidate a matched traffic claim without discarding an otherwise
+valid backend stability observation. Raw
 generation and prompt rates, request completion counts, cache share, and
 histograms are reported, but `successful_completion_goodput` remains
 unavailable because vLLM does not link generated-token sums to

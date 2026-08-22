@@ -222,6 +222,9 @@ def _write_capture(
     target_pig_version: str = "",
     target_pig_started: str = "pig-start-a",
     router_digest: str = "router-a",
+    router_counter: int = 100,
+    router_enabled: bool = True,
+    router_omit: str | None = None,
 ) -> Path:
     path = root / stamp
     path.mkdir()
@@ -241,8 +244,31 @@ def _write_capture(
     (path / "target-pig.prom").write_text(target_pig, encoding="utf-8")
     (path / "target-backend.prom").write_text(target_backend, encoding="utf-8")
     (path / "comparator-combined.prom").write_text(comparator, encoding="utf-8")
+    router_routes = [
+        {
+            "upstream_name": upstream,
+            "enabled": router_enabled,
+            "processed": router_counter,
+            "upstream_attempts": router_counter,
+            "upstream_429": router_counter,
+            "selected_by_cache": router_counter,
+            "selected_by_load": router_counter,
+            "selected_by_order": router_counter,
+            "cache_rejected_by_pressure": router_counter,
+            "pressure_passthrough": router_counter,
+        }
+        for upstream in ("use1-19", "use1-4c")
+    ]
+    if router_omit is not None:
+        for route in router_routes:
+            route.pop(router_omit, None)
     (path / "router.json").write_text(
-        json.dumps({"upstream_config_digest": router_digest, "routes": []}),
+        json.dumps(
+            {
+                "upstream_config_digest": router_digest,
+                "routes": router_routes,
+            }
+        ),
         encoding="utf-8",
     )
     return path
@@ -370,6 +396,92 @@ class PairedCaptureTests(unittest.TestCase):
             self.assertTrue(result["evidence"]["runtime_integrity_eligible"])
             self.assertFalse(result["evidence"]["matched_routing_eligible"])
             self.assertFalse(result["evidence"]["comparison_eligible"])
+
+    def test_router_counter_reset_blocks_matched_routing_but_not_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            start = _write_capture(
+                root,
+                "2026-08-22T00:00:00Z",
+                _backend(100, 10, 20, 1),
+                _target_pig("PIG-v0.12.18", 10, 1),
+                _comparator(10, 10, 20, 1),
+                router_counter=100,
+            )
+            end = _write_capture(
+                root,
+                "2026-08-22T01:00:00Z",
+                _backend(100, 110, 220, 11),
+                _target_pig("PIG-v0.12.18", 110, 11),
+                _comparator(110, 110, 220, 11),
+                router_counter=10,
+            )
+            result = analyze_paired_captures(load_capture(start), load_capture(end))
+            self.assertTrue(result["evidence"]["runtime_integrity_eligible"])
+            self.assertFalse(result["evidence"]["matched_routing_eligible"])
+            self.assertFalse(result["evidence"]["comparison_eligible"])
+            self.assertIn(
+                "target_router_counter_reset:processed",
+                result["evidence"]["errors"],
+            )
+            self.assertIn(
+                "comparator_router_counter_reset:processed",
+                result["evidence"]["errors"],
+            )
+
+    def test_missing_required_router_counter_blocks_matched_routing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            start = _write_capture(
+                root,
+                "2026-08-22T00:00:00Z",
+                _backend(100, 10, 20, 1),
+                _target_pig("PIG-v0.12.18", 10, 1),
+                _comparator(10, 10, 20, 1),
+                router_omit="processed",
+            )
+            end = _write_capture(
+                root,
+                "2026-08-22T01:00:00Z",
+                _backend(100, 110, 220, 11),
+                _target_pig("PIG-v0.12.18", 110, 11),
+                _comparator(110, 110, 220, 11),
+                router_omit="processed",
+            )
+            result = analyze_paired_captures(load_capture(start), load_capture(end))
+            self.assertTrue(result["evidence"]["runtime_integrity_eligible"])
+            self.assertFalse(result["evidence"]["matched_routing_eligible"])
+            self.assertIn(
+                "target_router_counter_unavailable:processed:field_not_exported",
+                result["evidence"]["errors"],
+            )
+
+    def test_disabled_router_route_is_not_matched_traffic_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            start = _write_capture(
+                root,
+                "2026-08-22T00:00:00Z",
+                _backend(100, 10, 20, 1),
+                _target_pig("PIG-v0.12.18", 10, 1),
+                _comparator(10, 10, 20, 1),
+                router_enabled=False,
+            )
+            end = _write_capture(
+                root,
+                "2026-08-22T01:00:00Z",
+                _backend(100, 110, 220, 11),
+                _target_pig("PIG-v0.12.18", 110, 11),
+                _comparator(110, 110, 220, 11),
+                router_enabled=False,
+            )
+            result = analyze_paired_captures(load_capture(start), load_capture(end))
+            self.assertTrue(result["evidence"]["runtime_integrity_eligible"])
+            self.assertFalse(result["evidence"]["matched_routing_eligible"])
+            self.assertIn(
+                "target_router_disabled",
+                result["evidence"]["errors"],
+            )
 
     def test_target_pig_restart_blocks_runtime_comparison(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -967,6 +967,44 @@ def _router_route_delta(
     }
 
 
+def _router_route_errors(side: str, route: Mapping[str, Any]) -> list[str]:
+    if route.get("status") != "available":
+        return [
+            f"{side}_router_route_unavailable:"
+            f"{route.get('reason', 'unknown')}"
+        ]
+
+    errors: list[str] = []
+    enabled_start = route.get("enabled_start")
+    enabled_end = route.get("enabled_end")
+    if not isinstance(enabled_start, bool) or not isinstance(enabled_end, bool):
+        errors.append(f"{side}_router_enabled_unavailable")
+    elif enabled_start != enabled_end:
+        errors.append(f"{side}_router_enabled_changed")
+    elif not enabled_start:
+        errors.append(f"{side}_router_disabled")
+
+    required_counters = {
+        "processed",
+        "upstream_attempts",
+        "upstream_429",
+    }
+    counters = route.get("counters", {})
+    for field, result in counters.items():
+        if result.get("status") == "available":
+            continue
+        reason = str(result.get("reason", "unknown"))
+        if reason == "counter_reset":
+            errors.append(f"{side}_router_counter_reset:{field}")
+        elif field in required_counters:
+            errors.append(
+                f"{side}_router_counter_unavailable:{field}:{reason}"
+            )
+    for field in sorted(required_counters - set(counters)):
+        errors.append(f"{side}_router_counter_unavailable:{field}:missing")
+    return errors
+
+
 def _required_statuses(
     target_backend: dict[str, Any],
     comparator_backend: dict[str, Any],
@@ -1226,14 +1264,32 @@ def analyze_paired_captures(
     comparator_upstream = str(
         start.manifest.get("comparator_upstream", "")
     )
+    target_router = _router_route_delta(
+        start.router, end.router, target_upstream, wall_time
+    )
+    comparator_router = _router_route_delta(
+        start.router, end.router, comparator_upstream, wall_time
+    )
+    routing_errors = sorted(
+        set(
+            _router_route_errors("target", target_router)
+            + _router_route_errors("comparator", comparator_router)
+            + [
+                error
+                for error in errors
+                if error
+                in (
+                    "router_config_identity_changed",
+                    "router_config_identity_unavailable",
+                )
+            ]
+        )
+    )
+    errors = sorted(set(errors + routing_errors))
     runtime_errors = [
         error
         for error in errors
-        if error
-        not in (
-            "router_config_identity_changed",
-            "router_config_identity_unavailable",
-        )
+        if error not in routing_errors
     ]
     comparison_eligible = not errors
     return {
@@ -1259,9 +1315,12 @@ def analyze_paired_captures(
         },
         "evidence": {
             "runtime_integrity_eligible": not runtime_errors,
-            "matched_routing_eligible": router_identity_ok,
+            "matched_routing_eligible": (
+                router_identity_ok and not routing_errors
+            ),
             "comparison_eligible": comparison_eligible,
             "errors": errors,
+            "routing_errors": routing_errors,
             "required_fields": required,
             "unavailable_required_fields": unavailable_required,
             "optional_unavailable_fields": optional,
@@ -1270,9 +1329,7 @@ def analyze_paired_captures(
             "identity": end.identity,
             "backend": target_backend,
             "pig": target_pig,
-            "router": _router_route_delta(
-                start.router, end.router, target_upstream, wall_time
-            ),
+            "router": target_router,
             "throughput": {
                 "successful_completion_goodput": _unavailable(
                     "success_token_linkage_not_exported"
@@ -1294,12 +1351,7 @@ def analyze_paired_captures(
             },
             "backend": comparator_backend,
             "pig": comparator_pig,
-            "router": _router_route_delta(
-                start.router,
-                end.router,
-                comparator_upstream,
-                wall_time,
-            ),
+            "router": comparator_router,
             "throughput": {
                 "successful_completion_goodput": _unavailable(
                     "success_token_linkage_not_exported"
@@ -1319,6 +1371,6 @@ def analyze_paired_captures(
             "vLLM generation token counters measure raw scheduler work, not success-linked completion goodput",
             "vLLM request_generation_tokens histograms do not carry finished_reason labels",
             "snapshot endpoint gauges are not time-weighted running or waiting distributions",
-            "Router identity changes require traffic conclusions to be split at the change time",
+            "Router config identity changes or counter resets require traffic conclusions to be split at the change time",
         ],
     }
