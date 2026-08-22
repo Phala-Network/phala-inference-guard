@@ -714,6 +714,9 @@ The three required reviews produced these constraints:
    this is source/operator evidence only and does not create a PIG version or
    image release.
 
+The accepted source and this execution record were committed as `3dae7ee` and
+pushed to `pig-origin/codex/pig-v0.12.18-throughput-estimator`.
+
 Final remote gate:
 
 ```text
