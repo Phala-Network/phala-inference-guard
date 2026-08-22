@@ -296,6 +296,7 @@ func TestV01218ResponseUsageEvidenceDistinguishesAvailableUnavailableMalformedAn
 	srv.writeLocalMetrics(&output)
 	metricsBody := output.String()
 	for _, want := range []string{
+		`pig_predictive_successful_completion_tokens_total 50`,
 		`pig_predictive_response_usage_outcomes_total{outcome="available"} 1`,
 		`pig_predictive_response_usage_outcomes_total{outcome="unavailable"} 1`,
 		`pig_predictive_response_usage_outcomes_total{outcome="malformed"} 1`,
@@ -344,6 +345,7 @@ func TestV01218ResponseUsageEvidenceUnderstandsResponsesAPIWithoutChangingBytes(
 	srv.writeLocalMetrics(&output)
 	metricsBody := output.String()
 	for _, want := range []string{
+		`pig_predictive_successful_completion_tokens_total 200`,
 		`pig_predictive_response_usage_outcomes_total{outcome="available"} 1`,
 		`pig_predictive_output_limit_comparison_total{actual_bucket="le_256",declared_bucket="le_256"} 1`,
 	} {

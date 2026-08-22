@@ -214,6 +214,17 @@ func TestCompletionUsageEvidenceClassifiesBoundedBodiesWithoutChangingBytes(t *t
 			tokens:  50,
 		},
 		{
+			name:    "available zero output",
+			payload: `{"choices":[{"finish_reason":"stop"}],"usage":{"completion_tokens":0}}`,
+			outcome: CompletionUsageAvailable,
+		},
+		{
+			name:    "available length finish",
+			payload: `{"choices":[{"finish_reason":"length"}],"usage":{"completion_tokens":50}}`,
+			outcome: CompletionUsageAvailable,
+			tokens:  50,
+		},
+		{
 			name:    "unavailable",
 			payload: `{"choices":[{}]}`,
 			outcome: CompletionUsageUnavailable,
