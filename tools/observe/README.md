@@ -50,3 +50,53 @@ Run the standard-library tests with:
 ```text
 python3 -m unittest discover -s tools/observe -p '*_tests.py' -v
 ```
+
+## Paired snapshot analysis
+
+`analyze_paired_snapshots.py` compares immutable start and end captures for the
+current target and a comparator over the same UTC interval:
+
+```text
+python3 tools/observe/analyze_paired_snapshots.py \
+  START_CAPTURE END_CAPTURE OUTPUT.json
+```
+
+Each capture directory must contain `manifest.json`, `target-pig.prom`,
+`target-backend.prom`, `comparator-combined.prom`, and `router.json`. When a
+`SHA256SUMS` file is present, every required source must be listed and must
+match. The analyzer also computes its own SHA-256 for every source and writes a
+SHA-256 sidecar for the deterministic JSON result.
+
+The manifest is retained verbatim as `raw_manifest`. Derived identity is a
+separate field: current PIG exposes `pig_info{version=...}`, while legacy PIG
+uses `pig_version_info{version=...}`. An empty historical
+`target_pig_version` is therefore corrected in derived provenance without
+altering the original evidence. A capture script must check both metric names;
+the immutable image tag is only a fallback when neither version metric exists.
+
+Counter deltas require exactly matching metric and label identities and a
+stable backend epoch. Any missing series, rollback, PIG/backend identity
+change, Compose drift, or recorded-hash mismatch makes the affected evidence
+unavailable. Histograms additionally require one bucket schema across all
+series, monotonic start/end cumulative buckets, monotonic bucket deltas, and
+agreement between `+Inf` and `_count`. Quantiles are interpolated only within
+finite buckets; a quantile landing in `+Inf` is reported as lower-bounded.
+
+Target-only predictive tables include protection reason/scope, TPS result and
+subreason, denominator source, input-size outcome buckets, streaming shape,
+and declared-versus-actual output buckets. Zero-delta label combinations are
+counted but omitted from the changed-series listing to keep the artifact
+usable for human review. Legacy comparator fields that are not exported are
+reported as `unavailable/not_exported`, never as zero.
+
+`runtime_integrity_eligible` covers PIG/backend/Compose evidence.
+`matched_routing_eligible` independently requires a stable Router config
+identity. A Router update can therefore invalidate a matched traffic claim
+without discarding an otherwise valid backend stability observation. Raw
+generation and prompt rates, request completion counts, cache share, and
+histograms are reported, but `successful_completion_goodput` remains
+unavailable because vLLM does not link generated-token sums to
+`finished_reason`. Even when the counter evidence is technically comparable,
+the target/comparator ratio is marked `descriptive_only` until demand, cache,
+input, and output cohorts satisfy the plan's matching contract; it is not a
+causal PIG effect estimate.

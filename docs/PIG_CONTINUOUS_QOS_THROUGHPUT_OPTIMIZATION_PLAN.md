@@ -484,8 +484,8 @@ Decision and remaining uncertainty:
 | Priority | Work | State | Completion condition |
 | ---: | --- | --- | --- |
 | 0 | Re-read live v0.12.18 identities and current health | Observing | Compose, policy, containers, Router set, backend, and 6h/24h evidence captured without service mutation |
-| 1 | Create a reusable semantic observer for the four windows | In progress | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
-| 2 | Establish a traffic-matched v0.12.18 baseline | Pending | At least one valid demand cohort with completion goodput, weighted TPS, cache, size, running/waiting, GPU/KV, protection, and stability evidence |
+| 1 | Create a reusable semantic observer for the four windows | In progress; paired layer accepted | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
+| 2 | Establish a traffic-matched v0.12.18 baseline | Observing | At least one valid demand cohort with completion goodput, weighted TPS, cache, size, running/waiting, GPU/KV, protection, and stability evidence |
 | 3 | Classify the first material bottleneck | Pending | Exactly one falsifiable hypothesis selected from Section 6, or an explicit no-change result |
 | 4 | Execute one behavior iteration if justified | Blocked on evidence | Red test, minimal implementation, three reviews, remote gates, pushed source, accepted image, safe rollout, and 30m/6h/24h result |
 | 5 | Synchronize the control-plane Compose snapshot | Separately authorized | User-approved persistent update matches accepted live Compose and retains a verified restore path |
@@ -670,3 +670,95 @@ request-shape cohorts, and an SGLang collector has been source-mapped but not
 remotely exercised in this iteration. Priority 0 remains `Observing`; the next
 formal analysis point is the six-hour checkpoint at
 `2026-08-22T10:58:39.588Z`.
+
+### 2026-08-22 paired target/comparator evidence gate
+
+The next Priority 1 slice added a standard-library-only paired snapshot
+analyzer under `tools/observe`. It consumes immutable start and end PIG,
+backend, and Router snapshots for `use1-19` and `use1-4c`; it is operator
+evidence code and is not imported by the PIG binary or request path. No PIG
+policy, image, Compose, Router, backend, container, or route was changed.
+
+The first capture at `2026-08-22T05:33:39Z` contained an empty raw
+`target_pig_version` because the temporary collector recognized only legacy
+`pig_version_info`. The analyzer preserves that raw manifest and separately
+derives `PIG-v0.12.18` from current `pig_info`. A corrected read-only capture at
+`2026-08-22T06:06:56Z` checks both names and records the current version
+directly. The original start manifest and hashes were not overwritten.
+
+Two test-first review cycles were run on the approved CVM. The initial 14-test
+red gate failed only at deliberate `NotImplementedError` boundaries. The
+second 20-test red gate reproduced five review defects: hierarchical metric
+double counting, grouped-bucket monotonicity, inconsistent cross-engine bucket
+schemas, an unverified recorded SHA list, and an unobserved PIG restart. The
+accepted implementation corrects all five and also omits zero-delta label rows
+from the human-facing breakdown while retaining their counts.
+
+The three required reviews produced these constraints:
+
+1. Model and causality: raw generation/prompt work, terminal requests, cache
+   share, and latency histograms may be compared descriptively. Successful
+   completion token goodput remains unavailable because the vLLM output-token
+   sum is not linked to `finished_reason`. Target/comparator ratios are marked
+   `descriptive_only` until demand, cache, input, and output cohorts match; no
+   causal PIG improvement is inferred.
+2. Safety and lifecycle: every counter requires the same complete label set;
+   any rollback is a reset. Backend epochs, model labels, target PIG image and
+   start identity, Compose, versions, Router config, recorded source hashes,
+   and histogram schemas are checked. Router drift invalidates matched-routing
+   evidence without discarding an otherwise valid PIG/backend stability
+   window. Missing legacy request-aware metrics remain unavailable, not zero.
+3. Evidence and release: all execution used the existing vLLM image with no
+   network, a read-only root filesystem, all capabilities dropped, and no new
+   inference requests. The full observer suite and real snapshot smoke passed;
+   this is source/operator evidence only and does not create a PIG version or
+   image release.
+
+Final remote gate:
+
+```text
+full unit suite                    34/34 passed
+unit runtime                       0.056 seconds
+real paired wall time              1,997 seconds
+runtime integrity                  eligible
+matched Router identity            eligible
+required fields                    18/18 available
+optional fields                    0 unavailable
+backend/PIG counter reset          none
+target/comparator preemptions      0 / 0
+analysis output bytes              85,303
+analysis output SHA-256            5e0afb26f80b23b4b844b06e3722a647333286a00bd535725bca64e4e04c3692
+unit log SHA-256                    c10768d073582a80035060649e8929fd6e199042bd53204ebe596d888be6c966
+```
+
+The valid 1,997-second interval is still not a traffic-matched or formal
+stability result. It observed:
+
+```text
+                                  target v0.12.18   comparator v0.8.12
+Router upstream attempts          3,420             2,240
+raw generation work               428.49 tok/s      256.39 tok/s
+raw prompt work                   2,662.22 tok/s    2,082.60 tok/s
+non-error terminal requests       3,298             2,175
+aggregate cache hit share         38.57%            32.00%
+preemptions                       0                 0
+PIG backend proxy errors          0                 0
+```
+
+Target PIG admitted 3,318 requests and recorded 103 protected or unknown
+decisions: 100 `tps_reference/load`, two `prefill_budget/load`, and one
+`observation_stale/availability` unknown decision. TPS subreasons included 67
+`qos_budget_unobserved`, 29 `waiting`, five `idle`, and one `active_lease`.
+These deltas establish visibility and a candidate signal, but the target also
+received 1.53 times as many Router attempts and had a 6.57 percentage-point
+higher cache-hit share. They do not justify changing `qos_budget_unobserved`
+or creating v0.12.19.
+
+At `2026-08-22T06:21:36Z`, the managed 24-hour observer remained running with
+166 samples, zero collector-error bytes, unchanged Compose and service
+identities, no new PIG/backend restart, and no current OOM flag. The user's
+Router 404 fix is outside PIG scope. If that fix changes Router identity during
+the six-hour window, the paired routing result will be split or marked
+ineligible while the independently valid backend/PIG stability evidence is
+retained. Priority 0 and Priority 2 remain `Observing`; no admission behavior
+change is authorized by this partial interval.
