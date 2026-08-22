@@ -418,6 +418,15 @@ Apply changes in this order so throughput gains remain attributable:
 6. Reduce hot-path CPU, allocation, and lock cost only after behavior is covered
    by tests and benchmarks.
 
+TPS over-protection must be split into independent causal branches. A
+`qos_budget_unobserved` decision is a non-idle marginal-debt decision after the
+base and qualified current-rate limits have already been exhausted. An `idle`
+decision is made earlier, before the QoS budget forecast runs, and is bounded by
+the idle/warming refill limit. A multi-lease debt experiment cannot be credited
+with fixing idle refill, and an idle-refill experiment cannot reuse the rolling
+surplus argument without a separately valid forecast. Test only one branch in a
+behavior-bearing version.
+
 Do not combine estimator, Prefill, KV, TPS, logging, and backend-adapter changes
 in one experiment. If a prerequisite defect must be fixed first, close that
 iteration and establish a new baseline before testing the original hypothesis.
@@ -486,7 +495,7 @@ Decision and remaining uncertainty:
 | 0 | Re-read live v0.12.18 identities and current health | Observing | Compose, policy, containers, Router set, backend, and 6h/24h evidence captured without service mutation |
 | 1 | Create a reusable semantic observer for the four windows | In progress; paired layer and r4 checkpoint lifecycle gate accepted | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
 | 2 | Establish a traffic-matched v0.12.18 baseline | Observing | At least one valid demand cohort with completion goodput, weighted TPS, cache, size, running/waiting, GPU/KV, protection, and stability evidence |
-| 3 | Classify the first material bottleneck | Pending | Exactly one falsifiable hypothesis selected from Section 6, or an explicit no-change result |
+| 3 | Classify the first material bottleneck | Preclassified; blocked on formal 6h evidence | Select either non-idle marginal debt or idle refill from complete decision-time evidence; do not combine them |
 | 4 | Execute one behavior iteration if justified | Blocked on evidence | Red test, minimal implementation, three reviews, remote gates, pushed source, accepted image, safe rollout, and 30m/6h/24h result |
 | 5 | Synchronize the control-plane Compose snapshot | Separately authorized | User-approved persistent update matches accepted live Compose and retains a verified restore path |
 
@@ -1615,3 +1624,128 @@ container identities, no OOM or restart delta, no recent PIG lifecycle event,
 the observer still writing, unchanged live Compose identity, and fresh Router
 `request_aware_open` metrics. No production inference request or runtime
 mutation was performed for this analysis.
+
+### 2026-08-22 QoS debt and idle architecture pre-review correction
+
+The Router response/uptime repair is owned by the separately submitted Router
+change. PIG will not translate a Router 404, synthesize Router success, alter
+Router counters, or add a Router-specific admission exception. The current PIG
+source review was performed read-only at commit `ff02694` before the formal
+six-hour checkpoint. It changes the earlier candidate wording as follows.
+
+The two dominant TPS subreasons do not share one control path:
+
+```text
+qos_budget_unobserved
+  ready non-idle TPS window
+  -> base/current-rate capacity exhausted
+  -> marginal QoS-surplus forecast
+  -> blocked because a prior marginal sequence is not yet observed
+
+idle
+  ready TPS window but RawRunning=0 and GenerationDelta=0
+  -> direct bounded refill limit of 2
+  -> QoS-surplus forecast is not called
+```
+
+Consequently, a second QoS debt lease can affect
+`qos_budget_unobserved`, but cannot affect `idle`. The previous combined wording
+is superseded. Formal evidence must select one of these hypotheses; they must
+not be implemented together in v0.12.19.
+
+Review 1, model and causality:
+
+1. `projectedTPSSequences` already includes raw running/waiting, pending
+   Prefill, local Decode, and unobserved sequences. Base/current-rate fitting
+   requests remain admissible while another request is unobserved; only the
+   marginal rolling-surplus path is closed.
+2. `qos_budget_unobserved` therefore measures denied requests beyond computed
+   ordinary capacity, not a global one-request-per-poll lock. It is a valid
+   optimization target only if the complete formal segment also shows short
+   fitting demand, long-average TPS headroom, low waiting/preemption pressure,
+   and lost success-linked goodput or the strongest still-available attributable
+   proxy.
+3. The existing forecast spends surplus measured in output tokens above
+   `reference * qualified sequence-seconds`. A second lease must consume only
+   remaining surplus. Re-evaluating the same rolling snapshot without a
+   committed-debt ledger would double-spend historical headroom.
+4. The smallest coherent non-idle candidate is a maximum two-lease wave with an
+   aggregate committed-debt value. The first lease retains its current bounded
+   deficit cost. A second lease reserves a conservative full marginal
+   `reference * forecast_seconds` obligation, rounded upward to a bounded
+   integer token debt, and is admitted only when current rolling surplus covers
+   all existing commitments plus the new one. Unknown output still uses the
+   fixed ten-second control horizon; a known output may shorten its own
+   forecast, never another live commitment.
+5. The idle branch remains unchanged in that candidate. If selected instead,
+   idle refill needs its own bounded probe design and simulation because it has
+   no current generation rate. It must not be justified by the non-idle debt
+   ledger.
+
+Review 2, atomicity, lifecycle, and efficiency:
+
+1. `AdmissionController.Admit` already performs state projection, forecast,
+   decision, cache-credit spend, reservation contribution, and overlay commit
+   under one mutex. No second lock, queue, learner, timer, or background worker
+   is needed.
+2. Current reservation state stores only `qosBudgeted bool`, and the overlay
+   stores only `qosBudgetLeases int64`. Changing the guards from `> 0` to a
+   count of two is explicitly forbidden: it has no value with which to subtract
+   the first commitment from rolling surplus.
+3. A candidate must attach a bounded integer debt-token value to each budgeted
+   reservation and aggregate it in the existing overlay. The same contribution
+   must survive reserved, forwarded-Prefill, active-Decode, and residual-debt
+   phases. Existing exact lifecycle rules release it on pre-forward rollback or
+   a legitimately removable terminal reservation, retain it across terminal
+   cancellation/error/disconnect until a covering poll, and clear it on backend
+   epoch reset, fail-close, or shutdown. A reference-changing TPS policy update
+   must preserve pre-update lifecycle debt but fence new marginal-debt grants
+   until every cross-revision lease is reconciled; an obligation priced at the
+   old reference must never authorize a second lease at the new reference. The
+   soft ten-second forecast is an accounting horizon, not a lease-expiry timer.
+4. Arithmetic must fail closed on negative values, overflow, invalid floating
+   inputs before rounding, overlay underflow, or disagreement between the fast
+   overlay and a slow reservation reconstruction. The production cap remains
+   two leases and one Decode sequence per debt admission; multi-sequence fanout
+   remains ineligible.
+5. Waiting, preemption, stale observation, Prefill, KV, cache-credit, input
+   limit, and long-input behavior remain byte-for-byte outside this slice. The
+   added hot-path state is constant-size integer arithmetic under the existing
+   lock; no request body, tokenizer, map cardinality, or per-model profile is
+   added.
+
+Review 3, red tests, simulation, and release boundary:
+
+1. Red unit tests must first prove that current v0.12.18 protects the second
+   same-poll marginal request, then require the candidate to admit it only when
+   aggregate remaining surplus is sufficient. Paired cases must cover
+   insufficient surplus, mixed known/unknown output horizons, active versus
+   unobserved first leases, lease cap, multi-sequence requests, waiting,
+   preemption, stale metrics, same-reference and reference-changing policy
+   updates, the cross-revision fence, reset, success, pre-forward rollback,
+   timeout, cancellation, error, disconnect, and counter overflow.
+2. Property and race gates must prove atomic cap enforcement, no double spend,
+   no double release, no leaked commitment, exact overlay reconstruction, and
+   fail-closed behavior under concurrent Admit/forward/first-byte/terminal/poll
+   interleavings.
+3. Deterministic simulation must compare the exact v0.12.18 policy with the
+   candidate on pre-poll bursts, short/unknown/mixed outputs, long-running
+   outputs, sustained waiting, preemption, staleness, backend reset,
+   distribution shift, completion-before-poll, and low flow. Acceptance
+   requires higher successful request output-token goodput, long-average
+   mean-active TPS at or above reference, no preemption/KV violation, no
+   material waiting regression, bounded sub-reference exposure, and a maximum
+   of two live debt leases. Raw admits alone do not pass.
+4. Idle scenarios remain regression gates for the non-idle candidate, not its
+   claimed gain. A later idle candidate would need its own red test, causal
+   simulation win, and behavior version.
+5. No behavior code, v0.12.19 identity, image, registry publication, Compose,
+   Router, backend, CVM process, or production traffic changes are authorized
+   by this pre-review. Formal six-hour evidence remains the gate that decides
+   whether to start the red-test slice or retain v0.12.18.
+
+All three review passes reject the simple `QoSBudgetLeases < 2` patch and the
+combined debt-plus-idle hypothesis. They accept only the above test-first,
+single-branch candidate as implementation-ready if the formal checkpoint
+selects it. The 24-hour checkpoint remains required regardless of the six-hour
+decision.
