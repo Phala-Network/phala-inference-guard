@@ -1291,7 +1291,8 @@ formal checkpoint eligible      false
 formal qualification reasons   incomplete_samples, insufficient_samples,
                                 insufficient_observed_span
 runtime-service integrity       true
-matched-routing integrity       false; 7 Router samples incomplete
+matched-routing integrity       false; 5 Router-incomplete sample rows;
+                                7 missing counter intervals
 ```
 
 Runtime service evidence remained healthy and attributable:
@@ -1317,9 +1318,10 @@ prediction / pre-forward mean            0.018 / 0.149 ms
 
 The window completed 11,845 PIG proxy requests at 1.026 requests/s with zero
 PIG failure or proxy-error delta. Raw backend generation work was 254.78 tok/s,
-but remains explicitly unavailable as successful completion goodput. Seven
-incomplete Router samples preserve the strict all-surface stop reason; they are
-not deleted, interpolated, or relabeled as PIG failures. No inference request,
+but remains explicitly unavailable as successful completion goodput. Five
+Router-incomplete sample rows, which produce seven missing adjacent
+counter intervals, preserve the strict all-surface stop reason; they are not
+deleted, interpolated, or relabeled as PIG failures. No inference request,
 container/CVM restart, image action, configuration change, or Router mutation
 was performed. The next decision remains the fixed six-hour checkpoint at
 `2026-08-22T10:58:39.588Z`.
@@ -1499,3 +1501,117 @@ created only isolated operator evidence. It did not modify PIG, Router,
 observer behavior, Compose, images, containers, routes, or production traffic.
 The 24-hour heartbeat must not be created until the six-hour checkpoint has
 finished; when created, it must pin this delayed r2 directory and archive hash.
+
+### 2026-08-22 3.9-hour partial trend and post-reset attribution
+
+At `2026-08-22T08:54:39.589Z`, a second immutable partial copy extended the
+same observer run to 14,160.001 seconds. This remains a diagnostic preflight,
+not a formal six-hour checkpoint. Its exact artifacts are:
+
+```text
+window analysis
+/var/volatile/dstack/persistent/.cache/pig-partial-window-20260822T0852Z
+window analysis SHA-256
+00473cb5f7e4426159c23e546337953fb043a3c33ab070166d0925b37e12f5c9
+post-reset paired analysis
+/var/volatile/dstack/persistent/.cache/pig-paired-partial/20260822T0852Z
+post-reset paired analysis SHA-256
+966751ae7d9c8c33401c1796156d688fad2c7edf8372a549dd6061580fbea91c
+fixed trend summary
+/var/volatile/dstack/persistent/.cache/pig-partial-trend-20260822T0852Z
+trend summary SHA-256
+6bed1dba19b81050019d140c841cc5bab02001c7ff80d7ba6549c8abf7b10c14
+```
+
+The continuous window retained 473/473 runtime-service-complete samples and
+468/473 all-surface-complete samples. The same five Router collection failures
+from the earlier portion remain visible as incomplete samples; no failure was
+removed or imputed. The formal result remains false for
+`incomplete_samples`, `insufficient_samples`, and
+`insufficient_observed_span`.
+
+The 3.2-hour to 3.9-hour same-run trend was:
+
+```text
+                                      3.2h       3.9h       change
+TPS p05                               61.51      61.34      -0.17 tok/s
+below-reference fraction              0%         0%          0
+waiting p95 / max                     0 / 2      0 / 2       unchanged
+preemptions / PIG failures / proxy    0/0/0      0/0/0       unchanged
+protection share                      5.56%      7.15%      +1.59 pp
+Router backpressure duty              1.84%      1.92%      +0.09 pp
+GPU mean / p95                        44.61/91   45.14/91   +0.54/0 pp
+KV mean / max                         1.67/13.28 1.79/19.00 +0.11/+5.72 pp
+backend cache-hit share               40.60%     41.90%     +1.30 pp
+raw generation work                   254.78     247.67     -7.10 tok/s
+prediction / pre-forward mean, ms     .018/.149  .018/.165  approximately stable
+```
+
+Successful completion goodput remains unavailable on live v0.12.18, so the raw
+generation change cannot be interpreted as a goodput regression or gain. The
+protection-share increase with stable high TPS, zero waiting p95, zero
+preemption, and nearly unchanged GPU mean strengthens the bounded
+over-protection hypothesis, but intermittent offered demand and unmatched
+traffic still prevent a causal throughput claim.
+
+The separate post-reset paired segment covered 6,410 seconds and passed runtime,
+Router continuity, and required-field gates. It captured 5,287 target PIG
+decisions: 4,650 fit and 637 risk. Final PIG protections and Router target 429s
+were both exactly 637, preserving exact attribution and excluding a hidden
+protection path.
+
+```text
+final protection reason/scope                count
+tps_reference/load                            586
+prefill_budget/load                            20
+prefill_budget/request                         24
+input_limit/request                             7
+
+TPS protected-decision subreason             count
+qos_budget_unobserved                         446
+idle                                           95
+warming                                        40
+waiting                                         6
+qos_budget_active_lease                         3
+qos_budget_ineligible                           1
+```
+
+`qos_budget_unobserved` plus `idle` therefore accounted for 541/591, or about
+91.5%, of TPS-protected decision outcomes. Five of those TPS decisions ended
+with a stronger Prefill or request-scoped final reason, explaining why there
+were 591 protected TPS decisions but 586 final `tps_reference/load`
+protections. This is not hidden Router backpressure.
+
+Request-size evidence supports keeping long-input protection independent:
+
+```text
+outcome              total    p50 estimated input    p95
+admitted             4,650             934           13,199
+load protected         606           3,407           15,160
+request protected       31         122,880           >524,288 at p95
+```
+
+The target backend recorded zero preemptions and zero PIG proxy errors. Its
+request TPOT histogram implied approximately 41.92 tok/s at p95 and 29.26 tok/s
+at p99 by inverse TPOT, both above the 25 reference in this segment. These are
+request-histogram proxies, not the same statistic as controller trailing
+mean-active TPS and not successful completion goodput.
+
+The legacy comparator also had zero preemptions, but this pair is descriptive
+only: target/comparator cache-hit share was 43.7%/52.4%, while prompt-token p99
+was approximately 10.0K/41.5K. Raw generation and request rates therefore
+cannot support a new-versus-legacy performance claim.
+
+The falsifiable hypothesis for the formal checkpoint is now narrower: if the
+completed post-reset segment preserves these QoS/stability properties and
+`qos_budget_unobserved` plus bounded-idle protection still dominates short
+requests, the next behavior candidate may allow a tightly bounded second QoS
+debt lease for that branch only. It must not alter request-scoped input limits,
+Prefill budgets, KV protection, waiting/preemption stops, or long-input policy.
+No behavior change or v0.12.19 work starts from this partial evidence alone.
+
+A final liveness check at `2026-08-22T08:57:49Z` found the same PIG/backend
+container identities, no OOM or restart delta, no recent PIG lifecycle event,
+the observer still writing, unchanged live Compose identity, and fresh Router
+`request_aware_open` metrics. No production inference request or runtime
+mutation was performed for this analysis.
