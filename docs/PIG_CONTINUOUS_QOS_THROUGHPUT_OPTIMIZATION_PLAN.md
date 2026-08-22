@@ -1956,3 +1956,27 @@ This isolation pass changed no PIG/Router code, image, Compose, route,
 container, CVM, or production request. It used only current attestation,
 redacted admin configuration, existing metrics/logs, and the authenticated
 OpenRouter dashboard.
+
+### 2026-08-22 user-directed closure of the external 404 investigation
+
+The user subsequently reported that Redpill had fixed the external issue and
+explicitly directed this task to stop investigating it. This instruction
+supersedes the additional Router/OpenRouter attribution work and the external
+404 gating language above for the current PIG objective.
+
+From this point:
+
+1. do not inspect more OpenRouter, Redpill, Router, model-alias, ingress, 499,
+   or external uptime evidence for this incident;
+2. do not change Router source, configuration, image, route state, or logging
+   as part of the PIG task;
+3. retain the prior observations only as historical isolation evidence and do
+   not treat the unproven model-alias hypothesis as a confirmed root cause;
+4. do not use the external incident as evidence to relax or tighten PIG
+   admission; and
+5. continue the frozen six-hour and 24-hour PIG checkpoints using PIG runtime,
+   backend, and already planned matched-routing evidence. The external fix is
+   user-reported and intentionally not re-verified by this task.
+
+No runtime, source behavior, image, Compose, route, container, CVM, or
+production request changed in recording this scope correction.
