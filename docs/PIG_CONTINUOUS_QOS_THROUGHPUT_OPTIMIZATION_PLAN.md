@@ -1,9 +1,10 @@
 # PIG Continuous QoS and Throughput Optimization Plan
 
-Status: active maintenance plan; observation and implementation have not started
-from this document.
+Status: active maintenance plan; baseline observation is running. No behavior,
+policy, image, Compose, Router, or deployment change has been authorized or made
+by this execution.
 
-Last reviewed: 2026-08-21.
+Last reviewed: 2026-08-22.
 
 This document is the durable execution reference for observing PIG, analyzing
 production evidence, optimizing performance, and correcting defects. Versioned
@@ -482,7 +483,7 @@ Decision and remaining uncertainty:
 
 | Priority | Work | State | Completion condition |
 | ---: | --- | --- | --- |
-| 0 | Re-read live v0.12.18 identities and current health | Pending | Compose, policy, containers, Router set, backend, and 6h/24h evidence captured without mutation |
+| 0 | Re-read live v0.12.18 identities and current health | Observing | Compose, policy, containers, Router set, backend, and 6h/24h evidence captured without service mutation |
 | 1 | Create a reusable semantic observer for the four windows | Pending | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
 | 2 | Establish a traffic-matched v0.12.18 baseline | Pending | At least one valid demand cohort with completion goodput, weighted TPS, cache, size, running/waiting, GPU/KV, protection, and stability evidence |
 | 3 | Classify the first material bottleneck | Pending | Exactly one falsifiable hypothesis selected from Section 6, or an explicit no-change result |
@@ -518,3 +519,72 @@ The plan itself must pass three reviews before execution:
 Completing these plan reviews changes only this document. It does not start an
 observer, modify source behavior, build or publish an image, mutate Compose or
 Router, restart a process, or deploy to a CVM.
+
+## 14. Execution Ledger
+
+### 2026-08-22 live identity and delayed-failure audit
+
+Goal: `按持续优化计划执行`.
+
+The first read-only execution pass established this current state at
+approximately `2026-08-22T04:55Z`:
+
+```text
+CVM status                    running; no control-plane operation in progress
+CVM shape                     h200.small; dstack-nvidia-dev-0.5.9
+live Compose SHA-256          b5b0a6674ce1cb38105e5958126aab412993b89efa37b26e330966d2fa1c7d4e
+control-plane Compose         still names PIG v0.12.17
+live PIG image                0.12.18@sha256:7de28db7...f6b20
+live PIG source revision      80b7f0581f03fbaa8490c9245c3f55771ea0ec42
+PIG started / restarts        2026-08-21T13:40:59Z / 0
+PIG policy                    revision 1, startup source, enforce, TPS reference 25
+observer cadence/freshness    500 ms / 1500 ms
+backend                       vLLM; max_model_len 262144; KV 1977660 tokens; block 64
+Router enabled set            use1-19, use1-4c
+Router protocol               request_aware_open; metrics fresh; backpressure false
+admission lifecycle failures  0 in every owned phase
+current reservations/waiting  0 / 0 at the idle audit sample
+backend preemptions           0 since the current vLLM start
+```
+
+This pass confirmed one delayed backend failure outside the accepted 30-minute
+window. Docker recorded `oom` for vLLM at `2026-08-21T18:50:33Z`, followed by
+container death and automatic restart approximately ten seconds later. The
+current container has `RestartCount=1` and started at
+`2026-08-21T18:50:43Z`. PIG, HAProxy, and ingress did not restart. PIG exposed
+availability-scoped `observation_stale` protection while the backend was
+unavailable and later returned Router capacity to open. The current vLLM
+Prometheus epoch reports zero preemptions.
+
+The retained kernel journal did not preserve a corresponding OOM-killer record,
+and the restarted cgroup's current `memory.events` counters are zero. Therefore
+Docker proves an OOM event, but the available evidence does not yet prove the
+allocation source or that PIG admission caused it. Immediately before the
+event, vLLM logs showed low KV use and no waiting rather than KV saturation.
+Classify this as a backend/traffic incident under investigation, not a PIG
+algorithm defect.
+
+At `2026-08-22T04:58:39.588Z`, a managed read-only baseline observer started:
+
+```text
+run id                 20260822T045839Z
+container              pig-live-observer-20260822T045838Z-379598
+duration / interval    86400 seconds / 30 seconds
+expected samples       2880
+six-hour checkpoint    2026-08-22T10:58:39.588Z
+24-hour checkpoint     2026-08-23T04:58:39.588Z
+output                  /var/volatile/dstack/persistent/.cache/
+                        pig-live-observe-host/20260822T045839Z
+```
+
+The observer is resource-bounded to one CPU, 512 MiB memory, and 64 PIDs; it
+uses the already running vLLM image only as a Python runtime, mounts the live
+Compose read-only, and removes its container automatically at completion. Its
+first sample reported successful PIG, vLLM, Router, GPU, and container reads
+with an empty error log. It does not send inference requests or change PIG,
+Router, backend, Compose, or CVM state.
+
+Priority 0 remains `Observing` until the identity-stable six-hour and 24-hour
+checkpoints are analyzed. The next parallel task is Priority 1: make the
+analysis reset-aware and source-attributed so a backend restart, counter reset,
+or incomplete scrape cannot become a false goodput result.
