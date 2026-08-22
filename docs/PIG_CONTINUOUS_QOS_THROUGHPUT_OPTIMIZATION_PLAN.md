@@ -1863,3 +1863,96 @@ The formal `18:59` continuation must therefore make these distinctions:
 This pass changed no PIG behavior, Router source, image, Compose, route,
 container, or production request. The existing one-time `pig-6` heartbeat was
 updated only to carry these diagnostic gates into the formal checkpoint.
+
+### 2026-08-22 post-repair 404 persistence and model-identity isolation
+
+A second authenticated OpenRouter refresh at approximately
+`2026-08-22T10:06Z` invalidated the earlier working allowance that most of the
+rolling-hour 404 total might still predate the Router repair. The explicit
+`1 Hour` chart, covering approximately `17:03-17:58 Asia/Shanghai`, reported:
+
+```text
+uptime                    17.66%
+rounded total requests    3.2K
+error-404                 2,620
+success-200                 562
+error-429                     7
+error-400                     6
+exact table total         3,195
+```
+
+The 404 share was approximately `82.0%`; all 429s together were approximately
+`0.22%`. The chart contained 404 bars across most of the window, including the
+late part of the window. This is not a PIG 429-envelope effect and is no longer
+consistent with merely waiting for pre-repair buckets to age out.
+
+Current-runtime provenance remained exact. The Router attestation named source
+commit `991be26b4c65cd6745460266348dcc78866ad84e`, the container was shown as up
+for approximately four hours, and the control-plane operation that installed
+the current image completed at approximately `14:21 Asia/Shanghai`. The
+OpenRouter hour above is therefore wholly post-installation. The live Router
+config digest remained
+`sha256:007d78ec80c8f5704bdfbc8cf9268321f75b639447999e134d166e13ebc80c6d`.
+
+Source and live-config review identified a stronger primary hypothesis. The
+OpenRouter endpoint's canonical displayed model is
+`google/gemma-4-31b-it`, while all of these live Router identities use an
+upper-case `B`:
+
+```text
+middleware.public_model              google/gemma-4-31B-it
+all six upstream public-model keys   google/gemma-4-31B-it
+all six upstream model values        google/gemma-4-31B-it
+successful Router outcome logs       google/gemma-4-31B-it
+```
+
+`RouterBackend::handle_completion` currently compares the request's `model`
+with `middleware.public_model` using case-sensitive string equality. A mismatch
+returns `completion::model_not_found` with HTTP 404 before route selection or
+forwarding. `finalize_generated` currently does not record a generated outcome,
+and the service request counter is incremented only on the later forwarding
+path. A lower-case request cohort can consequently create exactly the observed
+shape: OpenRouter sees 404 while Router attempt, upstream-response, and outcome
+logs contain no corresponding 404.
+
+This is a strong causal hypothesis, not yet proof that the affected natural
+requests actually carried the lower-case value. No synthetic inference request
+was sent and the silent branch does not preserve the required request evidence.
+Do not globally case-fold arbitrary model identifiers as an assumed fix. A
+Router repair should instead provide an explicit public alias-to-canonical
+mapping, or map this deployment's lower-case public identifier to the existing
+upper-case upstream identifier, while preserving the upstream model value.
+It must also record every generated non-2xx response at the outermost request
+boundary without logging request bodies or secrets.
+
+The current Cloud log drawer provided a small, virtualized natural-traffic
+slice from `09:59:28Z` through `10:05:55Z`. Within the 32 visible timestamped
+lines it showed zero `status=404`, zero `upstream_status=404`, and zero
+`model_not_found`; it showed 23 `status=499 outcome=ClientClosed` stream
+settlements, two upstream-429 observation lines, and one upstream/final 400.
+Two of the 499s had zero data events, while many others ended at approximately
+292 seconds after producing data. Those client-closed streams are a separate
+availability signal that needs correlation with OpenRouter's streaming
+timeout behavior; they cannot be relabeled as HTTP 404 without direct evidence.
+The dstack-ingress access format exposes timing, byte, and termination fields
+but no final HTTP status, so it cannot close this evidence gap.
+
+The formal six-hour checkpoint must now treat the surfaces independently:
+
+1. PIG runtime-service health and the post-reset matched Router comparison may
+   still be analyzed if their own identity and counter-continuity gates pass.
+2. Strict all-surface eligibility must fail while the OpenRouter endpoint has
+   an unexplained approximately 82% 404 share, even if PIG itself is healthy.
+3. The formal report must not attribute those 404s to PIG admission or count
+   them as PIG QoS protection.
+4. A Router-side capture of final status, method, normalized path, request ID,
+   and a bounded model identity is needed to prove or reject the model-alias
+   hypothesis. Request bodies and bearer values must not be logged.
+5. PIG v0.12.18 remains unchanged until the frozen six-hour evidence is
+   collected. The external 404 incident is not evidence for relaxing or
+   tightening PIG admission.
+
+This isolation pass changed no PIG/Router code, image, Compose, route,
+container, CVM, or production request. It used only current attestation,
+redacted admin configuration, existing metrics/logs, and the authenticated
+OpenRouter dashboard.
