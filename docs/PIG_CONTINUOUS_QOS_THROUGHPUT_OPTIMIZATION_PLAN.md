@@ -484,7 +484,7 @@ Decision and remaining uncertainty:
 | Priority | Work | State | Completion condition |
 | ---: | --- | --- | --- |
 | 0 | Re-read live v0.12.18 identities and current health | Observing | Compose, policy, containers, Router set, backend, and 6h/24h evidence captured without service mutation |
-| 1 | Create a reusable semantic observer for the four windows | In progress; paired layer accepted | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
+| 1 | Create a reusable semantic observer for the four windows | In progress; paired layer and r4 checkpoint lifecycle gate accepted | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
 | 2 | Establish a traffic-matched v0.12.18 baseline | Observing | At least one valid demand cohort with completion goodput, weighted TPS, cache, size, running/waiting, GPU/KV, protection, and stability evidence |
 | 3 | Classify the first material bottleneck | Pending | Exactly one falsifiable hypothesis selected from Section 6, or an explicit no-change result |
 | 4 | Execute one behavior iteration if justified | Blocked on evidence | Red test, minimal implementation, three reviews, remote gates, pushed source, accepted image, safe rollout, and 30m/6h/24h result |
@@ -1323,3 +1323,87 @@ not deleted, interpolated, or relabeled as PIG failures. No inference request,
 container/CVM restart, image action, configuration change, or Router mutation
 was performed. The next decision remains the fixed six-hour checkpoint at
 `2026-08-22T10:58:39.588Z`.
+
+### 2026-08-22 final r4 checkpoint lifecycle gate
+
+The earlier `pig-checkpoint-script-gate-0fb0234-r2` remains historical evidence
+but is superseded for formal capture. A third review found two additional
+evidence-lifecycle defects: the fixed log copy could include rows after the
+six-hour cutoff, and the paired capture could publish `latest-end.path` before
+its output became an immutable complete capture. The intermediate r3 candidate
+fixed the former but retained a narrow kill window that could leave a published
+pointer targeting a capture removed by failure cleanup. It was not admitted to
+the heartbeat or used for a formal checkpoint.
+
+The final candidate is isolated at:
+
+```text
+/var/volatile/dstack/persistent/.cache/pig-checkpoint-script-gate-r4
+archive /var/volatile/dstack/persistent/.cache/
+        pig-checkpoint-script-gate-r4.tar.gz
+archive SHA-256
+d0bd6e3e9cef1ed276890cd6f9d31aec682820e06b8190cc8f18297470d52a78
+```
+
+It freezes only the header and first 721 observer rows, bounds the growing
+observer error stream at the exact cutoff, and bounds Docker logs/events at the
+next whole-second upper limit `10:58:40Z`. That diagnostic log tail can include
+at most 0.412 seconds after the sample cutoff and is excluded from all
+sample-derived checkpoint metrics. The scripts enforce the time gate
+independently for both formal and paired capture, validate the paired output
+path under its dedicated root, and complete a paired directory before
+atomically publishing the pointer. A failure always removes a temporary
+pointer; it does not delete an already completed and published capture.
+
+The exact executable script hashes are:
+
+```text
+analyze-stability-6h.sh       be263aa5f4d4cb4601a4ddcbf02ef5edd06a7347cbf58e7d4f37de3b0876e1f2
+analyze-stability-paired.sh   ec0e7426154796ff14b94df48a86dede9bbb70ebc561f5a84162586d0114b921
+capture-paired-end.sh         5d6239ed4421dbc7de724b5964d4d81e22190284a267eedbefa567adf18295cc
+capture-stability-6h.sh       5756742ad1a8a7bb81ab0e5a5ca7de35070d4468bf0efe1777c5dcb05b53c22c
+capture-stability-logs.sh     ab483bd20b0733262f3f5e3ee49d1e52654b922a13a6a43a4af89dcdc45a773e
+```
+
+The remote gate was completed before the formal horizon at approximately
+`2026-08-22T08:30Z` without executing a valid checkpoint capture:
+
+```text
+superseded lifecycle red log SHA-256
+da3e04abe9f253302680111f4f4f33bc1dbe3c29378b9880b726b18397dc98ed
+contract runner SHA-256
+3d55d437bf2ed9d81982f8ef630c187ed4c14000d8d1073fd52be6872e9da400
+contract green output SHA-256
+b7f1c6c340dfc786e374a19cfd839f3addd602107e229a9b1bcbdd46ab168cda
+early-rejection runner SHA-256
+11920450b22e8005f5fd51013e7704e9c923d4a6001e0183432dba433f081942
+early-rejection SHA256SUMS SHA-256
+34655585cf904d17e21ddef06da16a2c15e019d5d902e6adfc98ea44e25a58ff
+failure-cleanup runner SHA-256
+81f8063c0c8990f0f815a517aaa2760b34c3719af119a81441c7f6679cf465e8
+failure-cleanup SHA256SUMS SHA-256
+fb92415076ca627ad4a7c8b4f64cea4586c5b23dfdb49d3e25355c0b3a427fa6
+```
+
+The contract test passed against r4. Both captures returned non-zero before the
+horizon (`stability=1`, `paired=1`), with no formal output, directory addition,
+pointer change, or partial pointer. Under an injected Docker failure at the
+cutoff, the formal and paired paths returned non-zero (`stability=1`,
+`paired=97`) and again left no formal directory, partial directory, added paired
+capture, or changed pointer. A final residual audit reported
+`checkpoint_r4_residuals=clean`.
+
+The first contract invocation accidentally used a Windows-to-SSH escape that
+made `tr` remove literal `r` characters and therefore failed before testing any
+r4 behavior. The accepted rerun used `sed 's/\r$//'`, passed the contract, and
+is the hashed green evidence above. This invocation defect is not counted as an
+r4 red or product failure.
+
+Current runtime identity was rechecked during the gate: PIG is still
+`0.12.18@sha256:7de28db7b46eade3440358479b30c27000f2c7d0d6acacf2fae6c20f0aaf6b20`;
+PIG, vLLM, HAProxy, and ingress are running without current OOM, and restart
+counts remain `0/1/0/0`, where the vLLM count is the already recorded historical
+restart. No service restart, inference request, image action, Compose change,
+Router mutation, or admission behavior change occurred. The formal six-hour
+capture remains prohibited until `2026-08-22T10:58:39.588Z` and must use this
+r4 directory.
