@@ -1749,3 +1749,117 @@ combined debt-plus-idle hypothesis. They accept only the above test-first,
 single-branch candidate as implementation-ready if the formal checkpoint
 selects it. The 24-hour checkpoint remains required regardless of the six-hour
 decision.
+
+### 2026-08-22 OpenRouter 404 versus PIG 429 pre-checkpoint isolation
+
+A fresh read-only incident pass rejected the hypothesis that PIG's JSON error
+shape can explain OpenRouter's `error-404` classification. PIG v0.12.18 does
+return an HTTP 429 before forwarding, but its direct envelope is an older
+compatibility shape:
+
+```text
+HTTP status              429
+Content-Type             application/json
+error.type               TooManyRequestsError
+error.code               numeric 429
+Retry-After              absent
+```
+
+This direct envelope should eventually be normalized to
+`rate_limit_error` / `rate_limit_exceeded` with `Retry-After`, but the live
+Router at source revision `991be26b4c65cd6745460266348dcc78866ad84e`
+classifies capacity from the upstream HTTP status rather than those JSON
+fields. It rebuilds a Router-owned HTTP 429 with the string code and rate-limit
+headers after candidate exhaustion. PIG enforced-reject deltas and the
+Router's target upstream-429 deltas also matched exactly in repeated natural
+traffic samples. The PIG envelope is therefore a protocol-hardening candidate,
+not a supported explanation for an HTTP 404.
+
+Refreshing the authenticated OpenRouter endpoint page at approximately
+`2026-08-22T09:48Z` produced newer evidence than the previously cached chart:
+
+```text
+window                    1 Hour
+uptime                    34.03%
+total requests            approximately 4.34K
+success-200               1,474
+error-404                 2,857
+error-429                 4
+error-400                 5
+latest tooltip            2026-08-22 17:48 Asia/Shanghai; error-404=2
+```
+
+OpenRouter's own visible explanation states that a fast HTTP 429 is recorded as
+`error-429` and allows rerouting, while other 4xx/5xx responses are recorded as
+their actual HTTP status. Even if all four 429s counted against uptime, they
+could not explain a window dominated by 2,857 404s. The refreshed chart also
+means the incident cannot be dismissed solely as a page that stopped at the
+old `17:08` bucket. Most of the rolling-hour 404 total can still predate the
+Router repair, but at least two current 404s require attribution.
+
+The same current Router epoch remained continuous. At
+`2026-08-22T09:46:31Z` its config digest was
+`sha256:007d78ec80c8f5704bdfbc8cf9268321f75b639447999e134d166e13ebc80c6d`.
+The enabled routes reported:
+
+```text
+route      processed   attempts   upstream 429   protocol
+use1-19       31,496     45,999         37,161   request_aware_open
+use1-4c       21,679     44,234         36,463   legacy
+```
+
+Router metrics showed that the dominant failed surface was streaming
+`/v1/completions`, not buffered chat:
+
+```text
+surface                              requests   receipts   upstream non-2xx
+/v1/completions streaming             43,695      7,853              35,672
+/v1/chat/completions streaming          9,249      8,284                 932
+```
+
+Those cumulative counters expose only a `4xx` status class for generated or
+upstream failures. They cannot prove the final client status. In the exact
+`09:40-09:48Z` log slice, Router recorded 22 upstream-429 lines and zero
+`status=404`, `upstream_status=404`, or `model_not_found` lines. This does not
+fully exonerate the Router surface because source review found two 404 paths
+that need not emit the existing request-outcome record:
+
+1. `handle_completion` compares the requested model and configured public model
+   by case-sensitive exact string equality, then calls `model_not_found` with
+   HTTP 404 on mismatch; that helper currently does not log a generated
+   request outcome.
+2. Axum has no explicit fallback handler around the enumerated inference
+   routes, so an unmatched path or HTTP method returns a framework 404 outside
+   the completion outcome logger.
+
+The successful Router outcome logs consistently used
+`google/gemma-4-31B-it`; no lower-case `google/gemma-4-31b-it` value appeared in
+the retained 50,000-line log window. That absence cannot exclude silent
+model-mismatch requests because the mismatch path itself lacks logging. No
+production probe was sent to manufacture evidence.
+
+Checkpoint liveness remained healthy at `2026-08-22T09:44:29Z`: the original
+observer was `running`, its latest sample was `09:44:09.589Z`, it had written
+572 samples, and all five real Router-collection error lines remained intact.
+PIG/vLLM/HAProxy/ingress were running with OOM flags false and restart counts
+`0/1/0/0`; the vLLM restart is the already recorded historical event. The live
+Compose hash and all r4 checkpoint archive/script hashes still matched the
+frozen plan, and there was no premature formal or partial checkpoint output.
+
+The formal `18:59` continuation must therefore make these distinctions:
+
+1. refresh the OpenRouter one-hour window after the old high-404 buckets have
+   aged out and report post-repair minute buckets rather than only the rolling
+   total;
+2. correlate any new 404 with Router model/path visibility and outer ingress;
+   do not infer a PIG admission fault from an unobserved Router response;
+3. preserve all real observer collection failures and independently report
+   runtime-service, matched-routing, and strict all-surface eligibility;
+4. retain v0.12.18 if the formal QoS/throughput evidence does not select the
+   reviewed non-idle debt-ledger hypothesis; and
+5. consider PIG's direct 429 envelope only as a separately tested protocol
+   cleanup. It must not be presented as the fix for OpenRouter `error-404`.
+
+This pass changed no PIG behavior, Router source, image, Compose, route,
+container, or production request. The existing one-time `pig-6` heartbeat was
+updated only to carry these diagnostic gates into the formal checkpoint.
