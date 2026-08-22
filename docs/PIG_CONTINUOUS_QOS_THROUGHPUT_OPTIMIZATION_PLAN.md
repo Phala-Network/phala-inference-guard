@@ -1182,3 +1182,94 @@ preemption, or request-scoped protection. Acceptance requires higher
 SLO-compliant completion goodput or a stronger attributable proxy, no sustained
 TPS deficit, and no new lifecycle or stability failure. Until the formal
 checkpoint satisfies this trigger, `v0.12.18` remains unchanged.
+
+### 2026-08-22 success-linked completion goodput source slice
+
+The Router response fix remains an external Router task. PIG does not translate
+or compensate for Router 404 behavior. The next PIG-only evidence gap was the
+lack of a success-linked output-token counter: the response parser already
+classified exact Completions and Responses API usage, but retained only outcome
+and declared-versus-actual buckets. Raw backend generation work therefore could
+not become the primary goodput result.
+
+The test-first red source was committed and pushed as
+`a84c0a5359d91f3fe6c02a092fee0db496d4c3a0`. Its exact source archive SHA-256
+was `d4ed9d9f8c154a33c80d70014ef77d9c94634a4bb42bc44e4070e93311741cab`.
+The first isolated runner attempt did not execute tests because `/tmp` was
+mistakenly mounted `noexec`; its `permission denied` logs are runner-failure
+evidence only. The corrected no-network r2 run failed for the intended behavior:
+
+```text
+red evidence root         /var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+                          a84c0a5359d91f3fe6c02a092fee0db496d4c3a0/successful-goodput-red-r2
+openai focused exit       1
+server focused exit       1
+openai red log SHA-256    0b75fbe7ad9a650384253fb9ebdc3447fbb7c5e021803739b9194a8ff0bbc26c
+server red log SHA-256    9a24273f5583b0bf0c10b844bc90ac0df6006f5469b57ce7640905d196c14935
+```
+
+Zero completion tokens were incorrectly classified as malformed; the server
+had no exact success-token counter; and an observed usage record could outrank
+a later timeout, disconnect, proxy failure, or non-2xx terminal in the outcome
+classification.
+
+The minimal implementation is pushed source
+`5a6ba0f12df99805c6ac0f89f95f6a0f264419ab`, exact source archive SHA-256
+`fc4cd3f994037e921dbcd4d756418fab749e88d0ce41c08681380f00aa3a9ade`.
+It adds the label-free monotonic
+`pig_predictive_successful_completion_tokens_total`, qualifies usage through the
+same proxy-success predicate used by the admission terminal lifecycle, treats
+zero as valid exact usage, and censors every non-success terminal. It changes
+no estimate, admission decision, reservation, Router projection, HTTP response,
+configuration, or version identity.
+
+```text
+focused evidence root     /var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+                          5a6ba0f12df99805c6ac0f89f95f6a0f264419ab/successful-goodput-focused
+full evidence root        /var/volatile/dstack/persistent/pig-v01218-workbench/evidence/
+                          5a6ba0f12df99805c6ac0f89f95f6a0f264419ab/successful-goodput-full
+```
+
+Focused Completions/Responses, streaming/non-streaming, zero-output,
+`finish_reason=length`, exact-once, non-success exclusion, and response-byte
+preservation tests passed with race coverage. The same pinned Go 1.24.13 image,
+one CPU, 4 GiB memory, 512-pid limit, no network, read-only source, and executable
+tmpfs then passed the complete source matrix:
+
+```text
+gofmt -d                        PASS; empty
+go test -count=1 ./...          PASS
+go test -race -count=1 ./...    PASS
+go vet ./...                    PASS; empty
+go build ./...                  PASS; empty
+verify-no-legacy-mode.sh        PASS
+
+full test log SHA-256           c7b1d6cfa501a7be0964848f3580e6579117e82081d115c78e0494310ec6da5c
+full race log SHA-256           01927607d92f90d669b5f29c7486b5e230d9b6239c62b6da7ab5727d7b5c9d77
+no-legacy log SHA-256           455cf163ebdc8cd358ea90370bf09603ddeec7deb7a64d3c3018975046aba5c0
+```
+
+Review 1, model and causality: passed. Exact usage is accepted only after a clean
+body terminal and proxy success. Aggregate usage across multiple choices remains
+aggregate output goodput. `length` is a valid completion, while malformed,
+missing, duplicate, partial, failed, timed-out, and disconnected evidence cannot
+increase the counter. The metric observes results and has no path into the
+pre-forward decision.
+
+Review 2, safety, efficiency, and lifecycle: passed. Request completion remains
+mutex-protected and exact-once; the global token addition occurs under the
+existing evidence lock, adds no new lock, label, body copy, parser, or allocation,
+and keeps fixed cardinality. Parser memory remains bounded at the existing JSON
+and SSE limits. Full race passed. The only theoretical uint64 wrap horizon is
+far beyond a process lifetime and does not justify a more complex hot path.
+
+Review 3, evidence and release: passed for pushed source only. Current live
+v0.12.18 metrics showed 66,013 `available`, 101 `unavailable`, 6 `malformed`,
+and 7,545 `censored` outcomes, or 99.84% usage availability among non-censored
+outcomes. Because deployed v0.12.18 does not yet success-qualify an observed
+usage record, this is parser-coverage evidence, not a successful-goodput result.
+It still shows that the future qualified counter should not be sparse. This live
+read sent no inference traffic. No image was built or uploaded, no
+Compose/Router/backend was changed, and no process or CVM was restarted. Whether
+this source enters a `v0.12.19` candidate remains gated on the fixed six-hour
+checkpoint; it does not itself authorize a behavior version or deployment.

@@ -53,6 +53,13 @@ OOM, fatal match, hidden protection, or low-flow self-lock. Because offered load
 was materially below the preceding v0.12.17 window, equal-load peak completion
 goodput remains an explicit evidence gap rather than a claimed win.
 
+The branch also contains a post-runtime, source-only observability slice at
+`5a6ba0f`: exact usage tokens are counted only for successful PIG proxy
+terminals. Its remote source gates passed, but it has no assigned new version,
+image, Compose integration, deployment, or live counter evidence. The continuous
+optimization plan records the red/green provenance and fixed six-hour decision
+gate.
+
 A later read-only audit found one vLLM host-memory OOM more than three hours
 after the formal window. PIG, HAProxy, and ingress did not restart; PIG closed
 on stale backend observations and reopened after vLLM recovered. This does not

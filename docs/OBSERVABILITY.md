@@ -77,6 +77,56 @@ A partial scrape does not immediately zero gauges or close intake. PIG retains
 the last coherent observation until freshness expires. A coherent replacement
 sample recovers current state without a separate cooldown or timer.
 
+## Success-linked output goodput metrics
+
+The development source exports one label-free monotonic token counter:
+
+```text
+pig_predictive_successful_completion_tokens_total
+```
+
+It sums exact `usage.completion_tokens` for Chat/Completions responses and exact
+`usage.output_tokens` for Responses API responses only when all of these are
+true:
+
+- the request endpoint and streaming shape are known;
+- the upstream response is eligible 2xx JSON or SSE;
+- the response body reaches a clean terminal boundary and supplies exactly one
+  valid final usage record; and
+- the PIG proxy terminal is success, not a backend error, proxy failure,
+  timeout, or client disconnect.
+
+Zero-token completions are valid evidence and `finish_reason=length` remains a
+successful completion. They do not increase the token sum beyond their exact
+value. Censored, unavailable, malformed, incomplete, non-2xx, timed-out, or
+disconnected responses never add tokens. Duplicate completion calls are
+idempotent.
+
+The existing fixed-cardinality evidence metrics describe coverage and declared
+output-limit error:
+
+```text
+pig_predictive_response_usage_outcomes_total{outcome="available|unavailable|malformed|censored"}
+pig_predictive_output_limit_comparison_total{declared_bucket,actual_bucket}
+```
+
+`available` is now qualified by the same proxy-success predicate as the exact
+token counter. `censored` includes pre-forward outcomes and forwarded requests
+whose proxy terminal was not success, even if some usage bytes were observed
+before the failure. No request, user, model, or token-value label is exported.
+
+For a window with stable process identity, successful completion goodput is:
+
+```promql
+rate(pig_predictive_successful_completion_tokens_total[5m])
+```
+
+Usage coverage among proxy-success terminals is the `available` rate divided
+by the sum of `available`, `unavailable`, and `malformed` rates. Exclude
+`censored` from that denominator. The counter proves success at PIG's proxy
+boundary; it does not classify an independent Router failure and it never feeds
+back into admission decisions.
+
 ## Request-aware decision metrics
 
 `pig_predictive_request_aware_last_decision_info` carries bounded labels for
