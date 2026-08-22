@@ -947,3 +947,123 @@ Router TLS EOF rows and report the strict gate honestly instead of requiring
 an empty error log. After this checkpoint it must replace itself with the
 one-time 24-hour delayed-checkpoint heartbeat. No PIG/Router/backend runtime or
 production configuration was changed during this preparation.
+
+### 2026-08-22 Router counter-reset correction and r4 remote gate
+
+The Router 404/client-response correction is now owned by the Router change
+submitted separately by the user. PIG must neither compensate for that Router
+defect nor reinterpret it as an admission outcome. This iteration therefore
+changes only the operator-side paired-evidence analyzer and its tests.
+
+A read-only paired capture from `20260822T053339Z` to
+`20260822T070815Z` covered 5,677 seconds. The Router configuration digest stayed
+at
+`sha256:007d78ec80c8f5704bdfbc8cf9268321f75b639447999e134d166e13ebc80c6d`,
+but all exported per-route counters moved backwards:
+
+```text
+                              start      end
+use1-19 processed             94,678     1,474
+use1-19 upstream_attempts     95,813     1,483
+use1-19 upstream_429          10,080        94
+use1-4c processed             43,983     1,076
+use1-4c upstream_attempts     50,962     1,140
+use1-4c upstream_429           4,366         9
+```
+
+This proves a Router counter epoch reset even though configuration identity was
+stable. The reset aligns with the four Router-only TLS EOF observations. The
+admin surface still exposes neither a process-start epoch nor a binary version,
+so this evidence does not identify the Router binary before or after the reset.
+
+The previous analyzer correctly marked the individual deltas unavailable, but
+incorrectly left `matched_routing_eligible=true`,
+`comparison_eligible=true`, and `errors=[]`. The test-first correction now:
+
+- requires both target and comparator routes to exist and remain enabled at
+  both paired endpoints;
+- requires `processed`, `upstream_attempts`, and `upstream_429` to be exported;
+- treats rollback of any exported route counter as a reset;
+- reports Router defects separately in `routing_errors`;
+- makes matched-routing and comparison evidence ineligible for any Router
+  route error while preserving independent PIG/backend runtime integrity.
+
+The exact red/green evidence retained on the current CVM is:
+
+```text
+Router-reset red test SHA-256       31a5791837c946a030450cc37194d770da99ebd32784a32d1214c86fac675404
+disabled-route red test SHA-256     615111ed9fd0828c4064d24804bba4ce74b99136510c40c020ed5e1113e872a4
+focused paired 23/23 SHA-256        c9b15ba06dda032958c43756a45a8adeda07c7e3ceb4239449ed5ba5db82a2e5
+corrected real-reset JSON SHA-256   9e3dd646f2dabe71c1dfc0ef3f30df3fc830c88eda215b70df5ca7f5be85cbe2
+```
+
+The implementation and README were committed and pushed as `0fb0234` on
+`pig-origin/codex/pig-v0.12.18-throughput-estimator`. A new immutable local
+archive was copied to the separate remote directory
+`/var/volatile/dstack/persistent/pig-observe-tool-r4-20260822`; it did not
+overwrite r3.
+
+```text
+r4 source archive SHA-256           bf8a9b7e659814a9b8b2b6b7b8765e1056e09279699704ca0c55c90521e5560e
+remote full suite                    49/49 passed
+full-suite output SHA-256           e676fee28f56f1821421c2859161b2ad2ced36edd856334e997e7afdcc21f33e
+current real-window JSON SHA-256     8529cef264c93d917b7af5122073552dcfc9da9812da481e565f133e897a56ac
+pre-reset paired JSON SHA-256        ffe6d3bfd2d50e02317f4b3d728a696a910e5921a6d485ffed8f333d57a8f1bc
+reset-crossing paired JSON SHA-256   9e3dd646f2dabe71c1dfc0ef3f30df3fc830c88eda215b70df5ca7f5be85cbe2
+```
+
+The current continuous window retained `runtime_service=true` while strict
+matched routing remained false because the four Router samples were incomplete.
+The pre-reset paired endpoint remained valid for descriptive traffic-cohort
+ratios, proving that the new rule does not reject an ordinary monotonic route
+interval. The reset-crossing endpoint now has:
+
+```text
+runtime_integrity_eligible     true
+matched_routing_eligible      false
+comparison_eligible           false
+comparison.status             ineligible
+```
+
+The required three review passes produced these conclusions:
+
+1. Model and causality: Router counter continuity is required to describe
+   traffic offered to each node. A Router reset is not a PIG runtime failure,
+   and backend raw generation work is still not successful completion goodput.
+   The corrected separation preserves both facts and provides no basis for an
+   admission-policy change.
+2. Safety and lifecycle: missing, disabled, endpoint-changed, or reset route
+   evidence closes only the matched-routing comparison. PIG/backend counter,
+   epoch, Compose, model, and container checks remain independent. Two endpoint
+   snapshots cannot detect a disable/re-enable or process restart that returns
+   to the same configuration without a visible counter rollback; formal claims
+   must therefore also require the continuous Router sample series and split at
+   every observed gap, identity change, or reset.
+3. Evidence and release: the focused red tests, 49-test remote suite, normal
+   pre-reset real window, and reset-crossing real window cover the corrected
+   claim. This is an operator analyzer release only. No PIG behavior, image,
+   Compose, Router configuration, route state, backend, or running process was
+   changed, and no production inference request was sent.
+
+The interim target/comparator rates collected across the reset are descriptive
+backend health only and cannot support a new-versus-legacy throughput claim.
+There remains no evidence-triggered reason to create `v0.12.19`; the deployed
+PIG baseline stays at `v0.12.18`. Before the six-hour checkpoint, the formal
+analysis scripts must be repinned from r3 to this tested r4 directory and pass a
+new isolated script gate.
+
+That repin completed at `2026-08-22T07:28:38Z`. The scripts are isolated under
+`/var/volatile/dstack/persistent/.cache/pig-checkpoint-script-gate-0fb0234`,
+reference `pig-observe-tool-r4-20260822`, and record analyzer source commit
+`0fb023433ada8dff636274e4740eb64bbc68c85b`. Remote `bash -n`, live input,
+container-identity, r4 real-output, and classification-expression gates passed
+while the formal checkpoint output remained absent; no time-gated capture ran
+early.
+
+```text
+capture stability window SHA-256    b148d9ebb9026a5eecf80c20748a52a0a9cedd6256f61d89477b0ccfbe49413b
+analyze stability window SHA-256    5e68841c631e25e317102d7df4dded7256f2c6920fefccc0a1440fb870ff73e5
+capture fixed logs SHA-256          79d464b921bab4674dd3c23c682415133c593977556efa003559fbea24f046a3
+capture paired endpoint SHA-256     b81cbeae63ccc8a6d2073c8a11757ac8e380d0f2dbcda35d68b025a91c933de8
+analyze paired endpoint SHA-256     63b1238cb242868aba1b4aa2c1a1774b094145e3c59463b1333d445ea5160b14
+```
