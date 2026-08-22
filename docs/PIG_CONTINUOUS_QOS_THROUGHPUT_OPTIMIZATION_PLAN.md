@@ -1273,3 +1273,53 @@ read sent no inference traffic. No image was built or uploaded, no
 Compose/Router/backend was changed, and no process or CVM was restarted. Whether
 this source enters a `v0.12.19` candidate remains gated on the fixed six-hour
 checkpoint; it does not itself authorize a behavior version or deployment.
+
+### 2026-08-22 3.2-hour partial-window preflight
+
+At `2026-08-22T08:11:09.589Z`, before the fixed six-hour horizon, the r4
+analyzer was rerun against the continuing identity-stable observer. This is an
+explicit partial diagnostic, not a formal checkpoint and not evidence for a
+release or admission change:
+
+```text
+analysis root                   /var/volatile/dstack/persistent/.cache/
+                                pig-partial-window-20260822T0811Z
+analysis JSON SHA-256           cd313e432ff1864cc5321d0b7af8334fda82cc4c8218499b749ae3234a1bf8fe
+observed samples                386 total / 381 all-surface complete
+observed span                   11,550.001 seconds
+formal checkpoint eligible      false
+formal qualification reasons   incomplete_samples, insufficient_samples,
+                                insufficient_observed_span
+runtime-service integrity       true
+matched-routing integrity       false; 7 Router samples incomplete
+```
+
+Runtime service evidence remained healthy and attributable:
+
+```text
+TPS reference                            25
+ready-under-load TPS samples             215
+below-reference fraction / longest       0% / 0 seconds
+trailing mean-active TPS mean / p05       98.18 / 61.51
+waiting p95 / max                        0 / 2
+preemptions                              0
+PIG failed / proxy errors                0 / 0
+PIG/vLLM/HAProxy/ingress restart delta   0 / 0 / 0 / 0
+OOM observed                             none
+known decisions / enforced protections  12,538 / 697
+protection share                         5.56%
+Router backpressure duty cycle           1.84%
+GPU utilization mean / p95               44.61% / 91%
+KV usage mean / max                      1.67% / 13.28%
+backend cache-hit share                  40.60%
+prediction / pre-forward mean            0.018 / 0.149 ms
+```
+
+The window completed 11,845 PIG proxy requests at 1.026 requests/s with zero
+PIG failure or proxy-error delta. Raw backend generation work was 254.78 tok/s,
+but remains explicitly unavailable as successful completion goodput. Seven
+incomplete Router samples preserve the strict all-surface stop reason; they are
+not deleted, interpolated, or relabeled as PIG failures. No inference request,
+container/CVM restart, image action, configuration change, or Router mutation
+was performed. The next decision remains the fixed six-hour checkpoint at
+`2026-08-22T10:58:39.588Z`.
