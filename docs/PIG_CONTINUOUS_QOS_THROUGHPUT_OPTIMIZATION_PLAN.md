@@ -1052,10 +1052,19 @@ PIG baseline stays at `v0.12.18`. Before the six-hour checkpoint, the formal
 analysis scripts must be repinned from r3 to this tested r4 directory and pass a
 new isolated script gate.
 
-That repin completed at `2026-08-22T07:28:38Z`. The scripts are isolated under
-`/var/volatile/dstack/persistent/.cache/pig-checkpoint-script-gate-0fb0234`,
-reference `pig-observe-tool-r4-20260822`, and record analyzer source commit
-`0fb023433ada8dff636274e4740eb64bbc68c85b`. Remote `bash -n`, live input,
+The initial repin passed at `2026-08-22T07:28:38Z`, but the second lifecycle
+review found that its paired script still started before the known Router reset.
+That would correctly return ineligible forever but would discard all stable
+post-reset evidence. The first gate directory was not executed as a checkpoint
+and is superseded.
+
+The corrected gate passed at `2026-08-22T07:31:18Z`. Its scripts are isolated
+under
+`/var/volatile/dstack/persistent/.cache/pig-checkpoint-script-gate-0fb0234-r2`,
+reference `pig-observe-tool-r4-20260822`, record analyzer source commit
+`0fb023433ada8dff636274e4740eb64bbc68c85b`, and start the formal paired segment
+at the complete post-reset capture `20260822T070815Z`. A later reset will still
+make the new segment ineligible. Remote `bash -n`, live input,
 container-identity, r4 real-output, and classification-expression gates passed
 while the formal checkpoint output remained absent; no time-gated capture ran
 early.
@@ -1065,5 +1074,5 @@ capture stability window SHA-256    b148d9ebb9026a5eecf80c20748a52a0a9cedd6256f6
 analyze stability window SHA-256    5e68841c631e25e317102d7df4dded7256f2c6920fefccc0a1440fb870ff73e5
 capture fixed logs SHA-256          79d464b921bab4674dd3c23c682415133c593977556efa003559fbea24f046a3
 capture paired endpoint SHA-256     b81cbeae63ccc8a6d2073c8a11757ac8e380d0f2dbcda35d68b025a91c933de8
-analyze paired endpoint SHA-256     63b1238cb242868aba1b4aa2c1a1774b094145e3c59463b1333d445ea5160b14
+analyze paired endpoint SHA-256     4f5aa5388db5d2e326865b133f8b411cdf883ba48a13d5d5438c03982f22e38d
 ```
