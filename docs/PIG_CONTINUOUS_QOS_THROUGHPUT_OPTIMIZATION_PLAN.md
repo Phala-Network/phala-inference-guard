@@ -1076,3 +1076,109 @@ capture fixed logs SHA-256          79d464b921bab4674dd3c23c682415133c593977556e
 capture paired endpoint SHA-256     b81cbeae63ccc8a6d2073c8a11757ac8e380d0f2dbcda35d68b025a91c933de8
 analyze paired endpoint SHA-256     4f5aa5388db5d2e326865b133f8b411cdf883ba48a13d5d5438c03982f22e38d
 ```
+
+### 2026-08-22 post-reset matched segment and TPS protection attribution
+
+An interim read-only endpoint captured at `2026-08-22T07:34:48Z` extended the
+post-reset paired segment from `20260822T070815Z` to `20260822T073447Z`, or
+1,592 seconds. r4 accepted every required runtime and Router field:
+
+```text
+runtime_integrity_eligible       true
+matched_routing_eligible        true
+comparison_eligible             true
+errors / routing_errors         [] / []
+target/comparator preemptions   0 / 0
+analysis JSON SHA-256           d92901711d886c12f11f817c8d63b6bcaf1aa58684b7f6f530bab0873c4cf136
+```
+
+Protection projection was exact in this segment:
+
+```text
+Router target attempts                       1,771
+PIG predictive decisions                    1,771
+PIG risk decisions / enforced protections     188 / 188
+Router target upstream_429                    188
+PIG accepted / completed                    1,584 / 1,584
+backend non-error terminals                 1,583
+PIG proxy errors / backend preemptions          0 / 0
+```
+
+The one-request accepted/terminal boundary difference is consistent with the
+two independently scraped endpoints; it is not silently treated as either an
+error or a completed request. More importantly, this segment proves that an
+enforced PIG protection is externally visible to Router as upstream 429. It
+does not reproduce the historical hidden-protection defect.
+
+The 188 protections separated into 187 `tps_reference/load` protections and one
+`prefill_budget/request` protection. Every load-protected input estimate was at
+most 4,096 tokens; the request-scoped Prefill protection was in the
+`64K-256K` range. TPS decision subreasons were:
+
+```text
+admit   base_rate                   1,460
+admit   idle                           95
+admit   warming                        19
+admit   current_rate                    7
+admit   qos_budget_granted              3
+protect qos_budget_unobserved          107
+protect idle                            60
+protect warming                         15
+protect waiting                          5
+```
+
+This evidence rules out a complete low-flow self-lock: PIG continued to admit
+both idle and warming requests and completed traffic throughout the segment.
+It also identifies a narrower throughput question. Only three requests spent a
+bounded QoS budget while 107 were protected because another request had not yet
+materialized in backend metrics; another 60 were protected by the bounded idle
+refill. This is the intended one-wave safety behavior, but it may be more
+conservative than the user's long-average QoS contract for short requests.
+
+A fresh partial continuous-window analysis covered 317 samples and 9,480.001
+seconds. Runtime-service integrity remained true, TPS-ready under-load samples
+were never below reference, waiting p95 was zero, and preemptions, PIG failures,
+and proxy errors remained zero. Protection share was 5.35%, GPU utilization
+mean/p95 was 47.87%/93%, KV mean/max was 1.95%/13.28%, and backend aggregate
+cache hit share was 40.03%. The strict Router surface remained ineligible only
+because the original four Router samples were missing. Its JSON SHA-256 was
+`23e5d3d19a4ada5dbb2b60775cb0d4dd846a6b651e8cb6882b572bc7b0c043f2`.
+
+The earlier point-gauge over-protection screen reported zero candidates, but a
+counter-delta audit showed why that result must remain only a screen. Across 90
+complete intervals containing 580 enforced protections, the sampled endpoint
+TPS window was not simultaneously ready and at reference in any interval;
+median endpoint-max GPU utilization was 77%, waiting endpoint-max p95 was zero,
+and KV endpoint-max p95 was 10.15%. A 30-second endpoint cannot reconstruct the
+exact 500-ms admission state or distinguish work that arrived and completed
+between polls. The diagnostic JSON SHA-256 was
+`64972c8a72ee2ca97f4b57b93f74e63c3651aecdc0412f4cd04553155a329e29`.
+Decision-time TPS subreason counters are therefore the authoritative
+attribution; endpoint gauges are supporting load context only.
+
+The descriptive target/comparator rates were:
+
+```text
+                              target v0.12.18   comparator v0.8.12
+raw generation work          103.81 tok/s       88.97 tok/s
+raw prompt work              884.43 tok/s     1,335.12 tok/s
+non-error terminal rate        0.9943/s          0.8499/s
+cache hit share               21.92%            42.32%
+```
+
+These are still unlike cohorts: comparator cache share was 20.41 percentage
+points higher and its prompt distribution was materially longer. Raw generation
+is not success-linked completion goodput. The values therefore prove health and
+counter continuity, not a causal v0.12.18 throughput improvement.
+
+The evidence is strong enough to define, but not yet execute, one falsifiable
+post-checkpoint hypothesis: if the completed post-reset six-hour segment still
+shows `qos_budget_unobserved` and bounded-idle protection dominating short
+requests while long-average TPS remains above reference with no waiting,
+preemption, restart, or OOM, test a `v0.12.19` bounded multi-lease QoS debt wave.
+The candidate must use declared output lifetime and current surplus to bound
+additional pre-poll requests; it must not globally weaken Prefill, KV, waiting,
+preemption, or request-scoped protection. Acceptance requires higher
+SLO-compliant completion goodput or a stronger attributable proxy, no sustained
+TPS deficit, and no new lifecycle or stability failure. Until the formal
+checkpoint satisfies this trigger, `v0.12.18` remains unchanged.
