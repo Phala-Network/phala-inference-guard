@@ -1407,3 +1407,12 @@ restart. No service restart, inference request, image action, Compose change,
 Router mutation, or admission behavior change occurred. The formal six-hour
 capture remains prohibited until `2026-08-22T10:58:39.588Z` and must use this
 r4 directory.
+
+After commit `26010f5`, the one-time `pig-6` heartbeat was repinned from the
+superseded r2 directory to this r4 directory and now requires the r4 archive and
+script hashes before capture. A read-only liveness check at
+`2026-08-22T08:37:47Z` found the same observer run still writing samples, the
+same live Compose hash, PIG `running`, `OOM=false`, `RestartCount=0`, no PIG
+lifecycle event in the preceding three hours, and Router reporting fresh
+`request_aware_open` PIG metrics. This liveness check is not a checkpoint or an
+admission-performance result.
