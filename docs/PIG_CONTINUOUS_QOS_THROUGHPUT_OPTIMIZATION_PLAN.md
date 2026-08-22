@@ -808,3 +808,76 @@ second lease. Without all of those conditions, allowing multiple surplus
 leases would weaken the existing atomic debt bound rather than prove a useful
 throughput improvement. No source behavior, policy, version, image, runtime,
 or route was changed by this audit.
+
+### 2026-08-22 Router collection isolation before the six-hour checkpoint
+
+The managed observer recorded four Router-only HTTPS collection failures from
+`2026-08-22T06:22:09.625Z` through `2026-08-22T06:23:39.627Z`, each
+`SSL: UNEXPECTED_EOF_WHILE_READING`. Later samples returned to `router_ok=1`.
+PIG, vLLM, GPU, and container collection remained successful through those
+rows. The observer process stayed running, its 30-second cadence had no gap,
+and the live Compose, PIG, and vLLM identities remained unchanged. This event
+occurred near work on the separately owned Router 404 repair, but the evidence
+does not establish causality and PIG must not compensate for it.
+
+At `2026-08-22T06:43:39.589Z`, the partial window contained 211 samples over
+6,300.001 seconds. The original all-surface gate correctly remained
+ineligible: 207 samples were complete across every surface and its sole
+integrity stop reason was `incomplete_samples`. PIG and backend counters had no
+reset or missing critical field; no current OOM, identity transition, stopped
+container, or new restart was observed. PIG accepted and completed 7,504
+requests over the window with zero PIG failed or proxy-error delta, while vLLM
+recorded zero preemptions. This is a runtime-health statement, not a formal
+six-hour result or a throughput comparison.
+
+A test-first, source-only observer change now adds independent
+`component_integrity.runtime_service` and
+`component_integrity.matched_routing` results without changing the old strict
+field or its checkpoint semantics. `runtime_service` requires PIG, vLLM, GPU,
+containers, runtime identity, critical counters, restart/OOM, and cadence
+continuity. `matched_routing` inherits those conditions and also requires
+Router scrape and counter continuity. Optional continuous
+`router_config_digest` evidence is checked when supplied; the current legacy
+CSV does not contain that field, so it explicitly reports
+`router_identity_status=not_collected` and requires the paired snapshot
+identity gate before any matched-traffic claim.
+
+The focused remote red gate ran in the existing vLLM image with no network and
+a read-only root. Seven new tests failed only because the component result did
+not yet exist. The accepted focused result is:
+
+```text
+initial red EvidenceGate run       14 tests; 7 expected KeyError failures
+initial red log SHA-256            d89f2086e48736508e3a3bf9f96deffa264fbfbbd3e8b2659f4b4b802f263310
+review red boundary run            2 tests; 2 expected constructor failures
+review red log SHA-256             11c8395ad616bbf30f6786089c455c9c98ac7a8dabd1546ce87203a1427d4bb0
+green window analyzer suite        26/26 passed in 0.044 seconds
+green log SHA-256                  76939ab468a29a753e264726ec4c84fea5c0a0f9c70f8f98e90e8c2ca31b3643
+real partial runtime_service       eligible; 211/211 samples
+real partial matched_routing       ineligible; Router samples incomplete
+strict all-surface integrity       ineligible; incomplete_samples
+initial real analysis SHA-256      1327804b30f0cb0bf8049dfa2d089d57f79118bfb5487d2f3b1fd786542b1c88
+full observer unit suite           46/46 passed in 0.064 seconds
+full unit log SHA-256              ddec75803920db0919cc2f8eeb82e46511b688560338c4319040758277decb24
+full-gate real samples             227; runtime true; routing false
+full-gate real SHA-256             96e5174b4860d8149d7407a63bf4211867507624b23084ec8a6407f979139143
+paired regression SHA-256          5e0afb26f80b23b4b844b06e3722a647333286a00bd535725bca64e4e04c3692
+```
+
+Three review passes preserve these boundaries:
+
+1. Model and causality: a Router scrape failure cannot become evidence of PIG
+   or backend failure, but it still invalidates continuous matched-routing
+   evidence. Horizon shortages remain checkpoint reasons rather than component
+   integrity failures.
+2. Safety and lifecycle: PIG/backend scrape loss, GPU loss, restart, OOM,
+   non-running containers, identity changes, counter resets, and cadence gaps
+   still invalidate runtime service evidence. Router identity or counter
+   changes invalidate routing evidence without erasing a valid service window.
+   The review also removed the obsolete constructor requirement for two fully
+   matched samples, so an all-window Router outage returns an explicit healthy
+   or failed runtime-service result instead of aborting analysis.
+3. Evidence and release: this is an offline operator analyzer only. It changes
+   no PIG admission path, PIG version, image, Compose, Router, backend, route,
+   or running process, and it sends no inference traffic. The strict six-hour
+   checkpoint remains scheduled for `2026-08-22T10:58:39.588Z`.

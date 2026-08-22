@@ -14,6 +14,7 @@ def sample(elapsed: int, **overrides: object) -> dict[str, str]:
         "pig_metrics_ok": 1,
         "vllm_metrics_ok": 1,
         "router_ok": 1,
+        "router_config_digest": "router-a",
         "gpu_ok": 1,
         "containers_ok": 1,
         "compose_sha256": "compose-a",
@@ -198,6 +199,178 @@ class CausalityTests(unittest.TestCase):
 
 
 class EvidenceGateTests(unittest.TestCase):
+    def test_router_only_scrape_failure_preserves_runtime_service_integrity(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [sample(0), sample(30, router_ok=0), sample(60)]
+            ),
+            horizon="stability",
+        )
+        components = result["component_integrity"]
+        self.assertTrue(components["runtime_service"]["integrity_eligible"])
+        self.assertEqual(
+            components["runtime_service"]["stop_reasons"], []
+        )
+        self.assertFalse(components["matched_routing"]["integrity_eligible"])
+        self.assertIn(
+            "router_samples_incomplete",
+            components["matched_routing"]["stop_reasons"],
+        )
+        self.assertFalse(result["runtime_integrity"]["integrity_eligible"])
+        self.assertFalse(result["checkpoint"]["formal_checkpoint_eligible"])
+
+    def test_all_router_scrapes_failed_still_reports_runtime_service(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [sample(0, router_ok=0), sample(30, router_ok=0)]
+            )
+        )
+        components = result["component_integrity"]
+        self.assertTrue(components["runtime_service"]["integrity_eligible"])
+        self.assertFalse(components["matched_routing"]["integrity_eligible"])
+        self.assertEqual(components["matched_routing"]["complete_samples"], 0)
+
+    def test_vllm_scrape_failure_invalidates_runtime_service_integrity(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [sample(0), sample(30, vllm_metrics_ok=0), sample(60)]
+            )
+        )
+        self.assertFalse(
+            result["component_integrity"]["runtime_service"]["integrity_eligible"]
+        )
+        self.assertIn(
+            "runtime_service_samples_incomplete",
+            result["component_integrity"]["runtime_service"]["stop_reasons"],
+        )
+
+    def test_all_vllm_scrapes_failed_returns_integrity_failure(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [sample(0, vllm_metrics_ok=0), sample(30, vllm_metrics_ok=0)]
+            )
+        )
+        components = result["component_integrity"]
+        self.assertFalse(components["runtime_service"]["integrity_eligible"])
+        self.assertFalse(components["matched_routing"]["integrity_eligible"])
+
+    def test_pig_scrape_failure_invalidates_runtime_service_integrity(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [sample(0), sample(30, pig_metrics_ok=0), sample(60)]
+            )
+        )
+        self.assertFalse(
+            result["component_integrity"]["runtime_service"]["integrity_eligible"]
+        )
+
+    def test_gpu_scrape_failure_invalidates_runtime_service_integrity(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [sample(0), sample(30, gpu_ok=0), sample(60)]
+            )
+        )
+        self.assertFalse(
+            result["component_integrity"]["runtime_service"]["integrity_eligible"]
+        )
+
+    def test_restart_and_oom_invalidate_runtime_service_integrity(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [
+                    sample(0),
+                    sample(
+                        30,
+                        vllm_started_at="vllm-start-b",
+                        vllm_restarts=1,
+                        vllm_oom=1,
+                    ),
+                ]
+            )
+        )
+        runtime = result["component_integrity"]["runtime_service"]
+        self.assertFalse(runtime["integrity_eligible"])
+        self.assertIn("container_restarted", runtime["stop_reasons"])
+        self.assertIn("oom_observed", runtime["stop_reasons"])
+
+    def test_router_identity_change_only_invalidates_matched_routing(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [sample(0), sample(30, router_config_digest="router-b")]
+            )
+        )
+        components = result["component_integrity"]
+        self.assertTrue(components["runtime_service"]["integrity_eligible"])
+        self.assertFalse(components["matched_routing"]["integrity_eligible"])
+        self.assertIn(
+            "router_identity_changed",
+            components["matched_routing"]["stop_reasons"],
+        )
+        self.assertIn(
+            "router_identity_changed",
+            result["runtime_integrity"]["formal_stop_reasons"],
+        )
+
+    def test_uncollected_router_identity_is_explicit_legacy_scope(self) -> None:
+        rows = [sample(0), sample(30)]
+        for row in rows:
+            row.pop("router_config_digest")
+        result = analyze(ObservationWindow(rows))
+        routing = result["component_integrity"]["matched_routing"]
+        self.assertTrue(routing["integrity_eligible"])
+        self.assertEqual(routing["router_identity_status"], "not_collected")
+        self.assertIsNotNone(routing["identity_note"])
+
+    def test_router_counter_reset_only_invalidates_matched_routing(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [
+                    sample(0),
+                    sample(
+                        30,
+                        router_use1_19_attempts=10,
+                        router_use1_19_processed=9,
+                        router_use1_19_429=1,
+                    ),
+                ]
+            )
+        )
+        components = result["component_integrity"]
+        self.assertTrue(components["runtime_service"]["integrity_eligible"])
+        self.assertFalse(components["matched_routing"]["integrity_eligible"])
+        self.assertIn(
+            "router_counter_reset",
+            components["matched_routing"]["stop_reasons"],
+        )
+
+    def test_backend_counter_reset_invalidates_runtime_service_integrity(self) -> None:
+        result = analyze(
+            ObservationWindow(
+                [sample(0), sample(30, vllm_generation_tokens_total=10)]
+            )
+        )
+        runtime = result["component_integrity"]["runtime_service"]
+        self.assertFalse(runtime["integrity_eligible"])
+        self.assertIn("critical_counter_reset", runtime["stop_reasons"])
+        self.assertIn(
+            "vllm_generation_tokens_total", runtime["critical_counter_resets"]
+        )
+
+    def test_partial_horizon_does_not_invalidate_component_integrity(self) -> None:
+        result = analyze(
+            ObservationWindow([sample(0), sample(30)]), horizon="stability"
+        )
+        self.assertTrue(
+            result["component_integrity"]["runtime_service"]["integrity_eligible"]
+        )
+        self.assertTrue(
+            result["component_integrity"]["matched_routing"]["integrity_eligible"]
+        )
+        self.assertFalse(result["checkpoint"]["formal_checkpoint_eligible"])
+        self.assertIn(
+            "insufficient_samples", result["checkpoint"]["qualification_reasons"]
+        )
+
     def test_runtime_restart_invalidates_formal_checkpoint(self) -> None:
         result = analyze(
             ObservationWindow(

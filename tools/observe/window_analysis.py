@@ -30,13 +30,13 @@ VLLM_SOURCE_MAPPING = {
     "cache_hits": "vllm:prefix_cache_hits_total (sum series)",
     "successful_completion_goodput": None,
 }
-COMPLETE_FIELDS = (
+RUNTIME_SERVICE_COMPLETE_FIELDS = (
     "pig_metrics_ok",
     "vllm_metrics_ok",
-    "router_ok",
     "gpu_ok",
     "containers_ok",
 )
+COMPLETE_FIELDS = RUNTIME_SERVICE_COMPLETE_FIELDS + ("router_ok",)
 RUNTIME_IDENTITY_FIELDS = (
     "compose_sha256",
     "pig_container_id",
@@ -60,6 +60,7 @@ VLLM_COUNTER_IDENTITY = (
     "vllm_started_at",
 )
 ROUTER_COUNTER_IDENTITY = ("compose_sha256",)
+ROUTER_IDENTITY_FIELDS = ("router_config_digest",)
 
 
 def number(value: str | None) -> float:
@@ -112,6 +113,13 @@ def distribution(values: Iterable[float]) -> dict[str, float | int | None]:
 
 def identity(row: Row, fields: Sequence[str]) -> tuple[str, ...]:
     return tuple(str(row.get(field, "")) for field in fields)
+
+
+def identity_transition_count(rows: Sequence[Row], fields: Sequence[str]) -> int:
+    return sum(
+        identity(previous, fields) != identity(current, fields)
+        for previous, current in zip(rows, rows[1:])
+    )
 
 
 @dataclass(frozen=True)
@@ -223,8 +231,6 @@ class ObservationWindow:
         self.complete_rows = [
             row for row in self.rows if all(boolean(row.get(field)) for field in COMPLETE_FIELDS)
         ]
-        if len(self.complete_rows) < 2:
-            raise ValueError("at least two complete observation samples are required")
         elapsed = [number(row.get("elapsed_seconds")) for row in self.rows]
         if any(not math.isfinite(value) for value in elapsed):
             raise ValueError("every sample must contain finite elapsed_seconds")
@@ -264,11 +270,7 @@ class ObservationWindow:
         return sorted({str(row.get(field, "")) for row in self.complete_rows})
 
     def identity_transitions(self) -> int:
-        return sum(
-            identity(previous, RUNTIME_IDENTITY_FIELDS)
-            != identity(current, RUNTIME_IDENTITY_FIELDS)
-            for previous, current in zip(self.complete_rows, self.complete_rows[1:])
-        )
+        return identity_transition_count(self.complete_rows, RUNTIME_IDENTITY_FIELDS)
 
     def maximum_interval(self) -> float:
         return max(self.intervals)
@@ -401,6 +403,12 @@ def checkpoint_qualification(
 def analyze(window: ObservationWindow, horizon: str | None = None) -> dict[str, Any]:
     rows = window.complete_rows
     all_rows = window.rows
+    runtime_rows = [
+        row
+        for row in all_rows
+        if all(boolean(row.get(field)) for field in RUNTIME_SERVICE_COMPLETE_FIELDS)
+    ]
+    router_rows = [row for row in all_rows if boolean(row.get("router_ok"))]
     references = [number(row.get("pig_tps_reference")) for row in rows]
     references = [value for value in references if math.isfinite(value)]
     reference = statistics.median(references) if references else 0.0
@@ -472,13 +480,37 @@ def analyze(window: ObservationWindow, horizon: str | None = None) -> dict[str, 
     cache_share = hit_delta / query_delta if query_delta > 0 else None
 
     restart_fields = ("pig_restarts", "vllm_restarts", "haproxy_restarts", "ingress_restarts")
-    restart_deltas = {field: fixed_gauge_delta(rows, field) for field in restart_fields}
+    restart_deltas = {
+        field: fixed_gauge_delta(runtime_rows, field) for field in restart_fields
+    }
     new_restarts = {
         field: delta for field, delta in restart_deltas.items() if delta is not None and delta > 0
     }
     oom_fields = ("pig_oom", "vllm_oom", "haproxy_oom", "ingress_oom")
-    observed_oom = {field: any(boolean(row.get(field)) for row in rows) for field in oom_fields}
-    runtime_identity_transitions = window.identity_transitions()
+    observed_oom = {
+        field: any(boolean(row.get(field)) for row in runtime_rows) for field in oom_fields
+    }
+    runtime_identity_transitions = identity_transition_count(
+        runtime_rows, RUNTIME_IDENTITY_FIELDS
+    )
+    router_identity_keys_present = any(
+        field in row for row in router_rows for field in ROUTER_IDENTITY_FIELDS
+    )
+    if not router_identity_keys_present:
+        router_identity_status = "not_collected"
+        router_identity_transitions = 0
+    elif any(
+        str(row.get(field, "")) == ""
+        for row in router_rows
+        for field in ROUTER_IDENTITY_FIELDS
+    ):
+        router_identity_status = "incomplete"
+        router_identity_transitions = 0
+    else:
+        router_identity_status = "collected"
+        router_identity_transitions = identity_transition_count(
+            router_rows, ROUTER_IDENTITY_FIELDS
+        )
     formal_stop_reasons: list[str] = []
     if len(window.complete_rows) != len(window.rows):
         formal_stop_reasons.append("incomplete_samples")
@@ -486,6 +518,10 @@ def analyze(window: ObservationWindow, horizon: str | None = None) -> dict[str, 
         formal_stop_reasons.append("sample_gap")
     if runtime_identity_transitions:
         formal_stop_reasons.append("runtime_identity_changed")
+    if router_identity_status == "incomplete":
+        formal_stop_reasons.append("router_identity_incomplete")
+    elif router_identity_transitions:
+        formal_stop_reasons.append("router_identity_changed")
     if new_restarts:
         formal_stop_reasons.append("container_restarted")
     if any(observed_oom.values()):
@@ -494,7 +530,9 @@ def analyze(window: ObservationWindow, horizon: str | None = None) -> dict[str, 
         {
             field.removesuffix("_status")
             for field in ("pig_status", "vllm_status", "haproxy_status", "ingress_status")
-            if any(str(row.get(field, "")).lower() != "running" for row in rows)
+            if any(
+                str(row.get(field, "")).lower() != "running" for row in runtime_rows
+            )
         }
     )
     if non_running:
@@ -503,7 +541,7 @@ def analyze(window: ObservationWindow, horizon: str | None = None) -> dict[str, 
         {
             field
             for field in RUNTIME_IDENTITY_FIELDS
-            if any(str(row.get(field, "")) == "" for row in rows)
+            if any(str(row.get(field, "")) == "" for row in runtime_rows)
         }
     )
     if missing_identity_fields:
@@ -549,6 +587,66 @@ def analyze(window: ObservationWindow, horizon: str | None = None) -> dict[str, 
         formal_stop_reasons.append("critical_counter_reset")
     if missing_counter_fields:
         formal_stop_reasons.append("critical_metric_missing")
+
+    runtime_critical_counters = {
+        group: critical_counters[group] for group in ("pig", "backend")
+    }
+    runtime_reset_fields = sorted(
+        key
+        for group in runtime_critical_counters.values()
+        for key, result in group.items()
+        if int(result["reset_intervals"] or 0) > 0
+    )
+    runtime_missing_counter_fields = sorted(
+        key
+        for group in runtime_critical_counters.values()
+        for key, result in group.items()
+        if int(result["accepted_intervals"] or 0) == 0
+        and int(result["missing_intervals"] or 0) > 0
+    )
+    router_reset_fields = sorted(
+        key
+        for key, result in critical_counters["router"].items()
+        if int(result["reset_intervals"] or 0) > 0
+    )
+    router_missing_counter_fields = sorted(
+        key
+        for key, result in critical_counters["router"].items()
+        if int(result["accepted_intervals"] or 0) == 0
+        and int(result["missing_intervals"] or 0) > 0
+    )
+
+    runtime_service_stop_reasons: list[str] = []
+    if len(runtime_rows) != len(all_rows):
+        runtime_service_stop_reasons.append("runtime_service_samples_incomplete")
+    if window.maximum_interval() > window.nominal_interval * 1.5:
+        runtime_service_stop_reasons.append("sample_gap")
+    if runtime_identity_transitions:
+        runtime_service_stop_reasons.append("runtime_identity_changed")
+    if new_restarts:
+        runtime_service_stop_reasons.append("container_restarted")
+    if any(observed_oom.values()):
+        runtime_service_stop_reasons.append("oom_observed")
+    if non_running:
+        runtime_service_stop_reasons.append("container_not_running")
+    if missing_identity_fields:
+        runtime_service_stop_reasons.append("runtime_identity_incomplete")
+    if runtime_reset_fields:
+        runtime_service_stop_reasons.append("critical_counter_reset")
+    if runtime_missing_counter_fields:
+        runtime_service_stop_reasons.append("critical_metric_missing")
+
+    matched_routing_stop_reasons = list(runtime_service_stop_reasons)
+    if len(router_rows) != len(all_rows):
+        matched_routing_stop_reasons.append("router_samples_incomplete")
+    if router_identity_status == "incomplete":
+        matched_routing_stop_reasons.append("router_identity_incomplete")
+    elif router_identity_transitions:
+        matched_routing_stop_reasons.append("router_identity_changed")
+    if router_reset_fields:
+        matched_routing_stop_reasons.append("router_counter_reset")
+    if router_missing_counter_fields:
+        matched_routing_stop_reasons.append("router_metric_missing")
 
     checkpoint = checkpoint_qualification(window, horizon, formal_stop_reasons)
 
@@ -667,5 +765,31 @@ def analyze(window: ObservationWindow, horizon: str | None = None) -> dict[str, 
             "pig_container_ids": window.identity_values("pig_container_id"),
             "vllm_container_ids": window.identity_values("vllm_container_id"),
             "vllm_started_at_values": window.identity_values("vllm_started_at"),
+        },
+        "component_integrity": {
+            "runtime_service": {
+                "integrity_eligible": not runtime_service_stop_reasons,
+                "stop_reasons": runtime_service_stop_reasons,
+                "complete_samples": len(runtime_rows),
+                "total_samples": len(all_rows),
+                "critical_counter_resets": runtime_reset_fields,
+                "missing_critical_counter_fields": runtime_missing_counter_fields,
+            },
+            "matched_routing": {
+                "integrity_eligible": not matched_routing_stop_reasons,
+                "stop_reasons": matched_routing_stop_reasons,
+                "complete_samples": len(window.complete_rows),
+                "total_samples": len(all_rows),
+                "critical_counter_resets": router_reset_fields,
+                "missing_critical_counter_fields": router_missing_counter_fields,
+                "router_identity_status": router_identity_status,
+                "router_identity_transitions": router_identity_transitions,
+                "identity_note": (
+                    "not_collected means the legacy CSV cannot prove Router config "
+                    "identity; pair this result with a Router snapshot identity gate"
+                    if router_identity_status == "not_collected"
+                    else None
+                ),
+            },
         },
     }

@@ -11,10 +11,24 @@ python3 tools/observe/analyze_window.py \
 
 The explicit horizon is mandatory: `release` applies the 30-minute/5-second
 contract, `stability` the 6-hour/30-second contract, and `delayed` the
-24-hour/60-second contract. `runtime_integrity.integrity_eligible` means only
-that collected evidence is internally coherent. The stronger
-`checkpoint.formal_checkpoint_eligible` also requires the horizon's duration,
-sample count, and cadence; a healthy partial window cannot pass early.
+24-hour/60-second contract. The legacy
+`runtime_integrity.integrity_eligible` field remains the strict all-surface
+integrity gate: any incomplete PIG, backend, Router, GPU, or container sample
+keeps it false. The stronger `checkpoint.formal_checkpoint_eligible` also
+requires the horizon's duration, sample count, and cadence; a healthy partial
+window cannot pass early.
+
+`component_integrity` prevents a Router-only collection failure from being
+misreported as a PIG/backend runtime failure without weakening the strict
+gate. `runtime_service` requires continuous PIG, backend, GPU, container,
+identity, restart/OOM, and critical-counter evidence. `matched_routing`
+inherits those requirements and additionally requires complete Router scrapes
+and Router counter continuity. The legacy CSV does not collect a Router config
+digest, so it reports `router_identity_status=not_collected` and an explicit
+note; use the paired snapshot Router identity gate before making a matched
+traffic claim. If a future CSV supplies `router_config_digest`, an incomplete
+or changing value invalidates `matched_routing` and the strict all-surface
+gate, while an otherwise continuous `runtime_service` result remains usable.
 
 The analyzer deliberately reports backend generation tokens as raw generation
 throughput. The observer CSV has no success-linked output-token counter, so the
