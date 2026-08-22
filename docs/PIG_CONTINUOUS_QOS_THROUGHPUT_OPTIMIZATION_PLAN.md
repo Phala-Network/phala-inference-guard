@@ -1416,3 +1416,86 @@ same live Compose hash, PIG `running`, `OOM=false`, `RestartCount=0`, no PIG
 lifecycle event in the preceding three hours, and Router reporting fresh
 `request_aware_open` PIG metrics. This liveness check is not a checkpoint or an
 admission-performance result.
+
+### 2026-08-22 delayed 24-hour checkpoint preparation
+
+The six-hour horizon was still in the future at `2026-08-22T08:39:39Z`, so no
+formal capture was executed. Instead, the already accepted r4 lifecycle was
+mechanically specialized for the nested delayed checkpoint at
+`2026-08-23T04:58:39.588Z`. The delayed analyzer contract is 24 hours, at least
+1,440 samples, and no slower than a 90-second median interval. The running
+observer collects every 30 seconds and stops before taking a sample at exactly
+86,400 seconds.
+
+The first delayed candidate, retained as
+`pig-checkpoint-script-gate-delayed-r1`, assumed exactly 2,880 samples and would
+have rejected an otherwise valid 24-hour window if any individual collection
+iteration exceeded 30 seconds and caused the observer to skip one slot. That is
+an over-strict evidence gate, not a runtime defect. It was never admitted to a
+heartbeat or used for a formal capture. One initial r1 contract invocation also
+looked for the wrong literal variable name; the corrected contract then passed
+and exposed the sample-count design issue during the explicit derivation review.
+
+The accepted preparation candidate is isolated at:
+
+```text
+/var/volatile/dstack/persistent/.cache/pig-checkpoint-script-gate-delayed-r2
+archive SHA-256
+4c11bd6619e371ff21ee6628dcf6142183917d940beac007e0005cd29368b78c
+```
+
+It waits for observer metadata `status=complete`, freezes every actual CSV row
+instead of downsampling or truncating, and verifies:
+
+- at least 1,440 actual samples;
+- metadata sample count equals the immutable CSV row count;
+- configured observer interval/duration remain 30/86,400 seconds;
+- first sample is within one second of start;
+- final sample and observed span satisfy the delayed horizon lower bound but
+  remain before 86,400 seconds;
+- observer start/end and current live Compose SHA-256 are identical;
+- all observer error rows up to the exact cutoff are retained;
+- the analyzer runs with `--horizon delayed`;
+- the paired comparison still begins at the complete post-reset endpoint
+  `20260822T070815Z`.
+
+Retaining all 30-second rows is intentional even though the minimum delayed
+contract is expressed at 60 seconds. Downsampling could omit an incomplete
+Router scrape and falsely turn strict all-surface evidence green. Denser input
+does not weaken the analyzer's minimum duration, sample-count, or maximum
+cadence requirements.
+
+The final delayed script hashes are:
+
+```text
+analyze-delayed-24h.sh          44205c08ddd3f766f9ff2e9183d27418cc31cb9c55e8bd31463c21203bfe6132
+analyze-delayed-paired.sh       320fa4d7af939ab4ad8bf8bff6c48f6d5719efd677d79668efc5559b8c007f73
+capture-delayed-24h.sh          4d8f0c4c542763457c31a9b616a72c232251ac39dd8b28aef86ffa9b0024e3ac
+capture-delayed-logs.sh         f7d0dc3e6e04f514985ad22293252d3552719e702110004fdc5bcd9d8383b255
+capture-delayed-paired-end.sh   3aceb60506df7c923b680b6a5fe47accaa6e6b55289528e7b5302d62c030954e
+```
+
+Remote `bash -n`, exact contract, installed SHA verification, r1-to-r2 diff,
+and pre-horizon rejection gates passed. The four scripts unrelated to sample
+freezing are byte-identical to r1; the only r2 executable difference is the
+bounded all-sample capture and its metadata/Compose consistency checks.
+
+```text
+installed SHA256SUMS SHA-256
+defc2079ef78ca557d19788b77a0dab2efbf379c237e1246c0fb094795592678
+contract green output SHA-256
+926e80ef499fcde36216739c6a09218b9f8ba724adbc69926a32f20c220427e2
+early-rejection SHA256SUMS SHA-256
+59ca3dab888843b86bda17972118ba07212d46e86e5dc1f16b15f595d4d3a15f
+r1-to-r2 derivation diff SHA-256
+0ecf4caa2c9a964aa5ff487a17779ce9d3e7e2e6bd369f621423e4b989895512
+```
+
+Both delayed window and paired capture returned non-zero before the horizon,
+with no formal directory, partial directory, paired directory addition, or
+pointer change. The final residual audit reported
+`delayed_checkpoint_r2_evidence=complete residuals=clean`. This preparation
+created only isolated operator evidence. It did not modify PIG, Router,
+observer behavior, Compose, images, containers, routes, or production traffic.
+The 24-hour heartbeat must not be created until the six-hour checkpoint has
+finished; when created, it must pin this delayed r2 directory and archive hash.
