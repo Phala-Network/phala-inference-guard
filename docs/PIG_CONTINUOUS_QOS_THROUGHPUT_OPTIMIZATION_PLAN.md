@@ -1980,3 +1980,80 @@ From this point:
 
 No runtime, source behavior, image, Compose, route, container, CVM, or
 production request changed in recording this scope correction.
+
+### 2026-08-22 pre-checkpoint debt-ledger implementation audit correction
+
+A further read-only review at source HEAD `bc4ae6d` checked the proposed
+non-idle debt candidate against the concrete Controller, projection,
+reservation, reconciliation, and dynamic TPS-policy paths. It found two
+attribution/fencing requirements that the earlier pre-review did not state
+precisely enough. The formal six-hour evidence remains the behavior gate; this
+section does not select or implement the candidate.
+
+First, the candidate must not relax `UnobservedSequences > 0` merely because
+one QoS-budget lease exists. `UnobservedSequences` also includes ordinary
+fitting reservations, so that shortcut could admit a second marginal request
+while unrelated demand has not yet materialized in backend metrics. A selected
+candidate must aggregate the intersection explicitly: unobserved Decode
+sequences belonging to QoS-budgeted reservations. A second marginal grant is
+eligible only when every currently unobserved sequence is attributable to the
+bounded QoS-debt wave; any unrelated unobserved sequence preserves the current
+`qos_budget_unobserved` protection. The value must follow the same reserved,
+forwarded-Prefill, active-Decode, terminal-debt, covering-poll, reset,
+fail-close, and shutdown lifecycle as its owning reservation.
+
+Second, the reference-change fence must use the Controller's existing
+`tpsPolicyEpoch`, not the externally visible `policyRevision`. The policy
+revision increases even for a same-reference CAS write, while `tpsPolicyEpoch`
+increases only when the TPS reference actually changes and already excludes a
+sample window that straddles that change. Each debt lease must therefore store
+the admission-time TPS policy epoch, and the constant-size aggregate ledger
+must retain the common live debt epoch. A new grant is forbidden when a live
+ledger epoch differs from the current TPS policy epoch. A same-reference write
+must preserve eligibility and evidence; a reference-changing write must reset
+the TPS window and fence all old-epoch debt until reconciliation clears it.
+Because cross-epoch grants are forbidden, the live aggregate has either zero
+leases and epoch zero, or one/two leases sharing one nonzero epoch; add,
+subtract, replace, slow reconstruction, overflow, and underflow checks must
+enforce that invariant.
+
+The coherent candidate state is consequently still constant-size, but is more
+specific than a lease count:
+
+```text
+per QoS-budget reservation
+  committed_debt_tokens
+  tps_policy_epoch
+  budget-attributed unobserved Decode sequences
+
+aggregate reservation overlay
+  qos_budget_leases             <= 2
+  qos_committed_debt_tokens
+  qos_budget_policy_epoch       common epoch or zero
+  qos_budget_unobserved_sequences
+```
+
+The forecast must return the upward-rounded bounded debt value with the grant,
+and `AdmissionController.Admit` must commit that value atomically with the
+reservation under the existing mutex. The first and second grant must subtract
+all aggregate committed debt from the same rolling surplus before spending it.
+Decision records, logs, and metrics must expose enough before/after committed
+debt and attribution to distinguish an actual second grant, insufficient
+remaining surplus, unrelated-unobserved protection, the two-lease cap, and an
+old-policy-epoch fence; no silent protection branch is acceptable.
+
+Focused red tests must now include both false-attribution directions: one
+same-poll QoS-budget reservation may permit the second bounded debt grant when
+the aggregate budget proves it, while one unrelated ordinary unobserved
+reservation must continue to block it. Policy tests must separately cover an
+equal-reference update, a reference-changing update, a straddling sample,
+old-epoch live and residual debt, reconciliation to an empty epoch, and the
+first new-epoch grant after fresh TPS evidence matures. Property, race,
+simulation, and idle-regression requirements from the prior three review passes
+remain unchanged.
+
+This correction rejects an implementation based only on
+`QoSBudgetLeases < 2`, any implementation that treats all unobserved demand as
+budget-attributed, and any fence based on ordinary policy revision. It changes
+no Go source, tests, version, image, runtime configuration, process, route, or
+production request.
