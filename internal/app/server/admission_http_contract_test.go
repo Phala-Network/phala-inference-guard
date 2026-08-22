@@ -355,6 +355,45 @@ func TestV01218ResponseUsageEvidenceUnderstandsResponsesAPIWithoutChangingBytes(
 	}
 }
 
+func TestSuccessfulCompletionTokensTrackStreamingUsageWithoutChangingBytes(t *testing.T) {
+	payload := "data: {\"choices\":[],\"usage\":{\"completion_tokens\":7}}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer backend.Close()
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", KVCapacity: 64_000, MaxModelLen: 4_096,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+	body := `{"model":"model-agnostic","messages":[{"role":"user","content":"stream usage"}],` +
+		`"stream":true,"max_tokens":64}`
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	srv.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != payload {
+		t.Fatalf(
+			"streaming usage changed proxy response: status=%d body=%q",
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	var output bytes.Buffer
+	srv.writeLocalMetrics(&output)
+	for _, want := range []string{
+		`pig_predictive_successful_completion_tokens_total 7`,
+		`pig_predictive_response_usage_outcomes_total{outcome="available"} 1`,
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("streaming successful completion evidence missing %q\nmetrics:\n%s", want, output.String())
+		}
+	}
+}
+
 func TestV01218PrefillLifecycleEvidenceSeparatesFirstByteNoFirstByteAndPreForward(t *testing.T) {
 	var backendCalls atomic.Int64
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

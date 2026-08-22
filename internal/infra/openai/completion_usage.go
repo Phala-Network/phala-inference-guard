@@ -510,7 +510,7 @@ func decodeCompletionsUsageEvidence(payload []byte, streaming bool) (CompletionU
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
 	usage := CompletionUsage{CompletionTokens: *envelope.Usage.CompletionTokens}
-	if usage.CompletionTokens <= 0 {
+	if usage.CompletionTokens < 0 {
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
 	if envelope.Usage.PromptTokens != nil && *envelope.Usage.PromptTokens > 0 {
@@ -554,7 +554,7 @@ func decodeResponsesUsageEvidence(payload []byte, streaming bool) (CompletionUsa
 	if envelope == nil || envelope.Usage == nil {
 		return CompletionUsage{}, CompletionUsageUnavailable
 	}
-	if envelope.Usage.OutputTokens == nil || *envelope.Usage.OutputTokens <= 0 {
+	if envelope.Usage.OutputTokens == nil || *envelope.Usage.OutputTokens < 0 {
 		return CompletionUsage{}, CompletionUsageMalformed
 	}
 	usage := CompletionUsage{CompletionTokens: *envelope.Usage.OutputTokens}

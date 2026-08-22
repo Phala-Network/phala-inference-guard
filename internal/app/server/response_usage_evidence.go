@@ -80,14 +80,16 @@ var actualOutputTokenBucketLabels = [...]string{
 }
 
 type responseUsageEvidence struct {
-	mu          sync.Mutex
-	outcomes    [responseUsageEvidenceOutcomeCount]uint64
-	comparisons [declaredOutputTokenBucketCount][actualOutputTokenBucketCount]uint64
+	mu                         sync.Mutex
+	outcomes                   [responseUsageEvidenceOutcomeCount]uint64
+	comparisons                [declaredOutputTokenBucketCount][actualOutputTokenBucketCount]uint64
+	successfulCompletionTokens uint64
 }
 
 type responseUsageEvidenceSnapshot struct {
-	outcomes    [responseUsageEvidenceOutcomeCount]uint64
-	comparisons [declaredOutputTokenBucketCount][actualOutputTokenBucketCount]uint64
+	outcomes                   [responseUsageEvidenceOutcomeCount]uint64
+	comparisons                [declaredOutputTokenBucketCount][actualOutputTokenBucketCount]uint64
+	successfulCompletionTokens uint64
 }
 
 type responseUsageRequestEvidence struct {
@@ -133,6 +135,7 @@ func (e *responseUsageEvidence) record(
 	declared declaredOutputTokenBucket,
 	outcome responseUsageEvidenceOutcome,
 	actual actualOutputTokenBucket,
+	successfulCompletionTokens uint64,
 ) {
 	if e == nil {
 		return
@@ -149,6 +152,7 @@ func (e *responseUsageEvidence) record(
 	e.mu.Lock()
 	e.outcomes[outcome]++
 	e.comparisons[declared][actual]++
+	e.successfulCompletionTokens += successfulCompletionTokens
 	e.mu.Unlock()
 }
 
@@ -158,14 +162,20 @@ func (e *responseUsageEvidence) Snapshot() responseUsageEvidenceSnapshot {
 	}
 	e.mu.Lock()
 	snapshot := responseUsageEvidenceSnapshot{
-		outcomes:    e.outcomes,
-		comparisons: e.comparisons,
+		outcomes:                   e.outcomes,
+		comparisons:                e.comparisons,
+		successfulCompletionTokens: e.successfulCompletionTokens,
 	}
 	e.mu.Unlock()
 	return snapshot
 }
 
 func writeResponseUsageEvidenceMetrics(w io.Writer, snapshot responseUsageEvidenceSnapshot) {
+	fmt.Fprintf(
+		w,
+		"pig_predictive_successful_completion_tokens_total %d\n",
+		snapshot.successfulCompletionTokens,
+	)
 	for outcome, label := range responseUsageEvidenceOutcomeLabels {
 		fmt.Fprintf(w, "pig_predictive_response_usage_outcomes_total{outcome=%q} %d\n", label, snapshot.outcomes[outcome])
 	}
@@ -228,12 +238,12 @@ func (r *responseUsageRequestEvidence) Complete(result proxyResult) {
 	}
 	outcome := responseUsageEvidenceCensored
 	actual := actualOutputTokensCensored
-	switch {
-	case r.observed:
-		outcome, actual = responseUsageEvidenceForObservation(r.observation)
-	case result.status >= http.StatusOK && result.status < http.StatusMultipleChoices &&
-		!result.proxyFailed && !result.timedOut && result.status != clientClosedRequestStatus:
-		if !r.parserAttached {
+	var successfulCompletionTokens uint64
+	if proxyResultSucceeded(result) {
+		switch {
+		case r.observed:
+			outcome, actual, successfulCompletionTokens = responseUsageEvidenceForObservation(r.observation)
+		case !r.parserAttached:
 			outcome = responseUsageEvidenceUnavailable
 			actual = actualOutputTokensUnavailable
 		}
@@ -242,7 +252,7 @@ func (r *responseUsageRequestEvidence) Complete(result proxyResult) {
 	owner := r.owner
 	declared := r.declared
 	r.mu.Unlock()
-	owner.record(declared, outcome, actual)
+	owner.record(declared, outcome, actual, successfulCompletionTokens)
 }
 
 func (r *responseUsageRequestEvidence) Censor() {
@@ -258,21 +268,23 @@ func (r *responseUsageRequestEvidence) Censor() {
 	owner := r.owner
 	declared := r.declared
 	r.mu.Unlock()
-	owner.record(declared, responseUsageEvidenceCensored, actualOutputTokensCensored)
+	owner.record(declared, responseUsageEvidenceCensored, actualOutputTokensCensored, 0)
 }
 
 func responseUsageEvidenceForObservation(
 	observation openai.CompletionUsageEvidence,
-) (responseUsageEvidenceOutcome, actualOutputTokenBucket) {
+) (responseUsageEvidenceOutcome, actualOutputTokenBucket, uint64) {
 	switch observation.Outcome {
 	case openai.CompletionUsageAvailable:
-		if observation.Usage.CompletionTokens > 0 {
-			return responseUsageEvidenceAvailable, actualOutputTokenBucketFor(observation.Usage.CompletionTokens)
+		if observation.Usage.CompletionTokens >= 0 {
+			return responseUsageEvidenceAvailable,
+				actualOutputTokenBucketFor(observation.Usage.CompletionTokens),
+				uint64(observation.Usage.CompletionTokens)
 		}
 	case openai.CompletionUsageUnavailable:
-		return responseUsageEvidenceUnavailable, actualOutputTokensUnavailable
+		return responseUsageEvidenceUnavailable, actualOutputTokensUnavailable, 0
 	}
-	return responseUsageEvidenceMalformed, actualOutputTokensMalformed
+	return responseUsageEvidenceMalformed, actualOutputTokensMalformed, 0
 }
 
 func declaredOutputTokenBucketFor(tokens int64) declaredOutputTokenBucket {

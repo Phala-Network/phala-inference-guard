@@ -134,9 +134,14 @@ func admissionTerminalCause(result proxyResult) coreadmission.TerminalCause {
 		return coreadmission.TerminalDisconnect
 	case result.proxyFailed:
 		return coreadmission.TerminalError
-	case result.status >= http.StatusOK && result.status < http.StatusMultipleChoices:
+	case proxyResultSucceeded(result):
 		return coreadmission.TerminalSuccess
 	default:
 		return coreadmission.TerminalError
 	}
+}
+
+func proxyResultSucceeded(result proxyResult) bool {
+	return result.status >= http.StatusOK && result.status < http.StatusMultipleChoices &&
+		!result.proxyFailed && !result.timedOut && result.status != clientClosedRequestStatus
 }

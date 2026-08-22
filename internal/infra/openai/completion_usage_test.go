@@ -294,6 +294,25 @@ func TestCompletionUsageEvidenceParsesResponsesAPIJSONAndSSE(t *testing.T) {
 	}
 }
 
+func TestCompletionUsageEvidenceAcceptsZeroOutputForResponsesAPI(t *testing.T) {
+	payload := `{"object":"response","usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10}}`
+	var observed []CompletionUsageEvidence
+	body := ObserveCompletionUsageEvidenceBodyForFormat(
+		io.NopCloser(strings.NewReader(payload)),
+		false,
+		CompletionUsageFormatResponses,
+		func(evidence CompletionUsageEvidence) { observed = append(observed, evidence) },
+	)
+	got, err := io.ReadAll(body)
+	if err != nil || string(got) != payload {
+		t.Fatalf("zero-output Responses body=%q err=%v", got, err)
+	}
+	if len(observed) != 1 || observed[0].Outcome != CompletionUsageAvailable ||
+		observed[0].Usage.PromptTokens != 10 || observed[0].Usage.CompletionTokens != 0 {
+		t.Fatalf("zero-output Responses evidence=%+v", observed)
+	}
+}
+
 func TestCompletionUsageObserverParsesFinalSSEUsageAtEOFWithoutBlankLine(t *testing.T) {
 	payload := "data: {\"choices\":[],\"usage\":{\"completion_tokens\":3},\"metrics\":{\"mean_itl_ms\":10}}"
 	var observed []CompletionUsage
