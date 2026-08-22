@@ -881,3 +881,69 @@ Three review passes preserve these boundaries:
    no PIG admission path, PIG version, image, Compose, Router, backend, route,
    or running process, and it sends no inference traffic. The strict six-hour
    checkpoint remains scheduled for `2026-08-22T10:58:39.588Z`.
+
+### 2026-08-22 formal checkpoint preparation and current QoS screen
+
+At `2026-08-22T07:01:09.589Z`, the still-growing partial window had 246
+samples over 7,350.001 seconds. All 246 PIG/backend/GPU/container samples were
+runtime-service complete; 242 were complete across Router as well. No new
+collector error, counter reset, restart, OOM, preemption, PIG failure, or proxy
+error appeared. The exact partial analysis SHA-256 was
+`f24d835081902c40b135505049d10cface24dc3f86b5c5b74a79c362e8ed756c`.
+
+The partial QoS and utilization screen reported:
+
+```text
+TPS reference                         25
+ready-under-load samples              165
+trailing mean-active TPS              min 30.94; p05 59.05; mean 97.70
+ready-under-load below reference      0%; longest 0 seconds
+backend waiting                       p95 0; max 2; mean 0.0124
+backend preemptions                    0
+PIG accepted / completed delta         8,543 / 8,540
+PIG failed / proxy-error delta         0 / 0
+raw generation work                   333.86 tokens/s
+known decisions / protections          8,919 / 379
+protection share                      4.25%
+over-protection screen                0 candidate intervals
+GPU utilization                       mean 53.44%; p95 93%; max 100%
+KV occupancy                          mean 2.36%; p95 8.62%; max 13.28%
+backend aggregate cache-hit share     41.32%
+mean prediction / pre-forward cost    0.018 ms / 0.153 ms
+```
+
+The simultaneous low GPU/KV samples do not prove over-protection because
+offered demand is intermittent, the plan's demand-aware screen found no
+candidate interval, and successful completion token goodput remains
+unavailable. The correct current decision is no behavior change before the
+formal horizon and paired endpoint evidence.
+
+The Router `upstream_config_digest` at `2026-08-22T07:05:12Z` remained
+`sha256:007d78ec80c8f5704bdfbc8cf9268321f75b639447999e134d166e13ebc80c6d`,
+equal to the paired start capture; `use1-19` remained enabled with
+`request_aware_open`. This proves only Router configuration identity. The
+admin surface exposes neither Router binary version nor process-start epoch,
+so no binary-identity stability claim is permitted.
+
+To prevent the continuing 24-hour CSV from changing the six-hour result, the
+formal workflow now freezes the first 721 samples after the horizon, analyzes
+that immutable copy, captures fixed-boundary compressed logs, Docker events,
+kernel OOM/Xid evidence, then captures and analyzes a new paired endpoint.
+These scripts were uploaded only to an isolated gate directory and passed
+remote `bash -n`, input-path, container-format, and classification-expression
+checks at `2026-08-22T07:03:20Z`; the formal output did not yet exist and none
+of the time-gated scripts was executed early.
+
+```text
+capture stability window SHA-256    eb414b2391e0f988989e69394568d9b73ead40c09bd4699db2ba49ca94e002da
+analyze stability window SHA-256    9a60943a8954f6eadcc650a7d5601bce8f61960ea5e467599c68025c0c903daf
+capture fixed logs SHA-256          79d464b921bab4674dd3c23c682415133c593977556efa003559fbea24f046a3
+capture paired endpoint SHA-256     b81cbeae63ccc8a6d2073c8a11757ac8e380d0f2dbcda35d68b025a91c933de8
+analyze paired endpoint SHA-256     362ddef460ec14a9a6dca0a2fad1458b321f0f9c21248471eee6a4f991f288aa
+```
+
+The one-time six-hour heartbeat was corrected: it must preserve the four
+Router TLS EOF rows and report the strict gate honestly instead of requiring
+an empty error log. After this checkpoint it must replace itself with the
+one-time 24-hour delayed-checkpoint heartbeat. No PIG/Router/backend runtime or
+production configuration was changed during this preparation.
