@@ -2057,3 +2057,82 @@ This correction rejects an implementation based only on
 budget-attributed, and any fence based on ordinary policy revision. It changes
 no Go source, tests, version, image, runtime configuration, process, route, or
 production request.
+
+### 2026-08-22 frozen six-hour behavior-selection matrix
+
+The six-hour checkpoint must not choose a metric after seeing the result. Live
+v0.12.18 does not export success-linked completion tokens, so the checkpoint
+cannot prove a completion-goodput improvement or regression. The following
+matrix is frozen before capture and limits what the available evidence may
+authorize.
+
+Keep v0.12.18 and start no behavior slice when any of these holds:
+
+1. `runtime_service` is ineligible because of an incomplete PIG/backend/GPU/
+   container sample, runtime identity change, new restart, OOM, non-running
+   component, critical counter reset/missing series, or sampling gap;
+2. the post-reset paired segment is ineligible because a required target or
+   comparator runtime field is unavailable, a backend epoch/model/PIG/Compose
+   identity changed, a required counter rolled back, or matched Router identity
+   and counter continuity failed;
+3. the target's long-window mean-active TPS does not average at or above its
+   configured reference under qualified load, or below-reference exposure is
+   sustained rather than occasional;
+4. target preemptions, PIG proxy failures, OOM/restart evidence, or persistent
+   waiting appear; an isolated nonpersistent endpoint-max waiting observation
+   is reported but is not by itself a failure;
+5. enforced PIG protections do not reconcile with the target Router 429 surface
+   apart from an explicitly reported scrape-boundary in-flight difference;
+6. protected request-size and reason evidence shows that long-input, Prefill,
+   KV, waiting, preemption, or request-scoped protection is the material limit;
+   or
+7. offered demand, TPS decision subreason, request-size, and stability evidence
+   is too incomplete to distinguish non-idle marginal debt from bounded idle
+   refill. Low or unlike traffic is `inconclusive`, never a reason to loosen.
+
+Authorize only the non-idle debt-ledger red-test slice, not a release or live
+change, when all of the following are true:
+
+1. `runtime_service` is eligible and the complete target window has no new
+   preemption, PIG proxy failure, OOM, restart, lifecycle leak, or persistent
+   waiting;
+2. the post-reset paired runtime and matched-routing comparison is eligible,
+   and target PIG risk/enforced-protection deltas reconcile with target Router
+   upstream-429 deltas within the recorded scrape-boundary allowance;
+3. target mean-active TPS averages at or above the reference under qualified
+   load and any below-reference samples are isolated rather than a sustained
+   deficit;
+4. `qos_budget_unobserved` is the largest TPS-protection subreason and accounts
+   for more than half of TPS-protected decisions after keeping stronger final
+   Prefill/request protections separate;
+5. those load-protected requests remain predominantly ordinary short inputs
+   below the 64K regular-Prefill boundary, while long/request-scoped protections
+   remain independently enforced; and
+6. the result explicitly labels successful completion goodput unavailable and
+   treats accepted/completed alignment, non-error terminal rate, raw generation
+   work, cache share, prompt shape, GPU, and KV only as hypothesis-supporting
+   proxies. None may be renamed as successful goodput or a causal PIG gain.
+
+An authorization under this branch permits focused failing tests and
+deterministic simulation for the constant-size debt ledger defined above. It
+does not authorize v0.12.19 source behavior, an image, deployment, or a live
+traffic claim until the red/green, property/race, simulation, builder, and
+release gates pass.
+
+Authorize only a separate idle-refill red-test slice when `idle` is the largest
+TPS-protection subreason and exact decision-time evidence proves repeated
+offered demand remained idle beyond the existing one-poll 500-ms bound. A
+30-second endpoint gauge or idle counter alone cannot prove this condition. If
+that evidence is unavailable, retain v0.12.18 rather than combining idle with
+the debt candidate.
+
+The continuous six-hour all-surface result is expected to remain strict and may
+be ineligible because the five preserved Router-incomplete rows create seven
+missing Router counter intervals. That does not erase the rows, invalidate an
+otherwise complete `runtime_service` result, or permit those missing intervals
+to be bridged. The independent post-reset paired result is the only eligible
+source for a matched-routing comparison if all of its own gates pass.
+
+This frozen matrix resolves the earlier backlog wording that requested a valid
+completion-goodput baseline even though deployed v0.12.18 cannot export one.
+The 24-hour checkpoint remains mandatory whichever six-hour branch is chosen.
