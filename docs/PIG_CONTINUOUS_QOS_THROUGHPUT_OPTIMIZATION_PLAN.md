@@ -1,10 +1,11 @@
 # PIG Continuous QoS and Throughput Optimization Plan
 
-Status: active maintenance plan; baseline observation is running. No behavior,
-policy, image, Compose, Router, or deployment change has been authorized or made
-by this execution.
+Status: active maintenance plan. The v0.12.18 24-hour runtime-service iteration
+is final-observed and closed without a behavior change; strict all-surface and
+comparative-throughput conclusions remain inconclusive. No policy, image,
+Compose, Router, or deployment change was made by this execution.
 
-Last reviewed: 2026-08-22.
+Last reviewed: 2026-08-23.
 
 This document is the durable execution reference for observing PIG, analyzing
 production evidence, optimizing performance, and correcting defects. Versioned
@@ -492,11 +493,11 @@ Decision and remaining uncertainty:
 
 | Priority | Work | State | Completion condition |
 | ---: | --- | --- | --- |
-| 0 | Re-read live v0.12.18 identities and current health | Observing | Compose, policy, containers, Router set, backend, and 6h/24h evidence captured without service mutation |
-| 1 | Create a reusable semantic observer for the four windows | In progress; paired layer and r4 checkpoint lifecycle gate accepted | vLLM/SGLang source mappings, reset handling, completeness checks, cohort output, hashes, and cleanup tested remotely |
-| 2 | Establish a traffic-matched v0.12.18 baseline | Observing | At least one valid demand cohort with completion goodput, weighted TPS, cache, size, running/waiting, GPU/KV, protection, and stability evidence |
-| 3 | Classify the first material bottleneck | Preclassified; blocked on formal 6h evidence | Select either non-idle marginal debt or idle refill from complete decision-time evidence; do not combine them |
-| 4 | Execute one behavior iteration if justified | Blocked on evidence | Red test, minimal implementation, three reviews, remote gates, pushed source, accepted image, safe rollout, and 30m/6h/24h result |
+| 0 | Re-read live v0.12.18 identities and current health | Completed for this iteration | Compose, policy, containers, backend, and nested 6h/24h evidence captured without service mutation; Router incompleteness is retained rather than imputed |
+| 1 | Create a reusable semantic observer for the four windows | Completed for the current vLLM observation and delayed-r2 lifecycle | Source mapping, reset handling, completeness layers, cohort output, hashes, early rejection, failure cleanup, and remote execution are proven; future backend variants must repeat their own mapping gate |
+| 2 | Establish a traffic-matched v0.12.18 baseline | Closed as inconclusive at the deployed evidence boundary | Runtime QoS, cache, size, running/waiting, GPU/KV, protection, and stability are valid; successful completion goodput is unavailable and the long paired comparator changed identity, so no comparative-throughput baseline is claimed |
+| 3 | Classify the first material bottleneck | Closed without selecting a behavior candidate | The frozen `qos_budget_unobserved > 50%` gate failed and idle was not dominant; the invalid paired cohort cannot authorize a replacement hypothesis |
+| 4 | Execute one behavior iteration if justified | Not started; not justified by the frozen evidence | Red test, minimal implementation, three reviews, remote gates, pushed source, accepted image, safe rollout, and 30m/6h/24h result remain required if a future single hypothesis passes its evidence gate |
 | 5 | Synchronize the control-plane Compose snapshot | Separately authorized | User-approved persistent update matches accepted live Compose and retains a verified restore path |
 
 The correct outcome after observation may be no code or parameter change. If
@@ -2299,3 +2300,387 @@ runner identity and continued writing 30-second samples. This checkpoint made
 no PIG/Router/backend/Compose/image/route/process change and sent no synthetic
 inference request. The user-reported Redpill repair remains outside this PIG
 evidence and was not re-investigated.
+
+### 2026-08-23 formal delayed-r2 24-hour checkpoint and iteration closure
+
+The delayed-r2 gate ran only after observer metadata reported `complete` and
+UTC was beyond `2026-08-23T04:58:39.588Z`. The required scripts ran exactly
+once, in the frozen order below. Every step succeeded; no successful step was
+recovered, overwritten, or rerun:
+
+```text
+1  capture-delayed-24h.sh
+2  analyze-delayed-24h.sh
+3  capture-delayed-logs.sh
+4  capture-delayed-paired-end.sh
+5  analyze-delayed-paired.sh
+```
+
+The immutable window and paired endpoint are:
+
+```text
+formal checkpoint
+/var/volatile/dstack/persistent/.cache/pig-formal-checkpoints/
+20260822T045839Z-delayed-24h
+
+paired start
+/var/volatile/dstack/persistent/.cache/pig-paired-metrics/20260822T070815Z
+
+paired end
+/var/volatile/dstack/persistent/.cache/pig-paired-metrics/20260823T130123Z
+```
+
+Only the accepted delayed-r2 script gate was used. The delayed-r1 candidate
+was not executed. The archive, installed checksum manifest, and five executable
+hashes re-verified as:
+
+```text
+delayed-r2 archive                   4c11bd6619e371ff21ee6628dcf6142183917d940beac007e0005cd29368b78c
+installed SHA256SUMS                 defc2079ef78ca557d19788b77a0dab2efbf379c237e1246c0fb094795592678
+analyze-delayed-24h.sh               44205c08ddd3f766f9ff2e9183d27418cc31cb9c55e8bd31463c21203bfe6132
+analyze-delayed-paired.sh            320fa4d7af939ab4ad8bf8bff6c48f6d5719efd677d79668efc5559b8c007f73
+capture-delayed-24h.sh               4d8f0c4c542763457c31a9b616a72c232251ac39dd8b28aef86ffa9b0024e3ac
+capture-delayed-logs.sh              f7d0dc3e6e04f514985ad22293252d3552719e702110004fdc5bcd9d8383b255
+capture-delayed-paired-end.sh        3aceb60506df7c923b680b6a5fe47accaa6e6b55289528e7b5302d62c030954e
+```
+
+The previously recorded contract, early-rejection, and failure-cleanup gates
+remained satisfied. A final `sha256sum -c` passed for the installed scripts and
+for every formal checkpoint, analyzer, paired-analysis, and log manifest. The
+material formal hashes are:
+
+```text
+manifest.json                        56e1f350d0dd0c405ac41b7ea20268fe9fdcd97cbf9296221b5b8576f4fbd2fc
+SHA256SUMS                           436f1b58b92e92fab01558edc41db53827dad994a73e678e342f4463019a33a0
+window-analysis.json                 0e17008d576175bcefe3b7941ea41031c385ac98bc24ca43348680608c1164eb
+classification.json                  c871e4829f0adf8270080ddd7231f1e3af1b060380a0631cf8e56616f5787598
+ANALYSIS_SHA256SUMS                  232efbf9084fc968e28eef131d63a1d103e71d5f086ff80df8a8c87c9f4f7bbf
+paired-analysis.json                 3cc25ed4a647e350660fe3da8726611adcf95da7188c622db321403f28a66efa
+PAIRED_ANALYSIS_SHA256SUMS           5cf732568f3f7120677665c9313bd3ab8433924a922e94920200eac6c56f125f
+logs/SHA256SUMS                      2ec247d450fba3c8d69ec53ee817b6e412e9e938a2956ea4a864816961694f9a
+```
+
+#### Observer contract and preserved collection failures
+
+The same managed observer completed normally with this immutable metadata:
+
+```text
+run id                               20260822T045839Z
+runner                               pig-live-observer-20260822T045838Z-379598
+started                              2026-08-22T04:58:39.588Z
+finished                             2026-08-23T04:58:39.589Z
+configured duration / interval      86400 / 30 seconds
+actual duration                     86400.001 seconds
+sample rows / metadata sample_count 2880 / 2880
+first / last elapsed                0.0 / 86370.001 seconds
+sample span                         86370.001 seconds
+metadata status                     complete
+```
+
+All 2,880 real rows were frozen. Nothing was downsampled, truncated to a
+different count, deleted, interpolated, or filled with zero. The last sample is
+correctly before 86,400 seconds and the observed span is at least 86,340 but
+less than 86,400 seconds.
+
+The 45 actual Router collection errors, totaling 3,972 bytes, were also frozen
+byte-for-byte:
+
+```text
+read-operation timeout              36
+SSL unexpected EOF                   8
+SSL handshake timeout                1
+```
+
+Those 45 failed rows produce 62 missing adjacent Router counter intervals.
+They are different quantities and are not combined. They do not erase a row or
+turn into a healthy zero. PIG, backend, GPU, and container fields were complete
+for all 2,880 rows.
+
+#### Runtime identity and evidence eligibility
+
+The complete observer retained one live runtime identity:
+
+```text
+live Compose SHA-256                b5b0a6674ce1cb38105e5958126aab412993b89efa37b26e330966d2fa1c7d4e
+PIG                                 v0.12.18; running; OOM=false; restart delta=0
+vLLM                                running; OOM=false; restart delta=0
+HAProxy                             running; OOM=false; restart delta=0
+dstack-ingress                      running; OOM=false; restart delta=0
+critical counter resets            0
+runtime identity transitions       0
+```
+
+The vLLM container's absolute `RestartCount=1` remained the historical restart
+that occurred before this observer began. It did not increase during the
+24-hour window. The eligibility conclusions remain deliberately separate:
+
+1. `runtime_service` is eligible: 2,880/2,880 PIG/backend/GPU/container rows
+   are complete, with no counter reset, runtime identity change, restart delta,
+   preemption, PIG failure, or sampled proxy-error delta.
+2. Strict all-surface/formal eligibility is false only because the 45 preserved
+   Router-incomplete rows leave 2,835/2,880 all-surface-complete samples. The
+   formal reason is `incomplete_samples`; this is not a PIG/backend service
+   failure.
+3. Continuous `matched_routing` is ineligible because of the same missing
+   Router surface and 62 missing counter intervals. No interval is bridged.
+4. The independent post-reset paired comparison is also ineligible. It spans
+   107,587 seconds, but the comparator backend epoch changed from
+   `1787289260.69` to `1787465894.72`, the comparator PIG changed from
+   `PIG-v0.8.12` to `PIG-v0.12.17`, and the Router configuration digest changed
+   from
+   `sha256:007d78ec80c8f5704bdfbc8cf9268321f75b639447999e134d166e13ebc80c6d`
+   to
+   `sha256:40967f4843ec4e686298566ac6b51dbcaf86eaa143c707aa53462424eb0e6f66`.
+   The analyzer consequently reports `comparison_eligible=false`,
+   `matched_routing_eligible=false`, `runtime_integrity_eligible=false`, and
+   `comparison.status=ineligible`.
+
+The Router configuration change is used only as an evidence boundary. Its
+cause is outside this PIG task and was not investigated.
+
+#### QoS, resource use, stability, and hot-path cost
+
+The formal analyzer's distributions use the 2,835 all-surface-complete rows;
+the independent runtime-service integrity result above covers all 2,880 rows.
+This coverage distinction prevents the valid PIG/backend runtime layer from
+silently filling or erasing Router failures.
+
+Under qualified Decode load, the controller's sampled trailing
+sequence-second-weighted mean-active TPS remained well above the configured
+reference on average:
+
+```text
+TPS reference                              25 tok/s/active Decode sequence
+qualified trailing-TPS samples             2383
+mean / p05 / p50 / p95                     73.2947 / 24.6182 / 72.0280 / 135.8073 tok/s
+minimum                                    16.7905 tok/s
+below-reference sample fraction            6.1267%
+longest below-reference episode            330 seconds
+```
+
+The 330-second episode and `p05 < 25` are retained as real QoS evidence. They
+do not prove a persistent long-average failure, and they are not rewritten as
+if TPS never dipped. This matches the requirement that long-window average is
+primary and occasional low values are acceptable, while still preserving
+cluster duration for future regression detection.
+
+Stability and utilization were:
+
+```text
+backend waiting p95 / maximum / mean        0 / 13 / 0.094
+backend preemptions                         0
+PIG failed / proxy-error deltas             0 / 0
+restart / OOM deltas                        0 / 0
+GPU utilization mean / p50 / p95            69.54% / 77% / 97%
+KV usage mean / p50 / p95 / maximum         7.95% / 4.03% / 33.03% / 42.00%
+backend prefix-cache hit share              30.23%
+raw scheduler generation work               533.506 tok/s
+```
+
+`533.506 tok/s` is raw vLLM scheduler generation work. It includes work that
+is not linked to a successful client completion and is not successful
+completion goodput. Deployed v0.12.18 has no success-linked completion-token
+counter, so both the formal window and paired analyzer correctly report:
+
+```text
+successful_completion_goodput  unavailable
+reason                         success_token_linkage_not_exported
+causal_pig_effect              unavailable / traffic_cohort_not_matched
+```
+
+Terminal-request rate, inverse TPOT, raw generation, accepted/completed
+alignment, and any cross-node ratio remain descriptive proxies only. No proxy
+is renamed as a causal throughput improvement.
+
+The exact 24-hour counter means and the longer post-reset histogram agree that
+PIG hot-path cost is small:
+
+```text
+24h prediction mean                       0.0134 ms
+24h estimator mean                        0.0961 ms
+24h total pre-forward mean                0.2981 ms
+post-reset pre-forward p95 / p99          0.7865 / 4.8464 ms
+post-reset estimator p95 / p99            0.3253 / 0.9210 ms
+post-reset body-read p95 / p99            0.4050 / 4.4308 ms
+```
+
+Eight of 368,785 post-reset pre-forward observations were above the histogram's
+100-ms bucket. The p99 remains below 5 ms, so this is not a material normal-path
+regression; the aggregate histogram cannot identify the corresponding request
+shape or prove an estimator defect. The previously accepted bounded 4 MiB
+extreme-input test remains the request-shaped latency gate.
+
+#### Prefill, KV, cache, input size, and protection attribution
+
+At the last formal sample, PIG had two reservations matching two backend running
+requests, zero backend waiting, and zero pending or forwarded-pending Prefill
+sequences/tokens. Across the paired start and end, all admission failure phases
+(`close`, `decide`, `forward`, `prefill`, and `terminal`) stayed at zero. The
+paired end had 13 reservations with 13 backend running requests, zero waiting,
+and zero pending Prefill, which is active work rather than a leaked lifecycle.
+
+The complete post-reset request-size histograms are longer than the exact
+24-hour observer and are reported separately:
+
+```text
+outcome             total       <=64K    <=64K share      p50      p95       p99
+admitted           119430      119404       99.978%      5772    32972     59137
+load protected     226430      226218       99.906%      7608    35824     60047
+request protected   22761       22128       97.219%     11996    60299    207609
+```
+
+Load protection continued to affect mainly ordinary short requests, but that
+alone does not prove safe spare capacity. Waiting accounted for material TPS
+protection, and request-specific Prefill/input protection remained active.
+Long-input, Prefill, KV, waiting, preemption, and request-scoped gates therefore
+cannot be globally relaxed.
+
+The post-reset internal TPS-protection decisions total 226,279:
+
+```text
+subreason                       count       share
+qos_budget_unobserved          110721      48.931%
+qos_budget_active_lease         42075      18.594%
+qos_budget_wave_limit           30318      13.399%
+waiting                         26355      11.647%
+qos_budget_no_surplus           11681       5.162%
+qos_budget_ineligible            2298       1.016%
+qos_budget_lifetime              1476       0.652%
+idle                             1313       0.580%
+warming                            42       0.019%
+```
+
+`qos_budget_unobserved` is still the largest single reason, but its 48.931%
+share does not satisfy the frozen `> 50%` gate. `active_lease` and
+`wave_limit` are not merged with it after seeing the result. Idle is only
+0.580%, so an idle-refill hypothesis is also unsupported. Waiting at 11.647%
+is further evidence that these protections do not represent one interchangeable
+QoS-debt cause.
+
+Final protection-reason attribution over the same post-reset pair is:
+
+```text
+tps_reference / load                    216631
+prefill_budget / load                     9744
+prefill_budget / request                 22577
+prefill_contention / load                   55
+input_limit / request                       184
+invalid_request / request                   141
+observation_stale / availability             23
+total                                    249355
+```
+
+Internal TPS-decision subreasons and final protection reasons are different
+metric stages and are not expected to sum to the same totals. Stronger final
+Prefill/request protection remains separate from the behavior-selection gate.
+
+#### PIG-to-Router 429 and proxy-error accounting
+
+The exact continuous window contains 217,338 PIG enforced protections. The
+preserved Router counter surface contains 213,884 target upstream 429s across
+2,817 accepted intervals and 84,510.001 covered seconds, with 62 adjacent
+intervals missing. These are not equal-coverage counters, so their difference
+cannot be labeled either hidden PIG protection or a Router defect. The strict
+continuous reconciliation is `ineligible`.
+
+The post-reset paired capture cannot replace that reconciliation because the
+comparator and Router configuration identities changed. It remains useful for
+PIG-local reason and request-size deltas, but not for a target/comparator or
+PIG/Router causal comparison. The earlier six-hour matched segment's exact
+63,121-to-63,121 reconciliation remains valid only for that shorter frozen
+segment.
+
+One apparent proxy-error discrepancy was checked using PIG evidence only. The
+last formal observer sample at `2026-08-23T04:58:09.589Z` still had
+`pig_backend_proxy_errors_total=0`, while the paired endpoint at
+`2026-08-23T13:01:23Z` had value 1. PIG had the same start time, restart count
+zero, OOM false, and body-copy-error value zero. Both observations map to the
+same `pig_backend_proxy_errors_total` metric, so this is not a metric-semantics
+difference. The increment occurred after the last formal sample and before the
+paired endpoint. Because the last sample precedes the wall-clock cutoff by
+30.001 seconds, existing PIG evidence cannot prove whether it occurred inside
+that final unsampled tail or after the cutoff. The formal sampled 24-hour
+proxy-error delta remains zero, with that bounded timing uncertainty.
+
+In v0.12.18 the reverse-proxy error handler increments this counter and writes
+the standard 429 response, but discards the concrete transport error and does
+not emit a per-error log. Existing evidence can bound the event to the
+post-sample interval but cannot recover its exact time or cause. One isolated
+event without a restart, OOM, copy error, or repeated failure does not authorize
+a PIG behavior change, and this task did not inspect any external uptime or
+ingress evidence for it.
+
+#### Log audit
+
+The formal log hashes passed. PIG, HAProxy, ingress, and kernel critical-match
+files are empty. Docker recorded no create/start/die/restart/OOM/destroy event
+for the four production containers during the window; its 62 lines belong to
+bounded observer, analyzer, and other temporary operator containers, all with
+successful exits where shown.
+
+The vLLM critical grep contains 98 `Traceback` lines but no `EngineDeadError`,
+`Scheduler hit an exception`, CUDA OOM, `OutOfMemoryError`, NCCL error, NVRM/Xid,
+segmentation fault, or kernel OOM/Xid. The repeated request-scoped error cohorts
+include:
+
+```text
+local file request without allowed path       70
+PIL decompression-bomb rejection              11
+unsupported min_p plus logit_bias               5
+invalid schema requests                         2
+complex regex compilation timeout after 5 s     4
+```
+
+The counts above are request/error cohorts, not a partition of grep lines; one
+request can emit multiple exception lines. The four EngineCore regex timeouts
+appear as finished-reason `error` requests while generation continued. The
+backend did not exit or restart. These backend request-validation failures are
+preserved operational evidence, but they do not establish a PIG QoS defect and
+are not expanded into unrelated vLLM work in this iteration.
+
+#### Frozen decision and three-pass completion audit
+
+The 24-hour evidence does not support one predeclared, single, falsifiable
+behavior hypothesis that can improve throughput without weakening long-input,
+Prefill, KV, waiting, preemption, or request-scoped protection:
+
+- the precommitted `qos_budget_unobserved > 50%` gate failed at 48.931%;
+- idle protection is not dominant;
+- strict continuous and post-reset matched-routing comparisons are ineligible;
+- successful completion goodput is unavailable; and
+- runtime-service health is already stable, with no reproducible lifecycle,
+  OOM, restart, preemption, persistent-waiting, or hot-path-cost defect.
+
+The final behavior decision is therefore:
+
+1. keep deployed PIG v0.12.18 unchanged;
+2. do not start the debt-ledger or idle-refill red-test slice;
+3. do not create v0.12.19 behavior code;
+4. do not build or upload a PIG image; and
+5. do not change policy, Compose, Router, route state, containers, backend, or
+   the CVM.
+
+Review 1, model and causality: passed with an inconclusive comparative result.
+The evidence distinguishes runtime health, strict all-surface coverage, paired
+identity, raw work, and success-linked goodput. It makes no causal throughput
+claim from unlike traffic or an invalid comparator.
+
+Review 2, correctness, safety, and efficiency: passed for retaining v0.12.18.
+All frozen hashes and execution-order gates pass; runtime counters and identity
+are continuous; lifecycle failures, preemptions, OOMs, and restart deltas are
+zero; Prefill/request protection remains explicit; and p95/p99 hot-path cost is
+bounded. The real below-reference and post-sample proxy-error observations are
+reported rather than hidden.
+
+Review 3, SOLID and release scope: passed with no implementation candidate.
+There is no justified ownership change to estimator, gate, Controller,
+lifecycle, adapter, or reporter code, so adding an abstraction or another
+version would be over-design. Source publication, image acceptance, Compose,
+deployment, and live readiness remain separate; only this durable plan is
+updated and pushed.
+
+This closes the current `按持续优化计划执行` iteration. The continuous document
+remains the reference for a future iteration, but steady-state monitoring does
+not manufacture a code change. Reopen behavior work only when a new valid
+cohort supports one predeclared hypothesis and its safety gates before code is
+written.
