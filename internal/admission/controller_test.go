@@ -252,6 +252,96 @@ func TestControllerCapabilityDriftClosesPermanently(t *testing.T) {
 	}
 }
 
+func TestControllerRuntimeRestartSafelyRebindsKVCapacity(t *testing.T) {
+	now := time.Unix(4_500, 0)
+	capability := testCapability()
+	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
+	initial.RuntimeStartTime = 100
+	controller := testControllerWithObservation(t, capability, initial)
+
+	admitted := controller.Admit(
+		now.Add(time.Millisecond),
+		testEstimate(1_024, 1_536, capability.MinimumDecodeHorizonTokens),
+	)
+	if !admitted.Decision.Admitted() {
+		t.Fatalf("pre-restart admission=%+v", admitted.Decision)
+	}
+
+	restarted := testObservation(capability, now.Add(2*time.Millisecond), 0, 0, 0, 1, 0)
+	restarted.RuntimeStartTime = 200
+	restarted.KVCapacityTokens -= 384
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("restart sample window unavailable")
+	}
+	publication := controller.PublishObservation(window, restarted)
+	if !publication.Accepted || !publication.RuntimeReset || publication.CapabilityDrift {
+		t.Fatalf("safe runtime rebind publication=%+v", publication)
+	}
+
+	snapshot := controller.Snapshot(now.Add(3 * time.Millisecond))
+	if !snapshot.IntakeOpen || !snapshot.Available || snapshot.RuntimeEpoch != 2 ||
+		snapshot.Observation.KVCapacityTokens != restarted.KVCapacityTokens ||
+		snapshot.State.LiveReservations != 0 || snapshot.State.ReservationKVTokens != 0 {
+		t.Fatalf("safe runtime rebind snapshot=%+v", snapshot)
+	}
+	if admitted.Handle.MarkForwarded() || admitted.Handle.MarkFirstByte() ||
+		admitted.Handle.Terminate(TerminalSuccess) {
+		t.Fatal("old runtime handle remained usable after capability rebind")
+	}
+
+	followup := restarted
+	followup.ObservedAt = now.Add(4 * time.Millisecond)
+	followup.GenerationTokensTotal++
+	publishObservation(t, controller, followup)
+}
+
+func TestControllerRuntimeRestartUnsafeKVCapacityDropClosesPermanently(t *testing.T) {
+	now := time.Unix(4_750, 0)
+	capability := testCapability()
+	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
+	initial.RuntimeStartTime = 100
+	controller := testControllerWithObservation(t, capability, initial)
+
+	restarted := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 1, 0)
+	restarted.RuntimeStartTime = 200
+	restarted.KVCapacityTokens = capability.KVHardLimitTokens
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("unsafe restart sample window unavailable")
+	}
+	publication := controller.PublishObservation(window, restarted)
+	if publication.Accepted || !publication.CapabilityDrift || publication.Reason != ReasonCapabilityDrift {
+		t.Fatalf("unsafe runtime rebind publication=%+v", publication)
+	}
+	if _, ok := controller.StartSampleWindow(); ok {
+		t.Fatal("unsafe runtime rebind reopened without a new Controller")
+	}
+}
+
+func TestControllerSameRuntimeKVCapacityDriftClosesPermanently(t *testing.T) {
+	now := time.Unix(4_875, 0)
+	capability := testCapability()
+	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
+	initial.RuntimeStartTime = 100
+	controller := testControllerWithObservation(t, capability, initial)
+
+	drift := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 11, 0)
+	drift.RuntimeStartTime = initial.RuntimeStartTime
+	drift.KVCapacityTokens -= 384
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("same-runtime drift sample window unavailable")
+	}
+	publication := controller.PublishObservation(window, drift)
+	if publication.Accepted || !publication.CapabilityDrift || publication.Reason != ReasonCapabilityDrift {
+		t.Fatalf("same-runtime drift publication=%+v", publication)
+	}
+	if _, ok := controller.StartSampleWindow(); ok {
+		t.Fatal("same-runtime drift reopened without a new Controller")
+	}
+}
+
 func TestControllerConcurrentNearKVAdmissionIsAtomic(t *testing.T) {
 	now := time.Unix(5_000, 0)
 	capability := testCapability()

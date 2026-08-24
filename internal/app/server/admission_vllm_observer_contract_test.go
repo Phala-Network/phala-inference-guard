@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -214,7 +215,128 @@ func TestAdmissionVLLMObserverRevalidatesMetadataBeforeCounterResetRecovery(t *t
 	}
 }
 
+func TestAdmissionVLLMObserverConfirmsRuntimeRestartBeforeKVCapacityRebind(t *testing.T) {
+	const modelName = "vendor/rebind-model"
+	const maxModelLen int64 = 650 * 1024
+	var generation atomic.Uint64
+	var metricsCalls atomic.Int64
+	var metadataCalls atomic.Int64
+	var runtimeStart atomic.Int64
+	var kvCapacity atomic.Int64
+	generation.Store(10)
+	runtimeStart.Store(100)
+	kvCapacity.Store(1_000_000)
+	upstream := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/metrics":
+			metricsCalls.Add(1)
+			writeAdmissionVLLMMetricsWithCapability(
+				response,
+				modelName,
+				generation.Load(),
+				kvCapacity.Load(),
+				runtimeStart.Load(),
+			)
+		case "/v1/models":
+			metadataCalls.Add(1)
+			_, _ = fmt.Fprintf(
+				response,
+				`{"object":"list","data":[{"id":%q,"max_model_len":%d}]}`,
+				modelName,
+				maxModelLen,
+			)
+		default:
+			response.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer upstream.Close()
+
+	fingerprint := predictiveModelIdentitySHA256(modelName)
+	profile, err := runtimepredictive.NewBackendCapabilityProfile(runtimepredictive.CapabilityProfileInput{
+		ModelIdentitySHA256: fingerprint,
+		KVCapacityTokens:    kvCapacity.Load(),
+		KVBlockSize:         64,
+		KVHardRatio:         0.9,
+		MaxModelLen:         maxModelLen,
+		Source:              runtimepredictive.CapabilityProfileAutomatic,
+	})
+	if err != nil {
+		t.Fatalf("construct rebind observer capability: %v", err)
+	}
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
+		Capability:  admissionCapabilityFromProfile(profile),
+		WorkProfile: mustPredictiveRequestWorkProfile(t, "vllm"),
+	})
+	if err != nil {
+		t.Fatalf("construct rebind observer Controller: %v", err)
+	}
+	defer controller.Close()
+	clock := &manualTestClock{now: time.Unix(350, 0)}
+	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
+		BackendKind: "vllm", MetricsURL: upstream.URL + "/metrics", UpstreamURL: upstream.URL,
+		ModelName: modelName, RevalidateMetadata: true,
+		CapabilityFingerprint: fingerprint, MaxModelLenTokens: profile.MaxModelLenTokens,
+		KVCapacityTokens: profile.KVCapacityTokens, KVBlockSize: profile.KVBlockSize,
+		PollInterval: time.Hour, MaximumAge: 2 * time.Hour,
+		RequestTimeout: 100 * time.Millisecond, Controller: controller, Now: clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("construct rebind admission observer: %v", err)
+	}
+	defer observer.Close()
+
+	waitAdmissionCondition(t, func() bool {
+		snapshot := controller.Snapshot(clock.Now())
+		return snapshot.Available && snapshot.Observation.RuntimeStartTime == 100
+	})
+	initial := controller.Snapshot(clock.Now())
+
+	runtimeStart.Store(200)
+	kvCapacity.Store(999_616)
+	generation.Store(1)
+	clock.Advance(100 * time.Millisecond)
+	observer.poll(context.Background())
+	if metadataCalls.Load() != 1 {
+		t.Fatalf("first restart candidate metadata calls=%d, want 1", metadataCalls.Load())
+	}
+	afterFirst := controller.Snapshot(clock.Now())
+	if afterFirst.RuntimeEpoch != initial.RuntimeEpoch ||
+		afterFirst.Observation.RuntimeStartTime != initial.Observation.RuntimeStartTime {
+		t.Fatalf("unconfirmed capability candidate was published: %+v", afterFirst)
+	}
+
+	observer.poll(context.Background())
+	rebound := controller.Snapshot(clock.Now())
+	if !rebound.Available || rebound.RuntimeEpoch != initial.RuntimeEpoch+1 ||
+		rebound.Observation.RuntimeStartTime != 200 ||
+		rebound.Observation.KVCapacityTokens != 999_616 {
+		t.Fatalf("confirmed runtime capability was not rebound: %+v", rebound)
+	}
+	if !rebound.IntakeOpen || rebound.MinimumDecision.Reason == coreadmission.ReasonCapabilityDrift {
+		t.Fatalf("confirmed runtime capability did not reopen: %+v", rebound)
+	}
+
+	sequence := rebound.ObservationSequence
+	generation.Store(2)
+	observer.poll(context.Background())
+	followup := controller.Snapshot(clock.Now())
+	if !followup.Available || followup.ObservationSequence <= sequence ||
+		followup.RuntimeEpoch != rebound.RuntimeEpoch || !followup.IntakeOpen {
+		t.Fatalf("rebound observer baseline was not retained: %+v", followup)
+	}
+}
+
 func writeAdmissionVLLMMetrics(w http.ResponseWriter, modelName string, generation uint64) {
+	writeAdmissionVLLMMetricsWithCapability(w, modelName, generation, 1_000_000, 0)
+}
+
+func writeAdmissionVLLMMetricsWithCapability(
+	w http.ResponseWriter,
+	modelName string,
+	generation uint64,
+	kvCapacity int64,
+	runtimeStart int64,
+) {
 	_, _ = fmt.Fprintf(w, `
 # TYPE vllm:cache_config_info gauge
 # TYPE vllm:kv_cache_usage_perc gauge
@@ -222,13 +344,16 @@ func writeAdmissionVLLMMetrics(w http.ResponseWriter, modelName string, generati
 # TYPE vllm:num_requests_waiting gauge
 # TYPE vllm:num_preemptions_total counter
 # TYPE vllm:generation_tokens_total counter
-vllm:cache_config_info{block_size="64",kv_cache_size_tokens="1000000",num_gpu_blocks="15625"} 1
+vllm:cache_config_info{block_size="64",kv_cache_size_tokens="%d",num_gpu_blocks="15625"} 1
 vllm:kv_cache_usage_perc 0
 vllm:num_requests_running{model_name=%q,engine="0"} 0
 vllm:num_requests_waiting{model_name=%q,engine="0"} 0
 vllm:num_preemptions_total{model_name=%q,engine="0"} 0
 vllm:generation_tokens_total{model_name=%q,engine="0"} %d
-`, modelName, modelName, modelName, modelName, generation)
+`, kvCapacity, modelName, modelName, modelName, modelName, generation)
+	if runtimeStart > 0 {
+		_, _ = fmt.Fprintf(w, "process_start_time_seconds %d\n", runtimeStart)
+	}
 }
 
 func waitAdmissionCondition(t testing.TB, condition func() bool) {
