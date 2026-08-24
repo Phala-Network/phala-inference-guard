@@ -55,12 +55,29 @@ Router backpressure.
 
 ## Capability and observer metrics
 
-`pig_predictive_capability_*` records the immutable startup profile: model/KV
-identity geometry, aligned hard limit, maximum admissible input, fixed Prefill
-class boundaries, and current open/contended Prefill budgets. The profile source
-is `automatic` or `explicit`; initialization reason is `metadata` or
+`pig_predictive_capability_*` records the active capability profile: immutable
+model/block/context and startup-derived policy geometry, plus the raw KV
+capacity of the accepted backend runtime epoch. The aligned hard limit, maximum
+admissible input, fixed Prefill class boundaries, and open/contended Prefill
+budgets do not change during a PIG process lifetime. The profile source is
+`automatic` or `explicit`; initialization reason is `metadata` or
 `explicit_override`. There is no metadata fallback and no measured or learned
 Prefill rate.
+
+Backend runtime lifecycle is explicit:
+
+```text
+pig_predictive_backend_runtime_epoch
+pig_predictive_backend_capability_rebinds_total
+pig_predictive_backend_rebind_pending
+```
+
+`rebind_pending=1` means PIG has seen an explicit new backend process identity
+with changed raw KV capacity but has not yet accepted two consecutive coherent,
+metadata-validated samples. Admission and Router projection are availability-
+protected during that interval. A successful rebind increments both the runtime
+epoch and the monotonic rebind counter; a same-runtime capacity drift never
+increments the counter and permanently fail-closes instead.
 
 `pig_backend_*` records the single upstream's coherent observed state and proxy
 lifecycle: KV tokens, running, waiting, generation TPS validity, inflight,
@@ -298,9 +315,12 @@ records do not repeat a second `observed_at` timestamp.
 
 The startup record contains build identity, mode, observation cadence,
 freshness, status interval, TPS reference, and effective log level. Capability
-initialization is a one-time record of the frozen profile and its source/reason.
+initialization is a one-time record of the startup policy profile and its source/reason.
 Policy updates are separate `component=policy event=update` records.
 Fatal startup or serving errors use `level=error component=runtime event=exit`.
+An accepted backend epoch rebind emits one
+`component=capability event=runtime_epoch_rebound` record containing old/new
+runtime start, old/new raw KV capacity, accepted runtime epoch, and rebind count.
 
 Default admission records are emitted only for policy protections. They use
 `event=protection`, `warn` for an enforced reject, and `info` for a shadow

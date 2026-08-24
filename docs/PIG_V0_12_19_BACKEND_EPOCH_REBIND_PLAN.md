@@ -179,3 +179,97 @@ The repair is complete only after source push, remote test evidence, immutable
 image publication, all nine serial deployments, exact route restoration, and
 a final Router/PIG/vLLM audit. The unresolved vLLM host-memory growth is
 reported separately and is not mislabeled as repaired by PIG v0.12.19.
+
+## Source execution record
+
+Status at `2026-08-24T01:30Z`: the implementation candidate and remote source
+matrix are accepted for an exact-source commit. Image publication, Compose
+mutation, and production rollout have not yet started.
+
+The red contract was committed and pushed first:
+
+```text
+branch                 codex/pig-v0.12.19-backend-epoch-rebind
+red commit             957652de2e57a0a660ffe2c7418884a4b0b5d50b
+builder app            ff40ee31b95e89ebb242c223514adc715ac8a301
+builder environment    Linux amd64; Docker 25.0.3; golang:1.24-bookworm
+Go                     go1.24.13 linux/amd64
+```
+
+The current implementation failed for the intended old behavior:
+
+```text
+controller-red.log     c3d8f716b465ef5e9868e0e1df236c2ce43010ee55610867c8d3f0029d874149
+observer-red.log       4b168b1116a19faba2d78ef15486f6b67f375b9156ad6322aaadf5f915338819
+```
+
+The Controller permanently returned `capability_drift` for a safe new runtime
+whose capacity decreased by 384 tokens, while the Observer performed zero
+metadata calls for that candidate. Unsafe restart capacity and same-runtime
+capacity drift remained closed in the red baseline.
+
+The implemented vertical slice is:
+
+1. Controller separates immutable model/context/block/policy geometry from the
+   only rebindable field, raw KV capacity.
+2. A safe explicit runtime-change candidate immediately makes the old
+   observation unavailable; no request can use it while confirmation is
+   pending.
+3. Observer metadata failure or a changing/invalid sample breaks the candidate
+   streak. Two coherent samples are required before publication.
+4. Controller accepts the publication only when the new capacity still
+   validates and contains the existing hard limit. Rebind, epoch advance, old
+   lifecycle invalidation, and new observation publication share one lock.
+5. Same-runtime drift, identity/context/block drift, and unsafe capacity remain
+   permanent fail-close. No request-size, Prefill, KV hard-limit, TPS, cache, or
+   routing policy changed.
+6. Runtime telemetry projects the Controller-owned current raw capacity without
+   a second mutable profile. Runtime epoch, pending state, rebind count, and one
+   structured acceptance log are exported.
+
+The first concurrent gate found that assigning the complete `Capability`
+structure during rebind raced with `Admit` reading the immutable block size
+before it enters the Controller lock. The final implementation updates only the
+rebindable `KVCapacityTokens` field. It therefore preserves the allocation-free
+request-work build outside the lock and removes the race without widening the
+hot-path critical section.
+
+Final pre-commit executable patch SHA-256:
+
+```text
+a5452aba8b26715e553e5efccffd6cec4a11bd14a6160d46daecc4d71448b5ba
+```
+
+Remote r4 gates all passed:
+
+```text
+go vet ./...                                             passed
+focused Controller/Observer/runtime/metrics/version      passed
+go test ./... -count=1                                  passed
+go test -race ./internal/admission ./internal/app/server passed
+go build ./cmd/phala-inference-guard                     passed
+git diff --check                                         passed
+
+controller-focused.log  1d0071d86a17a8eae8128613f8112b6d9cba1f0faa0ab3cbaf5bd24b93973f25
+server-focused.log      fbc3ef44bb36b96760e76a165297e9fcc2a8bf8931511600507106916a6273d5
+full.log                ac3ba197c0f660cdf64c4fdeb5a63a15db35fc317769dd69c910486710a4ab47
+race.log                f69baf850aec542315dfcedfaa603c73eeb65ba3b4c0abab18e3d6871fe13947
+vet.log                 39104f880de0ffdd58aa15a00d98079e713b227957166da382d33a1a457ae61e
+```
+
+Three required review passes:
+
+1. Model and causality: passed. The change is triggered only by an explicit
+   backend process identity transition and affects availability before
+   forwarding. Feedback, cache, TPS, and request estimation do not authorize
+   rebind.
+2. Safety and lifecycle: passed after the r3 race correction. Pending state is
+   availability-protected; unsafe and same-runtime drift close; old handles are
+   epoch-fenced; reservations, Prefill, cache, TPS, and exposure state reset in
+   the accepted transaction; concurrent admission, terminal, policy update,
+   and rebind pass race testing.
+3. Evidence and release: passed for source candidacy. Red evidence is tied to
+   pushed commit `957652d`; green r4 is tied to the exact executable patch above;
+   documentation changes after r4 do not alter Dockerfile build inputs under
+   `cmd/` or `internal/`. An exact committed-source gate still precedes image
+   construction. No image or production readiness is claimed here.

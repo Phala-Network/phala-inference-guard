@@ -145,6 +145,49 @@ func TestAdmissionReporterCallbackFailureCannotChangeDecision(t *testing.T) {
 	}
 }
 
+func TestAdmissionRuntimeProjectsReboundKVCapacityWithoutChangingPolicyGeometry(t *testing.T) {
+	runtime, controller, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", RuntimeStart: 100,
+	})
+	before := runtime.Snapshot(clock.Now())
+	restarted := before.Capacity.Observation
+	restarted.ObservedAt = clock.Now().Add(time.Millisecond)
+	restarted.RuntimeStartTime = 200
+	restarted.KVCapacityTokens -= 384
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("start runtime rebind sample")
+	}
+	publication := controller.PublishObservation(window, restarted)
+	if !publication.Accepted || !publication.RuntimeReset || !publication.CapabilityRebound {
+		t.Fatalf("publish runtime rebind: %+v", publication)
+	}
+	after := runtime.Snapshot(restarted.ObservedAt)
+	if after.CapabilityProfile.KVCapacityTokens != restarted.KVCapacityTokens ||
+		after.CapabilityProfile.KVHardLimitTokens != before.CapabilityProfile.KVHardLimitTokens ||
+		after.CapabilityProfile.MaximumAdmissibleInputTokens != before.CapabilityProfile.MaximumAdmissibleInputTokens ||
+		after.Capacity.CapabilityRebinds != 1 || after.Capacity.RuntimeRebindPending {
+		t.Fatalf("runtime rebind projection before=%+v after=%+v", before, after)
+	}
+	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	server := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+	var output bytes.Buffer
+	server.writeLocalMetrics(&output)
+	for _, want := range []string{
+		"pig_predictive_capability_kv_capacity_tokens 999616",
+		"pig_predictive_backend_runtime_epoch 2",
+		"pig_predictive_backend_capability_rebinds_total 1",
+		"pig_predictive_backend_rebind_pending 0",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("runtime rebind metrics missing %q\nmetrics:\n%s", want, output.String())
+		}
+	}
+}
+
 func TestAdmissionResponseEOFAndOuterDeferMutateTerminalOnce(t *testing.T) {
 	runtime, controller, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{Mode: "enforce"})
 	decision := runtime.Decide(context.Background(), domainpredictive.RequestEstimate{

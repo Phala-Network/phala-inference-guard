@@ -54,6 +54,9 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	fmt.Fprintf(w, "pig_rejected_total %d\n", s.total429.Load())
 	policy := snapshot.Capacity.Policy
 	fmt.Fprintf(w, "pig_predictive_policy_revision %d\n", policy.Revision)
+	fmt.Fprintf(w, "pig_predictive_backend_runtime_epoch %d\n", snapshot.Capacity.RuntimeEpoch)
+	fmt.Fprintf(w, "pig_predictive_backend_capability_rebinds_total %d\n", snapshot.Capacity.CapabilityRebinds)
+	fmt.Fprintf(w, "pig_predictive_backend_rebind_pending %d\n", boolMetric(snapshot.Capacity.RuntimeRebindPending))
 	fmt.Fprintf(w, "pig_predictive_policy_last_updated_at_seconds %.6f\n", predictivePolicyUnixSeconds(policy.UpdatedAt))
 	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "applied", s.policyUpdates.applied.Load())
 	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "invalid", s.policyUpdates.invalid.Load())
@@ -79,6 +82,13 @@ func predictivePolicyUnixSeconds(value time.Time) float64 {
 		return 0
 	}
 	return float64(value.UnixNano()) / float64(time.Second)
+}
+
+func boolMetric(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func (s *proxyServer) admissionTelemetry(now time.Time) (snapshot admissionTelemetrySnapshot) {

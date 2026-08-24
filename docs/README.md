@@ -24,6 +24,11 @@ standing instructions.
   image, PIG-only deployment, Router restoration, and one 30-minute live
   acceptance are complete. Equal-offered-load peak throughput remains
   unproven.
+- [v0.12.19 backend epoch rebind repair](PIG_V0_12_19_BACKEND_EPOCH_REBIND_PLAN.md):
+  lifecycle repair for an independently restarted backend whose raw KV
+  capacity changes while model, context, and block geometry remain stable.
+  Source, image, rolling deployment, and live readiness are audited as separate
+  stages.
 
 ## Historical release evidence
 

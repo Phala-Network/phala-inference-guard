@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -48,10 +49,21 @@ type admissionBackendObserver struct {
 	upstreamURL           string
 	modelName             string
 	revalidateMetadata    bool
+	metadataAvailable     bool
 	requestTimeout        time.Duration
+	rebindCandidate       admissionCapabilityRebindCandidate
+	hasRebindCandidate    bool
 	cancel                context.CancelFunc
 	done                  chan struct{}
 	closeOnce             sync.Once
+}
+
+type admissionCapabilityRebindCandidate struct {
+	capabilityFingerprint string
+	maxModelLenTokens     int64
+	kvCapacityTokens      int64
+	kvBlockSize           int64
+	runtimeStartTime      float64
 }
 
 type admissionSampleDisposition uint8
@@ -76,7 +88,8 @@ func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admiss
 		config.MaximumAge < config.PollInterval || config.RequestTimeout <= 0 || config.Controller == nil {
 		return nil, fmt.Errorf("admission backend observer configuration is invalid")
 	}
-	if config.RevalidateMetadata {
+	metadataAvailable := strings.TrimSpace(config.ModelName) != "" || strings.TrimSpace(config.UpstreamURL) != ""
+	if config.RevalidateMetadata || metadataAvailable {
 		if strings.TrimSpace(config.ModelName) == "" {
 			return nil, fmt.Errorf("admission backend observer metadata identity is invalid")
 		}
@@ -106,6 +119,7 @@ func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admiss
 		upstreamURL:           config.UpstreamURL,
 		modelName:             config.ModelName,
 		revalidateMetadata:    config.RevalidateMetadata,
+		metadataAvailable:     metadataAvailable,
 		requestTimeout:        config.RequestTimeout,
 		done:                  make(chan struct{}),
 	}
@@ -142,30 +156,118 @@ func (o *admissionBackendObserver) poll(ctx context.Context) {
 	}
 	sample, err := prometheus.FetchSampleContext(ctx, o.client, o.metricsURL)
 	if err != nil {
+		o.resetRebindCandidate()
 		return
 	}
 	observation, disposition := o.observation(sample, o.now())
 	if disposition == admissionSampleTransient {
+		o.resetRebindCandidate()
 		return
 	}
-	if disposition == admissionSampleUsable && o.requiresMetadataRevalidation(observation) {
-		metadataContext, cancel := context.WithTimeout(ctx, o.requestTimeout)
-		metadata, metadataErr := fetchPredictiveModelMetadata(
-			metadataContext,
-			o.metadataClient,
-			o.upstreamURL,
-			o.modelName,
-		)
-		cancel()
-		if metadataErr != nil {
+	if disposition == admissionSampleCapabilityDrift && o.isRuntimeCapacityRebindCandidate(observation) {
+		if !o.controller.BeginRuntimeRebind(observation) {
+			o.resetRebindCandidate()
+		} else {
+			if !o.revalidateObservationMetadata(ctx, &observation) {
+				o.resetRebindCandidate()
+				return
+			}
+			if !o.confirmRebindCandidate(observation) {
+				return
+			}
+		}
+	} else {
+		o.resetRebindCandidate()
+		if disposition == admissionSampleUsable && o.requiresMetadataRevalidation(observation) &&
+			!o.revalidateObservationMetadata(ctx, &observation) {
 			return
 		}
-		observation.MaxModelLenTokens = metadata.MaxModelLen
 	}
+	previous := o.controller.Snapshot(observation.ObservedAt)
 	result := o.controller.PublishObservation(window, observation)
+	if result.Accepted && result.CapabilityRebound {
+		oldCapacity := o.kvCapacityTokens
+		o.kvCapacityTokens = observation.KVCapacityTokens
+		accepted := o.controller.Snapshot(observation.ObservedAt)
+		log.Printf(
+			"level=info component=capability event=runtime_epoch_rebound backend_kind=%s old_runtime_start=%.6f new_runtime_start=%.6f old_kv_capacity_tokens=%d new_kv_capacity_tokens=%d runtime_epoch=%d capability_rebinds=%d",
+			o.backendKind,
+			previous.Observation.RuntimeStartTime,
+			observation.RuntimeStartTime,
+			oldCapacity,
+			observation.KVCapacityTokens,
+			result.RuntimeEpoch,
+			accepted.CapabilityRebinds,
+		)
+	}
 	if !result.Accepted && result.Reason != coreadmission.ReasonObservationInvalid && o.cancel != nil {
 		o.cancel()
 	}
+}
+
+func (o *admissionBackendObserver) isRuntimeCapacityRebindCandidate(
+	observation coreadmission.BackendObservation,
+) bool {
+	if o == nil || o.controller == nil || !o.metadataAvailable ||
+		observation.CapabilityFingerprint != o.capabilityFingerprint ||
+		observation.MaxModelLenTokens != o.maxModelLenTokens ||
+		observation.KVBlockSize != o.kvBlockSize ||
+		observation.KVCapacityTokens == o.kvCapacityTokens {
+		return false
+	}
+	current := o.controller.Snapshot(observation.ObservedAt)
+	return current.HasObservation && current.Observation.RuntimeStartTime > 0 &&
+		observation.RuntimeStartTime > 0 &&
+		observation.RuntimeStartTime != current.Observation.RuntimeStartTime
+}
+
+func (o *admissionBackendObserver) revalidateObservationMetadata(
+	ctx context.Context,
+	observation *coreadmission.BackendObservation,
+) bool {
+	if o == nil || observation == nil || !o.metadataAvailable || o.metadataClient == nil {
+		return false
+	}
+	metadataContext, cancel := context.WithTimeout(ctx, o.requestTimeout)
+	defer cancel()
+	metadata, err := fetchPredictiveModelMetadata(
+		metadataContext,
+		o.metadataClient,
+		o.upstreamURL,
+		o.modelName,
+	)
+	if err != nil {
+		return false
+	}
+	observation.MaxModelLenTokens = metadata.MaxModelLen
+	return true
+}
+
+func (o *admissionBackendObserver) confirmRebindCandidate(
+	observation coreadmission.BackendObservation,
+) bool {
+	candidate := admissionCapabilityRebindCandidate{
+		capabilityFingerprint: observation.CapabilityFingerprint,
+		maxModelLenTokens:     observation.MaxModelLenTokens,
+		kvCapacityTokens:      observation.KVCapacityTokens,
+		kvBlockSize:           observation.KVBlockSize,
+		runtimeStartTime:      observation.RuntimeStartTime,
+	}
+	if !o.hasRebindCandidate || o.rebindCandidate != candidate {
+		o.rebindCandidate = candidate
+		o.hasRebindCandidate = true
+		return false
+	}
+	o.resetRebindCandidate()
+	return true
+}
+
+func (o *admissionBackendObserver) resetRebindCandidate() {
+	if o == nil {
+		return
+	}
+	o.rebindCandidate = admissionCapabilityRebindCandidate{}
+	o.hasRebindCandidate = false
 }
 
 func (o *admissionBackendObserver) requiresMetadataRevalidation(

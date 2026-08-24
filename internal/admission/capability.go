@@ -79,9 +79,20 @@ func (c Capability) minimumWork(profile predictive.BackendExecutionProfile) (pre
 	}, profile, c.KVBlockSize)
 }
 
-func (c Capability) matchesObservation(observation BackendObservation) bool {
+func (c Capability) matchesStableObservation(observation BackendObservation) bool {
 	return observation.CapabilityFingerprint == c.Fingerprint &&
 		observation.MaxModelLenTokens == c.MaxModelLenTokens &&
-		observation.KVCapacityTokens == c.KVCapacityTokens &&
 		observation.KVBlockSize == c.KVBlockSize
+}
+
+func (c Capability) withKVCapacityFromObservation(observation BackendObservation) (Capability, bool) {
+	if !c.matchesStableObservation(observation) || observation.KVCapacityTokens == c.KVCapacityTokens {
+		return Capability{}, false
+	}
+	next := c
+	next.KVCapacityTokens = observation.KVCapacityTokens
+	if next.Validate() != nil {
+		return Capability{}, false
+	}
+	return next, true
 }

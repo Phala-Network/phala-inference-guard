@@ -221,6 +221,7 @@ func TestAdmissionVLLMObserverConfirmsRuntimeRestartBeforeKVCapacityRebind(t *te
 	var generation atomic.Uint64
 	var metricsCalls atomic.Int64
 	var metadataCalls atomic.Int64
+	var metadataFailure atomic.Bool
 	var runtimeStart atomic.Int64
 	var kvCapacity atomic.Int64
 	generation.Store(10)
@@ -239,6 +240,10 @@ func TestAdmissionVLLMObserverConfirmsRuntimeRestartBeforeKVCapacityRebind(t *te
 			)
 		case "/v1/models":
 			metadataCalls.Add(1)
+			if metadataFailure.Load() {
+				response.WriteHeader(http.StatusServiceUnavailable)
+				return
+			}
 			_, _ = fmt.Fprintf(
 				response,
 				`{"object":"list","data":[{"id":%q,"max_model_len":%d}]}`,
@@ -295,19 +300,36 @@ func TestAdmissionVLLMObserverConfirmsRuntimeRestartBeforeKVCapacityRebind(t *te
 	kvCapacity.Store(999_616)
 	generation.Store(1)
 	clock.Advance(100 * time.Millisecond)
+	metadataFailure.Store(true)
 	observer.poll(context.Background())
 	if metadataCalls.Load() != 1 {
-		t.Fatalf("first restart candidate metadata calls=%d, want 1", metadataCalls.Load())
+		t.Fatalf("failed restart candidate metadata calls=%d, want 1", metadataCalls.Load())
+	}
+	afterFailure := controller.Snapshot(clock.Now())
+	if afterFailure.RuntimeEpoch != initial.RuntimeEpoch ||
+		afterFailure.Observation.RuntimeStartTime != initial.Observation.RuntimeStartTime ||
+		!afterFailure.RuntimeRebindPending || afterFailure.Available ||
+		afterFailure.MinimumDecision.Reason != coreadmission.ReasonObservationStale {
+		t.Fatalf("failed metadata candidate changed availability contract: %+v", afterFailure)
+	}
+
+	metadataFailure.Store(false)
+	observer.poll(context.Background())
+	if metadataCalls.Load() != 2 {
+		t.Fatalf("first coherent restart candidate metadata calls=%d, want 2", metadataCalls.Load())
 	}
 	afterFirst := controller.Snapshot(clock.Now())
-	if afterFirst.RuntimeEpoch != initial.RuntimeEpoch ||
-		afterFirst.Observation.RuntimeStartTime != initial.Observation.RuntimeStartTime {
-		t.Fatalf("unconfirmed capability candidate was published: %+v", afterFirst)
+	if afterFirst.RuntimeEpoch != initial.RuntimeEpoch || !afterFirst.RuntimeRebindPending || afterFirst.Available {
+		t.Fatalf("first coherent capability candidate was published: %+v", afterFirst)
 	}
 
 	observer.poll(context.Background())
+	if metadataCalls.Load() != 3 {
+		t.Fatalf("confirmed restart candidate metadata calls=%d, want 3", metadataCalls.Load())
+	}
 	rebound := controller.Snapshot(clock.Now())
 	if !rebound.Available || rebound.RuntimeEpoch != initial.RuntimeEpoch+1 ||
+		rebound.CapabilityRebinds != 1 || rebound.RuntimeRebindPending ||
 		rebound.Observation.RuntimeStartTime != 200 ||
 		rebound.Observation.KVCapacityTokens != 999_616 {
 		t.Fatalf("confirmed runtime capability was not rebound: %+v", rebound)

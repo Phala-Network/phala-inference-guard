@@ -87,8 +87,9 @@ services:
 `UPSTREAM` is exactly one absolute HTTP URL. PIG derives the observer endpoint
 from its origin as `/metrics`. Predictive admission defaults to `enforce`, the
 observer polls every 500 ms, and the maximum observation age defaults to
-1500 ms. KV capacity, block size, protected KV limit, and Prefill thresholds
-are derived once during startup from the upstream capability profile. Automatic
+1500 ms. Initial raw KV capacity and block size are read at startup; the
+protected KV limit and Prefill thresholds are then derived once from that
+upstream capability profile. Automatic
 Prefill initialization reads `max_model_len` from `/v1/models` and combines it
 with the metric-reported KV geometry. The response must contain exactly one
 model matching the metric identity and a positive `max_model_len`; missing,
@@ -96,6 +97,18 @@ ambiguous, or inconsistent metadata fails startup. After a monotonic-counter
 reset, an automatically initialized profile revalidates the same bounded
 metadata before the reset sample can reopen intake. Ordinary 500-ms polls do
 not call `/v1/models`. PIG never sends a completion or active performance probe.
+
+When the backend exposes a different positive `process_start_time_seconds` and
+a changed raw KV capacity after an independent restart, PIG protects intake
+while qualifying the replacement runtime. Two consecutive samples must agree
+on runtime start, model identity, block size, raw capacity, and revalidated
+`max_model_len`. The new capacity must still contain the startup-derived hard KV
+limit. A successful rebind atomically advances the runtime epoch, clears all
+old-runtime lifecycle state, keeps the startup-derived hard KV, input, Prefill,
+and TPS policy geometry unchanged, and resumes normal 500-ms observation. A
+same-runtime capacity change, identity/block/context drift, or capacity at or
+below the existing hard limit remains permanent fail-close.
+
 The bounded request scanner uses a 4 MiB internal ceiling so a model-neutral
 650K-token text window remains classifiable under the estimator's six-byte
 upper ratio. This safety bound is not a production Compose variable.

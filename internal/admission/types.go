@@ -213,21 +213,24 @@ type AdmissionResult struct {
 }
 
 type CapacitySnapshot struct {
-	IntakeOpen          bool
-	HasObservation      bool
-	Available           bool
-	MinimumDecision     DecisionRecord
-	State               ProjectedState
-	Observation         BackendObservation
-	ObservationSequence uint64
-	ControllerSequence  uint64
-	RuntimeEpoch        uint64
-	Policy              TPSPolicySnapshot
+	IntakeOpen           bool
+	HasObservation       bool
+	Available            bool
+	MinimumDecision      DecisionRecord
+	State                ProjectedState
+	Observation          BackendObservation
+	ObservationSequence  uint64
+	ControllerSequence   uint64
+	RuntimeEpoch         uint64
+	CapabilityRebinds    uint64
+	RuntimeRebindPending bool
+	Policy               TPSPolicySnapshot
 }
 
 type PublicationResult struct {
 	Accepted            bool
 	RuntimeReset        bool
+	CapabilityRebound   bool
 	CapabilityDrift     bool
 	Reason              Reason
 	ObservationSequence uint64

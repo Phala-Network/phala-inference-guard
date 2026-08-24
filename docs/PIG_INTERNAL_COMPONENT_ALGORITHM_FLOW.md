@@ -26,9 +26,11 @@ explicit capability override exists only for controlled tests or an audited
 non-default deployment.
 
 Startup performs no completion, warmup, cache lookup, or performance probe. The
-Observer polls every 500 ms by default. Model identity, KV geometry, maximum
-input, and Prefill policy are immutable for the Controller lifetime and are not
-learned. The optional TPS reference is a deployment business target; observed
+Observer polls every 500 ms by default. Model identity, KV block geometry,
+maximum input, and Prefill policy are immutable for the Controller lifetime and
+are not learned. Raw KV capacity belongs to an identified backend runtime epoch
+and may be rebound only by the restart protocol below. The optional TPS
+reference is a deployment business target; observed
 Decode rates update a bounded trailing window but never rewrite the reference.
 
 ## Pre-forward transaction
@@ -41,7 +43,7 @@ protected HTTP path
   -> FastWorkEstimator creates one RequestEstimate
   -> AdmissionRuntime.Decide
        -> AdmissionController.Admit(now, estimate), under one lock
-            -> derive block-rounded RequestWork from immutable capability
+            -> derive block-rounded RequestWork from immutable policy geometry
             -> project coherent observation + positive reservation aggregate
             -> evaluate ContextGate, KVGate, PrefillGate, and optional TPSGate
             -> evaluate canonical minimum work on the same projected state
@@ -60,7 +62,7 @@ An unsupported or temporarily unclassifiable estimate becomes an observable
 cannot close canonical node capacity or lock a later fitting request. In shadow
 it is forwarded without a hypothetical reservation.
 
-The canonical minimum work is derived by the same immutable capability and
+The canonical minimum work is derived by the same immutable policy geometry and
 block rounding as a business request. It creates no reservation. There is no
 public inspect-and-reserve variant and no separate shadow policy.
 
@@ -165,7 +167,7 @@ background performance probe.
 `AdmissionController` is the only mutable business-state owner. Under one lock
 it owns:
 
-- the immutable capability and current coherent observation;
+- immutable policy geometry, current raw KV capacity, and coherent observation;
 - runtime, sample, observation, and event sequences;
 - the epoch-fenced reservation map; and
 - a checked O(1) reservation aggregate used by `Admit` and `Snapshot`.
@@ -220,15 +222,24 @@ Fetch errors and incomplete non-drift samples leave the last coherent state
 unchanged. Normal age calculation closes availability if it becomes stale; the
 next coherent sample reopens it immediately.
 
-Model identity, maximum context, KV capacity, or block-size drift permanently
-closes that Controller because its immutable capability no longer applies. A
-generation/preemption counter decrease is a possible backend runtime reset. For
-an automatically initialized profile, the Observer first revalidates model
-identity and `max_model_len` with one bounded metadata request. Failure does not
-publish the sample; changed metadata closes capability availability. Only a
-same-capability reset sample atomically advances the epoch, clears old
-reservations, residual debt, and the TPS window, resets deltas, and reopens from
-that sample.
+Model identity, maximum context, or block-size drift permanently closes that
+Controller. Raw KV capacity drift also permanently closes when it occurs inside
+the same backend process identity. A generation/preemption counter decrease is
+a possible same-capability backend runtime reset.
+
+When both old and new backend process-start identities are present and differ,
+the Observer may qualify changed raw KV capacity as a new runtime epoch. It
+immediately marks the old observation unavailable, revalidates model identity
+and `max_model_len`, and requires two consecutive samples with identical new
+runtime/capability identity. A failed scrape, invalid sample, metadata failure,
+or changed candidate breaks the confirmation streak while availability remains
+protected. The Controller accepts only a capacity that still contains the
+existing hard KV limit and validates against the immutable startup policy
+geometry. Acceptance atomically updates only raw capacity, advances the epoch,
+clears reservations, residual debt, cache/TPS/exposure evidence, fences old
+handles, and reopens from the accepted sample. The Observer then advances its
+raw-capacity baseline. Same-runtime drift and an unsafe capacity drop remain
+permanent fail-close.
 
 Shutdown first stops the Observer, then closes Controller intake and terminates
 all remaining reservations. Later calls through old handles are no-ops.
@@ -264,8 +275,8 @@ exists in the production execution path.
 | `internal/domain/predictive` | Minimal immutable estimate/work records and checked block rounding |
 | `internal/runtime/predictive/capability_profile.go` | Startup-only capability geometry, fixed Prefill derivation, and validation |
 | `internal/admission` | Controller, state projection, pure Gates, atomic reservation, lifecycle, and reconciliation |
-| `internal/app/server/admission_vllm_observer.go` | Metrics I/O and observation publication only |
-| `internal/app/server/admission_runtime.go` | Thin Controller/Reporter service boundary and shutdown ordering |
+| `internal/app/server/admission_backend_observer.go` | Backend-neutral metrics I/O, restart-candidate qualification, metadata revalidation, and observation publication |
+| `internal/app/server/admission_runtime.go` | Thin Controller/Reporter service boundary, race-free current-capacity projection, and shutdown ordering |
 | `internal/app/server/admission_http.go` | Panic-safe HTTP-facing decision translation |
 | `internal/app/server/admission_reporter.go` | Bounded counters, last records, and suppressed decision logs |
 | `internal/app/server/admission_projection.go` | Pure current-capacity and Router compatibility projection |

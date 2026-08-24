@@ -275,12 +275,14 @@ func TestControllerRuntimeRestartSafelyRebindsKVCapacity(t *testing.T) {
 		t.Fatal("restart sample window unavailable")
 	}
 	publication := controller.PublishObservation(window, restarted)
-	if !publication.Accepted || !publication.RuntimeReset || publication.CapabilityDrift {
+	if !publication.Accepted || !publication.RuntimeReset || !publication.CapabilityRebound ||
+		publication.CapabilityDrift {
 		t.Fatalf("safe runtime rebind publication=%+v", publication)
 	}
 
 	snapshot := controller.Snapshot(now.Add(3 * time.Millisecond))
 	if !snapshot.IntakeOpen || !snapshot.Available || snapshot.RuntimeEpoch != 2 ||
+		snapshot.CapabilityRebinds != 1 || snapshot.RuntimeRebindPending ||
 		snapshot.Observation.KVCapacityTokens != restarted.KVCapacityTokens ||
 		snapshot.State.LiveReservations != 0 || snapshot.State.ReservationKVTokens != 0 {
 		t.Fatalf("safe runtime rebind snapshot=%+v", snapshot)
@@ -294,6 +296,120 @@ func TestControllerRuntimeRestartSafelyRebindsKVCapacity(t *testing.T) {
 	followup.ObservedAt = now.Add(4 * time.Millisecond)
 	followup.GenerationTokensTotal++
 	publishObservation(t, controller, followup)
+}
+
+func TestControllerRuntimeRebindPendingProtectsOldSnapshotUntilRecovery(t *testing.T) {
+	now := time.Unix(4_625, 0)
+	capability := testCapability()
+	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
+	initial.RuntimeStartTime = 100
+	controller := testControllerWithObservation(t, capability, initial)
+
+	candidate := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 1, 0)
+	candidate.RuntimeStartTime = 200
+	candidate.KVCapacityTokens -= 384
+	if !controller.BeginRuntimeRebind(candidate) {
+		t.Fatal("safe runtime rebind candidate was not accepted for qualification")
+	}
+	pending := controller.Snapshot(candidate.ObservedAt)
+	if !pending.RuntimeRebindPending || pending.Available ||
+		pending.MinimumDecision.Reason != ReasonObservationStale {
+		t.Fatalf("runtime rebind candidate did not protect old snapshot: %+v", pending)
+	}
+	decision := controller.Admit(
+		candidate.ObservedAt,
+		testEstimate(1_024, 1_536, capability.MinimumDecodeHorizonTokens),
+	).Decision
+	if decision.Admitted() || decision.Reason != ReasonObservationStale || decision.Scope != ProtectionAvailability {
+		t.Fatalf("runtime rebind pending admission=%+v", decision)
+	}
+
+	recovered := initial
+	recovered.ObservedAt = now.Add(2 * time.Millisecond)
+	recovered.GenerationTokensTotal++
+	publishObservation(t, controller, recovered)
+	open := controller.Snapshot(recovered.ObservedAt)
+	if open.RuntimeRebindPending || !open.Available || open.RuntimeEpoch != 1 || open.CapabilityRebinds != 0 {
+		t.Fatalf("original runtime recovery did not clear pending rebind: %+v", open)
+	}
+}
+
+func TestControllerConcurrentRuntimeRebindAdmissionTerminalAndPolicyUpdate(t *testing.T) {
+	now := time.Unix(4_700, 0)
+	capability := testCapability()
+	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
+	initial.RuntimeStartTime = 100
+	controller := testControllerWithObservation(t, capability, initial)
+	estimate := testEstimate(1_024, 1_536, capability.MinimumDecodeHorizonTokens)
+	old := controller.Admit(now.Add(time.Millisecond), estimate)
+	if !old.Decision.Admitted() || !old.Handle.MarkForwarded() {
+		t.Fatalf("prepare concurrent runtime rebind=%+v", old.Decision)
+	}
+
+	restarted := testObservation(capability, now.Add(2*time.Millisecond), 0, 0, 0, 1, 0)
+	restarted.RuntimeStartTime = 200
+	restarted.KVCapacityTokens -= 384
+	if !controller.BeginRuntimeRebind(restarted) {
+		t.Fatal("begin concurrent runtime rebind")
+	}
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("start concurrent runtime rebind sample")
+	}
+
+	start := make(chan struct{})
+	publicationResult := make(chan PublicationResult, 1)
+	policyError := make(chan error, 1)
+	admissionResult := make(chan AdmissionResult, 1)
+	var wait sync.WaitGroup
+	wait.Add(4)
+	go func() {
+		defer wait.Done()
+		<-start
+		publicationResult <- controller.PublishObservation(window, restarted)
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		old.Handle.Terminate(TerminalCancel)
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		_, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
+			ExpectedRevision: 1,
+			Reference:        25,
+			UpdatedAt:        now.Add(3 * time.Millisecond),
+		})
+		policyError <- err
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		admissionResult <- controller.Admit(now.Add(4*time.Millisecond), estimate)
+	}()
+	close(start)
+	wait.Wait()
+
+	publication := <-publicationResult
+	if !publication.Accepted || !publication.CapabilityRebound || !publication.RuntimeReset {
+		t.Fatalf("concurrent runtime rebind publication=%+v", publication)
+	}
+	if err := <-policyError; err != nil {
+		t.Fatalf("concurrent policy update: %v", err)
+	}
+	concurrentAdmission := <-admissionResult
+	if concurrentAdmission.Decision.Admitted() {
+		concurrentAdmission.Handle.Terminate(TerminalCancel)
+	} else if concurrentAdmission.Decision.Reason != ReasonObservationStale {
+		t.Fatalf("concurrent admission=%+v", concurrentAdmission.Decision)
+	}
+	final := controller.Snapshot(now.Add(5 * time.Millisecond))
+	if final.RuntimeEpoch != 2 || final.CapabilityRebinds != 1 || final.RuntimeRebindPending ||
+		!final.IntakeOpen || final.Policy.Revision != 2 ||
+		final.Observation.KVCapacityTokens != restarted.KVCapacityTokens {
+		t.Fatalf("concurrent runtime rebind final=%+v", final)
+	}
 }
 
 func TestControllerRuntimeRestartUnsafeKVCapacityDropClosesPermanently(t *testing.T) {

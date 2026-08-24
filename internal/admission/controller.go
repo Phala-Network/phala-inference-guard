@@ -51,19 +51,21 @@ type AdmissionController struct {
 	now         func() time.Time
 	exposure    sequenceExposureLedger
 
-	runtimeEpoch        uint64
-	eventSequence       uint64
-	sampleSequence      uint64
-	observationSequence uint64
-	lastPublishedSample uint64
-	lastExposure        sequenceExposureSnapshot
-	cacheLeaseSequence  uint64
-	policyRevision      uint64
-	policyUpdatedAt     time.Time
-	tpsPolicyEpoch      uint64
-	observation         observedState
-	hasObservation      bool
-	closedReason        Reason
+	runtimeEpoch         uint64
+	capabilityRebinds    uint64
+	eventSequence        uint64
+	sampleSequence       uint64
+	observationSequence  uint64
+	lastPublishedSample  uint64
+	lastExposure         sequenceExposureSnapshot
+	cacheLeaseSequence   uint64
+	policyRevision       uint64
+	policyUpdatedAt      time.Time
+	tpsPolicyEpoch       uint64
+	observation          observedState
+	hasObservation       bool
+	closedReason         Reason
+	runtimeRebindPending bool
 
 	reservations        map[uint64]reservation
 	overlay             reservationOverlay
@@ -155,6 +157,28 @@ func (c *AdmissionController) StartSampleWindow() (SampleWindow, bool) {
 	}, true
 }
 
+func (c *AdmissionController) BeginRuntimeRebind(observation BackendObservation) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closedReason != "" || !c.hasObservation || !validBackendObservation(observation) {
+		return false
+	}
+	current := c.observation.observation
+	if current.RuntimeStartTime <= 0 || observation.RuntimeStartTime <= 0 ||
+		current.RuntimeStartTime == observation.RuntimeStartTime ||
+		!c.capability.matchesStableObservation(observation) {
+		return false
+	}
+	if _, safe := c.capability.withKVCapacityFromObservation(observation); !safe {
+		return false
+	}
+	c.runtimeRebindPending = true
+	return true
+}
+
 func (c *AdmissionController) PublishObservation(window SampleWindow, observation BackendObservation) PublicationResult {
 	if c == nil {
 		return PublicationResult{Reason: ReasonControllerUnavailable}
@@ -169,13 +193,33 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		!validBackendObservation(observation) {
 		return PublicationResult{Reason: ReasonObservationInvalid, RuntimeEpoch: c.runtimeEpoch}
 	}
-	if !c.capability.matchesObservation(observation) {
+	runtimeIdentityChanged := c.hasObservation &&
+		observation.RuntimeStartTime > 0 && c.observation.observation.RuntimeStartTime > 0 &&
+		observation.RuntimeStartTime != c.observation.observation.RuntimeStartTime
+	if !c.capability.matchesStableObservation(observation) {
 		c.failClosedLocked(ReasonCapabilityDrift)
 		return PublicationResult{
 			CapabilityDrift: true,
 			Reason:          ReasonCapabilityDrift,
 			RuntimeEpoch:    c.runtimeEpoch,
 		}
+	}
+	capabilityRebound := false
+	reboundCapability := Capability{}
+	if observation.KVCapacityTokens != c.capability.KVCapacityTokens {
+		var safe bool
+		if runtimeIdentityChanged {
+			reboundCapability, safe = c.capability.withKVCapacityFromObservation(observation)
+		}
+		if !safe {
+			c.failClosedLocked(ReasonCapabilityDrift)
+			return PublicationResult{
+				CapabilityDrift: true,
+				Reason:          ReasonCapabilityDrift,
+				RuntimeEpoch:    c.runtimeEpoch,
+			}
+		}
+		capabilityRebound = true
 	}
 	if c.hasObservation && observation.ObservedAt.Before(c.observation.observation.ObservedAt) {
 		return PublicationResult{Reason: ReasonObservationInvalid, RuntimeEpoch: c.runtimeEpoch}
@@ -189,8 +233,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	}
 
 	runtimeReset := c.hasObservation &&
-		((observation.RuntimeStartTime > 0 && c.observation.observation.RuntimeStartTime > 0 &&
-			observation.RuntimeStartTime != c.observation.observation.RuntimeStartTime) ||
+		(runtimeIdentityChanged ||
 			observation.GenerationTokensTotal < c.observation.observation.GenerationTokensTotal ||
 			observation.PreemptionsTotal < c.observation.observation.PreemptionsTotal)
 	var generationDelta, preemptionDelta uint64
@@ -199,9 +242,13 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	var cache cachePrefillObservation
 	var newCacheLease bool
 	if runtimeReset {
-		if c.runtimeEpoch == math.MaxUint64 {
+		if c.runtimeEpoch == math.MaxUint64 || (capabilityRebound && c.capabilityRebinds == math.MaxUint64) {
 			c.failClosedLocked(ReasonCounterOverflow)
 			return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
+		}
+		if capabilityRebound {
+			c.capability.KVCapacityTokens = reboundCapability.KVCapacityTokens
+			c.capabilityRebinds++
 		}
 		c.runtimeEpoch++
 		clear(c.reservations)
@@ -279,9 +326,11 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		cache:             cache,
 	}
 	c.hasObservation = true
+	c.runtimeRebindPending = false
 	return PublicationResult{
 		Accepted:            true,
 		RuntimeReset:        runtimeReset,
+		CapabilityRebound:   capabilityRebound,
 		Reason:              ReasonOpen,
 		ObservationSequence: c.observationSequence,
 		RuntimeEpoch:        c.runtimeEpoch,
@@ -384,15 +433,17 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 	if !ok {
 		decision := c.unavailableDecisionLocked(reason, c.policy.minimumWork.Estimate, c.policy.minimumWork, state)
 		return CapacitySnapshot{
-			IntakeOpen:          c.closedReason == "",
-			HasObservation:      c.hasObservation,
-			MinimumDecision:     decision,
-			State:               state,
-			Observation:         c.observation.observation,
-			ObservationSequence: c.observationSequence,
-			ControllerSequence:  c.eventSequence,
-			RuntimeEpoch:        c.runtimeEpoch,
-			Policy:              c.tpsPolicySnapshotLocked(),
+			IntakeOpen:           c.closedReason == "",
+			HasObservation:       c.hasObservation,
+			MinimumDecision:      decision,
+			State:                state,
+			Observation:          c.observation.observation,
+			ObservationSequence:  c.observationSequence,
+			ControllerSequence:   c.eventSequence,
+			RuntimeEpoch:         c.runtimeEpoch,
+			CapabilityRebinds:    c.capabilityRebinds,
+			RuntimeRebindPending: c.runtimeRebindPending,
+			Policy:               c.tpsPolicySnapshotLocked(),
 		}
 	}
 	minimumWork := c.policy.withObservedPrefillCost(state, c.policy.minimumWork)
@@ -403,16 +454,18 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 		state,
 	)
 	return CapacitySnapshot{
-		IntakeOpen:          true,
-		HasObservation:      true,
-		Available:           decision.Admitted(),
-		MinimumDecision:     decision,
-		State:               state,
-		Observation:         c.observation.observation,
-		ObservationSequence: c.observationSequence,
-		ControllerSequence:  c.eventSequence,
-		RuntimeEpoch:        c.runtimeEpoch,
-		Policy:              c.tpsPolicySnapshotLocked(),
+		IntakeOpen:           true,
+		HasObservation:       true,
+		Available:            decision.Admitted(),
+		MinimumDecision:      decision,
+		State:                state,
+		Observation:          c.observation.observation,
+		ObservationSequence:  c.observationSequence,
+		ControllerSequence:   c.eventSequence,
+		RuntimeEpoch:         c.runtimeEpoch,
+		CapabilityRebinds:    c.capabilityRebinds,
+		RuntimeRebindPending: c.runtimeRebindPending,
+		Policy:               c.tpsPolicySnapshotLocked(),
 	}
 }
 
@@ -567,6 +620,9 @@ func (c *AdmissionController) stateLocked(now time.Time) (ProjectedState, Reason
 	if !ok {
 		return ProjectedState{}, ReasonControllerUnavailable, false
 	}
+	if c.runtimeRebindPending {
+		return state, ReasonObservationStale, false
+	}
 	if !now.IsZero() && !now.Before(observation.ObservedAt) {
 		state.TPS = c.tpsWindow.snapshot(now)
 	}
@@ -636,6 +692,7 @@ func (c *AdmissionController) failClosedLocked(reason Reason) {
 	c.exposure.reset()
 	c.lastExposure = sequenceExposureSnapshot{}
 	c.tpsWindow.reset()
+	c.runtimeRebindPending = false
 }
 
 func reservationExposureCounts(item reservation) (forwarded, response int64, valid bool) {

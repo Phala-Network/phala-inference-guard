@@ -27,6 +27,7 @@ type admissionRuntimeTestConfig struct {
 	MaximumAge   time.Duration
 	Generation   uint64
 	Preemptions  uint64
+	RuntimeStart float64
 	TPSReference float64
 }
 
@@ -89,6 +90,7 @@ func newAdmissionRuntimeForTest(
 		Waiting:               config.Waiting,
 		GenerationTokensTotal: config.Generation,
 		PreemptionsTotal:      config.Preemptions,
+		RuntimeStartTime:      config.RuntimeStart,
 	})
 	runtime, err := newAdmissionRuntime(
 		controller,

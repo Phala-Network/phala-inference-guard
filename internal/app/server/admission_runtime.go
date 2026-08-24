@@ -135,11 +135,16 @@ func (r *admissionRuntime) Snapshot(now time.Time) admissionTelemetrySnapshot {
 	if r == nil || r.controller == nil || r.reporter == nil {
 		return admissionTelemetrySnapshot{}
 	}
+	capacity := r.controller.Snapshot(now)
+	profile := r.profile
+	if capacity.HasObservation && capacity.Observation.KVCapacityTokens > 0 {
+		profile.KVCapacityTokens = capacity.Observation.KVCapacityTokens
+	}
 	return admissionTelemetrySnapshot{
 		BackendKind:        r.backendKind,
-		CapabilityProfile:  r.profile,
+		CapabilityProfile:  profile,
 		CapabilityReason:   r.capabilityReason,
-		Capacity:           r.controller.Snapshot(now),
+		Capacity:           capacity,
 		Report:             r.reporter.Snapshot(),
 		PredictionDuration: &r.prediction,
 	}

@@ -12,9 +12,9 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.18 adds endpoint-aware request estimation, bounded TPS debt, and
-// bounded classifier-body ownership while retaining model-neutral policy.
-const version = "PIG-v0.12.18"
+// v0.12.19 safely rebinds a coherent backend runtime epoch after an
+// independently restarted backend reports a changed raw KV capacity.
+const version = "PIG-v0.12.19"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 
