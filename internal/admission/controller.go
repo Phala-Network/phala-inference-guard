@@ -110,6 +110,7 @@ func newAdmissionController(
 	if err != nil {
 		return nil, err
 	}
+	policy.kvGate.skip = config.SkipKV
 	now := config.Now
 	if now == nil {
 		now = time.Now

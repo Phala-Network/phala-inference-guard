@@ -27,12 +27,16 @@ func (g contextGate) evaluate(work predictive.RequestWork) gateDecision {
 
 type kvGate struct {
 	hardLimitTokens int64
+	skip            bool
 }
 
 func (g kvGate) evaluate(state ProjectedState, work predictive.RequestWork) (gateDecision, int64) {
 	postAdmit, ok := addNonnegativeInt64(state.EffectiveKVTokens, work.TotalKVTokens)
 	if !ok {
 		return gateDecision{reason: ReasonResourceExhausted}, 0
+	}
+	if g.skip {
+		return gateDecision{fits: true, reason: ReasonOpen}, postAdmit
 	}
 	if postAdmit > g.hardLimitTokens {
 		return gateDecision{reason: ReasonKVCapacity}, postAdmit

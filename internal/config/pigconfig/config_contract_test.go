@@ -159,6 +159,17 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	}
 }
 
+func TestPredictiveSkipKVAdmissionIsExplicitOptIn(t *testing.T) {
+	t.Setenv("PREDICTIVE_SKIP_KV_ADMISSION", "true")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load KV admission bypass: %v", err)
+	}
+	if !cfg.PredictiveSkipKVAdmission {
+		t.Fatal("PREDICTIVE_SKIP_KV_ADMISSION=true was not loaded")
+	}
+}
+
 func TestRuntimeLogLevelIsBounded(t *testing.T) {
 	for _, level := range []string{"info", "INFO", " debug "} {
 		t.Run(strings.TrimSpace(level), func(t *testing.T) {

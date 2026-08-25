@@ -81,6 +81,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 			PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
 		},
 		WorkProfile: workProfile,
+		SkipKV:      cfg.PredictiveSkipKVAdmission,
 		TPS:         coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
 	})
 	if err != nil {
