@@ -46,7 +46,9 @@ does not create a cooldown or delayed capacity lock.
 ## Request path
 
 ```text
-bounded read-only JSON scan
+canonical method + exact-path public policy
+  -> public bearer authentication
+  -> bounded read-only JSON scan for generation routes
   -> model-agnostic lexical input and output-horizon estimate
   -> Controller-owned backend KV, running, waiting and preemption observation
   -> positive reservation overlay and post-admit Context/KV/Prefill/TPS gates
@@ -171,6 +173,14 @@ policy overrides is not promoted unchanged to production. See
 
 ## HTTP behavior
 
+- The only forwarded public routes are `POST /v1/chat/completions`,
+  `POST /v1/completions`, `POST /v1/responses`, and `GET /v1/models`. All use
+  the configured public bearer policy. Models discovery does not create an
+  admission reservation.
+- Unknown paths, method mismatches, non-canonical paths, encoded aliases,
+  prefixes, suffixes, trailing or repeated slashes, and backend-native routes
+  return the same local OpenAI-compatible HTTP 404 before body reading,
+  authentication, admission, or any upstream call.
 - Syntactically malformed JSON on an admitted path returns a bounded
   OpenAI-compatible HTTP 400 before prediction and never reaches the upstream.
 - An enforce protection returns HTTP 429 before forwarding and is reflected in
@@ -196,6 +206,7 @@ policy overrides is not promoted unchanged to production. See
 | `/pig/metrics` | PIG Prometheus metrics |
 | `/v1/metrics` | PIG metrics followed by a bounded upstream metrics copy |
 | `/v1/upstream-status` | `0` green, `1` selective pressure, `2` closed, `3` unknown |
+| `/admin/v1/predictive-policy` | Read or atomically update the runtime TPS reference |
 | `/v1/attestation/report` | Attestation report endpoint |
 
 Metrics and administrative endpoints require the configured bearer token.

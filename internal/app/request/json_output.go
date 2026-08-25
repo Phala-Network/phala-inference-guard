@@ -54,7 +54,7 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 	if r.URL != nil {
 		path = r.URL.Path
 	}
-	endpoint := domainrequest.EndpointForPath(path, c.cfg.SuffixMatch)
+	endpoint := domainrequest.EndpointForPath(path)
 	if path != "" && endpoint == domainrequest.EndpointUnknown {
 		classification.Cost = kvadmission.Cost{UnsupportedReason: "unsupported_endpoint"}
 		return classification, nil

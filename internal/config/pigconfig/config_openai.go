@@ -33,7 +33,6 @@ func loadOpenAIConfig(cfg *Config) error {
 	}
 
 	cfg.APIAuthEnabled = apiAuthEnabled
-	cfg.APIAuthPaths = env.CSV("API_AUTH_PATHS", strings.Join(cfg.QoSPaths, ","))
 	cfg.UpstreamErrorClassificationEnabled = upstreamErrorClassificationEnabled
 	cfg.AttestationEnabled = attestationEnabled
 	cfg.AttestationDstackEndpoint = strings.TrimSpace(env.String("ATTESTATION_DSTACK_ENDPOINT", ""))

@@ -29,6 +29,9 @@ standing instructions.
   capacity changes while model, context, and block geometry remain stable.
   Source, image, rolling deployment, and live readiness are audited as separate
   stages.
+- [v0.12.20 strict public route policy](PIG_V0_12_20_STRICT_PUBLIC_ROUTE_POLICY_PLAN.md):
+  fixed method plus canonical exact-path forwarding, complete PIG-local endpoint
+  ownership, route rejection observability, and source/image/deployment gates.
 
 ## Historical release evidence
 

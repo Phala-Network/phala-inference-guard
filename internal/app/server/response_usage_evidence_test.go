@@ -22,7 +22,7 @@ func TestV01218ResponseUsageEvidenceIsFixedCardinalityAndExactOnce(t *testing.T)
 			OutputLimitKnown:  true,
 			OutputLimitTokens: 1_024,
 		}},
-	}, "/v1/chat/completions", false)
+	}, "/v1/chat/completions")
 	request.Censor()
 	request.Censor()
 	request.Complete(proxyResult{status: 200})
@@ -49,7 +49,7 @@ func TestV01218ResponseUsageEvidenceIsFixedCardinalityAndExactOnce(t *testing.T)
 
 func TestSuccessfulCompletionTokensCountOnlySuccessfulExactUsageOnce(t *testing.T) {
 	var evidence responseUsageEvidence
-	request := evidence.Begin(apprequest.Classification{}, "/v1/chat/completions", false)
+	request := evidence.Begin(apprequest.Classification{}, "/v1/chat/completions")
 	request.observe(openai.CompletionUsageEvidence{
 		Outcome: openai.CompletionUsageAvailable,
 		Usage:   openai.CompletionUsage{CompletionTokens: 123},
@@ -79,7 +79,7 @@ func TestSuccessfulCompletionTokensExcludeEveryNonSuccessTerminal(t *testing.T) 
 		{status: clientClosedRequestStatus},
 	}
 	for _, result := range results {
-		request := evidence.Begin(apprequest.Classification{}, "/v1/chat/completions", false)
+		request := evidence.Begin(apprequest.Classification{}, "/v1/chat/completions")
 		request.observe(openai.CompletionUsageEvidence{
 			Outcome: openai.CompletionUsageAvailable,
 			Usage:   openai.CompletionUsage{CompletionTokens: 50},

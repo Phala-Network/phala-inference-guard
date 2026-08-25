@@ -53,6 +53,16 @@ pig_client_protocol_errors_total{reason="invalid_json"}
 It must not increase predictive attempts, predictive rejects, general 429s, or
 Router backpressure.
 
+Public requests rejected before authentication and admission increment only:
+
+```text
+pig_route_not_allowed_total
+```
+
+This counter covers unknown paths, method mismatches, and non-canonical request
+targets. It does not alter predictive attempts, reservations, capacity
+projection, backend availability, or 429 counters.
+
 ## Capability and observer metrics
 
 `pig_predictive_capability_*` records the active capability profile: immutable
@@ -307,7 +317,7 @@ not be collapsed into one synthetic `running / global_limit` percentage.
 All runtime records use three stable leading fields:
 
 ```text
-level=<info|warn|debug|error> component=<runtime|capability|controller|admission|policy> event=<name>
+level=<info|warn|debug|error> component=<runtime|capability|controller|admission|policy|route> event=<name>
 ```
 
 The Go logger supplies one UTC timestamp with microsecond precision. Ordinary
@@ -345,6 +355,14 @@ suppressed by logging.
 `event=protection_detail` with the complete numeric decision snapshot. Debug is
 for short diagnostic windows; the default is `info`. Neither form contains
 prompts, request bodies, credentials, request IDs, or endpoint hosts.
+
+A locally rejected public route emits one fixed-cardinality warning:
+
+```text
+level=warn component=route event=rejected reason=route_not_allowed class=<unknown_path|method_mismatch|noncanonical_path> method_class=<get|post|other>
+```
+
+It never logs the raw path, query, headers, authorization value, or body.
 
 The compact periodic `component=controller event=status` line defaults to one
 record every 30 seconds. Its slash-delimited groups are documented in order:

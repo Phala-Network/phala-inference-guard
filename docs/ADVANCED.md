@@ -34,13 +34,19 @@ with a fresh live Compose and audit every explicit `PREDICTIVE_*` value.
 | `LISTEN` | `:8000` | PIG listen address |
 | `UPSTREAM` | `http://backend:8000` | The only upstream base URL |
 | `TOKEN` | empty | Bearer token; setting it enables API authentication by default |
-| `PIG_PATHS` | three OpenAI generation paths | Paths that use predictive admission |
 | `API_AUTH_ENABLED` | true when `TOKEN` is set | Require bearer authentication |
-| `API_AUTH_PATHS` | `PIG_PATHS` | Authenticated generation paths |
 | `PROXY_TIMEOUT_SECONDS` | `1800` | End-to-end upstream timeout |
 | `PIG_STATUS_LOG_INTERVAL_SECONDS` | `30` | Compact Controller status interval; `0` disables periodic lines |
 | `PIG_LOG_LEVEL` | `info` | `info` emits compact events; `debug` also emits decision detail |
 | `UPSTREAM_ERROR_CLASSIFICATION_ENABLED` | `true` | Preserve the bounded upstream error classifier |
+
+The public forwarding surface is not configurable. PIG accepts only
+`POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/responses`, and
+`GET /v1/models`. The three generation routes use predictive admission; models
+discovery does not. All four use the public bearer policy when
+`API_AUTH_ENABLED=true`. Unknown paths and method mismatches terminate locally
+with a generic OpenAI-shaped 404. This fixed boundary prevents a Compose
+override from exposing backend-native interfaces outside PIG admission.
 
 Attestation infrastructure remains configurable with `ATTESTATION_ENABLED`,
 `ATTESTATION_DSTACK_ENDPOINT`, `TLS_CERT_PATH`, `ATTESTATION_GPU_ARCH`, the

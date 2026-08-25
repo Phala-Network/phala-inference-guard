@@ -10,38 +10,22 @@ import (
 )
 
 func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path == "/healthz" {
-		_, _ = w.Write([]byte("ok\n"))
+	if handler, ok := s.localManagementRoutes.Match(r); ok {
+		s.serveLocalManagement(handler, w, r)
 		return
 	}
-	if r.URL.Path == "/pig/metrics" {
-		s.metrics(w, r)
+	if !s.publicRoutes.Allows(r) {
+		s.rejectPublicRoute(w, r)
 		return
 	}
-	if r.URL.Path == "/v1/metrics" {
-		s.combinedMetrics(w, r)
-		return
-	}
-	if r.URL.Path == "/v1/upstream-status" {
-		s.upstreamStatus(w, r)
-		return
-	}
-	if r.URL.Path == predictivePolicyAPIPath {
-		s.predictivePolicyAPI(w, r)
-		return
-	}
-	if attestationReportPath(r.URL.Path) {
-		s.attestationReport(w, r)
-		return
-	}
-	if s.requiresAPIAuth(r) && !s.authorized(r) {
+	if s.authentication.RequiresPublicAuthentication() && !s.authorized(r) {
 		openai.WriteUnauthorized(w)
 		return
 	}
 	r = r.WithContext(attachClientContext(r.Context(), r.Context()))
 	requestStart := time.Now()
-	if !s.requestClassifier.AdmittedPath(r) {
-		s.forwardWithoutAdmission(w, r, requestStart)
+	if !s.admissionRoutes.RequiresAdmission(r) {
+		s.forwardPublicWithoutAdmission(w, r, requestStart)
 		return
 	}
 
@@ -51,7 +35,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
 	}
 	s.requestEvidence.Record(classification)
-	responseEvidence := s.responseUsageEvidence.Begin(classification, r.URL.Path, s.cfg.PathSuffixMatch)
+	responseEvidence := s.responseUsageEvidence.Begin(classification, r.URL.Path)
 	defer responseEvidence.Censor()
 	prefillEvidence := s.prefillLifecycleEvidence.Begin(classification)
 	defer func() { prefillEvidence.Terminate(time.Now()) }()
@@ -115,7 +99,7 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.observeInternalOverhead(time.Since(requestStart), 0, result.total)
 }
 
-func (s *proxyServer) forwardWithoutAdmission(w http.ResponseWriter, r *http.Request, started time.Time) {
+func (s *proxyServer) forwardPublicWithoutAdmission(w http.ResponseWriter, r *http.Request, started time.Time) {
 	if s.backend == nil {
 		s.backendUnavailable.Add(1)
 		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)

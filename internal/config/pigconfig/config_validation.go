@@ -20,20 +20,8 @@ func Validate(cfg Config) error {
 	if err := validateHTTPURL("PREDICTIVE_METRICS_URL", cfg.PredictiveMetricsURL); err != nil {
 		return err
 	}
-	if len(cfg.QoSPaths) == 0 {
-		return fmt.Errorf("PIG_PATHS must not be empty")
-	}
-	if err := validatePaths("PIG_PATHS", cfg.QoSPaths); err != nil {
-		return err
-	}
 	if cfg.APIAuthEnabled && cfg.Token == "" {
 		return fmt.Errorf("API_AUTH_ENABLED requires TOKEN")
-	}
-	if cfg.APIAuthEnabled && len(cfg.APIAuthPaths) == 0 {
-		return fmt.Errorf("API_AUTH_PATHS must not be empty when API_AUTH_ENABLED=true")
-	}
-	if err := validatePaths("API_AUTH_PATHS", cfg.APIAuthPaths); err != nil {
-		return err
 	}
 	if cfg.ProxyTimeout <= 0 {
 		return fmt.Errorf("PROXY_TIMEOUT_SECONDS must be > 0")
@@ -102,20 +90,6 @@ func validateHTTPURL(name, value string) error {
 	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("%s must be one absolute HTTP URL without query or fragment", name)
-	}
-	return nil
-}
-
-func validatePaths(name string, paths []string) error {
-	seen := make(map[string]struct{}, len(paths))
-	for _, path := range paths {
-		if !names.QoSPath(path) {
-			return fmt.Errorf("invalid %s path %q", name, path)
-		}
-		if _, exists := seen[path]; exists {
-			return fmt.Errorf("%s contains duplicate value %q", name, path)
-		}
-		seen[path] = struct{}{}
 	}
 	return nil
 }

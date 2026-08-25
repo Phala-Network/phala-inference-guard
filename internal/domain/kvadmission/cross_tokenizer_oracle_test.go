@@ -119,7 +119,7 @@ func crossTokenizerEstimateBody(endpoint string, body []byte) (Cost, bool) {
 	fields, valid := domainrequest.ParseEndpointJSONFields(
 		body,
 		[]string{"max_tokens", "max_completion_tokens", "max_output_tokens"},
-		domainrequest.EndpointForPath(endpoint, false),
+		domainrequest.EndpointForPath(endpoint),
 	)
 	if !valid || !fields.ShapeSupported {
 		return Cost{}, false

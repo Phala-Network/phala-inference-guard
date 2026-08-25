@@ -9,8 +9,6 @@ import (
 )
 
 type Config struct {
-	Paths             []string
-	SuffixMatch       bool
 	MaximumBodyBytes  int64
 	MaximumConcurrent int
 	OutputTokenFields []string

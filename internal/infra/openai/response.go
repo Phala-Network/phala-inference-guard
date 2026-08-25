@@ -54,3 +54,16 @@ func WriteInvalidJSON(w http.ResponseWriter) {
 		},
 	})
 }
+
+func WriteNotFound(w http.ResponseWriter) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(Response{
+		Error: Info{
+			Message: "The requested resource was not found",
+			Type:    "invalid_request_error",
+			Param:   nil,
+			Code:    http.StatusNotFound,
+		},
+	})
+}

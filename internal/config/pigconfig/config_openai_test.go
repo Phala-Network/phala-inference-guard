@@ -84,9 +84,6 @@ func TestLoadOpenAIConfigEnablesAPIAuthWithToken(t *testing.T) {
 	if !cfg.APIAuthEnabled {
 		t.Fatalf("APIAuthEnabled = false with TOKEN, want true")
 	}
-	if len(cfg.APIAuthPaths) != len(cfg.QoSPaths) {
-		t.Fatalf("APIAuthPaths len=%d want %d", len(cfg.APIAuthPaths), len(cfg.QoSPaths))
-	}
 }
 
 func TestLoadOpenAIConfigLoadsNVIDIAPayloadURL(t *testing.T) {

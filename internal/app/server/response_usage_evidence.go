@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 
 	apprequest "github.com/Phala-Network/phala-inference-guard/internal/app/request"
@@ -112,14 +111,13 @@ type responseUsageRequestEvidenceContextKey struct{}
 func (e *responseUsageEvidence) Begin(
 	classification apprequest.Classification,
 	path string,
-	suffixMatch bool,
 ) *responseUsageRequestEvidence {
 	declared := declaredOutputTokensUnknown
 	estimate := classification.Cost.Estimate
 	if estimate.OutputLimitKnown && estimate.OutputLimitTokens > 0 {
 		declared = declaredOutputTokenBucketFor(estimate.OutputLimitTokens)
 	}
-	format, formatKnown := responseUsageFormatForPath(path, suffixMatch)
+	format, formatKnown := responseUsageFormatForPath(path)
 	return &responseUsageRequestEvidence{
 		owner:    e,
 		declared: declared,
@@ -325,15 +323,11 @@ func actualOutputTokenBucketFor(tokens int64) actualOutputTokenBucket {
 
 func responseUsageFormatForPath(
 	path string,
-	suffixMatch bool,
 ) (openai.CompletionUsageFormat, bool) {
-	match := func(candidate string) bool {
-		return path == candidate || (suffixMatch && strings.HasSuffix(path, candidate))
-	}
-	switch {
-	case match("/v1/chat/completions"), match("/v1/completions"):
+	switch path {
+	case "/v1/chat/completions", "/v1/completions":
 		return openai.CompletionUsageFormatCompletions, true
-	case match("/v1/responses"):
+	case "/v1/responses":
 		return openai.CompletionUsageFormatResponses, true
 	default:
 		return openai.CompletionUsageFormatCompletions, false

@@ -822,7 +822,7 @@ func TestV01218EndpointEstimatorTreatsWhitespaceEmptyExternalContextAsEmpty(t *t
 	}
 }
 
-func TestV01218EndpointEstimatorRejectsUnknownConfiguredEndpoint(t *testing.T) {
+func TestV01218EndpointEstimatorRejectsUnknownEndpoint(t *testing.T) {
 	classification := classifyEndpointFixture(t, "/custom/generate", `{"prompt":"hello","max_tokens":32}`)
 	if classification.Cost.Supported || classification.Cost.UnsupportedReason != "unsupported_endpoint" {
 		t.Fatalf("unknown endpoint classification=%+v", classification.Cost)
@@ -832,7 +832,6 @@ func TestV01218EndpointEstimatorRejectsUnknownConfiguredEndpoint(t *testing.T) {
 func classifyEndpointFixture(t *testing.T, path, body string) Classification {
 	t.Helper()
 	classifier := New(Config{
-		Paths:             []string{"/v1/chat/completions", "/v1/completions", "/v1/responses", "/custom/generate"},
 		MaximumBodyBytes:  int64(len(body) + 1),
 		MaximumConcurrent: 1,
 		OutputTokenFields: []string{"max_tokens", "max_completion_tokens", "max_output_tokens"},

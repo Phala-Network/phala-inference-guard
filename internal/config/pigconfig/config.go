@@ -15,7 +15,6 @@ func Load() (Config, error) {
 		Upstream:             upstream,
 		PredictiveMetricsURL: deriveMetricsURL(upstream),
 		Token:                env.String("TOKEN", ""),
-		QoSPaths:             env.CSV("PIG_PATHS", "/v1/chat/completions,/v1/completions,/v1/responses"),
 		OutputTokenFields:    env.CSV("OUTPUT_TOKEN_FIELD_NAMES", "max_tokens,max_completion_tokens,max_output_tokens"),
 		PredictiveEstimator:  kvadmission.DefaultEstimatorConfig(),
 	}

@@ -14,10 +14,7 @@ type Config struct {
 	Upstream                           string
 	PredictiveMetricsURL               string
 	Token                              string
-	QoSPaths                           []string
 	APIAuthEnabled                     bool
-	APIAuthPaths                       []string
-	PathSuffixMatch                    bool
 	ProxyTimeout                       time.Duration
 	StatusLogInterval                  time.Duration
 	LogLevel                           string

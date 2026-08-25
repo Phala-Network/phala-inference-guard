@@ -12,9 +12,8 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.19 safely rebinds a coherent backend runtime epoch after an
-// independently restarted backend reports a changed raw KV capacity.
-const version = "PIG-v0.12.19"
+// v0.12.20 forwards only the explicitly supported OpenAI public surface.
+const version = "PIG-v0.12.20"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 
@@ -55,12 +54,17 @@ type proxyServer struct {
 	requestClassifier         *request.Classifier
 	attestation               *attestation.Service
 	admission                 admissionService
+	publicRoutes              PublicRoutePolicy
+	admissionRoutes           AdmissionRoutePolicy
+	authentication            AuthenticationPolicy
+	localManagementRoutes     LocalManagementRoutePolicy
 	closeOnce                 sync.Once
 	closeErr                  error
 	started                   time.Time
 	total429                  atomic.Uint64
 	clientProtocolInvalidJSON atomic.Uint64
 	backendUnavailable        atomic.Uint64
+	routeNotAllowed           atomic.Uint64
 	predictiveEnforcedRejects atomic.Uint64
 	admissionFailures         admissionFailureCounters
 	requestEvidence           requestEvidence
