@@ -2,6 +2,7 @@ package prometheus
 
 import (
 	"math"
+	"strings"
 
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
@@ -68,6 +69,9 @@ func adaptVLLMKV(index metricIndex, usage float64, usagePresent bool, sample *te
 	blockValue, blockPresent := index.uniqueFloatLabel("vllm:cache_config_info", "block_size")
 	capacity, capacityValid := exactNonNegativeMetricInt64(capacityValue, capacityPresent)
 	blockSize, blockValid := exactNonNegativeMetricInt(blockValue, blockPresent)
+	if !capacityValid && !vllmCacheConfigHasExplicitCapacity(index) {
+		capacity, capacityValid = guardedLegacyVLLMCapacity(index, blockSize, blockValid)
+	}
 	if !index.declaredType("vllm:cache_config_info", "gauge") ||
 		!index.declaredType("vllm:kv_cache_usage_perc", "gauge") ||
 		!capacityValid || capacity <= 0 || !blockValid || blockSize <= 0 ||
@@ -82,6 +86,46 @@ func adaptVLLMKV(index metricIndex, usage float64, usagePresent bool, sample *te
 	sample.KVAvailableTokens = capacity - used
 	sample.KVCacheUsage = usage
 	sample.KVTokenMetricsValid = true
+}
+
+func vllmCacheConfigHasExplicitCapacity(index metricIndex) bool {
+	for _, item := range index.samples["vllm:cache_config_info"] {
+		if !item.labelsValid {
+			return true
+		}
+		if _, ok := item.labels["kv_cache_size_tokens"]; ok {
+			return true
+		}
+		if _, ok := item.labels["kv_cache_size"]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func guardedLegacyVLLMCapacity(index metricIndex, blockSize int, blockValid bool) (int64, bool) {
+	if !blockValid || blockSize <= 0 {
+		return 0, false
+	}
+	blocksValue, blocksPresent := index.uniqueFloatLabel("vllm:cache_config_info", "num_gpu_blocks")
+	blocks, blocksValid := exactNonNegativeMetricInt64(blocksValue, blocksPresent)
+	attentionFree, attentionFreeValid := index.uniqueLabelAcrossPresent(
+		[]string{"vllm:cache_config_info"}, "is_attention_free", false,
+	)
+	mambaPageSize, mambaPageSizeValid := index.uniqueLabelAcrossPresent(
+		[]string{"vllm:cache_config_info"}, "mamba_page_size_padded", false,
+	)
+	slidingWindow, slidingWindowValid := index.uniqueLabelAcrossPresent(
+		[]string{"vllm:cache_config_info"}, "sliding_window", false,
+	)
+	if !blocksValid || blocks <= 0 ||
+		!attentionFreeValid || !strings.EqualFold(attentionFree, "false") ||
+		!mambaPageSizeValid || !strings.EqualFold(mambaPageSize, "none") ||
+		!slidingWindowValid || !strings.EqualFold(slidingWindow, "none") ||
+		blocks > math.MaxInt64/int64(blockSize) {
+		return 0, false
+	}
+	return blocks * int64(blockSize), true
 }
 
 func adaptVLLMCache(index metricIndex, modelName string, sample *telemetry.Sample) {

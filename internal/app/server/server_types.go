@@ -12,8 +12,8 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.20 forwards only the explicitly supported OpenAI public surface.
-const version = "PIG-v0.12.20"
+// v0.12.21 retains the strict public surface and adds guarded legacy vLLM KV geometry.
+const version = "PIG-v0.12.21"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 

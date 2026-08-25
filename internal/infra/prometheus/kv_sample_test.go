@@ -32,6 +32,70 @@ vllm:num_requests_running 4
 	}
 }
 
+func TestParseSampleUsesGuardedLegacyVLLMBlockCapacity(t *testing.T) {
+	metrics := vllmMetricTypeDeclarations + `
+vllm:cache_config_info{block_size="16",is_attention_free="False",mamba_page_size_padded="None",num_gpu_blocks="27463",sliding_window="None"} 1
+vllm:kv_cache_usage_perc{model_name="qwen/qwen-2.5-7b-instruct",engine="0"} 0.25
+vllm:num_requests_running{model_name="qwen/qwen-2.5-7b-instruct",engine="0"} 4
+vllm:num_requests_waiting{model_name="qwen/qwen-2.5-7b-instruct",engine="0"} 0
+vllm:num_preemptions_total{model_name="qwen/qwen-2.5-7b-instruct",engine="0"} 0
+vllm:generation_tokens_total{model_name="qwen/qwen-2.5-7b-instruct",engine="0"} 100
+`
+	sample := ParseSample(metrics)
+	if sample.BackendKind != "vllm" || !sample.KVTokenMetricsValid || !sample.KVBlockSizeValid {
+		t.Fatalf("legacy full-attention sample=%#v want valid vllm token geometry", sample)
+	}
+	if sample.KVCapacityTokens != 27463*16 || sample.KVBlockSize != 16 {
+		t.Fatalf("legacy geometry capacity=%d block=%d", sample.KVCapacityTokens, sample.KVBlockSize)
+	}
+	if sample.KVUsedTokens != 109852 || sample.KVAvailableTokens != 329556 {
+		t.Fatalf("legacy usage used=%d available=%d", sample.KVUsedTokens, sample.KVAvailableTokens)
+	}
+}
+
+func TestParseSampleRejectsUnsafeLegacyVLLMBlockCapacity(t *testing.T) {
+	for name, cacheConfig := range map[string]string{
+		"attention free":            `block_size="16",is_attention_free="True",mamba_page_size_padded="None",num_gpu_blocks="27463",sliding_window="None"`,
+		"mamba hybrid":              `block_size="16",is_attention_free="False",mamba_page_size_padded="64",num_gpu_blocks="27463",sliding_window="None"`,
+		"sliding window":            `block_size="16",is_attention_free="False",mamba_page_size_padded="None",num_gpu_blocks="27463",sliding_window="4096"`,
+		"missing guard":             `block_size="16",num_gpu_blocks="27463"`,
+		"invalid explicit capacity": `block_size="16",is_attention_free="False",kv_cache_size_tokens="invalid",mamba_page_size_padded="None",num_gpu_blocks="27463",sliding_window="None"`,
+		"zero explicit capacity":    `block_size="16",is_attention_free="False",kv_cache_size_tokens="0",mamba_page_size_padded="None",num_gpu_blocks="27463",sliding_window="None"`,
+		"fractional blocks":         `block_size="16",is_attention_free="False",mamba_page_size_padded="None",num_gpu_blocks="27463.5",sliding_window="None"`,
+		"overflowing capacity":      `block_size="2048",is_attention_free="False",mamba_page_size_padded="None",num_gpu_blocks="9007199254740992",sliding_window="None"`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			metrics := vllmMetricTypeDeclarations + "\nvllm:cache_config_info{" + cacheConfig + `} 1
+vllm:kv_cache_usage_perc{model_name="vendor/model",engine="0"} 0.25
+vllm:num_requests_running{model_name="vendor/model",engine="0"} 0
+vllm:num_requests_waiting{model_name="vendor/model",engine="0"} 0
+vllm:num_preemptions_total{model_name="vendor/model",engine="0"} 0
+vllm:generation_tokens_total{model_name="vendor/model",engine="0"} 0
+`
+			sample := ParseSample(metrics)
+			if sample.KVTokenMetricsValid || sample.KVBlockSizeValid {
+				t.Fatalf("unsafe legacy geometry accepted: %#v", sample)
+			}
+		})
+	}
+}
+
+func TestParseSampleRejectsAmbiguousLegacyVLLMBlockCapacity(t *testing.T) {
+	metrics := vllmMetricTypeDeclarations + `
+vllm:cache_config_info{block_size="16",engine="0",is_attention_free="False",mamba_page_size_padded="None",num_gpu_blocks="27463",sliding_window="None"} 1
+vllm:cache_config_info{block_size="16",engine="1",is_attention_free="False",mamba_page_size_padded="None",num_gpu_blocks="27464",sliding_window="None"} 1
+vllm:kv_cache_usage_perc{model_name="vendor/model",engine="0"} 0.25
+vllm:num_requests_running{model_name="vendor/model",engine="0"} 0
+vllm:num_requests_waiting{model_name="vendor/model",engine="0"} 0
+vllm:num_preemptions_total{model_name="vendor/model",engine="0"} 0
+vllm:generation_tokens_total{model_name="vendor/model",engine="0"} 0
+`
+	sample := ParseSample(metrics)
+	if sample.KVTokenMetricsValid || sample.KVBlockSizeValid {
+		t.Fatalf("ambiguous legacy geometry accepted: %#v", sample)
+	}
+}
+
 func TestParseSampleCapturesOptionalRuntimeStartTime(t *testing.T) {
 	withEpoch := ParseSample("process_start_time_seconds 1786639534.03\n")
 	if !withEpoch.RuntimeStartTimeValid || withEpoch.RuntimeStartTime != 1786639534.03 {

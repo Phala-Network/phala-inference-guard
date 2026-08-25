@@ -32,6 +32,9 @@ standing instructions.
 - [v0.12.20 strict public route policy](PIG_V0_12_20_STRICT_PUBLIC_ROUTE_POLICY_PLAN.md):
   fixed method plus canonical exact-path forwarding, complete PIG-local endpoint
   ownership, route rejection observability, and source/image/deployment gates.
+- [v0.12.21 legacy vLLM KV geometry](PIG_V0_12_21_LEGACY_VLLM_KV_GEOMETRY_PLAN.md):
+  guarded compatibility for full-attention vLLM runtimes that expose block
+  count and block size but not the newer group-aware token-capacity label.
 
 ## Historical release evidence
 
