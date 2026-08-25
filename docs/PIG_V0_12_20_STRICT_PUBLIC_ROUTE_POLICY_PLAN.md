@@ -1,6 +1,6 @@
 # PIG v0.12.20 Strict Public Route Policy Plan
 
-Status: source candidate accepted; source push and release stages in progress
+Status: complete; source, image, four-node rollout, Router restoration, and final audit passed
 
 ## Objective
 
@@ -94,11 +94,13 @@ change the handler-specific semantics above.
 
 ## Current topology audit
 
-Read-only control-plane checks on 2026-08-25 found the active Gemma4 nodes
+Read-only control-plane checks on 2026-08-25 found the rollout targets
 `use2-19`, `use2-3b`, `use2-4c`, and `use2-5d` running PIG `0.12.19` with
 `UPSTREAM=http://vllm:8000`. They are direct PIG-to-vLLM deployments. The user
-has explicitly removed `use1-4c` and `use2-9b/bb/cb/db` from the current
-Gemma4 scope.
+excluded `use1-4c` and `use2-9b/bb/cb/db` from deployment. `use1-4c` remained
+part of the pre-existing Router enabled set and was preserved unchanged;
+`use2-9b/bb/cb/db` no longer serve Gemma4 and were neither deployed nor
+enabled.
 
 The two current tracked `production/**/docker-compose.yaml` PIG deployments are
 direct PIG-to-SGLang topologies. No current tracked production Compose uses
@@ -162,16 +164,26 @@ Required green evidence:
 8. Build and publish `0.12.20` only after the exact pushed commit passes the
    clean-builder matrix and image smoke tests.
 9. Treat Compose update, canary deployment, readiness, Router restoration, and
-   expansion as separate authorized stages. Never restart a CVM merely to
-   replace PIG.
+   expansion as separate authorized stages. Do not explicitly restart or
+   redeploy after an accepted Compose update. The current non-dev control-plane
+   Compose operation nevertheless restarts the whole CVM; every target must
+   therefore remain disabled until vLLM finishes its complete cold start.
 
 ## Release decision
 
-The r5 source candidate passed the focused and complete Linux builder matrix
-and is approved for source commit and push. No image or runtime is approved by
-this plan yet. Registry publication requires exact-pushed-commit builder and
-image smoke evidence. Deployment remains a separate canary/drain/readiness
-stage.
+Release complete. Commit
+`85bb6e4084b437cfc6e9320f97e58d134176d4b6` is pushed on
+`codex/pig-v0.12.20-strict-public-routes`. The exact pushed commit passed the
+clean Linux builder matrix, image smoke, and anonymous digest-pull identity
+gate. Registry digest
+`sha256:fa433bbd8d6fdb4696542f1954944d41649ef4fc6dfe457b4b108f4b6bf22c70`
+was deployed serially to `use2-19`, `use2-3b`, `use2-4c`, and `use2-5d`.
+
+Each node passed strict-route, management-route, auth, PIG/backend readiness,
+and two-minute natural-traffic gates before Router restoration. The final
+read-only fleet audit passed with the exact original enabled set and no OOM,
+Xid, panic, or restart-loop markers. The release does not change predictive
+QoS behavior or authorize any wider public forwarding surface.
 
 ## Three-pass review
 
@@ -217,8 +229,19 @@ stage.
   passed. The frozen estimator performance test also passed in the complete
   matrix; no threshold or estimator source changed.
 - Source, pushed commit, image, registry, Compose, deployment, and live
-  readiness remain separately gated.
-- Result: pass; source commit/push approved, image/deployment not yet approved.
+  readiness remained separate gates throughout the release.
+- The exact pushed commit matrix repeated formatting, focused strict-route
+  tests, vet, all-package tests, race tests, binary build, and image smoke.
+- The non-dev control-plane Compose update restarted each CVM and vLLM even
+  though the only Compose content change was the PIG image. Early runner
+  failures based on the invalid no-vLLM-restart assumption were retained; the
+  already-applied candidates were validated without redeploying. Later nodes
+  explicitly accepted the observed CVM restart and waited for full vLLM
+  readiness.
+- Every target was disabled and drained independently, validated, restored,
+  and observed under natural traffic before the next node was changed.
+- Result: pass; source, image, registry, four-node deployment, Router
+  restoration, and final fleet audit approved.
 
 ## Evidence log
 
@@ -264,4 +287,82 @@ stage.
   `39104f880de0ffdd58aa15a00d98079e713b227957166da382d33a1a457ae61e`.
   Matrix marker SHA-256:
   `0657406b866c50cb4bbf25f39a32d8db72074a4e681d81fdf0a8a6c25330aa22`.
-- Commit, pushed source, image, and deployment evidence: pending
+- Behavior commit:
+  `85bb6e4084b437cfc6e9320f97e58d134176d4b6`; remote branch
+  `pig-origin/codex/pig-v0.12.20-strict-public-routes` resolved to the same
+  commit after rollout.
+- Exact-commit builder archive SHA-256:
+  `218192656de969497d0d01507b2a5fecf2615f8fd935c99c40565e2450932e15`;
+  builder directory:
+  `/var/volatile/dstack/persistent/.cache/pig-v01220-strict-route/commit-85bb6e4-21819265`.
+- Exact-commit builder gates: formatting, focused strict-route tests,
+  `go vet ./...`, `go test -count=1 ./...`,
+  `go test -race -count=1 ./...`, binary build, image smoke, and anonymous
+  registry digest-pull/OCI identity all passed.
+- Image tags:
+  `ghcr.io/phala-network/phala-inference-guard:0.12.20` and
+  `ghcr.io/phala-network/phala-inference-guard:0.12.20-85bb6e4084b4`.
+  Registry digest:
+  `sha256:fa433bbd8d6fdb4696542f1954944d41649ef4fc6dfe457b4b108f4b6bf22c70`;
+  image ID:
+  `sha256:86cdb75419c1649f998f322c5872c7e833255bf1601f96c83202c8c8bad67f43`.
+
+## Production rollout record
+
+Only `use2-19`, `use2-3b`, `use2-4c`, and `use2-5d` were changed. The candidate
+Compose for each node replaced exactly one PIG image reference. No Router,
+vLLM, SGLang, or vllm-proxy source or configuration was changed.
+
+| Node | Final Compose SHA-256 | Natural processed | Backend accepted/completed | Backend failed/proxy errors | Result |
+| --- | --- | ---: | ---: | ---: | --- |
+| `use2-19` | `646f28c8c9d7b4dd75de341b89df11a40d11d5f453e06e45737fb9f305e4c650` | 71 | 76 / 74 | 0 / 0 | passed, restored |
+| `use2-3b` | `b5bd8f170430f870038f5a7b0ff553f037eabe32ca1c497d33afdb129077bc7c` | 28 | 29 / 29 | 0 / 0 | passed, restored |
+| `use2-4c` | `5d7f326c3843e1bfadf33158803605a3be090195df598b5c8d34a6c677ada039` | 41 | 41 / 39 | 0 / 0 | passed, restored |
+| `use2-5d` | `9936c7f9e39ad9878ab1e3a36dbd9194d5f9009ccd9858e9e55dbc70f10bb054` | 27 | 30 / 29 | 0 / 0 | passed, restored |
+
+The natural-traffic window was 120 seconds per node. Counter differences can
+include requests that were accepted just before the first sample or completed
+just after the last sample; release gating used zero increase in backend failed
+and proxy-error counters plus a stable vLLM process epoch, not equality among
+processed, accepted, and completed deltas.
+
+All four control-plane Compose updates restarted the entire non-dev CVM and
+therefore changed the vLLM process epoch. Each node stayed disabled throughout
+weights loading, KV allocation, CUDA graph capture, tokenizer/template setup,
+and multimodal warmup. No manual CVM restart and no second deployment of an
+already-accepted candidate occurred.
+
+Per-node runtime validation proved:
+
+- PIG reports `pig_info{version="PIG-v0.12.20"} 1`.
+- Authenticated `GET /v1/models` returns 200 and unauthenticated access returns
+  401.
+- `/healthz`, `/pig/metrics`, `/v1/metrics`, `/v1/upstream-status`,
+  `/admin/v1/predictive-policy`, and `/v1/attestation/report` remain local and
+  return their expected production statuses; unauthenticated PIG metrics return
+  401.
+- `/generate`, `/v1/tokenize`, wrong-method `/v1/models`, trailing-slash chat,
+  and an encoded chat alias return the generic OpenAI-shaped 404.
+- The blocked-route gate increments `pig_route_not_allowed_total` exactly once
+  per request while admission, reservations, scanner, backend accepted/failed/
+  completed, proxy-error, and capacity-related live counters remain unchanged.
+
+## Final fleet audit
+
+The read-only audit completed at `2026-08-25T09:21:56Z`; it sent no generation
+request. Evidence JSON SHA-256:
+`1651f26c580bee3689af9092155a5c9b78f04f08edb3acf6d93adb4476c18ca8`.
+
+- All four CVMs are `running` with `in_progress=false`, exact candidate Compose
+  hashes, one exact digest-pinned PIG image occurrence, PIG `v0.12.20`, backend
+  metrics available, and authenticated `/v1/models=200`.
+- All four Router entries are enabled, selectable, circuit closed,
+  `pig_metrics.ok=true`, and `pig_metrics.stale=false`; vLLM waiting was zero on
+  every node at capture time.
+- The audited PIG and vLLM log tails contained zero CUDA OOM, Xid, panic,
+  fatal-error, back-off restart, or restart-loop markers.
+- Final enabled set is exactly
+  `use1-4c,use2-19,use2-3b,use2-4c,use2-5d`.
+- `use1-4c` was preserved without deployment. `use2-9b`, `use2-bb`, `use2-cb`,
+  and `use2-db` were neither deployed nor restored because they no longer serve
+  Gemma4.
