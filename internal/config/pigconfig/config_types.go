@@ -43,6 +43,7 @@ type Config struct {
 	PredictiveObservationPollInterval      time.Duration
 	PredictiveMaximumMetricsAge            time.Duration
 	PredictiveKVHardRatio                  float64
+	PredictiveSkipKVAdmission              bool
 	PredictiveTPSReference                 float64
 	PredictiveMaxModelLenTokens            int64
 	PredictivePrefillRegularTokens         int64

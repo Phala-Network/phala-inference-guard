@@ -155,6 +155,7 @@ type TPSPolicyConfig struct {
 type ControllerConfig struct {
 	Capability  Capability
 	WorkProfile predictive.BackendExecutionProfile
+	SkipKV      bool
 	TPS         TPSPolicyConfig
 	Now         func() time.Time
 }

@@ -56,6 +56,16 @@ func TestPolicySeparatesContextKVAndPrefillGates(t *testing.T) {
 	}
 }
 
+func TestPolicyCanSkipKVCapacityProtection(t *testing.T) {
+	policy := testPolicy(t)
+	policy.kvGate.skip = true
+	state := ProjectedState{ObservedKVTokens: 7_999_800, EffectiveKVTokens: 7_999_800}
+	decision := policy.evaluate(state, testWork(t, 32*1024, 64*1024, 256))
+	if decision.action != ActionAdmit || decision.reason != ReasonOpen {
+		t.Fatalf("KV-bypassed decision=%+v", decision)
+	}
+}
+
 func TestPolicyEnforcesExclusiveAndQuiescentOwnership(t *testing.T) {
 	policy := testPolicy(t)
 
