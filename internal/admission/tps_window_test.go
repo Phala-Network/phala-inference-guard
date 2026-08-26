@@ -209,7 +209,7 @@ func TestV01215TPSWindowSeparatesAggregateAndReliableSequenceEvidence(t *testing
 	}
 }
 
-func TestV01215CompletionBetweenPollsCannotFabricateTPSExploration(t *testing.T) {
+func TestV01215CompletionBetweenPollsCannotFabricateCurrentTPSEvidence(t *testing.T) {
 	window := newTPSWindow(50)
 	start := time.Unix(32_000, 0)
 	for index := 0; index < 4; index++ {
@@ -238,8 +238,86 @@ func TestV01215CompletionBetweenPollsCannotFabricateTPSExploration(t *testing.T)
 		t.Fatalf("qualified mixed snapshot=%+v", snapshot)
 	}
 	decision := (tpsGate{}).evaluate(ProjectedState{RawRunning: 1, TPS: snapshot})
-	if decision.fits || decision.reason != ReasonTPSReference || decision.sequenceLimit != 1 {
-		t.Fatalf("unreliable completion evidence opened exploration: %+v", decision)
+	if !decision.fits || decision.reason != ReasonOpen ||
+		decision.subreason != TPSDecisionSubreasonNoCurrentEvidence {
+		t.Fatalf("unreliable completion evidence became current TPS evidence: %+v", decision)
+	}
+}
+
+func TestV01223TPSWindowDoesNotTreatPurePrefillAsZeroDecodeTPS(t *testing.T) {
+	window := newTPSWindow(25)
+	start := time.Unix(33_000, 0)
+	if !window.observe(tpsSample{
+		start: start, end: start.Add(time.Second), maximumInterval: 2 * time.Second,
+		localExposureMeasured: true,
+	}) {
+		t.Fatal("pure-prefill sample caused numeric failure")
+	}
+
+	snapshot := window.snapshot(start.Add(time.Second))
+	if snapshot.Latest.Qualified || snapshot.QualifiedSamples != 0 ||
+		snapshot.QualifiedSequenceSamples != 0 {
+		t.Fatalf("pure prefill became zero decode TPS: %+v", snapshot)
+	}
+}
+
+func TestV01223TPSWindowQualifiesTrackedDecodeWithZeroGeneratedTokens(t *testing.T) {
+	window := newTPSWindow(25)
+	start := time.Unix(34_000, 0)
+	if !window.observe(tpsSample{
+		start: start, end: start.Add(time.Second), maximumInterval: 2 * time.Second,
+		localExposureMeasured: true, localResponseSequenceSeconds: 1,
+	}) {
+		t.Fatal("tracked zero-token decode sample caused numeric failure")
+	}
+
+	snapshot := window.snapshot(start.Add(time.Second))
+	if !snapshot.Latest.Qualified || snapshot.Latest.Tokens != 0 ||
+		snapshot.Latest.MeanActiveTPS != 0 || snapshot.QualifiedSequenceSamples != 1 {
+		t.Fatalf("tracked zero-token decode was not qualified: %+v", snapshot)
+	}
+}
+
+func TestV01223TPSWindowHealthUsesRollingToleranceAndCurrentRecovery(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		tokens    []uint64
+		subreason TPSDecisionSubreason
+	}{
+		{
+			name:      "healthy rolling window tolerates current dip",
+			tokens:    []uint64{80, 80, 80, 10},
+			subreason: TPSDecisionSubreasonHealthyWindow,
+		},
+		{
+			name:      "qualified current recovery reopens low rolling window",
+			tokens:    []uint64{20, 20, 20, 60},
+			subreason: TPSDecisionSubreasonRecoveredCurrent,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			window := newTPSWindow(25)
+			start := time.Unix(35_000, 0)
+			for index, tokens := range test.tokens {
+				intervalStart := start.Add(time.Duration(index) * 2 * time.Second)
+				if !window.observe(tpsSample{
+					start: intervalStart, end: intervalStart.Add(2 * time.Second),
+					maximumInterval: 3 * time.Second, generatedTokens: tokens,
+					previousRunning: 1, running: 1,
+				}) {
+					t.Fatalf("sample %d caused numeric failure", index)
+				}
+			}
+
+			snapshot := window.snapshot(start.Add(8 * time.Second))
+			if !snapshot.Ready || !snapshot.Latest.Qualified {
+				t.Fatalf("TPS fixture did not become ready: %+v", snapshot)
+			}
+			decision := (tpsGate{}).evaluate(ProjectedState{TPS: snapshot})
+			if !decision.fits || decision.reason != ReasonOpen || decision.subreason != test.subreason {
+				t.Fatalf("TPS health decision=%+v snapshot=%+v", decision, snapshot)
+			}
+		})
 	}
 }
 

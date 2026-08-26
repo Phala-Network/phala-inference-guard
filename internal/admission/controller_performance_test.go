@@ -29,7 +29,7 @@ func BenchmarkControllerProtectedAdmission(b *testing.B) {
 	}
 	publication := controller.PublishObservation(
 		window,
-		testObservation(time.Unix(18_500, 0), tpsWarmingSequenceLimit, 0, 0, 0),
+		testObservation(time.Unix(18_500, 0), 1, 1, 0, 0),
 	)
 	if !publication.Accepted {
 		b.Fatalf("publication=%+v", publication)
