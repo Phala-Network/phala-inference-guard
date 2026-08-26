@@ -472,9 +472,15 @@ checked rather than only saying "passed".
   decision, and successful completion-token counters are already present in the
   current source; their absence in the inspected live series is deployed-image
   or collection drift, not authorization to duplicate them;
-- Phase 0 focused red test: authored for removal of the synthetic constant-zero
-  request-aware pressure metric; remote red evidence pending;
-- Phase 0 production source: unchanged pending valid remote red evidence;
+- Phase 0 focused red test: passed as a valid red test on builder CVM
+  `4f167f6e-4c50-415f-99f2-94b65652beba`, app
+  `ff40ee31b95e89ebb242c223514adc715ac8a301`, using pinned Go image
+  `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`.
+  Exact pushed red-test commit `472c831fd70c09f775c780da9086a4d7cfc3d58a`
+  failed only because `pig_predictive_request_aware_pressure` remained in
+  production output; focused test exit was 1;
+- Phase 0 production source: the synthetic constant-zero request-aware pressure
+  metric has been removed; green remote evidence pending;
 - TPS behavior: unchanged;
 - cache-aware KV behavior: unchanged;
 - remote test environment: not yet identified as approved nonproduction;

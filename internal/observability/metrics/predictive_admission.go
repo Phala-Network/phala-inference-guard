@@ -221,7 +221,6 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_router_backpressure_effective_global_limit %d\n", input.RouterBackpressure.EffectiveGlobalLimit)
 	fmt.Fprintf(w, "pig_predictive_request_aware_last_decision_info{action=%q,reason=%q,pressure_source=%q,prefill_class=%q} 1\n", admissionAction, admissionReason, admissionPressureSource, admissionPrefillClass)
 	fmt.Fprintf(w, "pig_predictive_request_aware_input_estimate_confidence_info{confidence=%q} 1\n", inputEstimateConfidence)
-	fmt.Fprintf(w, "pig_predictive_request_aware_pressure %.6f\n", 0.0)
 	fmt.Fprintf(w, "pig_predictive_request_aware_selection_input_tokens %d\n", input.AdmissionSelectionInputTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_maximum_sequence_input_tokens %d\n", input.AdmissionMaximumSequenceInputTokens)
 	fmt.Fprintf(w, "pig_predictive_request_aware_base_prompt_count %d\n", input.AdmissionBasePromptCount)
