@@ -505,8 +505,20 @@ checked rather than only saying "passed".
 - Phase 2 source candidate: O(1), one-second bounded accumulation is implemented
   separately from mature cache-credit leases. Coherent mixed hot/cold evidence,
   zero-delta expiry, counter rollback, full-KV invariance, and arithmetic bounds
-  have focused coverage; remote green evidence pending;
+  have focused coverage. Exact pushed source commit
+  `5b2d0276b9a383a8558d2bef50920a52bc880f33` passed the focused admission test,
+  admission-package test, full test suite, race suite, vet, and build on the
+  approved nonproduction builder. Output SHA-256 values were respectively
+  `1b86d98986af0d3620b82754ff32f050b3ed084dc140477fb719789f4e652f52`,
+  `77e516205fcbca8898b0057091f921d9915e1d32ed709d0ad9eefda02d58f7a4`,
+  `aec03840f2e78b883fc0e605539d09ac8f14243c3b07cf5bb410d5d19bcb5ffc`,
+  and `a74207cb405e7138d5b8c4907501f2b84be1c7f97abbe8ec1ce649791ead8a9b`;
+  vet and build both produced the empty-output SHA-256
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
 - TPS behavior: unchanged;
 - cache-aware KV behavior: unchanged;
-- remote test environment: not yet identified as approved nonproduction;
+- remote test environment: approved nonproduction builder CVM
+  `4f167f6e-4c50-415f-99f2-94b65652beba`, app
+  `ff40ee31b95e89ebb242c223514adc715ac8a301`, using pinned Go image
+  `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`;
 - image/deployment: not authorized and not started.
