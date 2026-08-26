@@ -262,5 +262,77 @@ revision a71798e0fb613edd6b47065ae029fb9fe8eb9eb2
 ```
 
 Source, full builder validation, builder-local image contract, registry
-publication, and registry pullability are complete. Production Compose rollout
-and live readiness remain pending and must use the immutable digest above.
+publication, and registry pullability are complete. The production rollout and
+live-readiness result are recorded below.
+
+## 12. Production Rollout And Live Readiness
+
+The authorized eight-node rollout completed on 2026-08-26 UTC. Every target
+was a non-dev CVM, so each update used the control-plane Compose surface without
+an `.env` upload. No Router state was changed and no synthetic inference request
+was sent. The only explicit predictive production setting remains
+`PREDICTIVE_TPS_REFERENCE=25`; obsolete explicit defaults were not restored.
+
+The immutable PIG image on every target is:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:v0.12.25@sha256:3d558568430b0e16e7c2dde1a2122f2e759fa8805a1fe84a4999b7d95f9b30c2
+```
+
+The final per-node Docker Compose hashes are:
+
+```text
+gemma4-31b-it-use1-4c  ebcd52cf1ab3412af97139e9dcc4159096af4297a9f7783b150d3943006961bf
+gemma4-31b-it-use2-19  32c87f726f2f194fb6502616abddcee8771cf495d83ffb69cc1a9e9da5548406
+gemma4-31b-it-use2-3b  bf74df607cf684a9e913b948c3e0075c9842b1850dcf60cae25c0a135a4ba760
+gemma4-31b-it-use2-4c  ead2a98cb906bb68b9ffc2e6e288e74301712513bf9c2d39b71353380ca92ccc
+gemma4-31b-it-use2-5d  637dc0172148e531b293e66c1abe02e2e39ea76900db8c9ccd1579f32fd4527e
+qwen3-8-27b-use2-9b   d9d3fb4b50b6be7bbd597c2715d72fd48141a878769b439a44072e2aa60ca2c5
+qwen3-8-27b-use2-bb   837c7621cc8bd56b1f1787c92bd24ae96b720a937ee4f9876b3f48da5ae59006
+qwen3-8-27b-use2-cb   563faefcf8ebfd39e6154db6b15fb14d13ee0a0e3938b4bacb38b29e9bb1594d
+```
+
+The rollout used one canary per model, then parallel expansion while retaining
+healthy nodes in each model group, and finally the last node in each group.
+The first Gemma canary encountered a platform guest-preparation failure because
+`pccs.phala.network` temporarily had no A record. A start retry succeeded
+without resubmitting the Compose update. Several CLI waits stopped at their
+fixed 300-second client timeout; authoritative `cvms get` state showed the
+accepted candidate hashes and the existing operations were allowed to finish.
+No duplicate deploy was submitted.
+
+At the final fleet audit all eight CVMs reported `running` with
+`in_progress=false`. For every node, authenticated `/v1/models` returned 200
+with the expected Gemma4 or Qwen3.8 identity, unauthenticated `/pig/metrics`
+returned 401, authenticated `/pig/metrics` returned exactly the five contracted
+lines, authenticated `/v1/metrics` returned 200, and the full metrics exposed
+`pig_info{version="PIG-v0.12.25"} 1`. Every five-line snapshot was internally
+consistent: an open state used `global_limit=0` and `backpressure=0`; a protected
+state used a positive limit equal to the observed running count and
+`backpressure=1`.
+
+Live traffic exercised the waiting lifecycle without a synthetic request. The
+Gemma expansion nodes repeatedly reached observed running counts from 32 to 50
+while waiting remained zero, proving the configured window concurrency was not
+misused as a total-running ceiling. When `use1-4c` first reopened, the immediate
+traffic burst produced waiting 7 and then 9, below the window-concurrency bound
+of 32. The next observations closed intake, and waiting returned to zero within
+about 35 seconds. Later the same node reached running 44 with waiting zero and
+an open Router signal, then returned to running zero, waiting zero, and an open
+signal under low traffic. This shows neither leaked pending-first-byte debt nor
+a low-flow self-lock in the observed rollout window. The final audit reported
+waiting zero on all eight nodes.
+
+Each PIG container recorded exactly one successful v0.12.25 startup and zero
+post-start PIG error, panic, fatal, or OOM lines. Backend logs had no crash,
+restart loop, or OOM. One vLLM request was rejected because `min_p` together
+with `logit_bias` is unsupported under speculative decoding; the engine
+continued serving. The final Qwen node logged the known post-warmup `freeze_gc`
+localhost race after `Application startup complete`; `/server_info`,
+`/v1/models`, PIG metrics, and subsequent real requests all succeeded.
+
+The source, builder matrix, published image, Compose integration, eight-node
+deployment, live readiness, authentication contract, Router five-line metrics,
+and waiting-guard rollout are therefore complete for v0.12.25. Longer-term QoS
+and throughput behavior remains production observation rather than a claim
+derived from this rollout window.
