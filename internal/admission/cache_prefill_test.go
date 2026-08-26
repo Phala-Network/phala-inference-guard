@@ -237,6 +237,45 @@ func TestControllerCacheFallbacksNeverCloseLowFlowAdmission(t *testing.T) {
 	}
 }
 
+func TestV01222ControllerAccumulatesCoherentSubthresholdCacheDeltas(t *testing.T) {
+	now := time.Unix(22_500, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(
+		t,
+		capability,
+		cacheObservation(capability, now, 10_000, 5_000),
+	)
+
+	firstPoll := cacheObservation(capability, now.Add(500*time.Millisecond), 10_000+2*1024, 5_000+1536)
+	publishObservation(t, controller, firstPoll)
+	beforeMinimum := controller.Admit(
+		now.Add(500*time.Millisecond+time.Microsecond),
+		testEstimate(4*1024, 4*1024, 256),
+	)
+	if !beforeMinimum.Decision.Admitted() || beforeMinimum.Decision.Work.PrefillComputeTokens != 4*1024 {
+		t.Fatalf("subthreshold cache delta changed or blocked admission: %+v", beforeMinimum.Decision)
+	}
+	if !beforeMinimum.Handle.Terminate(TerminalCancel) {
+		t.Fatalf("subthreshold admission lifecycle=%+v", beforeMinimum.Decision)
+	}
+
+	secondPoll := cacheObservation(capability, now.Add(time.Second), 10_000+4*1024, 5_000+3072)
+	publishObservation(t, controller, secondPoll)
+	qualified := controller.Admit(
+		now.Add(time.Second+time.Microsecond),
+		testEstimate(4*1024, 4*1024, 256),
+	).Decision
+	if !qualified.Admitted() || qualified.Work.PrefillComputeTokens != 1024 {
+		t.Fatalf("coherent cache deltas did not accumulate into bounded credit: %+v", qualified)
+	}
+	if qualified.State.CacheEvidenceTokens != 4*1024 ||
+		qualified.State.CacheCreditBudgetTokens != 3072 ||
+		qualified.Work.InputKVTokens != qualified.Estimate.KVReservationInputTokens ||
+		qualified.Work.TotalKVTokens != qualified.Work.InputKVTokens+qualified.Work.FutureKVTokens {
+		t.Fatalf("accumulated cache evidence changed KV or has the wrong budget: %+v", qualified)
+	}
+}
+
 func TestV01215ControllerCacheCreditExpiresAtRequestTime(t *testing.T) {
 	now := time.Unix(23_000, 0)
 	capability := testCapability()

@@ -480,7 +480,26 @@ checked rather than only saying "passed".
   failed only because `pig_predictive_request_aware_pressure` remained in
   production output; focused test exit was 1;
 - Phase 0 production source: the synthetic constant-zero request-aware pressure
-  metric has been removed; green remote evidence pending;
+  metric has been removed. Exact green source commit
+  `e9fdb709f0ae7d93005826ab388154c8014ce23a` passed focused and metrics-package
+  tests with output SHA-256
+  `d8a502e6f41450fa87aa5a5d643b4c89f163db6994cd7225d954d3b7ecc63523`
+  and `d19fcff70f4c788429f6494638b9a0440622640702ab8226ca5679ef0f1b19d1`;
+  formatting output was empty;
+- Phase 0 exact-commit full remote matrix: complete. `go test ./...` output
+  SHA-256 was
+  `34e9d0b2791991dc7dc535dd3908285bdd45923069306e9dd5566c2c3c4103c8`,
+  race output SHA-256 was
+  `f985b96fd6debd6aae5f58c0e721053ff92147fbc255905e2ae37d4de4ce1a10`,
+  and `go vet ./...` plus `go build ./...` both produced the empty-output
+  SHA-256 `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+- Phase 1 TPS behavior entrance gate: pending a comparable six-hour observation
+  from a source/image that actually exports the existing reason-specific
+  counters. Without deployment authorization, H1 is not yet eligible and TPS
+  behavior remains unchanged;
+- Phase 2 focused cache-accumulation red test: authored; remote red evidence
+  pending. It requires two coherent 2,048-token deltas within one second to
+  qualify the existing 4,096-token evidence minimum while preserving full KV;
 - TPS behavior: unchanged;
 - cache-aware KV behavior: unchanged;
 - remote test environment: not yet identified as approved nonproduction;
