@@ -16,8 +16,9 @@ standing instructions.
 - [Internal algorithm flow](PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md): current
   TPS-only ownership and pre-forward transaction.
 - [v0.12.22 TPS-only controller plan](PIG_V0_12_22_TPS_ONLY_CONTROLLER_PLAN.md):
-  active source plan and execution evidence. No version, image, or deployment
-  is implied by this plan.
+  active source and release evidence for the TPS-only controller. Consult its
+  current execution state before treating source, image, or deployment as
+  complete.
 
 ## Historical plans
 

@@ -604,5 +604,7 @@ Three reviews were completed before behavior code:
   complete builder verification were committed as
   `ea4d474aeea97a16aeea74ee5a1d4a3817bb61fb` and pushed to
   `pig-origin/codex/pig-v0.12.22-tps-only`;
-- version/image/deployment: no version assigned, no image built or uploaded,
-  and no deployment started. Those remain separate later stages.
+- release stage opened by explicit user authorization on 2026-08-26: version
+  `0.12.22` is assigned in the runtime identity, OCI label, and release identity
+  test. Image build/publication and the isolated dev-CVM update remain pending
+  and must be recorded separately below after they actually complete.
