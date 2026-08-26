@@ -68,6 +68,9 @@ func TestConfigHasNoRetiredModeOwnership(t *testing.T) {
 		"DynamicGlobalGreen", "DynamicGlobalYellow", "DynamicGlobalRed",
 		"QoSQueueWait", "QoSQueuePoll", "KVAdmissionMode", "KVAdmissionPolicy",
 		"PredictiveKVTargetRatio", "PredictivePreemptionCooldown",
+		"PredictiveKVHardRatio", "PredictiveMaxModelLenTokens",
+		"PredictivePrefillRegularTokens", "PredictivePrefillExclusiveTokens",
+		"PredictivePrefillQuiescentTokens", "PredictivePrefillAggregateBudgetTokens",
 		"SSEKeepAliveEnabled", "SSEEarlyBridgeEnabled",
 	}
 	typeOfConfig := reflect.TypeOf(Config{})
@@ -95,6 +98,16 @@ func TestRetiredEnvironmentCannotReenableRemovedModes(t *testing.T) {
 		"PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS": "not-an-int",
 		"UPSTREAMS":                              "http://retired-a.invalid,http://retired-b.invalid",
 		"BACKENDS":                               "a=http://retired-a.invalid|http://retired-a.invalid/metrics",
+	}
+	for _, name := range []string{
+		"PREDICTIVE_KV_HARD_RATIO",
+		"PREDICTIVE_MAX_MODEL_LEN_TOKENS",
+		"PREDICTIVE_PREFILL_REGULAR_TOKENS",
+		"PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS",
+		"PREDICTIVE_PREFILL_QUIESCENT_TOKENS",
+		"PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS",
+	} {
+		retired[name] = "retired-value"
 	}
 	for name, value := range retired {
 		t.Setenv(name, value)
