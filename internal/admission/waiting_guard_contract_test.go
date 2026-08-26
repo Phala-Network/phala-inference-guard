@@ -135,3 +135,47 @@ func TestPendingFirstByteTerminalReleasesImmediately(t *testing.T) {
 		t.Fatal("replacement cleanup failed")
 	}
 }
+
+func TestStaleObservationCannotExpirePendingFirstByteLease(t *testing.T) {
+	now := time.Unix(22_000, 0)
+	clock := &manualAdmissionClock{at: now}
+	controller, err := NewAdmissionController(ControllerConfig{
+		RuntimeIdentity:   testRuntimeIdentity,
+		WindowConcurrency: 1,
+		Now:               clock.Now,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := testObservation(now, 0, 0, 1, 0)
+	initial.MaximumAge = 500 * time.Millisecond
+	publishObservation(t, controller, initial)
+
+	result := controller.Admit(now.Add(time.Millisecond), testDemand(1))
+	clock.Set(now.Add(time.Millisecond))
+	if !result.Decision.Admitted() || !result.Handle.MarkForwarded() {
+		t.Fatalf("lease admission=%+v", result.Decision)
+	}
+
+	clock.Set(now.Add(3 * time.Second))
+	stale := testObservation(now.Add(2*time.Second), 0, 0, 2, 0)
+	stale.MaximumAge = 500 * time.Millisecond
+	publishObservation(t, controller, stale)
+	staleSnapshot := controller.Snapshot(now.Add(3 * time.Second))
+	if staleSnapshot.State.UnobservedSequences != 1 ||
+		staleSnapshot.MinimumDecision.Reason != ReasonObservationStale {
+		t.Fatalf("stale observation expired or opened lease: %+v", staleSnapshot)
+	}
+
+	clock.Set(now.Add(3100 * time.Millisecond))
+	fresh := testObservation(now.Add(3100*time.Millisecond), 0, 0, 3, 0)
+	fresh.MaximumAge = 500 * time.Millisecond
+	publishObservation(t, controller, fresh)
+	if after := controller.Snapshot(now.Add(3101 * time.Millisecond)); after.State.UnobservedSequences != 0 || !after.Available {
+		t.Fatalf("fresh observation did not expire lease: %+v", after)
+	}
+
+	if !result.Handle.Terminate(TerminalCancel) {
+		t.Fatal("lease cleanup failed")
+	}
+}

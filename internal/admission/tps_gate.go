@@ -19,6 +19,13 @@ func (g tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 		result:       TPSDecisionResultDisabled,
 		subreason:    TPSDecisionSubreasonDisabled,
 	}
+	if state.RawWaiting > 0 {
+		decision.fits = false
+		decision.reason = ReasonTPSReference
+		decision.result = TPSDecisionResultProtect
+		decision.subreason = TPSDecisionSubreasonWaiting
+		return decision
+	}
 	snapshot := state.TPS
 	if !snapshot.Enabled {
 		return decision
@@ -32,15 +39,11 @@ func (g tpsGate) evaluate(state ProjectedState) tpsGateDecision {
 		decision.subreason = TPSDecisionSubreasonInvalidState
 		return decision
 	}
-	if state.RawWaiting > 0 || state.PreemptionDelta > 0 {
+	if state.PreemptionDelta > 0 {
 		decision.fits = false
 		decision.reason = ReasonTPSReference
 		decision.result = TPSDecisionResultProtect
-		if state.PreemptionDelta > 0 {
-			decision.subreason = TPSDecisionSubreasonPreemption
-		} else {
-			decision.subreason = TPSDecisionSubreasonWaiting
-		}
+		decision.subreason = TPSDecisionSubreasonPreemption
 		return decision
 	}
 	if !snapshot.Ready {

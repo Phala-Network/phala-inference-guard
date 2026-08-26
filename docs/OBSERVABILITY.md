@@ -158,11 +158,14 @@ pig_predictive_window_concurrency_observed_count
 pig_predictive_window_concurrency_observed_sum
 ```
 
-It samples the unreconciled Decode sequence count once per successful
-observation, before reconciliation. Finite cumulative buckets are
-`0,1,2,4,6,8,10,12,16,20,24,28,32,36,40,44,48,52,56,60,64`; every value above
-64 is combined in `+Inf`. Bucket iteration occurs on the observer path, not the
-request admission hot path.
+It samples the pending-first-byte Decode sequence count once per successful
+observation, before qualified lease expiry. A normal observation does not
+release this count. First byte or terminal lifecycle releases it immediately;
+after three polling intervals, a successful fresh zero-waiting observation may
+release a long-TTFT lease. Finite cumulative buckets are every integer from
+`0` through `16`, then `20,24,28,32,36,40,44,48,52,56,60,63`. The delta
+`+Inf - le="63"` is the single 64-and-above band. Bucket iteration occurs on
+the observer path, not the request admission hot path.
 
 ## Lifecycle and timing
 
@@ -179,8 +182,10 @@ pig_predictive_admission_pre_forward_duration_seconds
 ```
 
 Failure phases are `close`, `decide`, `forward`, `first_byte`, and `terminal`.
-A transient liability until the next observation watermark is expected;
-sustained residual debt or failure deltas warrant investigation.
+Sequence liabilities support TPS exposure reconciliation and can remain until
+the next observation watermark. They do not retain pending-first-byte admission
+capacity after first byte or terminal lifecycle. Sustained residual debt or
+failure deltas warrant investigation.
 
 ## Goodput and backend view
 

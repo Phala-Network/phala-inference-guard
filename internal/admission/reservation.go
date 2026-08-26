@@ -1,5 +1,7 @@
 package admission
 
+import "time"
+
 type reservationPhase uint8
 
 const (
@@ -10,30 +12,32 @@ const (
 )
 
 type reservation struct {
-	id                uint64
-	runtimeEpoch      uint64
-	demand            TPSRequestDemand
-	phase             reservationPhase
-	sequenceCovered   bool
-	admittedSequence  uint64
-	forwardedSequence uint64
-	firstByteSequence uint64
-	terminalSequence  uint64
-	terminalCause     TerminalCause
+	id                       uint64
+	runtimeEpoch             uint64
+	demand                   TPSRequestDemand
+	phase                    reservationPhase
+	pendingFirstByteReleased bool
+	forwardedAt              time.Time
+	admittedSequence         uint64
+	forwardedSequence        uint64
+	terminalSequence         uint64
 }
 
 func (r reservation) contribution() (reservationOverlay, bool) {
 	if r.id == 0 || r.runtimeEpoch == 0 || !r.demand.valid() {
 		return reservationOverlay{}, false
 	}
-	contribution := reservationOverlay{
-		sequenceLiabilities: r.demand.DecodeSequences,
-	}
-	if !r.sequenceCovered && (r.phase != reservationResidualDebt || r.terminalCause != TerminalSuccess) {
-		contribution.unobservedSequences = r.demand.DecodeSequences
-	}
+	contribution := reservationOverlay{sequenceLiabilities: r.demand.DecodeSequences}
 	switch r.phase {
-	case reservationReserved, reservationForwarded, reservationActiveDecode:
+	case reservationReserved, reservationForwarded:
+		if !r.pendingFirstByteReleased {
+			contribution.unobservedSequences = r.demand.DecodeSequences
+		}
+		contribution.liveReservations = 1
+	case reservationActiveDecode:
+		if !r.pendingFirstByteReleased {
+			return reservationOverlay{}, false
+		}
 		contribution.liveReservations = 1
 	case reservationResidualDebt:
 		contribution.residualDebts = 1

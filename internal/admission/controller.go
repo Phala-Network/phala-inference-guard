@@ -7,7 +7,10 @@ import (
 	"time"
 )
 
-const maximumTPSReservations = int64(1 << 20)
+const (
+	maximumTPSReservations               = int64(1 << 20)
+	defaultPendingFirstByteLeaseDuration = 1500 * time.Millisecond
+)
 
 type SampleWindow struct {
 	controller     *AdmissionController
@@ -43,15 +46,16 @@ func (h ReservationHandle) Terminate(cause TerminalCause) bool {
 type AdmissionController struct {
 	mu sync.Mutex
 
-	runtimeIdentity    string
-	policy             admissionPolicy
-	projector          stateProjector
-	tpsWindow          tpsWindow
-	windowConcurrency  int64
-	runningLimit       int64
-	runningLimitSource RunningLimitSource
-	now                func() time.Time
-	exposure           sequenceExposureLedger
+	runtimeIdentity               string
+	policy                        admissionPolicy
+	projector                     stateProjector
+	tpsWindow                     tpsWindow
+	windowConcurrency             int64
+	runningLimit                  int64
+	runningLimitSource            RunningLimitSource
+	pendingFirstByteLeaseDuration time.Duration
+	now                           func() time.Time
+	exposure                      sequenceExposureLedger
 
 	runtimeEpoch        uint64
 	eventSequence       uint64
@@ -85,8 +89,12 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 	if config.RunningLimitSource == "" {
 		config.RunningLimitSource = RunningLimitSourceUnknown
 	}
+	if config.PendingFirstByteLeaseDuration == 0 {
+		config.PendingFirstByteLeaseDuration = defaultPendingFirstByteLeaseDuration
+	}
 	if config.WindowConcurrency <= 0 || config.WindowConcurrency > maximumTPSReservations ||
 		config.RunningLimit < 0 || config.RunningLimit > maximumTPSReservations ||
+		config.PendingFirstByteLeaseDuration < 0 ||
 		!config.RunningLimitSource.valid() ||
 		(config.RunningLimit > 0 && config.RunningLimitSource == RunningLimitSourceUnknown) {
 		return nil, fmt.Errorf("admission running and window bounds are invalid")
@@ -97,18 +105,19 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 		now = time.Now
 	}
 	return &AdmissionController{
-		runtimeIdentity:     config.RuntimeIdentity,
-		policy:              policy,
-		tpsWindow:           newTPSWindow(config.TPS.Reference),
-		windowConcurrency:   config.WindowConcurrency,
-		runningLimit:        config.RunningLimit,
-		runningLimitSource:  config.RunningLimitSource,
-		now:                 now,
-		runtimeEpoch:        1,
-		policyRevision:      1,
-		tpsPolicyEpoch:      1,
-		reservations:        make(map[uint64]reservation),
-		maximumReservations: maximumTPSReservations,
+		runtimeIdentity:               config.RuntimeIdentity,
+		policy:                        policy,
+		tpsWindow:                     newTPSWindow(config.TPS.Reference),
+		windowConcurrency:             config.WindowConcurrency,
+		runningLimit:                  config.RunningLimit,
+		runningLimitSource:            config.RunningLimitSource,
+		pendingFirstByteLeaseDuration: config.PendingFirstByteLeaseDuration,
+		now:                           now,
+		runtimeEpoch:                  1,
+		policyRevision:                1,
+		tpsPolicyEpoch:                1,
+		reservations:                  make(map[uint64]reservation),
+		maximumReservations:           maximumTPSReservations,
 	}, nil
 }
 
@@ -217,12 +226,17 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			c.failClosedLocked(ReasonControllerUnavailable)
 			return PublicationResult{Reason: ReasonControllerUnavailable, RuntimeEpoch: c.runtimeEpoch}
 		}
-		nextOverlay, forwardedSequenceLiabilities, ok := c.reconciledOverlayLocked(window.eventSequence)
+		reconciliationAt := c.now()
+		nextOverlay, forwardedSequenceLiabilities, ok := c.reconciledOverlayLocked(
+			window.eventSequence,
+			observation,
+			reconciliationAt,
+		)
 		if !ok {
 			c.failClosedLocked(ReasonControllerUnavailable)
 			return PublicationResult{Reason: ReasonControllerUnavailable, RuntimeEpoch: c.runtimeEpoch}
 		}
-		c.applyReconciliationLocked(window.eventSequence)
+		c.applyReconciliationLocked(window.eventSequence, observation, reconciliationAt)
 		c.overlay = nextOverlay
 		c.lastPublishedSample = window.id
 		c.lastExposure = window.exposure
@@ -408,12 +422,14 @@ func (c *AdmissionController) markForwarded(epoch, id uint64) bool {
 	if !ok {
 		return false
 	}
+	forwardedAt := c.now()
 	demand, valid := item.effectiveDemand()
-	if !valid || !c.exposure.addForwarded(c.now(), demand.DecodeSequences) {
+	if forwardedAt.IsZero() || !valid || !c.exposure.addForwarded(forwardedAt, demand.DecodeSequences) {
 		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
 	item.phase = reservationForwarded
+	item.forwardedAt = forwardedAt
 	item.forwardedSequence = sequence
 	c.reservations[id] = item
 	return true
@@ -432,13 +448,14 @@ func (c *AdmissionController) markFirstByte(epoch, id uint64) bool {
 	oldContribution, oldValid := item.contribution()
 	next := item
 	next.phase = reservationActiveDecode
+	next.pendingFirstByteReleased = true
 	newContribution, newValid := next.contribution()
 	nextOverlay, overlayValid := replaceOverlay(c.overlay, oldContribution, newContribution)
 	if !oldValid || !newValid || !overlayValid {
 		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
-	sequence, ok := c.nextEventSequenceLocked()
+	_, ok = c.nextEventSequenceLocked()
 	if !ok {
 		return false
 	}
@@ -446,7 +463,6 @@ func (c *AdmissionController) markFirstByte(epoch, id uint64) bool {
 		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
-	next.firstByteSequence = sequence
 	c.overlay = nextOverlay
 	c.reservations[id] = next
 	return true
@@ -475,7 +491,6 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 	if !remove {
 		next = item
 		next.phase = reservationResidualDebt
-		next.terminalCause = cause
 		newContribution, newValid = next.contribution()
 	}
 	nextOverlay, overlayValid := replaceOverlay(c.overlay, oldContribution, newContribution)
@@ -594,7 +609,11 @@ func reservationExposureCounts(item reservation) (forwarded, response int64, val
 	}
 }
 
-func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reservationOverlay, int64, bool) {
+func (c *AdmissionController) reconciledOverlayLocked(
+	watermark uint64,
+	observation BackendObservation,
+	reconciliationAt time.Time,
+) (reservationOverlay, int64, bool) {
 	nextOverlay := c.overlay
 	var forwardedSequenceLiabilities int64
 	for _, item := range c.reservations {
@@ -616,7 +635,13 @@ func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reserva
 		if !oldValid {
 			return reservationOverlay{}, 0, false
 		}
-		next, remove, changed := reconcileReservation(item, watermark)
+		next, remove, changed := reconcileReservation(
+			item,
+			watermark,
+			observation,
+			reconciliationAt,
+			c.pendingFirstByteLeaseDuration,
+		)
 		if remove {
 			var ok bool
 			nextOverlay, ok = subtractOverlay(nextOverlay, oldContribution)
@@ -640,9 +665,19 @@ func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reserva
 	return nextOverlay, forwardedSequenceLiabilities, true
 }
 
-func (c *AdmissionController) applyReconciliationLocked(watermark uint64) {
+func (c *AdmissionController) applyReconciliationLocked(
+	watermark uint64,
+	observation BackendObservation,
+	reconciliationAt time.Time,
+) {
 	for id, item := range c.reservations {
-		next, remove, changed := reconcileReservation(item, watermark)
+		next, remove, changed := reconcileReservation(
+			item,
+			watermark,
+			observation,
+			reconciliationAt,
+			c.pendingFirstByteLeaseDuration,
+		)
 		if remove {
 			delete(c.reservations, id)
 			continue
@@ -653,21 +688,42 @@ func (c *AdmissionController) applyReconciliationLocked(watermark uint64) {
 	}
 }
 
-func reconcileReservation(item reservation, watermark uint64) (reservation, bool, bool) {
+func reconcileReservation(
+	item reservation,
+	watermark uint64,
+	observation BackendObservation,
+	reconciliationAt time.Time,
+	pendingFirstByteLeaseDuration time.Duration,
+) (reservation, bool, bool) {
 	if item.phase == reservationResidualDebt && item.terminalSequence > 0 &&
 		item.terminalSequence <= watermark {
 		return reservation{}, true, true
 	}
 	next := item
-	if item.phase == reservationForwarded && !item.sequenceCovered &&
-		item.forwardedSequence > 0 && item.forwardedSequence <= watermark {
-		next.sequenceCovered = true
-	}
-	if item.phase == reservationActiveDecode && item.firstByteSequence > 0 &&
-		item.firstByteSequence <= watermark {
-		next.sequenceCovered = true
+	if item.phase == reservationForwarded && !item.pendingFirstByteReleased &&
+		item.forwardedSequence > 0 && item.forwardedSequence <= watermark &&
+		pendingFirstByteLeaseExpired(
+			item,
+			observation,
+			reconciliationAt,
+			pendingFirstByteLeaseDuration,
+		) {
+		next.pendingFirstByteReleased = true
 	}
 	return next, false, next != item
+}
+
+func pendingFirstByteLeaseExpired(
+	item reservation,
+	observation BackendObservation,
+	reconciliationAt time.Time,
+	duration time.Duration,
+) bool {
+	return duration > 0 && observation.Waiting == 0 && !item.forwardedAt.IsZero() &&
+		!reconciliationAt.IsZero() && !reconciliationAt.Before(observation.ObservedAt) &&
+		reconciliationAt.Sub(observation.ObservedAt) <= observation.MaximumAge &&
+		!observation.ObservedAt.Before(item.forwardedAt) &&
+		observation.ObservedAt.Sub(item.forwardedAt) >= duration
 }
 
 func (c *AdmissionController) slowOverlayLocked() (reservationOverlay, bool) {

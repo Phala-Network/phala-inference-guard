@@ -127,3 +127,29 @@ no long-TTFT permanent lock.
 Review 3, evidence and release: bind tests, image, digest, Compose candidates,
 and live readiness to exact immutable source. Keep source, image publication,
 deployment, and healthy runtime as separate completion layers.
+
+## 7. Red Evidence
+
+The focused contract was pushed at exact commit
+`9b75ab9b096a7a2512c0810691a84fb4a8c9a9ff`. On remote builder
+`4f167f6e-4c50-415f-99f2-94b65652beba`, the first runner stopped before tests
+because a login shell removed Go from `PATH`; it is retained only as runner
+failure and is not behavior evidence.
+
+The corrected `red-9b75ab9-r2` runner used `go1.24.13 linux/amd64` from pinned
+image
+`golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`.
+The focused test exited `1` and failed all four intended v0.12.24 behaviors:
+
+- TPS reference zero admitted while backend waiting was one;
+- the first ordinary metrics poll erased two pending-first-byte reservations;
+- a later observation with waiting one erased an expired lease and reported
+  intake available; and
+- a forwarded timeout retained its pending-first-byte window slot.
+
+The red log SHA-256 is
+`c463277341d4461ec971d4b5a87173d631d54d240e0cea98a63e5b3603a287b7`;
+the environment record SHA-256 is
+`7efbbc23c81b06391e71920a448d0dfdabdb52e8c2db70547f3f43473ae18705`.
+No failure came from compilation, dependencies, invalid fixtures, or an
+unrelated package.

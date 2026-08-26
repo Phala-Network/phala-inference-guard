@@ -34,11 +34,12 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		runningLimit.Source,
 	)
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		RuntimeIdentity:    startup.ModelIdentitySHA256,
-		TPS:                coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
-		WindowConcurrency:  cfg.PredictiveWindowConcurrency,
-		RunningLimit:       runningLimit.Value,
-		RunningLimitSource: runningLimit.Source,
+		RuntimeIdentity:               startup.ModelIdentitySHA256,
+		TPS:                           coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
+		WindowConcurrency:             cfg.PredictiveWindowConcurrency,
+		RunningLimit:                  runningLimit.Value,
+		RunningLimitSource:            runningLimit.Source,
+		PendingFirstByteLeaseDuration: 3 * cfg.PredictiveObservationPollInterval,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct admission Controller: %w", err)

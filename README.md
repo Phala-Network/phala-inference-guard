@@ -36,12 +36,15 @@ are acceptable and become evidence for later predictions; they do not create a
 cooldown, consecutive-clear requirement, sticky recovery timer, or learned low
 cap.
 
-Waiting or a fresh preemption pauses marginal intake for that observation only.
-The first fresh clear observation can reopen intake. Same-snapshot reservations
-remain atomic so concurrent arrivals cannot spend the same apparent headroom.
-TPS never derives a concurrency ceiling. The default window bound allows 32
-new, not-yet-observed Decode sequences per metrics window. A separate backend
-running limit is enforced only when explicitly configured or safely discovered.
+Waiting pauses marginal intake even when TPS reference protection is disabled;
+a fresh preemption pauses it when TPS health is enabled. Same-snapshot
+reservations remain atomic so concurrent arrivals cannot spend the same apparent
+headroom. TPS never derives a concurrency ceiling. The default window bound
+allows 32 Decode sequences that are still pending first byte. A normal metrics
+poll does not release that budget. First byte or terminal lifecycle releases it
+immediately; after three polling intervals, a fresh zero-waiting observation may
+release a long-TTFT lease. A separate backend running limit is enforced only
+when explicitly configured or safely discovered.
 
 ## Production configuration
 
@@ -61,8 +64,9 @@ services:
 
 `UPSTREAM` is one absolute HTTP URL. PIG derives `/metrics` from that origin,
 defaults to `enforce`, polls every 500 ms, and defaults observation freshness to
-three polls. Omit `PREDICTIVE_TPS_REFERENCE` or set it to `0` when no business
-TPS target exists.
+three polls. The pending-first-byte lease is also three polls and is derived,
+not configured. Omit `PREDICTIVE_TPS_REFERENCE` or set it to `0` when no
+business TPS target exists; waiting protection remains active.
 
 `PREDICTIVE_WINDOW_CONCURRENCY` defaults to `32` and normally stays implicit.
 `PREDICTIVE_RUNNING_LIMIT=0` means unknown/disabled. SGLang can initialize its

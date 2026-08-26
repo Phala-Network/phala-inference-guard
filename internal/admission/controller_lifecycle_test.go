@@ -129,12 +129,18 @@ func TestControllerMultiSequenceLifecycleReconcilesOnce(t *testing.T) {
 	}
 	clock.Set(now.Add(2 * time.Millisecond))
 	publishObservation(t, controller, testObservation(now.Add(2*time.Millisecond), 4, 0, 2, 0))
-	covered := controller.Snapshot(now.Add(3 * time.Millisecond)).State
-	if covered.UnobservedSequences != 0 ||
-		covered.SequenceLiabilities != 4 {
-		t.Fatalf("multi-sequence covering state=%+v", covered)
+	pending := controller.Snapshot(now.Add(3 * time.Millisecond)).State
+	if pending.UnobservedSequences != 4 || pending.SequenceLiabilities != 4 {
+		t.Fatalf("ordinary poll released pending first byte=%+v", pending)
 	}
 	clock.Set(now.Add(3 * time.Millisecond))
+	if !result.Handle.MarkFirstByte() {
+		t.Fatal("multi-sequence first byte failed")
+	}
+	covered := controller.Snapshot(now.Add(3 * time.Millisecond)).State
+	if covered.UnobservedSequences != 0 || covered.SequenceLiabilities != 4 {
+		t.Fatalf("multi-sequence first-byte state=%+v", covered)
+	}
 	if !result.Handle.Terminate(TerminalError) {
 		t.Fatal("multi-sequence terminal failed")
 	}

@@ -183,12 +183,13 @@ func (s RunningLimitSource) valid() bool {
 }
 
 type ControllerConfig struct {
-	RuntimeIdentity    string
-	TPS                TPSPolicyConfig
-	WindowConcurrency  int64
-	RunningLimit       int64
-	RunningLimitSource RunningLimitSource
-	Now                func() time.Time
+	RuntimeIdentity               string
+	TPS                           TPSPolicyConfig
+	WindowConcurrency             int64
+	RunningLimit                  int64
+	RunningLimitSource            RunningLimitSource
+	PendingFirstByteLeaseDuration time.Duration
+	Now                           func() time.Time
 }
 
 type DecisionRecord struct {

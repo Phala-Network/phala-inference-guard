@@ -17,8 +17,8 @@ PREDICTIVE_TPS_REFERENCE=25
 
 Do not repeat source defaults in production Compose. Admission defaults to
 `enforce`, metrics polling defaults to 500 ms, freshness defaults to three
-polls, and same-observation window concurrency defaults to 32 Decode sequences.
-`shadow` is an explicit test-only override.
+polls, and pending-first-byte window concurrency defaults to 32 Decode
+sequences. `shadow` is an explicit test-only override.
 
 The public surface is fixed to `POST /v1/chat/completions`,
 `POST /v1/completions`, `POST /v1/responses`, and `GET /v1/models`. Generation
@@ -52,15 +52,16 @@ Attestation variables do not alter admission policy.
 | `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS` | `500` | `1..60000` |
 | `PREDICTIVE_MAX_METRICS_AGE_MS` | `3 x poll` | At least one poll, at most `60000` |
 | `PREDICTIVE_TPS_REFERENCE` | `0` | Finite Decode tokens/s/active sequence in `[0,1000000]`; `0` disables TPS health |
-| `PREDICTIVE_WINDOW_CONCURRENCY` | `32` | New unobserved Decode sequences per observation window in `[1,1048576]` |
+| `PREDICTIVE_WINDOW_CONCURRENCY` | `32` | Decode sequences pending first byte in `[1,1048576]` |
 | `PREDICTIVE_RUNNING_LIMIT` | `0` | Backend running ceiling in `[0,1048576]`; `0` means unknown/disabled |
 
-TPS is a health signal, not a capacity formula. The gate stays open while
-warming or when the latest interval has no reliable Decode denominator. It
-protects on waiting, a fresh preemption, or when both the ready rolling mean and
-latest qualified mean are below the reference. One low interval does not close
-a healthy rolling window, and one qualified recovered interval reopens a low
-rolling window immediately.
+TPS is a health signal, not a capacity formula. Waiting protection is always
+active, including when TPS reference is zero. With TPS health enabled, the gate
+stays open while warming or when the latest interval has no reliable Decode
+denominator. It protects on a fresh preemption or when both the ready rolling
+mean and latest qualified mean are below the reference. One low interval does
+not close a healthy rolling window, and one qualified recovered interval
+reopens a low rolling window immediately.
 
 The independent admission bounds are:
 
@@ -75,6 +76,13 @@ A known running limit rejects when `projected_running` exceeds it. The window
 bound rejects when `projected_window` exceeds its configured value. Both checks
 and the complete request-fanout reservation occur under the same controller
 lock. PIG returns 429 immediately and does not queue.
+
+`unobserved_sequences` is the pending-first-byte lease, not total backend
+concurrency. It is released on first byte or any terminal path. A successful
+fresh observation may expire a long-TTFT lease after three polling intervals
+only when backend waiting is zero. Ordinary polls, failed/invalid/stale
+observations, and positive waiting cannot release it. The duration is derived
+from polling cadence and is not a separate environment or admin setting.
 
 vLLM standard metrics expose current running but no trusted configured
 `max_num_seqs`; PIG therefore leaves its running limit unknown unless explicitly
