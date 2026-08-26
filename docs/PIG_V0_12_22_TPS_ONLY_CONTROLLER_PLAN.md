@@ -24,7 +24,9 @@ pre-forward TPS controller that:
    in-flight work only improve the next decision;
 4. recovers capacity at the configured 500 ms observation cadence and cannot
    low-flow self-lock;
-5. is measurably better than exact PIG `v0.8.13` on frozen, deterministic,
+5. keeps backend waiting absent or short-lived without retaining a learned low
+   cap after waiting clears;
+6. is measurably better than exact PIG `v0.8.13` on frozen, deterministic,
    production-shaped traces before any release claim.
 
 The controlled reference for initial tests is `25 tok/s/active Decode
@@ -55,10 +57,14 @@ or fail closed when they are missing. There must be a causal test that holds TPS
 state constant, varies each optional field across extreme values, and proves the
 same decision and reservation.
 
-Backend waiting and preemption are not independent admission gates. They only
-invalidate optimistic TPS expansion. A request that fits the conservative TPS
-base limit may still be admitted; one that needs current-rate or surplus
-exploration may not.
+Backend waiting and preemption are not separately configurable capacity gates.
+They are immediate evidence that the currently projected TPS concurrency is not
+safe to expand. While either is present, the controller admits no new marginal
+sequence and reports a bounded `tps_reference` subreason. This hold lasts only
+for that observation: it does not lower the rolling base, create a learned cap,
+start a cooldown, or require consecutive clear samples. The first fresh 500 ms
+observation with zero waiting/preemption returns immediately to normal TPS
+selection.
 
 Protocol-invalid requests still receive their existing local client error.
 Controller absence, stale TPS telemetry, runtime identity drift, arithmetic
@@ -186,10 +192,17 @@ The selected limit is the maximum eligible value among:
 3. at most one rolling-surplus step (`base + 1`) when the bounded predicted TPS
    debt fits accumulated surplus and no other surplus lease exists.
 
-Waiting or a current preemption disables candidates 2 and 3 but does not replace
-candidate 1 with an unrelated zero-intake rule. Idle and warming states permit
-only a bounded probe and can advance again on the next valid 500 ms observation;
-there is no hidden one-second hold or consecutive-green counter.
+Waiting or a current preemption disables all marginal admission for exactly the
+current observation. It does not mutate candidate 1 or survive a fresh clear
+observation. Idle and warming states permit only a bounded probe and can advance
+again on the next valid 500 ms observation; there is no hidden one-second hold,
+cooldown, or consecutive-green counter.
+
+Preventing waiting before it appears depends on atomic projection: backend
+running plus waiting, complete proven batch multiplicity, and every locally
+admitted sequence not yet visible in backend metrics are included before a new
+lease is granted. No two concurrent requests can both consume the same apparent
+headroom.
 
 Occasional below-reference intervals are allowed. The objective is the
 qualified, active-sequence-weighted rolling mean, and the surplus lease makes
@@ -238,6 +251,8 @@ capacity is stable enough for the reference:
 - sustained degradation stops new marginal admission without terminating
   existing streams;
 - waiting/preemption/stale evidence never grants optimistic expansion;
+- any observed waiting/preemption stops marginal intake for at most that
+  observation and zero waiting resumes normal selection on the next fresh poll;
 - no more than one marginal exploration lease exists;
 - no reservation leak, double release, stale-epoch reuse, or counter rollback
   bypass occurs.
@@ -299,8 +314,8 @@ When the trace returns to healthy output TPS with no waiting/preemption:
 Add focused red tests before changing any TPS rule:
 
 - the Redpill `100.7/25/current 2/post 3` fixture admits at limit 4;
-- waiting/preemption suppress optimistic paths but do not override a fitting
-  base TPS limit;
+- waiting/preemption stop marginal intake for one observation, never lower the
+  rolling base, and recover on the first fresh clear observation;
 - current-rate recovery grants only one sequence for one observation;
 - concurrent arrivals cannot double-spend that step or the surplus lease;
 - warming and idle recover at 500 ms without low-flow self-lock;
@@ -349,7 +364,8 @@ summaries for:
 - low-flow ramp and restart;
 - burst then recovery;
 - one-poll dip and sustained degradation;
-- waiting/preemption episodes;
+- single-poll and sustained waiting/preemption episodes, including immediate
+  recovery after the first fresh clear sample;
 - short/long and cache-hot/cold mixes with identical TPS outcomes;
 - unknown output and multi-sequence batches;
 - cancellations, errors, disconnects, timeouts, counter rollback, epoch reset,
@@ -424,10 +440,13 @@ Three reviews were completed before behavior code:
    than enforcing every poll.
 2. Safety and lifecycle review: the review checked unknown request shapes,
    batches, warming, idle, waiting, preemption, stale observations, concurrent
-   arrivals, all terminal paths, counter rollback, and runtime epoch changes. It
-   corrected waiting/preemption from an unconditional reject into an optimistic
-   expansion veto, retained fail-closed integrity failures, and made the
-   reservation ledger sequence-only.
+   arrivals, all terminal paths, counter rollback, and runtime epoch changes.
+   The user then clarified that waiting should be kept near zero without sticky
+   protection. The plan therefore retains an observation-scoped marginal-intake
+   hold for waiting/preemption, forbids learned cap/cooldown/consecutive-clear
+   state, requires immediate recovery on the first fresh clear poll, retains
+   fail-closed integrity failures, and makes the reservation ledger
+   sequence-only.
 3. SOLID, efficiency, evidence, and release review: the review checked whether
    disabled KV code/no-op config would remain, whether optional telemetry could
    leak back into policy, whether the v0.8.13 comparison was executable, and
