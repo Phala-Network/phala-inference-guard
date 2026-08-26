@@ -2,8 +2,6 @@ package pigconfig
 
 import (
 	"time"
-
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 )
 
 // Config is the typed runtime configuration. Tests may inject policy values
@@ -36,8 +34,6 @@ type Config struct {
 	PredictiveAdmissionMode           string
 	PredictiveScannerBodyBytes        int64
 	PredictiveScannerConcurrency      int
-	OutputTokenFields                 []string
-	PredictiveEstimator               kvadmission.EstimatorConfig
 	PredictiveStartupProbeTimeout     time.Duration
 	PredictiveMetricsRequestTimeout   time.Duration
 	PredictiveObservationPollInterval time.Duration

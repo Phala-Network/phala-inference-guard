@@ -4,9 +4,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	observabilitymetrics "github.com/Phala-Network/phala-inference-guard/internal/observability/metrics"
 )
 
@@ -22,27 +22,28 @@ func TestBackendMetricsExposeFrozenSGLangKind(t *testing.T) {
 	}
 }
 
-func TestV01215AdmissionMetricsExposeFirstByteWorkLiabilities(t *testing.T) {
+func TestAdmissionMetricsExposeTPSDecisionAndSequenceLiabilities(t *testing.T) {
 	input := observabilitymetrics.PredictiveAdmissionInput{}
 	applyAdmissionDecisionMetrics(&input, coreadmission.DecisionRecord{
-		Work: domainpredictive.RequestWork{
-			PrefillInputTokens:                   800,
-			FirstBytePendingPrefillInputTokens:   300,
-			FirstBytePendingPrefillComputeTokens: 200,
-			FirstBytePendingPrefillSequences:     3,
-			InputKVTokens:                        1_600,
-			FirstByteCoverableInputKVTokens:      400,
-			FirstBytePendingInputKVTokens:        1_200,
-			FutureKVTokens:                       2_000,
+		Demand: coreadmission.TPSRequestDemand{
+			DecodeSequences: 3,
+			Source:          coreadmission.TPSDemandSourceRequest,
 		},
+		State: coreadmission.ProjectedState{
+			RawRunning:          4,
+			RawWaiting:          1,
+			UnobservedSequences: 2,
+			SequenceLiabilities: 2,
+			GenerationDelta:     50,
+			ObservationInterval: time.Second,
+		},
+		TPSDecisionResult:    coreadmission.TPSDecisionResultProtect,
+		TPSDecisionSubreason: coreadmission.TPSDecisionSubreasonWaiting,
 	})
-	if input.AdmissionFirstBytePendingPrefillInput != 300 ||
-		input.AdmissionFirstBytePendingPrefillCompute != 200 ||
-		input.AdmissionFirstBytePendingPrefillSequences != 3 ||
-		input.AdmissionInputKVTokens != 1_600 ||
-		input.AdmissionFirstByteCoverableInputKV != 400 ||
-		input.AdmissionFirstBytePendingInputKV != 1_200 ||
-		input.AdmissionFutureKVTokens != 2_000 {
-		t.Fatalf("first-byte work metrics=%+v", input)
+	if input.AdmissionDecodeSequences != 3 ||
+		input.AdmissionEffectiveSequences != 7 ||
+		input.TPSDecisionResult != "protect" ||
+		input.TPSDecisionSubreason != "waiting" {
+		t.Fatalf("TPS decision metrics=%+v", input)
 	}
 }

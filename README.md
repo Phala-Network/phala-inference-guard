@@ -69,12 +69,22 @@ policy.
 These retired settings are ignored and should be removed from Compose:
 
 ```text
+GLOBAL_LIMIT
+DYNAMIC_*
+QOS_QUEUE_*
+KV_ADMISSION_*
+BACKEND_PRIORITY_*
+CLASSIFY_OUTPUT_TOKENS
+ADAPTIVE_OUTPUT_*
+PREDICTIVE_KV_TARGET_RATIO
 PREDICTIVE_KV_HARD_RATIO
 PREDICTIVE_MAX_MODEL_LEN_TOKENS
+PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS
 PREDICTIVE_PREFILL_REGULAR_TOKENS
 PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS
 PREDICTIVE_PREFILL_QUIESCENT_TOKENS
 PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS
+OUTPUT_TOKEN_FIELD_NAMES
 ```
 
 ## Test configuration
@@ -101,6 +111,11 @@ overrides are not copied unchanged into production Compose.
   locally with a generic OpenAI-shaped HTTP 404 and no backend call.
 - Malformed JSON on a generation path returns a bounded OpenAI-shaped HTTP 400
   before admission and forwarding.
+- If bounded request inspection cannot prove fanout because of its byte/depth
+  limit, content type, read failure, or scanner saturation, PIG charges one
+  explicitly labelled fallback sequence through the normal atomic TPS path.
+  Scanner limits do not independently return 429; ambiguous, conflicting, or
+  overflowing fanout still receives request-scoped protection.
 - A TPS protection returns HTTP 429 before forwarding and is reflected in
   structured low-cardinality logs and metrics.
 - Supported request bodies and application headers are forwarded unchanged.

@@ -1,401 +1,265 @@
 # PIG Observability
 
-This document describes the current development source contract. A metrics
-scrape captures one adapter telemetry snapshot; predictive metrics, the current
-Router projection, and compatibility values are formatted from that snapshot.
+This document describes the current TPS-only source contract. Metrics, logs,
+Router projection, and the policy API format immutable Controller snapshots;
+none of them reruns policy or changes admission.
 
-## Endpoints
+## Local endpoints
 
-`/pig/metrics` returns PIG metrics. `/v1/metrics` appends a bounded copy of the
-single upstream's Prometheus response. Both require the configured bearer token.
-`GET` and `PATCH /admin/v1/predictive-policy` expose and atomically update the
-runtime TPS reference policy. The admin endpoint always requires the same
-single-value bearer authentication and never proxies to the backend.
-`/v1/upstream-status` returns:
+- `/pig/metrics` returns PIG metrics.
+- `/v1/metrics` returns PIG metrics followed by a bounded copy of the
+  single upstream's native Prometheus response.
+- `/v1/upstream-status` returns the Router-facing capacity status.
+- `GET/PATCH /admin/v1/predictive-policy` reads or atomically updates the
+  TPS reference.
+
+Metrics and policy endpoints preserve their configured bearer requirements and
+are handled locally. They are never forwarded through the public inference
+whitelist.
+
+`/v1/upstream-status` values are:
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Open, or shadow mode with a fresh valid observation |
-| `1` | Current load protection while the canonical inspect request still has positive capacity |
-| `2` | Current enforce intake closed |
-| `3` | Shadow observation unavailable or status unknown |
+| `1` | Load protection while the canonical one-sequence inspect demand still fits |
+| `2` | Enforce intake is closed |
+| `3` | Shadow observation is unavailable or status is unknown |
 
-## Admission metrics
+## Admission totals
 
-The primary contract is:
+Use these counters to separate decisions from emitted HTTP responses:
 
-- `pig_predictive_admission_mode_info` and
-  `pig_predictive_admission_enforce` identify shadow versus enforce;
-- `pig_predictive_admission_attempts_total` and
-  `pig_predictive_admission_decisions_total{decision}` count pre-forward
-  evaluations;
-- `pig_predictive_admission_enforced_rejects_total` counts HTTP requests for
-  which the proxy actually emitted a predictive response instead of
-  forwarding;
-- `pig_predictive_admission_reservations` and the forwarded-Prefill gauges
-  expose current lifecycle ownership;
-- prediction, body-read, estimator, and total pre-forward histograms separate
-  policy cost from request inspection cost; and
-- `pig_predictive_admission_failures_total{phase}` exposes the five owned
-  lifecycle phases: `close`, `decide`, `forward`, `prefill`, and `terminal`.
+```text
+pig_predictive_admission_attempts_total
+pig_predictive_admission_decisions_total{decision="fit|risk|unknown"}
+pig_predictive_admission_outcomes_total{outcome="admitted|request_protected|load_protected|availability_protected"}
+pig_predictive_admission_protections_total{reason,scope}
+pig_predictive_admission_enforced_rejects_total
+pig_rejected_total
+```
 
-Completed-Decode credits, retired reservations, retired evictions, completion
-learning, and shadow attribution are not current state and are not exported as
-permanent zero-valued metrics.
+`attempts_total` counts Controller evaluations. The fixed protection reasons are:
 
-Malformed JSON is client protocol failure, not admission pressure. It increments
-only:
+```text
+controller_unavailable observation_missing observation_invalid
+observation_stale invalid_request tps_reference runtime_identity_drift
+resource_exhausted counter_overflow closed
+```
+
+`enforced_rejects_total` increments only when enforce mode emits a
+pre-forward predictive 429. `pig_rejected_total` is the broader local 429
+counter. Shadow decisions remain observable but do not increase enforced
+rejects or Router backpressure.
+
+Malformed JSON is a client protocol error:
 
 ```text
 pig_client_protocol_errors_total{reason="invalid_json"}
 ```
 
-It must not increase predictive attempts, predictive rejects, general 429s, or
-Router backpressure.
-
-Public requests rejected before authentication and admission increment only:
+It does not count as an admission attempt or 429. A disallowed method/path or
+non-canonical request target increments only:
 
 ```text
 pig_route_not_allowed_total
 ```
 
-This counter covers unknown paths, method mismatches, and non-canonical request
-targets. It does not alter predictive attempts, reservations, capacity
-projection, backend availability, or 429 counters.
+Route rejection does not read the request body, create a reservation, call the
+backend, or change admission/backend counters.
 
-## Capability and observer metrics
+## Request shape evidence
 
-`pig_predictive_capability_*` records the active capability profile: immutable
-model/block/context and startup-derived policy geometry, plus the raw KV
-capacity of the accepted backend runtime epoch. The aligned hard limit, maximum
-admissible input, fixed Prefill class boundaries, and open/contended Prefill
-budgets do not change during a PIG process lifetime. The profile source is
-`automatic` or `explicit`; initialization reason is `metadata` or
-`explicit_override`. There is no metadata fallback and no measured or learned
-Prefill rate.
-
-Backend runtime lifecycle is explicit:
+The request scanner exports:
 
 ```text
-pig_predictive_backend_runtime_epoch
-pig_predictive_backend_capability_rebinds_total
-pig_predictive_backend_rebind_pending
+pig_predictive_scanner_inflight
+pig_predictive_scanner_reserved_body_bytes
+pig_predictive_scanner_saturated_total
+pig_predictive_classifier_outcomes_total{outcome}
+pig_predictive_request_streaming_total{state}
+pig_predictive_request_decode_fanout_total{bucket}
+pig_predictive_admission_decode_fanout_total{bucket,outcome}
 ```
 
-`rebind_pending=1` means PIG has seen an explicit new backend process identity
-with changed raw KV capacity but has not yet accepted two consecutive coherent,
-metadata-validated samples. Admission and Router projection are availability-
-protected during that interval. A successful rebind increments both the runtime
-epoch and the monotonic rebind counter; a same-runtime capacity drift never
-increments the counter and permanently fail-closes instead.
+Classifier outcomes distinguish supported requests, body limits/content type,
+saturation/read failure, malformed JSON, unsupported request shape, bounded
+`shape_scan_limit`, and unsupported endpoint. Fanout buckets are fixed and
+contain no request, model, user, body, or token-value labels.
 
-`pig_backend_*` records the single upstream's coherent observed state and proxy
-lifecycle: KV tokens, running, waiting, generation TPS validity, inflight,
-accepted, completed, failures, and copy/proxy errors. The instantaneous TPS
-proxy and latest generation delta are diagnostics only. They are distinct from
-the qualified sustained window consumed by `TPSGate` when a positive reference
-is configured.
-
-PIG does not parse or aggregate backend TTFT histograms and exports no derived
-`pig_backend_observed_ttft_*` zero placeholders. TTFT is not an admission gate;
-when operational TTFT analysis is needed, use the backend's native metrics.
-
-A partial scrape does not immediately zero gauges or close intake. PIG retains
-the last coherent observation until freshness expires. A coherent replacement
-sample recovers current state without a separate cooldown or timer.
-
-## Success-linked output goodput metrics
-
-The development source exports one label-free monotonic token counter:
+The last-decision metric uses `demand_source="request"` for a classified
+request and `demand_source="fallback"` for a scanner-limited one-sequence
+request or the canonical Router-capacity inspection:
 
 ```text
-pig_predictive_successful_completion_tokens_total
+pig_predictive_tps_last_decision_info{
+  action,reason,pressure_source,result,subreason,demand_source
+}
+pig_predictive_tps_request_decode_sequences
 ```
 
-It sums exact `usage.completion_tokens` for Chat/Completions responses and exact
-`usage.output_tokens` for Responses API responses only when all of these are
-true:
+Any other source is normalized to `unknown`.
 
-- the request endpoint and streaming shape are known;
-- the upstream response is eligible 2xx JSON or SSE;
-- the response body reaches a clean terminal boundary and supplies exactly one
-  valid final usage record; and
-- the PIG proxy terminal is success, not a backend error, proxy failure,
-  timeout, or client disconnect.
+## TPS state
 
-Zero-token completions are valid evidence and `finish_reason=length` remains a
-successful completion. They do not increase the token sum beyond their exact
-value. Censored, unavailable, malformed, incomplete, non-2xx, timed-out, or
-disconnected responses never add tokens. Duplicate completion calls are
-idempotent.
-
-The existing fixed-cardinality evidence metrics describe coverage and declared
-output-limit error:
-
-```text
-pig_predictive_response_usage_outcomes_total{outcome="available|unavailable|malformed|censored"}
-pig_predictive_output_limit_comparison_total{declared_bucket,actual_bucket}
-```
-
-`available` is now qualified by the same proxy-success predicate as the exact
-token counter. `censored` includes pre-forward outcomes and forwarded requests
-whose proxy terminal was not success, even if some usage bytes were observed
-before the failure. No request, user, model, or token-value label is exported.
-
-For a window with stable process identity, successful completion goodput is:
-
-```promql
-rate(pig_predictive_successful_completion_tokens_total[5m])
-```
-
-Usage coverage among proxy-success terminals is the `available` rate divided
-by the sum of `available`, `unavailable`, and `malformed` rates. Exclude
-`censored` from that denominator. The counter proves success at PIG's proxy
-boundary; it does not classify an independent Router failure and it never feeds
-back into admission decisions.
-
-## Request-aware decision metrics
-
-`pig_predictive_request_aware_last_decision_info` carries bounded labels for
-action, reason, pressure source, and Prefill class. Current actions are
-`admit`, `size_protect`, and `hard_protect`. Current policy reasons are:
-
-```text
-open controller_unavailable observation_missing observation_invalid
-observation_stale invalid_request input_limit kv_capacity
-prefill_contention prefill_budget prefill_exclusive prefill_quiescent
-tps_reference capability_drift resource_exhausted counter_overflow closed
-```
-
-Numeric gauges expose:
-
-- selected/estimated input and reserved tokens;
-- effective, post-admit, remaining, and allowance KV tokens;
-- raw running/waiting plus effective sequence diagnostics;
-- aggregate and mean-active TPS proxies as telemetry only;
-- current pending Prefill sequences/tokens and long/quiescent owners; and
-- the equivalent pending-Prefill state captured for the last decision.
-
-The current pending gauges may advance after a decision because lifecycle state
-has changed. The `last_decision_*` gauges preserve the decision-time values so
-operators can distinguish those two snapshots.
-
-The sustained TPS contract is exported without request/user/model labels:
+The primary current-state gauges are:
 
 ```text
 pig_predictive_tps_reference
 pig_predictive_tps_window_ready
 pig_predictive_tps_window_qualified_samples
+pig_predictive_tps_window_qualified_sequence_samples
 pig_predictive_tps_window_qualified_sequence_seconds
 pig_predictive_tps_window_aggregate
 pig_predictive_tps_window_mean_active
+pig_predictive_tps_current_interval_aggregate
+pig_predictive_tps_current_interval_mean_active
+pig_predictive_tps_current_interval_mean_active_valid
+pig_predictive_tps_observed_running
+pig_predictive_tps_observed_waiting
+pig_predictive_tps_generation_delta
+pig_predictive_tps_preemption_delta
 pig_predictive_tps_unobserved_sequences
 pig_predictive_tps_sequence_limit
 pig_predictive_tps_current_sequences
 pig_predictive_tps_post_admit_sequences
+pig_predictive_tps_qos_budget_leases
+pig_predictive_tps_last_decision_qos_budgeted
 ```
 
-The reference and window values describe the current Controller-owned trailing
-window. The last three values are the canonical minimum request's current
-pre-forward projection. A not-ready window with a positive reference reports
-the bounded warming limit, so an operator can distinguish cold-start
-protection from a mature rate-derived limit.
-`pig_predictive_tps_unobserved_sequences` is the bounded local contribution not
-yet covered by the latest metrics watermark; it normally returns to zero on the
-next coherent poll and makes same-poll protection auditable.
-`pig_predictive_request_aware_*_tps_proxy` remains the latest-interval diagnostic
-and must not be interpreted as the sustained policy window.
+`window_aggregate` is output tokens per wall second over qualified intervals.
+`window_mean_active` is output tokens per active sequence-second and is the
+long-run QoS view. `sequence_limit/current/post_admit` explain the actual
+pre-forward counterfactual. A healthy mean alone does not prove an admit if the
+request fanout would exceed the selected limit.
 
-Runtime policy changes are exported with fixed cardinality:
+The bounded decision reason matrix is:
 
 ```text
-pig_predictive_policy_revision
-pig_predictive_policy_last_updated_at_seconds
-pig_predictive_policy_updates_total{result="applied"}
-pig_predictive_policy_updates_total{result="invalid"}
-pig_predictive_policy_updates_total{result="conflict"}
-pig_predictive_policy_updates_total{result="failed"}
+pig_predictive_tps_decisions_total{result,subreason}
 ```
 
-Decision logs include `policy_revision`; the periodic status line includes
-`policy=<revision>/<startup|runtime_api>`. A changed TPS reference clears the
-qualified TPS window, so metrics show the new reference with `ready=0` until
-new post-revision evidence qualifies. Existing reservation and QoS lease gauges
-must not drop merely because policy changed.
+Subreasons include `warming`, `idle`, `base_rate`,
+`current_rate`, `waiting`, `preemption`, and the bounded
+`qos_budget_*` outcomes. This matrix is the preferred way to distinguish
+healthy base admission from waiting holds or surplus-lease ineligibility.
 
-Periodic status logs distinguish `last=<action>/<reason>` from the live
-`capacity=<action>/<reason>` canonical probe. TPS protection caused by a metrics
-update is therefore visible before another request produces a decision log.
-
-Every enforced protection records a bounded last-reject reason, source, scope,
-and timestamp. The timestamp is telemetry only: it neither keeps intake closed
-nor overrides a later current-capacity result.
-
-## Router projection
-
-Router-visible state is a pure projection of `AdmissionController.Snapshot`.
-The snapshot contains the canonical minimum-request decision already evaluated
-from the same Controller-owned observation and reservation overlay used by
-admission; the reporting path never reruns policy or reserves work:
+The rolling denominator is auditable through:
 
 ```text
-candidate protected + canonical admitted    -> request scope
-candidate protected + canonical protected   -> load scope
-stale, invalid identity, or unavailable      -> availability scope
+pig_predictive_tps_denominator_selections_total{source}
+pig_predictive_tps_denominator_sequence_seconds_total{source}
 ```
 
-A request-scoped 429 is fully visible in decision metrics and logs, but does
-not close a node whose current canonical request fits. Load and availability
-protection publish non-open current capacity. As soon as a new observation or
-lifecycle event makes the canonical probe fit, capacity recovers immediately.
-There is no recent-reject hold.
+Sources distinguish endpoint running, local forwarded exposure, local response
+exposure, fallback liability, ties, and no usable denominator.
 
-The authoritative Router fields are:
-
-- `pig_predictive_router_backpressure_active`;
-- `pig_predictive_router_backpressure_state_info`;
-- `pig_predictive_router_inspect_capacity`;
-- raw/effective running and global-limit gauges; and
-- transition counters/timestamps plus the separate last-reject telemetry.
-
-Shadow always publishes inactive predictive Router backpressure and never
-reduces capacity.
-
-The current Router parser also requires six compatibility names:
+## Reservation and lifecycle state
 
 ```text
+pig_predictive_admission_reservations
+pig_predictive_admission_virtual_decode_sequences
+pig_predictive_admission_sequence_liabilities
+pig_predictive_admission_residual_debts
+pig_predictive_admission_failures_total{phase}
+```
+
+Lifecycle phases are exactly `close`, `decide`, `forward`,
+`first_byte`, and `terminal`. A sustained nonzero residual-debt or
+failure delta warrants lifecycle investigation; a transient liability until
+the next observer watermark is expected.
+
+## Timing
+
+The four histograms separate Controller time from request inspection:
+
+```text
+pig_predictive_admission_prediction_duration_seconds
+pig_predictive_admission_body_read_duration_seconds
+pig_predictive_admission_shape_scan_duration_seconds
+pig_predictive_admission_pre_forward_duration_seconds
+```
+
+`pre_forward` includes body read, shape scan, and decision. Benchmark and
+production timing are diagnostic experience. Do not turn one body size, host,
+percentile, or numeric value into a universal hard acceptance gate.
+
+The retired `pig_predictive_admission_estimator_duration_seconds` metric is
+not emitted. Dashboards must use `shape_scan_duration_seconds`.
+
+## Successful completion goodput
+
+```text
+pig_predictive_successful_completion_tokens_total
+pig_predictive_response_usage_outcomes_total{outcome}
+pig_predictive_response_completion_tokens_total{bucket}
+```
+
+The label-free token counter sums exact successful
+`usage.completion_tokens` for Chat/Completions and
+`usage.output_tokens` for Responses. It increments only when the endpoint and
+streaming format are known, the upstream response is eligible 2xx JSON/SSE, a
+single valid final usage record is observed, and the PIG proxy terminal is
+success.
+
+Unavailable, malformed, censored, incomplete, non-2xx, timed-out, or
+disconnected responses add no tokens. The bucket metric counts completed
+requests by completion-token range; it is not a token sum. Response usage is
+observability only and never feeds admission.
+
+A process-stable goodput rate is:
+
+```promql
+rate(pig_predictive_successful_completion_tokens_total[5m])
+```
+
+Always pair it with request success/error rates and process identity. Counter
+reset across a restart invalidates a naive window delta.
+
+## Backend and Router views
+
+`pig_backend_*` exposes proxy lifecycle plus current TPS-observer running,
+waiting, freshness, and backend kind. `/v1/metrics` also includes the
+upstream's native metrics, where operators can inspect KV/cache/Prefill values.
+Those optional values are not admission inputs in TPS-only source and must not
+be interpreted as a hidden gate.
+
+Router compatibility is exposed through:
+
+```text
+pig_predictive_router_backpressure_active
+pig_predictive_router_backpressure_applied
+pig_predictive_router_backpressure_state_info{scope,reason,source}
+pig_predictive_router_inspect_capacity
 pig_dynamic_observed_running_raw
-pig_dynamic_observed_waiting_raw
 pig_dynamic_observed_running
+pig_dynamic_observed_waiting_raw
 pig_dynamic_observed_waiting
 pig_dynamic_global_limit_raw
 pig_dynamic_global_limit
 ```
 
-They are a read-only projection of the predictive snapshot, not a retained
-request-count controller. No other retired dynamic-QoS behavior is authoritative.
+Use the raw/effective pairs to audit whether PIG actually projected protection
+to Router. Request-scoped invalid shapes do not close canonical node capacity.
 
-In particular, `pig_dynamic_global_limit` is the Router compatibility value
-needed to represent the current open/closed projection. It is not the number of
-arbitrary requests that the GPU can safely hold, and its meaning is not
-comparable to the retired request-count limiter. Do not use either of these as a
-cross-version utilization or saturation query:
+## Logs
 
-```promql
-pig_dynamic_observed_running / pig_dynamic_global_limit
-pig_dynamic_observed_running_raw / pig_dynamic_global_limit_raw
-```
+At `info`, PIG emits compact stable lines:
 
-Use the metric that represents the question instead. Examples:
+- `component=admission event=protection` for protected decisions, with mode,
+  enforcement, reason/scope, TPS result/subreason, sequence tuple, backend
+  running/waiting, rolling mean/reference, QoS lease count, and suppression;
+- `component=controller event=status` at the configured interval, with
+  counters, capacity, TPS state, reservations, Router projection, and observer
+  freshness.
 
-```promql
-# Current backend work, without the compatibility projection.
-pig_backend_observed_running{name="upstream"}
-pig_backend_observed_waiting{name="upstream"}
+At `debug`, `event=protection_detail` adds bounded numeric lifecycle
+and TPS evidence. It records no request body, prompt, prefix, token, bearer
+value, customer identity, or secret.
 
-# Backend KV occupancy.
-pig_backend_kv_active_tokens{name="upstream"}
-/
-clamp_min(pig_backend_kv_capacity_tokens{name="upstream"}, 1)
+## Retired predictive metrics
 
-# Whether the current canonical minimum request is under Router backpressure.
-pig_predictive_router_backpressure_active
-
-# Cumulative admission outcomes and bounded protection attribution.
-sum by (outcome) (rate(pig_predictive_admission_outcomes_total[5m]))
-sum by (reason, scope) (rate(pig_predictive_admission_protections_total[5m]))
-```
-
-The first two queries describe backend work and KV load. The backpressure gauge
-describes the current Router-facing state. The cumulative rates describe what
-PIG admitted or protected over the selected window, including request-specific
-protection that deliberately leaves the node open for smaller work. They must
-not be collapsed into one synthetic `running / global_limit` percentage.
-
-## Logs and cross-surface agreement
-
-All runtime records use three stable leading fields:
-
-```text
-level=<info|warn|debug|error> component=<runtime|capability|controller|admission|policy|route> event=<name>
-```
-
-The Go logger supplies one UTC timestamp with microsecond precision. Ordinary
-records do not repeat a second `observed_at` timestamp.
-
-The startup record contains build identity, mode, observation cadence,
-freshness, status interval, TPS reference, and effective log level. Capability
-initialization is a one-time record of the startup policy profile and its source/reason.
-Policy updates are separate `component=policy event=update` records.
-Fatal startup or serving errors use `level=error component=runtime event=exit`.
-An accepted backend epoch rebind emits one
-`component=capability event=runtime_epoch_rebound` record containing old/new
-runtime start, old/new raw KV capacity, accepted runtime epoch, and rebind count.
-
-Default admission records are emitted only for policy protections. They use
-`event=protection`, `warn` for an enforced reject, and `info` for a shadow
-counterfactual. The compact fields are:
-
-```text
-mode enforced action reason scope prefill_class input_estimate_confidence
-input_tokens prefill_compute_tokens cache_credit_tokens
-kv_tokens=<effective/post-admit/remaining>
-backend=<running/waiting>
-sequences=<current/post-admit/limit>
-tps=<mean-active/reference> tps_ready policy_revision suppressed
-```
-
-Each bounded action/reason/scope/enforcement signature emits at most once per
-five seconds. Alternating reasons cannot reset another signature's interval.
-`suppressed` reports how many equivalent records were omitted since that
-signature's previous line. Admission counters and metrics are never sampled or
-suppressed by logging.
-
-`PIG_LOG_LEVEL=debug` keeps the compact record and adds
-`event=protection_detail` with the complete numeric decision snapshot. Debug is
-for short diagnostic windows; the default is `info`. Neither form contains
-prompts, request bodies, credentials, request IDs, or endpoint hosts.
-
-A locally rejected public route emits one fixed-cardinality warning:
-
-```text
-level=warn component=route event=rejected reason=route_not_allowed class=<unknown_path|method_mismatch|noncanonical_path> method_class=<get|post|other>
-```
-
-It never logs the raw path, query, headers, authorization value, or body.
-
-The compact periodic `component=controller event=status` line defaults to one
-record every 30 seconds. Its slash-delimited groups are documented in order:
-
-```text
-counts=<attempts/admitted/request-protected/load-protected/availability-protected>
-last=<last-action/last-reason>
-capacity=<current-action/current-reason>
-prefill=<current-canonical-class/current-canonical-input>
-kv=<current-effective/current-canonical-post-admit/current-canonical-remaining>
-cache=<valid/hit-fraction/credit-fraction>
-tps=<mean-active/reference>
-sequences=<current/post-admit/limit>
-router=<active/scope/inspect-capacity>
-observer=<fresh/intake-open>
-backend=<running/waiting>
-```
-
-The current Controller snapshot, not the last request, supplies capacity, KV,
-cache, TPS, sequence, Router, observer, and backend groups. The last request is
-limited to the explicitly named `last` group. Detailed compatibility gauges
-remain in metrics instead of being repeated in every status line.
-
-For every enforce protection, audit agreement across:
-
-1. the client-visible HTTP result;
-2. decision reason, source, and scope telemetry;
-3. bounded decision/status logs;
-4. the current `/v1/upstream-status` result;
-5. the current predictive Router projection; and
-6. the six compatibility values from the same scrape.
-
-Agreement is scope-aware. A request-scoped rejection must remain visible while
-current Router capacity stays open for fitting smaller work. A load- or
-availability-scoped protection must publish the matching non-open current
-capacity. Any hidden reject or stale capacity clamp is a release stop condition.
+Current TPS-only source does not emit admission capability geometry, cache
+credit, Prefill lifecycle/class, input/KV work, declared-output comparison, or
+request-output-limit metrics. Historical dashboards and observation scripts
+that query these families must be treated as historical or migrated before use.

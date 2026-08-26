@@ -30,8 +30,8 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		cfg.PredictiveObservationPollInterval.Milliseconds(),
 	)
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability: coreadmission.Capability{Fingerprint: startup.ModelIdentitySHA256},
-		TPS:        coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
+		RuntimeIdentity: startup.ModelIdentitySHA256,
+		TPS:             coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct admission Controller: %w", err)
@@ -42,7 +42,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		return nil, fmt.Errorf("initialize admission observation window")
 	}
 	publication := controller.PublishObservation(window, coreadmission.BackendObservation{
-		CapabilityFingerprint: startup.ModelIdentitySHA256,
+		RuntimeIdentity:       startup.ModelIdentitySHA256,
 		ObservedAt:            startup.ObservedAt,
 		MaximumAge:            cfg.PredictiveMaximumMetricsAge,
 		Running:               int64(startup.Running),
@@ -67,13 +67,13 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		return nil, err
 	}
 	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
-		BackendKind:           startup.BackendKind,
-		MetricsURL:            metricsURL,
-		CapabilityFingerprint: startup.ModelIdentitySHA256,
-		PollInterval:          cfg.PredictiveObservationPollInterval,
-		MaximumAge:            cfg.PredictiveMaximumMetricsAge,
-		RequestTimeout:        cfg.PredictiveMetricsRequestTimeout,
-		Controller:            controller,
+		BackendKind:     startup.BackendKind,
+		MetricsURL:      metricsURL,
+		RuntimeIdentity: startup.ModelIdentitySHA256,
+		PollInterval:    cfg.PredictiveObservationPollInterval,
+		MaximumAge:      cfg.PredictiveMaximumMetricsAge,
+		RequestTimeout:  cfg.PredictiveMetricsRequestTimeout,
+		Controller:      controller,
 	})
 	if err != nil {
 		_ = runtime.Close()

@@ -2,8 +2,6 @@ package admission
 
 import (
 	"time"
-
-	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 type Action string
@@ -22,14 +20,8 @@ const (
 	ReasonObservationInvalid    Reason = "observation_invalid"
 	ReasonObservationStale      Reason = "observation_stale"
 	ReasonInvalidRequest        Reason = "invalid_request"
-	ReasonInputLimit            Reason = "input_limit"
-	ReasonKVCapacity            Reason = "kv_capacity"
-	ReasonPrefillContention     Reason = "prefill_contention"
-	ReasonPrefillBudget         Reason = "prefill_budget"
-	ReasonPrefillExclusive      Reason = "prefill_exclusive"
-	ReasonPrefillQuiescent      Reason = "prefill_quiescent"
 	ReasonTPSReference          Reason = "tps_reference"
-	ReasonCapabilityDrift       Reason = "capability_drift"
+	ReasonRuntimeIdentityDrift  Reason = "runtime_identity_drift"
 	ReasonResourceExhausted     Reason = "resource_exhausted"
 	ReasonCounterOverflow       Reason = "counter_overflow"
 	ReasonClosed                Reason = "closed"
@@ -44,45 +36,20 @@ const (
 	ProtectionAvailability ProtectionScope = "availability"
 )
 
-type PrefillClass string
-
-const (
-	PrefillRegular   PrefillClass = "regular"
-	PrefillWeighted  PrefillClass = "weighted"
-	PrefillExclusive PrefillClass = "exclusive"
-	PrefillQuiescent PrefillClass = "quiescent"
-)
-
 type ProjectedState struct {
-	ObservedKVTokens          int64
-	ReservationKVTokens       int64
-	EffectiveKVTokens         int64
-	PendingPrefillInputTokens int64
-	PendingPrefillTokens      int64
-	PendingCacheCreditTokens  int64
-	PendingPrefillSequences   int64
-	PendingExclusiveSequences int64
-	PendingQuiescentSequences int64
-	LocalActiveDecode         int64
-	UnobservedSequences       int64
-	SequenceLiabilities       int64
-	QoSBudgetLeases           int64
-	LiveReservations          int64
-	ResidualDebts             int64
-	RawRunning                int64
-	RawWaiting                int64
-	PreviousRawRunning        int64
-	GenerationDelta           uint64
-	PreemptionDelta           uint64
-	ObservationInterval       time.Duration
-	ObservationIntervalValid  bool
-	CacheObservationValid     bool
-	CacheHitFraction          float64
-	CacheCreditFraction       float64
-	CacheEvidenceTokens       uint64
-	CacheCreditBudgetTokens   int64
-	CacheCreditSpentTokens    int64
-	TPS                       TPSSnapshot
+	UnobservedSequences      int64
+	SequenceLiabilities      int64
+	QoSBudgetLeases          int64
+	LiveReservations         int64
+	ResidualDebts            int64
+	RawRunning               int64
+	RawWaiting               int64
+	PreviousRawRunning       int64
+	GenerationDelta          uint64
+	PreemptionDelta          uint64
+	ObservationInterval      time.Duration
+	ObservationIntervalValid bool
+	TPS                      TPSSnapshot
 }
 
 type TPSSnapshot struct {
@@ -124,6 +91,21 @@ const (
 	TPSDecisionResultInvalid
 )
 
+func (r TPSDecisionResult) String() string {
+	switch r {
+	case TPSDecisionResultDisabled:
+		return "disabled"
+	case TPSDecisionResultAdmit:
+		return "admit"
+	case TPSDecisionResultProtect:
+		return "protect"
+	case TPSDecisionResultInvalid:
+		return "invalid"
+	default:
+		return "unknown"
+	}
+}
+
 type TPSDecisionSubreason uint8
 
 const (
@@ -137,53 +119,81 @@ const (
 	TPSDecisionSubreasonBaseRate
 	TPSDecisionSubreasonCurrentRate
 	TPSDecisionSubreasonQoSBudgetGranted
-	TPSDecisionSubreasonQoSBudgetOutputUnknown
 	TPSDecisionSubreasonQoSBudgetMultiSequence
 	TPSDecisionSubreasonQoSBudgetUnobserved
 	TPSDecisionSubreasonQoSBudgetActiveLease
 	TPSDecisionSubreasonQoSBudgetWaveLimit
 	TPSDecisionSubreasonQoSBudgetNoSurplus
-	TPSDecisionSubreasonQoSBudgetInvalidRate
-	TPSDecisionSubreasonQoSBudgetLifetime
+	TPSDecisionSubreasonQoSBudgetCurrentRate
 	TPSDecisionSubreasonQoSBudgetIneligible
 )
+
+func (r TPSDecisionSubreason) String() string {
+	switch r {
+	case TPSDecisionSubreasonDisabled:
+		return "disabled"
+	case TPSDecisionSubreasonInvalidState:
+		return "invalid_state"
+	case TPSDecisionSubreasonWaiting:
+		return "waiting"
+	case TPSDecisionSubreasonPreemption:
+		return "preemption"
+	case TPSDecisionSubreasonWarming:
+		return "warming"
+	case TPSDecisionSubreasonIdle:
+		return "idle"
+	case TPSDecisionSubreasonBaseRate:
+		return "base_rate"
+	case TPSDecisionSubreasonCurrentRate:
+		return "current_rate"
+	case TPSDecisionSubreasonQoSBudgetGranted:
+		return "qos_budget_granted"
+	case TPSDecisionSubreasonQoSBudgetMultiSequence:
+		return "qos_budget_multi_sequence"
+	case TPSDecisionSubreasonQoSBudgetUnobserved:
+		return "qos_budget_unobserved"
+	case TPSDecisionSubreasonQoSBudgetActiveLease:
+		return "qos_budget_active_lease"
+	case TPSDecisionSubreasonQoSBudgetWaveLimit:
+		return "qos_budget_wave_limit"
+	case TPSDecisionSubreasonQoSBudgetNoSurplus:
+		return "qos_budget_no_surplus"
+	case TPSDecisionSubreasonQoSBudgetCurrentRate:
+		return "qos_budget_current_rate"
+	case TPSDecisionSubreasonQoSBudgetIneligible:
+		return "qos_budget_ineligible"
+	default:
+		return "unknown"
+	}
+}
 
 type TPSPolicyConfig struct {
 	Reference float64
 }
 
 type ControllerConfig struct {
-	Capability  Capability
-	WorkProfile predictive.BackendExecutionProfile
-	TPS         TPSPolicyConfig
-	Now         func() time.Time
+	RuntimeIdentity string
+	TPS             TPSPolicyConfig
+	Now             func() time.Time
 }
 
 type DecisionRecord struct {
-	Action                     Action
-	Reason                     Reason
-	Scope                      ProtectionScope
-	Demand                     TPSRequestDemand
-	PrefillClass               PrefillClass
-	Estimate                   predictive.RequestEstimate
-	Work                       predictive.RequestWork
-	State                      ProjectedState
-	PostAdmitKVTokens          int64
-	HardKVLimitTokens          int64
-	RemainingKVTokens          int64
-	PendingPrefillTokensBefore int64
-	PendingPrefillTokensAfter  int64
-	TPSSequenceLimit           int64
-	TPSCurrentSequences        int64
-	TPSPostAdmitSequences      int64
-	TPSQoSBudgeted             bool
-	TPSDecisionResult          TPSDecisionResult
-	TPSDecisionSubreason       TPSDecisionSubreason
-	ObservationSequence        uint64
-	ControllerSequence         uint64
-	RuntimeEpoch               uint64
-	PolicyRevision             uint64
-	ReservationID              uint64
+	Action                Action
+	Reason                Reason
+	Scope                 ProtectionScope
+	Demand                TPSRequestDemand
+	State                 ProjectedState
+	TPSSequenceLimit      int64
+	TPSCurrentSequences   int64
+	TPSPostAdmitSequences int64
+	TPSQoSBudgeted        bool
+	TPSDecisionResult     TPSDecisionResult
+	TPSDecisionSubreason  TPSDecisionSubreason
+	ObservationSequence   uint64
+	ControllerSequence    uint64
+	RuntimeEpoch          uint64
+	PolicyRevision        uint64
+	ReservationID         uint64
 }
 
 func (d DecisionRecord) Admitted() bool {
@@ -191,20 +201,13 @@ func (d DecisionRecord) Admitted() bool {
 }
 
 type BackendObservation struct {
-	CapabilityFingerprint string
-	MaxModelLenTokens     int64
-	KVCapacityTokens      int64
-	KVBlockSize           int64
+	RuntimeIdentity       string
 	ObservedAt            time.Time
 	MaximumAge            time.Duration
-	UsedKVTokens          int64
 	Running               int64
 	Waiting               int64
 	GenerationTokensTotal uint64
 	PreemptionsTotal      uint64
-	CacheQueryTokensTotal uint64
-	CacheHitTokensTotal   uint64
-	CacheCountersValid    bool
 	RuntimeStartTime      float64
 }
 
@@ -214,28 +217,25 @@ type AdmissionResult struct {
 }
 
 type CapacitySnapshot struct {
-	IntakeOpen           bool
-	HasObservation       bool
-	Available            bool
-	MinimumDecision      DecisionRecord
-	State                ProjectedState
-	Observation          BackendObservation
-	ObservationSequence  uint64
-	ControllerSequence   uint64
-	RuntimeEpoch         uint64
-	CapabilityRebinds    uint64
-	RuntimeRebindPending bool
-	Policy               TPSPolicySnapshot
+	IntakeOpen          bool
+	HasObservation      bool
+	Available           bool
+	MinimumDecision     DecisionRecord
+	State               ProjectedState
+	Observation         BackendObservation
+	ObservationSequence uint64
+	ControllerSequence  uint64
+	RuntimeEpoch        uint64
+	Policy              TPSPolicySnapshot
 }
 
 type PublicationResult struct {
-	Accepted            bool
-	RuntimeReset        bool
-	CapabilityRebound   bool
-	CapabilityDrift     bool
-	Reason              Reason
-	ObservationSequence uint64
-	RuntimeEpoch        uint64
+	Accepted             bool
+	RuntimeReset         bool
+	RuntimeIdentityDrift bool
+	Reason               Reason
+	ObservationSequence  uint64
+	RuntimeEpoch         uint64
 }
 
 type TerminalCause string

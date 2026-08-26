@@ -104,22 +104,22 @@ func TestV01215SequenceExposureWatermarksAreExactAndOverflowChecked(t *testing.T
 func TestV01215ControllerPublishesMeasuredSequentialExposure(t *testing.T) {
 	start := time.Unix(62_000, 0)
 	clock := &manualAdmissionClock{at: start}
-	capability := testCapability()
 	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability, WorkProfile: testRequestWorkProfile(),
-		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
+		RuntimeIdentity: testRuntimeIdentity,
+		TPS:             TPSPolicyConfig{Reference: 20},
+		Now:             clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishObservation(t, controller, testObservation(capability, start, 0, 0, 0, 0, 0))
+	publishObservation(t, controller, testObservation(start, 0, 0, 0, 0))
 
 	for index := 0; index < 100; index++ {
 		requestStart := start.Add(time.Duration(index) * 5 * time.Millisecond)
 		clock.Set(requestStart)
 		result := controller.Admit(
 			requestStart,
-			testEstimate(1, 1, capability.MinimumDecodeHorizonTokens),
+			testDemand(1),
 		)
 		if !result.Decision.Admitted() || !result.Handle.MarkForwarded() {
 			t.Fatalf("request %d forward=%+v", index, result.Decision)
@@ -135,13 +135,7 @@ func TestV01215ControllerPublishesMeasuredSequentialExposure(t *testing.T) {
 	}
 	clock.Set(start.Add(500 * time.Millisecond))
 	publishObservation(t, controller, testObservation(
-		capability,
-		start.Add(500*time.Millisecond),
-		0,
-		0,
-		0,
-		50,
-		0,
+		start.Add(500*time.Millisecond), 0, 0, 50, 0,
 	))
 
 	got := controller.Snapshot(start.Add(501 * time.Millisecond)).State.TPS
@@ -155,15 +149,15 @@ func TestV01215ControllerPublishesMeasuredSequentialExposure(t *testing.T) {
 func TestV01215ControllerDefersEventsAfterSampleWatermarkWithoutLosingExposure(t *testing.T) {
 	start := time.Unix(63_000, 0)
 	clock := &manualAdmissionClock{at: start}
-	capability := testCapability()
 	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability, WorkProfile: testRequestWorkProfile(),
-		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
+		RuntimeIdentity: testRuntimeIdentity,
+		TPS:             TPSPolicyConfig{Reference: 20},
+		Now:             clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishObservation(t, controller, testObservation(capability, start, 0, 0, 0, 0, 0))
+	publishObservation(t, controller, testObservation(start, 0, 0, 0, 0))
 
 	window, ok := controller.StartSampleWindow()
 	if !ok {
@@ -172,7 +166,7 @@ func TestV01215ControllerDefersEventsAfterSampleWatermarkWithoutLosingExposure(t
 	clock.Set(start.Add(100 * time.Millisecond))
 	result := controller.Admit(
 		clock.Now(),
-		testEstimate(1, 1, capability.MinimumDecodeHorizonTokens),
+		testDemand(1),
 	)
 	if !result.Decision.Admitted() || !result.Handle.MarkForwarded() ||
 		!result.Handle.MarkFirstByte() {
@@ -183,13 +177,7 @@ func TestV01215ControllerDefersEventsAfterSampleWatermarkWithoutLosingExposure(t
 		t.Fatal("intervening terminal failed")
 	}
 	first := controller.PublishObservation(window, testObservation(
-		capability,
-		start.Add(500*time.Millisecond),
-		0,
-		0,
-		0,
-		10,
-		0,
+		start.Add(500*time.Millisecond), 0, 0, 10, 0,
 	))
 	if !first.Accepted {
 		t.Fatalf("first publication=%+v", first)
@@ -200,13 +188,7 @@ func TestV01215ControllerDefersEventsAfterSampleWatermarkWithoutLosingExposure(t
 
 	clock.Set(start.Add(500 * time.Millisecond))
 	publishObservation(t, controller, testObservation(
-		capability,
-		start.Add(time.Second),
-		0,
-		0,
-		0,
-		20,
-		0,
+		start.Add(time.Second), 0, 0, 20, 0,
 	))
 	got := controller.Snapshot(start.Add(time.Second + time.Millisecond)).State.TPS
 	if got.QualifiedSequenceSamples != 1 ||
@@ -219,44 +201,32 @@ func TestV01215ControllerDefersEventsAfterSampleWatermarkWithoutLosingExposure(t
 func TestV01215ControllerRuntimeResetClearsSequenceExposure(t *testing.T) {
 	start := time.Unix(64_000, 0)
 	clock := &manualAdmissionClock{at: start}
-	capability := testCapability()
 	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability, WorkProfile: testRequestWorkProfile(),
-		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
+		RuntimeIdentity: testRuntimeIdentity,
+		TPS:             TPSPolicyConfig{Reference: 20},
+		Now:             clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishObservation(t, controller, testObservation(capability, start, 0, 0, 0, 100, 0))
+	publishObservation(t, controller, testObservation(start, 0, 0, 100, 0))
 	result := controller.Admit(
 		start,
-		testEstimate(1, 1, capability.MinimumDecodeHorizonTokens),
+		testDemand(1),
 	)
 	if !result.Decision.Admitted() || !result.Handle.MarkForwarded() {
 		t.Fatalf("pre-reset lifecycle=%+v", result.Decision)
 	}
 	clock.Set(start.Add(200 * time.Millisecond))
 	reset := publishObservation(t, controller, testObservation(
-		capability,
-		start.Add(500*time.Millisecond),
-		0,
-		0,
-		0,
-		1,
-		0,
+		start.Add(500*time.Millisecond), 0, 0, 1, 0,
 	))
 	if !reset.RuntimeReset || result.Handle.Terminate(TerminalCancel) {
 		t.Fatalf("runtime reset did not invalidate exposure lifecycle: %+v", reset)
 	}
 	clock.Set(start.Add(500 * time.Millisecond))
 	publishObservation(t, controller, testObservation(
-		capability,
-		start.Add(time.Second),
-		0,
-		0,
-		0,
-		1,
-		0,
+		start.Add(time.Second), 0, 0, 1, 0,
 	))
 	got := controller.Snapshot(start.Add(time.Second + time.Millisecond)).State.TPS
 	if got.QualifiedSamples != 0 || got.QualifiedSequenceSeconds != 0 {

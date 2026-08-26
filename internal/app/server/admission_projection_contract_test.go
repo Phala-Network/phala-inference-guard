@@ -8,15 +8,14 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 type staticAdmissionTelemetryService struct {
 	snapshot admissionTelemetrySnapshot
 }
 
-func (*staticAdmissionTelemetryService) Decide(context.Context, domainpredictive.RequestEstimate) admissionDecision {
-	return unavailableAdmissionDecision(domainpredictive.RequestEstimate{})
+func (*staticAdmissionTelemetryService) Decide(context.Context, coreadmission.TPSRequestDemand) admissionDecision {
+	return unavailableAdmissionDecision(coreadmission.TPSRequestDemand{})
 }
 
 func (s *staticAdmissionTelemetryService) Snapshot(time.Time) admissionTelemetrySnapshot {
@@ -48,7 +47,7 @@ func TestAdmissionRouterProjectionMatchesCurrentCapacityContract(t *testing.T) {
 			name: "load protection blocks an idle Router candidate immediately",
 			capacity: coreadmission.CapacitySnapshot{
 				MinimumDecision: coreadmission.DecisionRecord{
-					Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonPrefillBudget,
+					Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonTPSReference,
 					Scope: coreadmission.ProtectionLoad,
 				},
 				State: coreadmission.ProjectedState{RawWaiting: 4},
@@ -85,7 +84,7 @@ func TestAdmissionMetricsPublishProtectionBeforeAnyHTTPReject(t *testing.T) {
 	capacity := coreadmission.CapacitySnapshot{
 		IntakeOpen: true, HasObservation: true,
 		MinimumDecision: coreadmission.DecisionRecord{
-			Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonPrefillBudget,
+			Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonTPSReference,
 			Scope: coreadmission.ProtectionLoad,
 		},
 		State: coreadmission.ProjectedState{RawWaiting: 1},
@@ -149,7 +148,7 @@ func TestAdmissionUpstreamStatusUsesCurrentProtectionScope(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			decision := coreadmission.DecisionRecord{Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonKVCapacity, Scope: test.scope}
+			decision := coreadmission.DecisionRecord{Action: coreadmission.ActionProtect, Reason: coreadmission.ReasonTPSReference, Scope: test.scope}
 			if test.available {
 				decision = coreadmission.DecisionRecord{Action: coreadmission.ActionAdmit, Reason: coreadmission.ReasonOpen}
 			}
@@ -202,18 +201,20 @@ func TestStatusLogReportsCurrentTPSCapacityReasonWithoutARequestDecision(t *test
 func TestStatusLogSeparatesLastRequestFromCurrentCapacity(t *testing.T) {
 	now := time.Now()
 	current := coreadmission.DecisionRecord{
-		Action:            coreadmission.ActionAdmit,
-		Reason:            coreadmission.ReasonOpen,
-		State:             coreadmission.ProjectedState{EffectiveKVTokens: 100},
-		PostAdmitKVTokens: 200,
-		RemainingKVTokens: 800,
+		Action: coreadmission.ActionAdmit,
+		Reason: coreadmission.ReasonOpen,
+		State: coreadmission.ProjectedState{
+			RawRunning: 2,
+			TPS:        coreadmission.TPSSnapshot{Reference: 25},
+		},
+		TPSSequenceLimit:      3,
+		TPSCurrentSequences:   2,
+		TPSPostAdmitSequences: 3,
 	}
 	last := coreadmission.DecisionRecord{
-		Action:            coreadmission.ActionProtect,
-		Reason:            coreadmission.ReasonKVCapacity,
-		Scope:             coreadmission.ProtectionLoad,
-		State:             coreadmission.ProjectedState{EffectiveKVTokens: 900},
-		PostAdmitKVTokens: 1_100,
+		Action: coreadmission.ActionProtect,
+		Reason: coreadmission.ReasonTPSReference,
+		Scope:  coreadmission.ProtectionLoad,
 	}
 	srv := &proxyServer{
 		cfg: config{PredictiveAdmissionMode: "enforce"},
@@ -227,9 +228,9 @@ func TestStatusLogSeparatesLastRequestFromCurrentCapacity(t *testing.T) {
 		}},
 	}
 	line := srv.statusLogLine()
-	if !strings.Contains(line, "last=hard_protect/kv_capacity") ||
+	if !strings.Contains(line, "last=load_protect/tps_reference") ||
 		!strings.Contains(line, "capacity=admit/open") ||
-		!strings.Contains(line, "kv=100/200/800") || strings.Contains(line, "kv=900/1100/") {
+		!strings.Contains(line, "sequences=2/3/3") {
 		t.Fatalf("status conflated last request and current capacity: %s", line)
 	}
 }

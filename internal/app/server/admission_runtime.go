@@ -7,7 +7,6 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 type admissionReservation interface {
@@ -29,7 +28,7 @@ func (d admissionDecision) valid() bool {
 }
 
 type admissionService interface {
-	Decide(context.Context, domainpredictive.RequestEstimate) admissionDecision
+	Decide(context.Context, coreadmission.TPSRequestDemand) admissionDecision
 	Snapshot(time.Time) admissionTelemetrySnapshot
 	Close() error
 }
@@ -92,7 +91,7 @@ func newAdmissionRuntime(
 
 func (r *admissionRuntime) Decide(
 	ctx context.Context,
-	estimate domainpredictive.RequestEstimate,
+	demand coreadmission.TPSRequestDemand,
 ) admissionDecision {
 	started := time.Now()
 	defer func() {
@@ -102,17 +101,17 @@ func (r *admissionRuntime) Decide(
 	}()
 	if r == nil || r.controller == nil || r.reporter == nil {
 		return admissionDecision{Record: coreadmission.DecisionRecord{
-			Action:   coreadmission.ActionProtect,
-			Reason:   coreadmission.ReasonControllerUnavailable,
-			Scope:    coreadmission.ProtectionAvailability,
-			Estimate: estimate,
+			Action: coreadmission.ActionProtect,
+			Reason: coreadmission.ReasonControllerUnavailable,
+			Scope:  coreadmission.ProtectionAvailability,
+			Demand: demand,
 		}}
 	}
 	now := r.now()
 	if ctx == nil || ctx.Err() != nil {
-		estimate = domainpredictive.RequestEstimate{}
+		demand = coreadmission.TPSRequestDemand{}
 	}
-	result := r.controller.Admit(now, estimate)
+	result := r.controller.Admit(now, demand)
 	r.reporter.Record(now, r.mode, result.Decision)
 	decision := admissionDecision{Record: result.Decision}
 	if result.Decision.Admitted() {

@@ -47,7 +47,8 @@ func TestTPSWindowDistinguishesPurePrefillFromTrackedDecodeStall(t *testing.T) {
 
 	if !window.observe(tpsSample{
 		start: start.Add(time.Second), end: start.Add(2 * time.Second), maximumInterval: 2 * time.Second,
-		previousRunning: 1, running: 1, previousLocalActiveDecode: 1,
+		previousRunning: 1, running: 1,
+		localExposureMeasured: true, localResponseSequenceSeconds: 1,
 	}) {
 		t.Fatal("tracked Decode stall caused numeric failure")
 	}

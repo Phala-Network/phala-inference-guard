@@ -5,36 +5,46 @@ import (
 	"fmt"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
+	apprequest "github.com/Phala-Network/phala-inference-guard/internal/app/request"
 )
+
+func tpsDemandForClassification(classification apprequest.Classification) coreadmission.TPSRequestDemand {
+	if classification.Supported {
+		return coreadmission.NewTPSRequestDemand(classification.DecodeSequences)
+	}
+	if classification.SingleSequenceFallback {
+		return coreadmission.NewFallbackTPSRequestDemand()
+	}
+	return coreadmission.TPSRequestDemand{}
+}
 
 func (s *proxyServer) decideAdmission(
 	ctx context.Context,
-	estimate domainpredictive.RequestEstimate,
+	demand coreadmission.TPSRequestDemand,
 ) (result admissionDecision) {
 	if s == nil || s.admission == nil {
-		return unavailableAdmissionDecision(estimate)
+		return unavailableAdmissionDecision(demand)
 	}
 	defer func() {
 		if recover() != nil {
 			s.admissionFailures.decide.Add(1)
-			result = unavailableAdmissionDecision(estimate)
+			result = unavailableAdmissionDecision(demand)
 		}
 	}()
-	result = s.admission.Decide(ctx, estimate)
+	result = s.admission.Decide(ctx, demand)
 	if !result.valid() {
 		s.admissionFailures.decide.Add(1)
-		return unavailableAdmissionDecision(estimate)
+		return unavailableAdmissionDecision(demand)
 	}
 	return result
 }
 
-func unavailableAdmissionDecision(estimate domainpredictive.RequestEstimate) admissionDecision {
+func unavailableAdmissionDecision(demand coreadmission.TPSRequestDemand) admissionDecision {
 	return admissionDecision{Record: coreadmission.DecisionRecord{
-		Action:   coreadmission.ActionProtect,
-		Reason:   coreadmission.ReasonControllerUnavailable,
-		Scope:    coreadmission.ProtectionAvailability,
-		Estimate: estimate,
+		Action: coreadmission.ActionProtect,
+		Reason: coreadmission.ReasonControllerUnavailable,
+		Scope:  coreadmission.ProtectionAvailability,
+		Demand: demand,
 	}}
 }
 

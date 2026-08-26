@@ -5,9 +5,6 @@ import (
 	"math"
 	"net/url"
 	"strings"
-
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
-	"github.com/Phala-Network/phala-inference-guard/internal/support/names"
 )
 
 func Validate(cfg Config) error {
@@ -45,20 +42,6 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 	if cfg.PredictiveScannerBodyBytes <= 0 || cfg.PredictiveScannerConcurrency <= 0 {
 		return fmt.Errorf("predictive scanner bounds must be positive")
 	}
-	if len(cfg.OutputTokenFields) == 0 {
-		return fmt.Errorf("OUTPUT_TOKEN_FIELD_NAMES must not be empty")
-	}
-	for _, field := range cfg.OutputTokenFields {
-		if !names.OutputTokenField(field) {
-			return fmt.Errorf("invalid output token field %q", field)
-		}
-	}
-	if err := validateUniqueStrings("OUTPUT_TOKEN_FIELD_NAMES", cfg.OutputTokenFields); err != nil {
-		return err
-	}
-	if err := validateEstimator(cfg.PredictiveEstimator); err != nil {
-		return err
-	}
 	if cfg.PredictiveStartupProbeTimeout <= 0 || cfg.PredictiveStartupProbeTimeout > predictiveMaximumStartupProbeTimeout ||
 		cfg.PredictiveMetricsRequestTimeout <= 0 || cfg.PredictiveMetricsRequestTimeout > predictiveMaximumMetricsRequestTime ||
 		cfg.PredictiveMetricsRequestTimeout > cfg.PredictiveStartupProbeTimeout {
@@ -81,27 +64,6 @@ func validateHTTPURL(name, value string) error {
 	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("%s must be one absolute HTTP URL without query or fragment", name)
-	}
-	return nil
-}
-
-func validateUniqueStrings(label string, values []string) error {
-	seen := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if _, exists := seen[value]; exists {
-			return fmt.Errorf("%s contains duplicate value %q", label, value)
-		}
-		seen[value] = struct{}{}
-	}
-	return nil
-}
-
-func validateEstimator(cfg kvadmission.EstimatorConfig) error {
-	if cfg.MinBytesPerToken <= 0 || cfg.MaxBytesPerToken < cfg.MinBytesPerToken ||
-		cfg.ToolMinBytesPerToken <= 0 || cfg.ToolMaxBytesPerToken < cfg.ToolMinBytesPerToken ||
-		cfg.TemplateTokensPerMessageLow < 0 || cfg.TemplateTokensPerMessageHigh < cfg.TemplateTokensPerMessageLow ||
-		cfg.ModalityTokensLow < 0 || cfg.ModalityTokensHigh < cfg.ModalityTokensLow || cfg.BlindOutputTokens < 0 {
-		return fmt.Errorf("predictive estimator bounds are invalid")
 	}
 	return nil
 }

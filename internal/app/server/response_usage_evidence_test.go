@@ -7,8 +7,6 @@ import (
 	"testing"
 
 	apprequest "github.com/Phala-Network/phala-inference-guard/internal/app/request"
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 )
 
@@ -17,12 +15,7 @@ func TestV01218ResponseUsageEvidenceIsFixedCardinalityAndExactOnce(t *testing.T)
 	var empty bytes.Buffer
 	writeResponseUsageEvidenceMetrics(&empty, evidence.Snapshot())
 
-	request := evidence.Begin(apprequest.Classification{
-		Cost: kvadmission.Cost{Supported: true, Estimate: domainpredictive.RequestEstimate{
-			OutputLimitKnown:  true,
-			OutputLimitTokens: 1_024,
-		}},
-	}, "/v1/chat/completions")
+	request := evidence.Begin(apprequest.Classification{Supported: true}, "/v1/chat/completions")
 	request.Censor()
 	request.Censor()
 	request.Complete(proxyResult{status: 200})
@@ -39,7 +32,7 @@ func TestV01218ResponseUsageEvidenceIsFixedCardinalityAndExactOnce(t *testing.T)
 	}
 	for _, want := range []string{
 		`pig_predictive_response_usage_outcomes_total{outcome="censored"} 1`,
-		`pig_predictive_output_limit_comparison_total{actual_bucket="censored",declared_bucket="le_1024"} 1`,
+		`pig_predictive_response_completion_tokens_total{bucket="censored"} 1`,
 	} {
 		if !strings.Contains(metricsBody, want) {
 			t.Fatalf("response-usage evidence missing %q", want)
@@ -63,6 +56,7 @@ func TestSuccessfulCompletionTokensCountOnlySuccessfulExactUsageOnce(t *testing.
 	for _, want := range []string{
 		`pig_predictive_successful_completion_tokens_total 123`,
 		`pig_predictive_response_usage_outcomes_total{outcome="available"} 1`,
+		`pig_predictive_response_completion_tokens_total{bucket="le_256"} 1`,
 	} {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("successful completion evidence missing %q\nmetrics:\n%s", want, output.String())

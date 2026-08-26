@@ -28,29 +28,6 @@ var responseUsageEvidenceOutcomeLabels = [...]string{
 	"censored",
 }
 
-type declaredOutputTokenBucket uint8
-
-const (
-	declaredOutputTokensUnknown declaredOutputTokenBucket = iota
-	declaredOutputTokensLE64
-	declaredOutputTokensLE256
-	declaredOutputTokensLE1024
-	declaredOutputTokensLE4096
-	declaredOutputTokensLE16384
-	declaredOutputTokensGT16384
-	declaredOutputTokenBucketCount
-)
-
-var declaredOutputTokenBucketLabels = [...]string{
-	"unknown",
-	"le_64",
-	"le_256",
-	"le_1024",
-	"le_4096",
-	"le_16384",
-	"gt_16384",
-}
-
 type actualOutputTokenBucket uint8
 
 const (
@@ -81,19 +58,18 @@ var actualOutputTokenBucketLabels = [...]string{
 type responseUsageEvidence struct {
 	mu                         sync.Mutex
 	outcomes                   [responseUsageEvidenceOutcomeCount]uint64
-	comparisons                [declaredOutputTokenBucketCount][actualOutputTokenBucketCount]uint64
+	actuals                    [actualOutputTokenBucketCount]uint64
 	successfulCompletionTokens uint64
 }
 
 type responseUsageEvidenceSnapshot struct {
 	outcomes                   [responseUsageEvidenceOutcomeCount]uint64
-	comparisons                [declaredOutputTokenBucketCount][actualOutputTokenBucketCount]uint64
+	actuals                    [actualOutputTokenBucketCount]uint64
 	successfulCompletionTokens uint64
 }
 
 type responseUsageRequestEvidence struct {
 	owner          *responseUsageEvidence
-	declared       declaredOutputTokenBucket
 	streamingKnown bool
 	streaming      bool
 	formatKnown    bool
@@ -112,15 +88,9 @@ func (e *responseUsageEvidence) Begin(
 	classification apprequest.Classification,
 	path string,
 ) *responseUsageRequestEvidence {
-	declared := declaredOutputTokensUnknown
-	estimate := classification.Cost.Estimate
-	if estimate.OutputLimitKnown && estimate.OutputLimitTokens > 0 {
-		declared = declaredOutputTokenBucketFor(estimate.OutputLimitTokens)
-	}
 	format, formatKnown := responseUsageFormatForPath(path)
 	return &responseUsageRequestEvidence{
-		owner:    e,
-		declared: declared,
+		owner: e,
 		streamingKnown: classification.JSONFieldsKnown &&
 			(!classification.StreamingPresent || classification.StreamingKnown),
 		streaming:   classification.Streaming,
@@ -130,16 +100,12 @@ func (e *responseUsageEvidence) Begin(
 }
 
 func (e *responseUsageEvidence) record(
-	declared declaredOutputTokenBucket,
 	outcome responseUsageEvidenceOutcome,
 	actual actualOutputTokenBucket,
 	successfulCompletionTokens uint64,
 ) {
 	if e == nil {
 		return
-	}
-	if declared >= declaredOutputTokenBucketCount {
-		declared = declaredOutputTokensUnknown
 	}
 	if outcome >= responseUsageEvidenceOutcomeCount {
 		outcome = responseUsageEvidenceMalformed
@@ -149,7 +115,7 @@ func (e *responseUsageEvidence) record(
 	}
 	e.mu.Lock()
 	e.outcomes[outcome]++
-	e.comparisons[declared][actual]++
+	e.actuals[actual]++
 	e.successfulCompletionTokens += successfulCompletionTokens
 	e.mu.Unlock()
 }
@@ -161,7 +127,7 @@ func (e *responseUsageEvidence) Snapshot() responseUsageEvidenceSnapshot {
 	e.mu.Lock()
 	snapshot := responseUsageEvidenceSnapshot{
 		outcomes:                   e.outcomes,
-		comparisons:                e.comparisons,
+		actuals:                    e.actuals,
 		successfulCompletionTokens: e.successfulCompletionTokens,
 	}
 	e.mu.Unlock()
@@ -169,24 +135,12 @@ func (e *responseUsageEvidence) Snapshot() responseUsageEvidenceSnapshot {
 }
 
 func writeResponseUsageEvidenceMetrics(w io.Writer, snapshot responseUsageEvidenceSnapshot) {
-	fmt.Fprintf(
-		w,
-		"pig_predictive_successful_completion_tokens_total %d\n",
-		snapshot.successfulCompletionTokens,
-	)
+	fmt.Fprintf(w, "pig_predictive_successful_completion_tokens_total %d\n", snapshot.successfulCompletionTokens)
 	for outcome, label := range responseUsageEvidenceOutcomeLabels {
 		fmt.Fprintf(w, "pig_predictive_response_usage_outcomes_total{outcome=%q} %d\n", label, snapshot.outcomes[outcome])
 	}
-	for declared, declaredLabel := range declaredOutputTokenBucketLabels {
-		for actual, actualLabel := range actualOutputTokenBucketLabels {
-			fmt.Fprintf(
-				w,
-				"pig_predictive_output_limit_comparison_total{actual_bucket=%q,declared_bucket=%q} %d\n",
-				actualLabel,
-				declaredLabel,
-				snapshot.comparisons[declared][actual],
-			)
-		}
+	for actual, label := range actualOutputTokenBucketLabels {
+		fmt.Fprintf(w, "pig_predictive_response_completion_tokens_total{bucket=%q} %d\n", label, snapshot.actuals[actual])
 	}
 }
 
@@ -248,9 +202,8 @@ func (r *responseUsageRequestEvidence) Complete(result proxyResult) {
 	}
 	r.completed = true
 	owner := r.owner
-	declared := r.declared
 	r.mu.Unlock()
-	owner.record(declared, outcome, actual, successfulCompletionTokens)
+	owner.record(outcome, actual, successfulCompletionTokens)
 }
 
 func (r *responseUsageRequestEvidence) Censor() {
@@ -264,9 +217,8 @@ func (r *responseUsageRequestEvidence) Censor() {
 	}
 	r.completed = true
 	owner := r.owner
-	declared := r.declared
 	r.mu.Unlock()
-	owner.record(declared, responseUsageEvidenceCensored, actualOutputTokensCensored, 0)
+	owner.record(responseUsageEvidenceCensored, actualOutputTokensCensored, 0)
 }
 
 func responseUsageEvidenceForObservation(
@@ -283,25 +235,6 @@ func responseUsageEvidenceForObservation(
 		return responseUsageEvidenceUnavailable, actualOutputTokensUnavailable, 0
 	}
 	return responseUsageEvidenceMalformed, actualOutputTokensMalformed, 0
-}
-
-func declaredOutputTokenBucketFor(tokens int64) declaredOutputTokenBucket {
-	switch {
-	case tokens <= 0:
-		return declaredOutputTokensUnknown
-	case tokens <= 64:
-		return declaredOutputTokensLE64
-	case tokens <= 256:
-		return declaredOutputTokensLE256
-	case tokens <= 1_024:
-		return declaredOutputTokensLE1024
-	case tokens <= 4_096:
-		return declaredOutputTokensLE4096
-	case tokens <= 16_384:
-		return declaredOutputTokensLE16384
-	default:
-		return declaredOutputTokensGT16384
-	}
 }
 
 func actualOutputTokenBucketFor(tokens int64) actualOutputTokenBucket {
@@ -321,9 +254,7 @@ func actualOutputTokenBucketFor(tokens int64) actualOutputTokenBucket {
 	}
 }
 
-func responseUsageFormatForPath(
-	path string,
-) (openai.CompletionUsageFormat, bool) {
+func responseUsageFormatForPath(path string) (openai.CompletionUsageFormat, bool) {
 	switch path {
 	case "/v1/chat/completions", "/v1/completions":
 		return openai.CompletionUsageFormatCompletions, true

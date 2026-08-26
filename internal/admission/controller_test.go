@@ -2,1097 +2,188 @@ package admission
 
 import (
 	"math"
-	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
-	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
-func TestControllerRetainsCompletionBeforePollDebtUntilCoveringSample(t *testing.T) {
-	now := time.Unix(1_000, 0)
-	controller := testControllerWithObservation(t, testCapability(), testObservation(testCapability(), now, 0, 0, 0, 100, 2))
-	estimate := testEstimate(1_024, 1_536, 256)
-	result := controller.Admit(now.Add(time.Millisecond), estimate)
-	if !result.Decision.Admitted() || result.Decision.ReservationID == 0 {
-		t.Fatalf("admission=%+v handle=%+v", result.Decision, result.Handle)
+func TestControllerRejectsInvalidConfiguration(t *testing.T) {
+	if _, err := NewAdmissionController(ControllerConfig{}); err == nil {
+		t.Fatal("empty runtime identity constructed a Controller")
 	}
-	if !result.Handle.MarkForwarded() || !result.Handle.Terminate(TerminalSuccess) {
-		t.Fatal("forward/terminal transition failed")
-	}
-	before := controller.Snapshot(now.Add(2 * time.Millisecond))
-	if before.State.ReservationKVTokens != result.Decision.Work.TotalKVTokens ||
-		before.State.PendingPrefillTokens != 0 {
-		t.Fatalf("completion debt state=%+v work=%+v", before.State, result.Decision.Work)
-	}
-
-	publishObservation(t, controller, testObservation(testCapability(), now.Add(3*time.Millisecond), 0, 0, 0, 101, 2))
-	after := controller.Snapshot(now.Add(4 * time.Millisecond))
-	if after.State.ReservationKVTokens != 0 || !after.Available {
-		t.Fatalf("state after covering sample=%+v snapshot=%+v", after.State, after)
-	}
-}
-
-func TestV01215ControllerCarriesBetweenPollForwardedLiabilitiesIntoTPSWindow(t *testing.T) {
-	now := time.Unix(1_250, 0)
-	clock := &manualAdmissionClock{at: now}
-	capability := testCapability()
-	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability, WorkProfile: testRequestWorkProfile(),
-		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	publishObservation(t, controller, testObservation(capability, now, 0, 0, 0, 0, 0))
-	for index := 0; index < 2; index++ {
-		started := now.Add(time.Duration(index) * 250 * time.Millisecond)
-		clock.Set(started)
-		result := controller.Admit(
-			started,
-			testEstimate(1, 1, capability.MinimumDecodeHorizonTokens),
-		)
-		if !result.Decision.Admitted() || !result.Handle.MarkForwarded() {
-			t.Fatalf("short completion %d lifecycle=%+v", index, result.Decision)
-		}
-		clock.Set(started.Add(50 * time.Millisecond))
-		if !result.Handle.MarkFirstByte() {
-			t.Fatalf("short completion %d first byte failed", index)
-		}
-		clock.Set(started.Add(250 * time.Millisecond))
-		if !result.Handle.Terminate(TerminalSuccess) {
-			t.Fatalf("short completion %d terminal failed", index)
-		}
-	}
-	before := controller.Snapshot(now.Add(500 * time.Millisecond)).State
-	if before.ResidualDebts != 2 || before.SequenceLiabilities != 2 {
-		t.Fatalf("short completion liabilities were not retained: %+v", before)
-	}
-	clock.Set(now.Add(500 * time.Millisecond))
-	publishObservation(
-		t,
-		controller,
-		testObservation(capability, now.Add(500*time.Millisecond), 0, 0, 0, 20, 0),
-	)
-	after := controller.Snapshot(now.Add(501 * time.Millisecond)).State
-	if after.ResidualDebts != 0 || after.SequenceLiabilities != 0 ||
-		after.TPS.QualifiedSequenceSamples != 1 ||
-		math.Abs(after.TPS.QualifiedSequenceSeconds-0.5) > 1e-9 ||
-		math.Abs(after.TPS.MeanActiveTPS-40) > 1e-9 {
-		t.Fatalf("between-poll liabilities did not reach TPS window: %+v", after)
-	}
-}
-
-func TestControllerRejectsInvalidTPSPolicyConfiguration(t *testing.T) {
 	for _, reference := range []float64{-1, math.NaN(), math.Inf(1), 1_000_000.001} {
 		if _, err := NewAdmissionController(ControllerConfig{
-			Capability:  testCapability(),
-			WorkProfile: testRequestWorkProfile(),
-			TPS:         TPSPolicyConfig{Reference: reference},
+			RuntimeIdentity: testRuntimeIdentity,
+			TPS:             TPSPolicyConfig{Reference: reference},
 		}); err == nil {
 			t.Fatalf("invalid TPS reference %v constructed a Controller", reference)
 		}
 	}
 }
 
-func TestV01215ConservativePromptBatchFitsPerSequenceContext(t *testing.T) {
-	now := time.Unix(1_500, 0)
-	prompt := strings.Repeat("中", 250_000)
-	body := []byte(`{"model":"model-agnostic","prompt":["` + prompt + `","` + prompt + `"],"max_tokens":256}`)
-	cost := kvadmission.EstimateValidatedJSONWithShape(
-		body,
-		256,
-		true,
-		kvadmission.RequestShape{
-			PromptBatchSize:                2,
-			PromptStringBytes:              1_500_000,
-			MaximumPromptStringBytes:       750_000,
-			PromptApproximateTokens:        500_000,
-			MaximumPromptApproximateTokens: 250_000,
-			DecodeSequences:                2,
-		},
-		kvadmission.DefaultEstimatorConfig(),
-	)
-	estimate, known := cost.PredictiveEstimate()
-	if !known || estimate.InputEstimateConfidence != predictive.InputEstimateConfidenceConservative ||
-		estimate.BasePromptCount != 2 || estimate.DecodeSequences != 2 ||
-		estimate.SelectionInputTokens <= estimate.MaximumSequenceInputTokens ||
-		estimate.KVReservationInputTokens <= estimate.MaximumSequenceKVReservationInputTokens {
-		t.Fatalf("conservative prompt batch estimate=%+v/%t cost=%+v", estimate, known, cost)
+func TestControllerTPSReferenceChangesPreForwardDecision(t *testing.T) {
+	now := time.Unix(9_000, 0)
+	strict := testControllerWithTPSObservation(t, 20, testObservation(now, 5, 0, 0, 0))
+	permissive := testControllerWithTPSObservation(t, 15, testObservation(now, 5, 0, 0, 0))
+	for step := 1; step <= 4; step++ {
+		observation := testObservation(
+			now.Add(time.Duration(step)*time.Second),
+			5,
+			0,
+			uint64(step*100),
+			0,
+		)
+		publishObservation(t, strict, observation)
+		publishObservation(t, permissive, observation)
 	}
 
-	capability := testCapability()
-	capability.MaxModelLenTokens = 400_000
-	capability.MaximumInputTokens = capability.MaxModelLenTokens - capability.MinimumDecodeHorizonTokens
-	if estimate.KVReservationInputTokens <= capability.MaxModelLenTokens ||
-		estimate.MaximumSequenceKVReservationInputTokens > capability.MaximumInputTokens {
-		t.Fatalf("fixture does not separate aggregate and per-sequence context: estimate=%+v capability=%+v", estimate, capability)
+	strictDecision := strict.Admit(now.Add(4*time.Second+time.Millisecond), testDemand(1)).Decision
+	permissiveDecision := permissive.Admit(now.Add(4*time.Second+time.Millisecond), testDemand(1)).Decision
+	if strictDecision.Reason != ReasonTPSReference ||
+		strictDecision.TPSSequenceLimit != 5 ||
+		strictDecision.TPSCurrentSequences != 5 ||
+		strictDecision.TPSPostAdmitSequences != 6 {
+		t.Fatalf("strict TPS decision=%+v", strictDecision)
 	}
-	controller := testControllerWithObservation(
-		t,
-		capability,
-		testObservation(capability, now, 0, 0, 0, 1, 0),
-	)
-	result := controller.Admit(now.Add(time.Millisecond), estimate)
-	if !result.Decision.Admitted() ||
-		result.Decision.Work.InputKVTokens < estimate.KVReservationInputTokens ||
-		result.Decision.PostAdmitKVTokens != result.Decision.Work.TotalKVTokens {
-		t.Fatalf("valid conservative prompt batch was not admitted with full aggregate KV: %+v", result.Decision)
+	if !permissiveDecision.Admitted() ||
+		permissiveDecision.TPSSequenceLimit != 6 ||
+		permissiveDecision.TPSCurrentSequences != 5 ||
+		permissiveDecision.TPSPostAdmitSequences != 6 {
+		t.Fatalf("permissive TPS decision=%+v", permissiveDecision)
 	}
 }
 
-func TestControllerCoveringFirstByteKeepsOnlyFutureKV(t *testing.T) {
-	now := time.Unix(2_000, 0)
-	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 1_000, 0, 0, 100, 0))
-	result := controller.Admit(now.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
-	if !result.Decision.Admitted() || !result.Handle.MarkForwarded() || !result.Handle.MarkFirstByte() {
-		t.Fatalf("lifecycle admission=%+v", result.Decision)
-	}
-	before := controller.Snapshot(now.Add(2 * time.Millisecond))
-	if before.State.ReservationKVTokens != result.Decision.Work.TotalKVTokens {
-		t.Fatalf("uncovered active Decode state=%+v", before.State)
-	}
-	publishObservation(t, controller, testObservation(capability, now.Add(3*time.Millisecond), 1_000, 1, 0, 110, 0))
-	after := controller.Snapshot(now.Add(4 * time.Millisecond))
-	if after.State.ReservationKVTokens != result.Decision.Work.FutureKVTokens ||
-		after.State.LocalActiveDecode != 1 {
-		t.Fatalf("covered active Decode state=%+v work=%+v", after.State, result.Decision.Work)
-	}
-}
-
-func TestControllerSameCapabilityCounterResetRecoversAndFencesOldHandle(t *testing.T) {
-	now := time.Unix(3_000, 0)
-	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 500, 1, 0, 10_000, 7))
-	old := controller.Admit(now.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
-	if !old.Decision.Admitted() || !old.Handle.MarkForwarded() {
-		t.Fatalf("old admission=%+v", old.Decision)
-	}
-	publication := publishObservation(t, controller, testObservation(capability, now.Add(2*time.Millisecond), 0, 0, 0, 3, 0))
-	if !publication.RuntimeReset || publication.RuntimeEpoch != old.Decision.RuntimeEpoch+1 {
-		t.Fatalf("reset publication=%+v old=%+v", publication, old.Decision)
-	}
-	if old.Handle.MarkFirstByte() || old.Handle.Terminate(TerminalSuccess) {
-		t.Fatal("old-epoch handle mutated reset Controller")
-	}
-	fresh := controller.Admit(now.Add(3*time.Millisecond), testEstimate(1_024, 1_536, 256))
-	if !fresh.Decision.Admitted() || fresh.Decision.RuntimeEpoch != publication.RuntimeEpoch {
-		t.Fatalf("post-reset admission=%+v", fresh.Decision)
-	}
-}
-
-func TestControllerRuntimeEpochChangeResetsEvenWhenCountersIncrease(t *testing.T) {
-	now := time.Unix(3_500, 0)
-	capability := testCapability()
-	initial := testObservation(capability, now, 500, 1, 0, 10, 0)
-	initial.RuntimeStartTime = 100.25
-	controller := testControllerWithObservation(t, capability, initial)
-	old := controller.Admit(now.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
-	if !old.Decision.Admitted() || !old.Handle.MarkForwarded() {
-		t.Fatalf("old runtime-epoch admission=%+v", old.Decision)
-	}
-
-	reset := testObservation(capability, now.Add(2*time.Millisecond), 0, 0, 0, 11, 0)
-	reset.RuntimeStartTime = 200.5
-	publication := publishObservation(t, controller, reset)
-	if !publication.RuntimeReset || publication.RuntimeEpoch != old.Decision.RuntimeEpoch+1 {
-		t.Fatalf("runtime-epoch publication=%+v old=%+v", publication, old.Decision)
-	}
-	if old.Handle.MarkFirstByte() || old.Handle.Terminate(TerminalSuccess) {
-		t.Fatal("old handle mutated Controller after process epoch change")
-	}
-}
-
-func TestControllerDoesNotForgetKnownRuntimeEpoch(t *testing.T) {
-	now := time.Unix(3_750, 0)
-	capability := testCapability()
-	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
-	initial.RuntimeStartTime = 100.25
-	controller := testControllerWithObservation(t, capability, initial)
-	missing := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 11, 0)
-	window, ok := controller.StartSampleWindow()
-	if !ok {
-		t.Fatal("sample window unavailable")
-	}
-	publication := controller.PublishObservation(window, missing)
-	if publication.Accepted || publication.Reason != ReasonObservationInvalid {
-		t.Fatalf("missing known runtime epoch publication=%+v", publication)
-	}
-	snapshot := controller.Snapshot(now.Add(2 * time.Millisecond))
-	if !snapshot.Available || snapshot.Observation.RuntimeStartTime != initial.RuntimeStartTime ||
-		snapshot.Observation.GenerationTokensTotal != initial.GenerationTokensTotal {
-		t.Fatalf("missing runtime epoch overwrote coherent observation: %+v", snapshot)
-	}
-}
-
-func TestControllerCapabilityDriftClosesPermanently(t *testing.T) {
-	now := time.Unix(4_000, 0)
-	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 0, 0, 0, 1, 0))
-	drift := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 2, 0)
-	drift.CapabilityFingerprint = "different-capability"
-	window, ok := controller.StartSampleWindow()
-	if !ok {
-		t.Fatal("sample window unavailable")
-	}
-	publication := controller.PublishObservation(window, drift)
-	if !publication.CapabilityDrift || publication.Accepted {
-		t.Fatalf("drift publication=%+v", publication)
-	}
-	decision := controller.Admit(now.Add(2*time.Millisecond), testEstimate(1_024, 1_536, 256)).Decision
-	if decision.Action != ActionProtect || decision.Reason != ReasonCapabilityDrift ||
-		decision.Scope != ProtectionAvailability {
-		t.Fatalf("post-drift decision=%+v", decision)
-	}
-	if _, ok := controller.StartSampleWindow(); ok {
-		t.Fatal("capability drift reopened without a new Controller")
-	}
-}
-
-func TestControllerRuntimeRestartSafelyRebindsKVCapacity(t *testing.T) {
-	now := time.Unix(4_500, 0)
-	capability := testCapability()
-	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
-	initial.RuntimeStartTime = 100
-	controller := testControllerWithObservation(t, capability, initial)
-
-	admitted := controller.Admit(
-		now.Add(time.Millisecond),
-		testEstimate(1_024, 1_536, capability.MinimumDecodeHorizonTokens),
-	)
-	if !admitted.Decision.Admitted() {
-		t.Fatalf("pre-restart admission=%+v", admitted.Decision)
-	}
-
-	restarted := testObservation(capability, now.Add(2*time.Millisecond), 0, 0, 0, 1, 0)
-	restarted.RuntimeStartTime = 200
-	restarted.KVCapacityTokens -= 384
-	window, ok := controller.StartSampleWindow()
-	if !ok {
-		t.Fatal("restart sample window unavailable")
-	}
-	publication := controller.PublishObservation(window, restarted)
-	if !publication.Accepted || !publication.RuntimeReset || !publication.CapabilityRebound ||
-		publication.CapabilityDrift {
-		t.Fatalf("safe runtime rebind publication=%+v", publication)
-	}
-
-	snapshot := controller.Snapshot(now.Add(3 * time.Millisecond))
-	if !snapshot.IntakeOpen || !snapshot.Available || snapshot.RuntimeEpoch != 2 ||
-		snapshot.CapabilityRebinds != 1 || snapshot.RuntimeRebindPending ||
-		snapshot.Observation.KVCapacityTokens != restarted.KVCapacityTokens ||
-		snapshot.State.LiveReservations != 0 || snapshot.State.ReservationKVTokens != 0 {
-		t.Fatalf("safe runtime rebind snapshot=%+v", snapshot)
-	}
-	if admitted.Handle.MarkForwarded() || admitted.Handle.MarkFirstByte() ||
-		admitted.Handle.Terminate(TerminalSuccess) {
-		t.Fatal("old runtime handle remained usable after capability rebind")
-	}
-
-	followup := restarted
-	followup.ObservedAt = now.Add(4 * time.Millisecond)
-	followup.GenerationTokensTotal++
-	publishObservation(t, controller, followup)
-}
-
-func TestControllerRuntimeRebindPendingProtectsOldSnapshotUntilRecovery(t *testing.T) {
-	now := time.Unix(4_625, 0)
-	capability := testCapability()
-	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
-	initial.RuntimeStartTime = 100
-	controller := testControllerWithObservation(t, capability, initial)
-
-	candidate := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 1, 0)
-	candidate.RuntimeStartTime = 200
-	candidate.KVCapacityTokens -= 384
-	if !controller.BeginRuntimeRebind(candidate) {
-		t.Fatal("safe runtime rebind candidate was not accepted for qualification")
-	}
-	pending := controller.Snapshot(candidate.ObservedAt)
-	if !pending.RuntimeRebindPending || pending.Available ||
-		pending.MinimumDecision.Reason != ReasonObservationStale {
-		t.Fatalf("runtime rebind candidate did not protect old snapshot: %+v", pending)
-	}
-	decision := controller.Admit(
-		candidate.ObservedAt,
-		testEstimate(1_024, 1_536, capability.MinimumDecodeHorizonTokens),
-	).Decision
-	if decision.Admitted() || decision.Reason != ReasonObservationStale || decision.Scope != ProtectionAvailability {
-		t.Fatalf("runtime rebind pending admission=%+v", decision)
-	}
-
-	recovered := initial
-	recovered.ObservedAt = now.Add(2 * time.Millisecond)
-	recovered.GenerationTokensTotal++
-	publishObservation(t, controller, recovered)
-	open := controller.Snapshot(recovered.ObservedAt)
-	if open.RuntimeRebindPending || !open.Available || open.RuntimeEpoch != 1 || open.CapabilityRebinds != 0 {
-		t.Fatalf("original runtime recovery did not clear pending rebind: %+v", open)
-	}
-}
-
-func TestControllerConcurrentRuntimeRebindAdmissionTerminalAndPolicyUpdate(t *testing.T) {
-	now := time.Unix(4_700, 0)
-	capability := testCapability()
-	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
-	initial.RuntimeStartTime = 100
-	controller := testControllerWithObservation(t, capability, initial)
-	estimate := testEstimate(1_024, 1_536, capability.MinimumDecodeHorizonTokens)
-	old := controller.Admit(now.Add(time.Millisecond), estimate)
-	if !old.Decision.Admitted() || !old.Handle.MarkForwarded() {
-		t.Fatalf("prepare concurrent runtime rebind=%+v", old.Decision)
-	}
-
-	restarted := testObservation(capability, now.Add(2*time.Millisecond), 0, 0, 0, 1, 0)
-	restarted.RuntimeStartTime = 200
-	restarted.KVCapacityTokens -= 384
-	if !controller.BeginRuntimeRebind(restarted) {
-		t.Fatal("begin concurrent runtime rebind")
-	}
-	window, ok := controller.StartSampleWindow()
-	if !ok {
-		t.Fatal("start concurrent runtime rebind sample")
-	}
-
+func TestControllerWarmingReservationsAreAtomic(t *testing.T) {
+	now := time.Unix(9_500, 0)
+	controller := testControllerWithTPSObservation(t, 20, testObservation(now, 0, 0, 0, 0))
+	const callers = 32
+	results := make(chan AdmissionResult, callers)
 	start := make(chan struct{})
-	publicationResult := make(chan PublicationResult, 1)
-	policyError := make(chan error, 1)
-	admissionResult := make(chan AdmissionResult, 1)
-	var wait sync.WaitGroup
-	wait.Add(4)
-	go func() {
-		defer wait.Done()
-		<-start
-		publicationResult <- controller.PublishObservation(window, restarted)
-	}()
-	go func() {
-		defer wait.Done()
-		<-start
-		old.Handle.Terminate(TerminalCancel)
-	}()
-	go func() {
-		defer wait.Done()
-		<-start
-		_, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-			ExpectedRevision: 1,
-			Reference:        25,
-			UpdatedAt:        now.Add(3 * time.Millisecond),
-		})
-		policyError <- err
-	}()
-	go func() {
-		defer wait.Done()
-		<-start
-		admissionResult <- controller.Admit(now.Add(4*time.Millisecond), estimate)
-	}()
-	close(start)
-	wait.Wait()
-
-	publication := <-publicationResult
-	if !publication.Accepted || !publication.CapabilityRebound || !publication.RuntimeReset {
-		t.Fatalf("concurrent runtime rebind publication=%+v", publication)
-	}
-	if err := <-policyError; err != nil {
-		t.Fatalf("concurrent policy update: %v", err)
-	}
-	concurrentAdmission := <-admissionResult
-	if concurrentAdmission.Decision.Admitted() {
-		concurrentAdmission.Handle.Terminate(TerminalCancel)
-	} else if concurrentAdmission.Decision.Reason != ReasonObservationStale {
-		t.Fatalf("concurrent admission=%+v", concurrentAdmission.Decision)
-	}
-	final := controller.Snapshot(now.Add(5 * time.Millisecond))
-	if final.RuntimeEpoch != 2 || final.CapabilityRebinds != 1 || final.RuntimeRebindPending ||
-		!final.IntakeOpen || final.Policy.Revision != 2 ||
-		final.Observation.KVCapacityTokens != restarted.KVCapacityTokens {
-		t.Fatalf("concurrent runtime rebind final=%+v", final)
-	}
-}
-
-func TestControllerRuntimeRestartUnsafeKVCapacityDropClosesPermanently(t *testing.T) {
-	now := time.Unix(4_750, 0)
-	capability := testCapability()
-	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
-	initial.RuntimeStartTime = 100
-	controller := testControllerWithObservation(t, capability, initial)
-
-	restarted := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 1, 0)
-	restarted.RuntimeStartTime = 200
-	restarted.KVCapacityTokens = capability.KVHardLimitTokens
-	window, ok := controller.StartSampleWindow()
-	if !ok {
-		t.Fatal("unsafe restart sample window unavailable")
-	}
-	publication := controller.PublishObservation(window, restarted)
-	if publication.Accepted || !publication.CapabilityDrift || publication.Reason != ReasonCapabilityDrift {
-		t.Fatalf("unsafe runtime rebind publication=%+v", publication)
-	}
-	if _, ok := controller.StartSampleWindow(); ok {
-		t.Fatal("unsafe runtime rebind reopened without a new Controller")
-	}
-}
-
-func TestControllerSameRuntimeKVCapacityDriftClosesPermanently(t *testing.T) {
-	now := time.Unix(4_875, 0)
-	capability := testCapability()
-	initial := testObservation(capability, now, 0, 0, 0, 10, 0)
-	initial.RuntimeStartTime = 100
-	controller := testControllerWithObservation(t, capability, initial)
-
-	drift := testObservation(capability, now.Add(time.Millisecond), 0, 0, 0, 11, 0)
-	drift.RuntimeStartTime = initial.RuntimeStartTime
-	drift.KVCapacityTokens -= 384
-	window, ok := controller.StartSampleWindow()
-	if !ok {
-		t.Fatal("same-runtime drift sample window unavailable")
-	}
-	publication := controller.PublishObservation(window, drift)
-	if publication.Accepted || !publication.CapabilityDrift || publication.Reason != ReasonCapabilityDrift {
-		t.Fatalf("same-runtime drift publication=%+v", publication)
-	}
-	if _, ok := controller.StartSampleWindow(); ok {
-		t.Fatal("same-runtime drift reopened without a new Controller")
-	}
-}
-
-func TestControllerConcurrentNearKVAdmissionIsAtomic(t *testing.T) {
-	now := time.Unix(5_000, 0)
-	capability := testCapability()
-	capability.KVCapacityTokens = 4_096
-	capability.KVHardLimitTokens = 2_048
-	capability.MaximumInputTokens = 1_024
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 1_664, 0, 0, 1, 0))
-	estimate := testEstimate(100, 300, 20)
-
-	const arrivals = 32
-	start := make(chan struct{})
-	results := make(chan AdmissionResult, arrivals)
 	var group sync.WaitGroup
-	group.Add(arrivals)
-	for range arrivals {
+	for index := 0; index < callers; index++ {
+		group.Add(1)
 		go func() {
 			defer group.Done()
 			<-start
-			results <- controller.Admit(now.Add(time.Millisecond), estimate)
+			results <- controller.Admit(now.Add(time.Millisecond), testDemand(1))
 		}()
 	}
 	close(start)
 	group.Wait()
 	close(results)
-	admitted := 0
+
+	var admittedSequences int64
 	for result := range results {
 		if result.Decision.Admitted() {
-			admitted++
+			admittedSequences += result.Decision.Demand.DecodeSequences
+			if !result.Handle.Terminate(TerminalCancel) {
+				t.Fatal("admitted reservation did not terminate")
+			}
+			continue
+		}
+		if result.Decision.Reason != ReasonTPSReference || result.Decision.ReservationID != 0 {
+			t.Fatalf("unexpected concurrent protection: %+v", result.Decision)
 		}
 	}
-	if admitted != 1 {
-		t.Fatalf("admitted=%d want 1", admitted)
-	}
-	snapshot := controller.Snapshot(now.Add(2 * time.Millisecond))
-	if snapshot.State.EffectiveKVTokens > capability.KVHardLimitTokens {
-		t.Fatalf("counterfactual KV exceeded hard limit: %+v", snapshot.State)
-	}
-	assertAggregateMatchesSlow(t, controller)
-}
-
-func TestControllerManySmallPrefillsRecoverImmediately(t *testing.T) {
-	now := time.Unix(6_000, 0)
-	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 0, 1, 0, 1, 0))
-	estimate := testEstimate(16*1024, 24*1024, 256)
-	handles := make([]ReservationHandle, 0, 4)
-	for index := 0; index < 4; index++ {
-		result := controller.Admit(now.Add(time.Millisecond), estimate)
-		if !result.Decision.Admitted() {
-			t.Fatalf("admission %d=%+v", index, result.Decision)
-		}
-		handles = append(handles, result.Handle)
-	}
-	protected := controller.Admit(now.Add(time.Millisecond), estimate).Decision
-	if protected.Action != ActionProtect || protected.Reason != ReasonPrefillBudget ||
-		protected.Scope != ProtectionLoad {
-		t.Fatalf("budget protection=%+v", protected)
-	}
-	if !handles[0].MarkForwarded() || !handles[0].MarkFirstByte() {
-		t.Fatal("failed to advance one Prefill")
-	}
-	reopened := controller.Admit(now.Add(2*time.Millisecond), estimate).Decision
-	if !reopened.Admitted() {
-		t.Fatalf("capacity did not reopen after lifecycle state change: %+v", reopened)
-	}
-	assertAggregateMatchesSlow(t, controller)
-}
-
-func TestControllerLargeBudgetProtectionDoesNotReserveOrBlockFollowingSmallRequest(t *testing.T) {
-	now := time.Unix(6_500, 0)
-	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 1_000, 20, 0, 1, 0))
-	large := controller.Admit(now.Add(time.Millisecond), testEstimate(96*1024, 144*1024, 256))
-	if large.Decision.Reason != ReasonPrefillBudget || large.Decision.Scope != ProtectionRequest ||
-		large.Decision.ReservationID != 0 || large.Handle.MarkForwarded() {
-		t.Fatalf("large protection=%+v", large)
-	}
-	small := controller.Admit(now.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
-	if !small.Decision.Admitted() || !small.Handle.MarkForwarded() {
-		t.Fatalf("small admission after large protection=%+v", small.Decision)
-	}
-	assertAggregateMatchesSlow(t, controller)
-}
-
-func TestControllerUnknownWaitingStillAdmitsFittingMinimumRequest(t *testing.T) {
-	now := time.Unix(6_750, 0)
-	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 1_000, 0, 50, 1, 0))
-	result := controller.Admit(now.Add(time.Millisecond), testEstimate(1, 1, capability.MinimumDecodeHorizonTokens))
-	if !result.Decision.Admitted() || result.Decision.PrefillClass != PrefillRegular {
-		t.Fatalf("minimum request under unknown waiting=%+v", result.Decision)
+	if admittedSequences != tpsWarmingSequenceLimit {
+		t.Fatalf("same observation admitted sequences=%d want=%d", admittedSequences, tpsWarmingSequenceLimit)
 	}
 }
 
-func TestV01215PrefillClassUsesBackendExpandedWork(t *testing.T) {
-	now := time.Unix(6_875, 0)
-	capability := testCapability()
-	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability,
-		WorkProfile: predictive.BackendExecutionProfile{
-			PrefillExecution:  predictive.PrefillExecutionIndependentSequences,
-			InputKVSharing:    predictive.InputKVSharingIndependentSequences,
-			FirstByteCoverage: predictive.FirstByteCoverageOneSequence,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	publishObservation(t, controller, testObservation(capability, now, 0, 0, 0, 1, 0))
-	estimate := testEstimate(40*1024, 40*1024, 256)
-	estimate.DecodeSequences = 2
+func TestControllerReservesCompleteBatchMultiplicity(t *testing.T) {
+	now := time.Unix(9_750, 0)
+	controller := testControllerWithTPSObservation(t, 20, testObservation(now, 0, 0, 0, 0))
 
-	decision := controller.Admit(now.Add(time.Millisecond), estimate).Decision
-	if !decision.Admitted() || decision.Work.PrefillInputTokens != 80*1024 ||
-		decision.PrefillClass != PrefillWeighted {
-		t.Fatalf("backend-expanded Prefill was classified from stale selection tokens: %+v", decision)
+	first := controller.Admit(now.Add(time.Millisecond), testDemand(2))
+	if !first.Decision.Admitted() ||
+		first.Decision.TPSCurrentSequences != 0 ||
+		first.Decision.TPSPostAdmitSequences != 2 {
+		t.Fatalf("batch admission=%+v", first.Decision)
 	}
-}
-
-func TestControllerStaleObservationReopensOnFreshSample(t *testing.T) {
-	now := time.Unix(7_000, 0)
-	capability := testCapability()
-	observation := testObservation(capability, now, 0, 0, 0, 1, 0)
-	observation.MaximumAge = 500 * time.Millisecond
-	controller := testControllerWithObservation(t, capability, observation)
-	stale := controller.Admit(now.Add(time.Second), testEstimate(1_024, 1_536, 256)).Decision
-	if stale.Reason != ReasonObservationStale || stale.Scope != ProtectionAvailability {
-		t.Fatalf("stale decision=%+v", stale)
-	}
-	publishObservation(t, controller, testObservation(capability, now.Add(time.Second), 0, 0, 0, 2, 0))
-	fresh := controller.Admit(now.Add(time.Second+time.Millisecond), testEstimate(1_024, 1_536, 256)).Decision
-	if !fresh.Admitted() {
-		t.Fatalf("fresh decision=%+v", fresh)
-	}
-}
-
-func TestControllerSnapshotPublishesOneCoherentObservationRecord(t *testing.T) {
-	now := time.Unix(8_000, 0)
-	capability := testCapability()
-	controller := testControllerWithObservation(
-		t,
-		capability,
-		testObservation(capability, now, 1_000, 3, 1, 100, 4),
-	)
-	second := testObservation(capability, now.Add(500*time.Millisecond), 1_500, 5, 2, 170, 5)
-	publishObservation(t, controller, second)
-
-	snapshot := controller.Snapshot(now.Add(600 * time.Millisecond))
-	if !snapshot.IntakeOpen || !snapshot.HasObservation || snapshot.Observation != second {
-		t.Fatalf("snapshot observation=%+v", snapshot)
-	}
-	if snapshot.State.GenerationDelta != 70 || snapshot.State.PreemptionDelta != 1 ||
-		snapshot.State.ObservationInterval != 500*time.Millisecond ||
-		snapshot.State.PreviousRawRunning != 3 {
-		t.Fatalf("snapshot diagnostic state=%+v", snapshot.State)
-	}
-}
-
-func TestControllerTPSReferenceAloneChangesPreForwardDecision(t *testing.T) {
-	now := time.Unix(9_000, 0)
-	capability := testCapability()
-	strict := testControllerWithTPSObservation(t, capability, 20, testObservation(capability, now, 0, 5, 0, 0, 0))
-	permissive := testControllerWithTPSObservation(t, capability, 15, testObservation(capability, now, 0, 5, 0, 0, 0))
-	for step := 1; step <= 4; step++ {
-		observation := testObservation(capability, now.Add(time.Duration(step)*time.Second), 0, 5, 0, uint64(step*100), 0)
-		publishObservation(t, strict, observation)
-		publishObservation(t, permissive, observation)
-	}
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	strictDecision := strict.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
-	permissiveDecision := permissive.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
-	if strictDecision.Reason != ReasonTPSReference || strictDecision.Scope != ProtectionLoad ||
-		strictDecision.TPSSequenceLimit != 5 || strictDecision.TPSCurrentSequences != 5 || strictDecision.TPSPostAdmitSequences != 6 {
-		t.Fatalf("strict TPS decision=%+v", strictDecision)
-	}
-	if !permissiveDecision.Admitted() || permissiveDecision.TPSSequenceLimit != 6 ||
-		permissiveDecision.TPSCurrentSequences != 5 || permissiveDecision.TPSPostAdmitSequences != 6 {
-		t.Fatalf("permissive TPS decision=%+v", permissiveDecision)
-	}
-}
-
-func TestControllerTPSWarmingAtomicallyCapsSameSnapshotAtTwoSequences(t *testing.T) {
-	now := time.Unix(9_500, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t,
-		capability,
-		20,
-		testObservation(capability, now, 0, 0, 0, 0, 0),
-	)
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	for admitted := int64(1); admitted <= tpsWarmingSequenceLimit; admitted++ {
-		decision := controller.Admit(now.Add(time.Millisecond), estimate).Decision
-		if !decision.Admitted() || decision.TPSSequenceLimit != tpsWarmingSequenceLimit ||
-			decision.TPSPostAdmitSequences != admitted {
-			t.Fatalf("warming admission %d=%+v", admitted, decision)
-		}
-	}
-	protected := controller.Admit(now.Add(time.Millisecond), estimate).Decision
-	if protected.Reason != ReasonTPSReference || protected.Scope != ProtectionLoad ||
-		protected.TPSCurrentSequences != tpsWarmingSequenceLimit ||
-		protected.TPSPostAdmitSequences != tpsWarmingSequenceLimit+1 ||
-		protected.ReservationID != 0 {
-		t.Fatalf("warming overflow=%+v", protected)
-	}
-}
-
-func TestControllerTPSSameSnapshotBurstCannotExceedSequenceLimit(t *testing.T) {
-	now := time.Unix(10_000, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(t, capability, 20, testObservation(capability, now, 0, 4, 0, 0, 0))
-	for step := 1; step <= 4; step++ {
-		running := int64(4)
-		if step == 4 {
-			running = 0
-		}
-		publishObservation(t, controller, testObservation(
-			capability,
-			now.Add(time.Duration(step)*time.Second),
-			0,
-			running,
-			0,
-			uint64(step*80),
-			0,
-		))
-	}
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	for admitted := int64(1); admitted <= 4; admitted++ {
-		decision := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
-		if !decision.Admitted() || decision.TPSSequenceLimit != 4 ||
-			decision.TPSCurrentSequences != admitted-1 || decision.TPSPostAdmitSequences != admitted {
-			t.Fatalf("idle refill %d=%+v", admitted, decision)
-		}
-	}
-	protected := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
-	if protected.Reason != ReasonTPSReference || protected.TPSSequenceLimit != 4 ||
-		protected.TPSCurrentSequences != 4 || protected.TPSPostAdmitSequences != 5 ||
-		protected.ReservationID != 0 {
-		t.Fatalf("same-snapshot overflow=%+v", protected)
-	}
-}
-
-func TestV01215ControllerMatureTPSIdleRefillUsesBoundedWave(t *testing.T) {
-	now := time.Unix(10_250, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(t, capability, 20, testObservation(capability, now, 0, 4, 0, 0, 0))
-	for step := 1; step <= 4; step++ {
-		running := int64(4)
-		if step == 4 {
-			running = 0
-		}
-		publishObservation(t, controller, testObservation(
-			capability,
-			now.Add(time.Duration(step)*time.Second),
-			0,
-			running,
-			0,
-			uint64(step*80),
-			0,
-		))
-	}
-	idleAt := now.Add(4500 * time.Millisecond)
-	publishObservation(t, controller, testObservation(capability, idleAt, 0, 0, 0, 320, 0))
-
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	for admitted := int64(1); admitted <= tpsWarmingSequenceLimit; admitted++ {
-		decision := controller.Admit(idleAt.Add(time.Millisecond), estimate).Decision
-		if !decision.Admitted() || decision.TPSSequenceLimit != tpsWarmingSequenceLimit ||
-			decision.TPSCurrentSequences != admitted-1 || decision.TPSPostAdmitSequences != admitted {
-			t.Fatalf("bounded idle refill %d=%+v", admitted, decision)
-		}
-	}
-	protected := controller.Admit(idleAt.Add(time.Millisecond), estimate).Decision
-	if protected.Admitted() || protected.Reason != ReasonTPSReference ||
-		protected.TPSSequenceLimit != tpsWarmingSequenceLimit ||
-		protected.TPSCurrentSequences != tpsWarmingSequenceLimit ||
-		protected.TPSPostAdmitSequences != tpsWarmingSequenceLimit+1 {
-		t.Fatalf("bounded idle refill overflow=%+v", protected)
-	}
-}
-
-func TestControllerTPSReservationAboveNonzeroRawCannotOvershootLimit(t *testing.T) {
-	now := time.Unix(10_500, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t,
-		capability,
-		20,
-		testObservation(capability, now, 0, 4, 0, 0, 0),
-	)
-	for step := 1; step <= 4; step++ {
-		publishObservation(t, controller, testObservation(
-			capability,
-			now.Add(time.Duration(step)*time.Second),
-			0,
-			4,
-			0,
-			uint64(step*100),
-			0,
-		))
-	}
-
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	first := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate)
-	if !first.Decision.Admitted() || first.Decision.TPSSequenceLimit != 5 ||
-		first.Decision.TPSCurrentSequences != 4 || first.Decision.TPSPostAdmitSequences != 5 {
-		t.Fatalf("first same-poll admission=%+v", first.Decision)
-	}
-	if !first.Handle.MarkForwarded() {
-		t.Fatal("first same-poll reservation did not reach the forwarded phase")
-	}
-	second := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate).Decision
-	if second.Admitted() || second.Reason != ReasonTPSReference ||
-		second.TPSSequenceLimit != 5 || second.TPSCurrentSequences != 5 ||
-		second.TPSPostAdmitSequences != 6 || second.State.UnobservedSequences != 1 ||
+	second := controller.Admit(now.Add(time.Millisecond), testDemand(1)).Decision
+	if second.Admitted() ||
+		second.TPSCurrentSequences != 2 ||
+		second.TPSPostAdmitSequences != 3 ||
 		second.ReservationID != 0 {
-		t.Fatalf("second same-poll decision overshot learned limit: %+v", second)
+		t.Fatalf("batch reservation was not atomic: %+v", second)
+	}
+	if !first.Handle.Terminate(TerminalCancel) {
+		t.Fatal("batch reservation rollback failed")
 	}
 }
 
-func TestV01215ControllerQoSBudgetChangesPreForwardDecisionAndIsAtomic(t *testing.T) {
-	start := time.Unix(10_625, 0)
-	clock := &manualAdmissionClock{at: start}
-	capability := testCapability()
-	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability, WorkProfile: testRequestWorkProfile(),
-		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
-	})
-	if err != nil {
-		t.Fatal(err)
+func TestControllerCounterResetClearsWindowAndFencesHandles(t *testing.T) {
+	now := time.Unix(10_000, 0)
+	controller := testControllerWithTPSObservation(t, 20, testObservation(now, 0, 0, 100, 0))
+	result := controller.Admit(now.Add(time.Millisecond), testDemand(1))
+	if !result.Decision.Admitted() {
+		t.Fatalf("pre-reset admission=%+v", result.Decision)
 	}
-	publishObservation(t, controller, testObservation(capability, start, 0, 7, 0, 0, 0))
-	for step := 1; step <= 4; step++ {
-		at := start.Add(time.Duration(step) * 500 * time.Millisecond)
-		clock.Set(at)
-		publishObservation(t, controller, testObservation(
-			capability,
-			at,
-			0,
-			7,
-			0,
-			uint64(step*75),
-			0,
-		))
-	}
-
-	snapshot := controller.Snapshot(clock.Now()).State.TPS
-	if !snapshot.Ready || snapshot.QualifiedSequenceTokens <= snapshot.Reference*snapshot.QualifiedSequenceSeconds {
-		t.Fatalf("fixture did not build positive long-window surplus: %+v", snapshot)
-	}
-	estimate := testEstimate(1, 1, 16)
-	estimate.OutputLimitTokens = 16
-	estimate.OutputLimitKnown = true
-	first := controller.Admit(clock.Now(), estimate)
-	if !first.Decision.Admitted() || first.Decision.TPSSequenceLimit != 8 ||
-		first.Decision.TPSCurrentSequences != 7 || first.Decision.TPSPostAdmitSequences != 8 ||
-		!first.Decision.TPSQoSBudgeted {
-		t.Fatalf("positive QoS budget did not change pre-forward decision: %+v", first.Decision)
-	}
-	second := controller.Admit(clock.Now(), estimate).Decision
-	if second.Admitted() || second.Reason != ReasonTPSReference ||
-		second.TPSSequenceLimit != 7 || second.TPSCurrentSequences != 8 ||
-		second.TPSPostAdmitSequences != 9 || second.ReservationID != 0 || second.TPSQoSBudgeted ||
-		second.State.QoSBudgetLeases != 1 {
-		t.Fatalf("same-snapshot QoS budget was spent twice: %+v", second)
-	}
-	if !first.Handle.MarkForwarded() {
-		t.Fatal("QoS-budget reservation did not forward")
-	}
-	coveredAt := start.Add(2500 * time.Millisecond)
-	clock.Set(coveredAt)
-	publishObservation(t, controller, testObservation(capability, coveredAt, 0, 8, 0, 375, 0))
-	covered := controller.Snapshot(clock.Now()).State
-	if covered.QoSBudgetLeases != 1 || covered.UnobservedSequences != 0 {
-		t.Fatalf("backend coverage released QoS-budget lease: %+v", covered)
-	}
-	coveredReject := controller.Admit(clock.Now(), estimate).Decision
-	if coveredReject.Admitted() || coveredReject.Reason != ReasonTPSReference ||
-		coveredReject.State.QoSBudgetLeases != 1 {
-		t.Fatalf("covered live lease spent QoS surplus twice: %+v", coveredReject)
-	}
-	if !first.Handle.Terminate(TerminalSuccess) {
-		t.Fatal("QoS-budget reservation did not terminate")
-	}
-	terminalDebt := controller.Snapshot(clock.Now()).State
-	if terminalDebt.QoSBudgetLeases != 1 || terminalDebt.ResidualDebts != 1 {
-		t.Fatalf("terminal QoS-budget debt released before a covering sample: %+v", terminalDebt)
-	}
-	reopenedAt := start.Add(3 * time.Second)
-	clock.Set(reopenedAt)
-	publishObservation(t, controller, testObservation(capability, reopenedAt, 0, 7, 0, 450, 0))
-	if got := controller.Snapshot(clock.Now()).State; got.QoSBudgetLeases != 0 || got.ResidualDebts != 0 {
-		t.Fatalf("covering sample retained terminal QoS-budget debt: %+v", got)
-	}
-	reopened := controller.Admit(clock.Now(), estimate).Decision
-	if !reopened.Admitted() || !reopened.TPSQoSBudgeted || reopened.TPSSequenceLimit != 8 {
-		t.Fatalf("terminal QoS-budget lease did not reopen bounded surplus: %+v", reopened)
-	}
-}
-
-func TestControllerTPSCoveringSampleDoesNotDoubleCountForwardedReservation(t *testing.T) {
-	now := time.Unix(10_750, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t,
-		capability,
-		20,
-		testObservation(capability, now, 0, 4, 0, 0, 0),
-	)
 	for step := 1; step <= 4; step++ {
 		publishObservation(t, controller, testObservation(
-			capability,
 			now.Add(time.Duration(step)*time.Second),
+			2,
 			0,
-			4,
-			0,
-			uint64(step*120),
-			0,
-		))
-	}
-
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	first := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate)
-	if !first.Decision.Admitted() || !first.Handle.MarkForwarded() {
-		t.Fatalf("forwarded reservation=%+v", first.Decision)
-	}
-	publishObservation(t, controller, testObservation(
-		capability,
-		now.Add(5*time.Second),
-		0,
-		5,
-		0,
-		600,
-		0,
-	))
-	second := controller.Admit(now.Add(5*time.Second+time.Millisecond), estimate).Decision
-	if !second.Admitted() || second.TPSSequenceLimit != 6 ||
-		second.TPSCurrentSequences != 5 || second.TPSPostAdmitSequences != 6 ||
-		second.State.UnobservedSequences != 0 {
-		t.Fatalf("covering sample double-counted forwarded reservation: %+v", second)
-	}
-}
-
-func TestControllerTPSTerminalBeforeCoveringSampleRetainsUnobservedDemand(t *testing.T) {
-	now := time.Unix(10_875, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t,
-		capability,
-		20,
-		testObservation(capability, now, 0, 4, 0, 0, 0),
-	)
-	for step := 1; step <= 4; step++ {
-		publishObservation(t, controller, testObservation(
-			capability,
-			now.Add(time.Duration(step)*time.Second),
-			0,
-			4,
-			0,
-			uint64(step*100),
+			uint64(100+step*40),
 			0,
 		))
-	}
-
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	forwarded := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate)
-	if !forwarded.Decision.Admitted() || !forwarded.Handle.MarkForwarded() ||
-		!forwarded.Handle.Terminate(TerminalCancel) {
-		t.Fatalf("forwarded terminal lifecycle=%+v", forwarded.Decision)
-	}
-	protected := controller.Admit(now.Add(4*time.Second+2*time.Millisecond), estimate).Decision
-	if protected.Admitted() || protected.Reason != ReasonTPSReference ||
-		protected.State.ResidualDebts != 1 || protected.State.UnobservedSequences != 1 ||
-		protected.TPSCurrentSequences != 5 || protected.TPSPostAdmitSequences != 6 {
-		t.Fatalf("terminal blind window lost demand: %+v", protected)
-	}
-
-	publishObservation(t, controller, testObservation(
-		capability,
-		now.Add(5*time.Second),
-		0,
-		4,
-		0,
-		500,
-		0,
-	))
-	reopened := controller.Admit(now.Add(5*time.Second+time.Millisecond), estimate).Decision
-	if !reopened.Admitted() || reopened.State.ResidualDebts != 0 ||
-		reopened.State.UnobservedSequences != 0 || reopened.TPSPostAdmitSequences != 5 {
-		t.Fatalf("covering sample did not release terminal demand: %+v", reopened)
-	}
-}
-
-func TestControllerTPSUnobservedSuccessDoesNotDelayReplacement(t *testing.T) {
-	now := time.Unix(10_937, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t,
-		capability,
-		20,
-		testObservation(capability, now, 0, 4, 0, 0, 0),
-	)
-	for step := 1; step <= 4; step++ {
-		publishObservation(t, controller, testObservation(
-			capability,
-			now.Add(time.Duration(step)*time.Second),
-			0,
-			4,
-			0,
-			uint64(step*100),
-			0,
-		))
-	}
-
-	estimate := testEstimate(1, 1, capability.MinimumDecodeHorizonTokens)
-	completed := controller.Admit(now.Add(4*time.Second+time.Millisecond), estimate)
-	if !completed.Decision.Admitted() || !completed.Handle.MarkForwarded() ||
-		!completed.Handle.MarkFirstByte() || !completed.Handle.Terminate(TerminalSuccess) {
-		t.Fatalf("successful lifecycle=%+v", completed.Decision)
-	}
-	replacement := controller.Admit(now.Add(4*time.Second+2*time.Millisecond), estimate).Decision
-	if !replacement.Admitted() || replacement.State.ResidualDebts != 1 ||
-		replacement.State.UnobservedSequences != 0 || replacement.TPSPostAdmitSequences != 5 {
-		t.Fatalf("successful completion delayed replacement: %+v", replacement)
-	}
-}
-
-func TestControllerRuntimeResetClearsTPSWindow(t *testing.T) {
-	now := time.Unix(11_000, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(t, capability, 20, testObservation(capability, now, 0, 2, 0, 100, 0))
-	for step := 1; step <= 4; step++ {
-		publishObservation(t, controller, testObservation(capability, now.Add(time.Duration(step)*time.Second), 0, 2, 0, uint64(100+step*40), 0))
 	}
 	if before := controller.Snapshot(now.Add(4*time.Second + time.Millisecond)); !before.State.TPS.Ready {
 		t.Fatalf("TPS window did not warm before reset: %+v", before.State.TPS)
 	}
-	reset := testObservation(capability, now.Add(5*time.Second), 0, 0, 0, 1, 0)
-	publication := publishObservation(t, controller, reset)
-	if !publication.RuntimeReset {
-		t.Fatalf("counter reset publication=%+v", publication)
+	oldEpoch := result.Decision.RuntimeEpoch
+
+	reset := publishObservation(t, controller, testObservation(now.Add(5*time.Second), 0, 0, 1, 0))
+	if !reset.RuntimeReset || reset.RuntimeEpoch == oldEpoch {
+		t.Fatalf("counter reset publication=%+v old_epoch=%d", reset, oldEpoch)
+	}
+	if result.Handle.MarkForwarded() || result.Handle.Terminate(TerminalCancel) {
+		t.Fatal("runtime reset accepted an old handle")
 	}
 	after := controller.Snapshot(now.Add(5*time.Second + time.Millisecond))
-	if after.State.TPS.Ready || after.State.TPS.QualifiedSamples != 0 || after.State.TPS.QualifiedSequenceSeconds != 0 {
-		t.Fatalf("TPS window survived runtime reset: %+v", after.State.TPS)
+	if after.State.TPS.Ready ||
+		after.State.TPS.QualifiedSamples != 0 ||
+		after.State.SequenceLiabilities != 0 {
+		t.Fatalf("runtime reset retained prior state: %+v", after.State)
 	}
 }
 
-func testControllerWithObservation(t *testing.T, capability Capability, observation BackendObservation) *AdmissionController {
-	t.Helper()
-	controller, err := NewAdmissionController(ControllerConfig{
-		Capability:  capability,
-		WorkProfile: testRequestWorkProfile(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	publishObservation(t, controller, observation)
-	return controller
-}
-
-func testControllerWithTPSObservation(
-	t *testing.T,
-	capability Capability,
-	reference float64,
-	observation BackendObservation,
-) *AdmissionController {
-	t.Helper()
-	controller, err := NewAdmissionController(ControllerConfig{
-		Capability:  capability,
-		WorkProfile: testRequestWorkProfile(),
-		TPS:         TPSPolicyConfig{Reference: reference},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	publishObservation(t, controller, observation)
-	return controller
-}
-
-func publishObservation(t *testing.T, controller *AdmissionController, observation BackendObservation) PublicationResult {
-	t.Helper()
+func TestControllerRuntimeIdentityDriftFailsClosed(t *testing.T) {
+	now := time.Unix(10_500, 0)
+	controller := testControllerWithObservation(t, testObservation(now, 0, 0, 1, 0))
 	window, ok := controller.StartSampleWindow()
 	if !ok {
 		t.Fatal("sample window unavailable")
 	}
-	result := controller.PublishObservation(window, observation)
-	if !result.Accepted {
-		t.Fatalf("observation publication=%+v", result)
+	observation := testObservation(now.Add(time.Millisecond), 0, 0, 2, 0)
+	observation.RuntimeIdentity = "other-runtime"
+	publication := controller.PublishObservation(window, observation)
+	if publication.Accepted ||
+		!publication.RuntimeIdentityDrift ||
+		publication.Reason != ReasonRuntimeIdentityDrift {
+		t.Fatalf("identity drift publication=%+v", publication)
 	}
-	return result
-}
-
-func testObservation(capability Capability, at time.Time, used, running, waiting int64, generation, preemptions uint64) BackendObservation {
-	return BackendObservation{
-		CapabilityFingerprint: capability.Fingerprint,
-		MaxModelLenTokens:     capability.MaxModelLenTokens,
-		KVCapacityTokens:      capability.KVCapacityTokens,
-		KVBlockSize:           capability.KVBlockSize,
-		ObservedAt:            at,
-		MaximumAge:            5 * time.Second,
-		UsedKVTokens:          used,
-		Running:               running,
-		Waiting:               waiting,
-		GenerationTokensTotal: generation,
-		PreemptionsTotal:      preemptions,
+	decision := controller.Admit(now.Add(2*time.Millisecond), testDemand(1)).Decision
+	if decision.Reason != ReasonRuntimeIdentityDrift || decision.Scope != ProtectionAvailability {
+		t.Fatalf("identity drift did not fail closed: %+v", decision)
 	}
 }
 
-func testEstimate(selection, reservation, decode int64) predictive.RequestEstimate {
-	return predictive.RequestEstimate{
-		SelectionInputTokens:                    selection,
-		MaximumSequenceInputTokens:              selection,
-		KVReservationInputTokens:                reservation,
-		MaximumSequenceKVReservationInputTokens: reservation,
-		DecodeHorizonTokens:                     decode,
-		BasePromptCount:                         1,
-		DecodeSequences:                         1,
-	}
-}
+func TestControllerSnapshotIsOneCoherentObservation(t *testing.T) {
+	now := time.Unix(11_000, 0)
+	controller := testControllerWithObservation(t, testObservation(now, 3, 1, 100, 4))
+	second := testObservation(now.Add(500*time.Millisecond), 5, 2, 170, 5)
+	publication := publishObservation(t, controller, second)
 
-func testRequestWorkProfile() predictive.BackendExecutionProfile {
-	return predictive.BackendExecutionProfile{
-		PrefillExecution:  predictive.PrefillExecutionIndependentSequences,
-		InputKVSharing:    predictive.InputKVSharingIndependentSequences,
-		FirstByteCoverage: predictive.FirstByteCoverageOneSequence,
-	}
-}
-
-func assertAggregateMatchesSlow(t *testing.T, controller *AdmissionController) {
-	t.Helper()
-	controller.mu.Lock()
-	defer controller.mu.Unlock()
-	want, ok := controller.slowOverlayLocked()
-	if !ok || controller.overlay != want {
-		t.Fatalf("aggregate=%+v slow=%+v valid=%t", controller.overlay, want, ok)
+	snapshot := controller.Snapshot(now.Add(600 * time.Millisecond))
+	if snapshot.Observation != second ||
+		snapshot.ObservationSequence != publication.ObservationSequence ||
+		snapshot.State.RawRunning != 5 ||
+		snapshot.State.RawWaiting != 2 ||
+		snapshot.State.GenerationDelta != 70 ||
+		snapshot.State.PreemptionDelta != 1 ||
+		snapshot.State.PreviousRawRunning != 3 ||
+		snapshot.State.ObservationInterval != 500*time.Millisecond {
+		t.Fatalf("incoherent snapshot=%+v", snapshot)
 	}
 }

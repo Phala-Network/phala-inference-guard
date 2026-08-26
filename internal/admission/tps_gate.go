@@ -23,14 +23,10 @@ type tpsGateDecision struct {
 	subreason          TPSDecisionSubreason
 }
 
-type tpsGate struct {
-	qosBudget qosBudgetForecast
-}
+type tpsGate struct{}
 
 type tpsAdmissionDemand struct {
 	additionalSequences int64
-	outputLimitTokens   int64
-	outputLimitKnown    bool
 }
 
 func (g tpsGate) evaluate(state ProjectedState) tpsGateDecision {
@@ -96,15 +92,12 @@ func (g tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDem
 	decision.sequenceLimit = rateDerivedBaseSequenceLimit(snapshot)
 	if state.RawRunning == 0 && state.GenerationDelta == 0 {
 		decision.subreason = TPSDecisionSubreasonIdle
-		if decision.sequenceLimit > tpsWarmingSequenceLimit {
-			decision.sequenceLimit = tpsWarmingSequenceLimit
-		}
 	} else {
 		if currentRateLimit := tpsQualifiedCurrentRateSequenceLimit(state, snapshot); currentRateLimit > decision.sequenceLimit {
 			decision.sequenceLimit = currentRateLimit
 			decision.subreason = TPSDecisionSubreasonCurrentRate
 		}
-		budgetLimit, budgeted, budgetSubreason := g.qosBudget.sequenceLimit(
+		budgetLimit, budgeted, budgetSubreason := qosBudgetSequenceLimit(
 			state,
 			current,
 			decision.sequenceLimit,
@@ -119,7 +112,7 @@ func (g tpsGate) evaluateAdditional(state ProjectedState, demand tpsAdmissionDem
 			decision.subreason = budgetSubreason
 		}
 	}
-	if current == 0 || postAdmit <= decision.sequenceLimit {
+	if postAdmit <= decision.sequenceLimit {
 		return decision
 	}
 	decision.fits = false
@@ -169,10 +162,6 @@ func projectedTPSSequences(state ProjectedState, additionalSequences int64) (cur
 	if additionalSequences <= 0 {
 		return math.MaxInt64, math.MaxInt64, false
 	}
-	tracked, ok := addNonnegativeInt64(state.PendingPrefillSequences, state.LocalActiveDecode)
-	if !ok {
-		return math.MaxInt64, math.MaxInt64, false
-	}
 	rawDemand, ok := addNonnegativeInt64(state.RawRunning, state.RawWaiting)
 	if !ok {
 		return math.MaxInt64, math.MaxInt64, false
@@ -180,9 +169,6 @@ func projectedTPSSequences(state ProjectedState, additionalSequences int64) (cur
 	current, ok = addNonnegativeInt64(rawDemand, state.UnobservedSequences)
 	if !ok {
 		return math.MaxInt64, math.MaxInt64, false
-	}
-	if tracked > current {
-		current = tracked
 	}
 	postAdmit, ok = addNonnegativeInt64(current, additionalSequences)
 	if !ok {

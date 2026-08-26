@@ -4,15 +4,11 @@ import (
 	"bytes"
 	"sync/atomic"
 	"time"
-
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 )
 
 type Config struct {
 	MaximumBodyBytes  int64
 	MaximumConcurrent int
-	OutputTokenFields []string
-	Estimator         kvadmission.EstimatorConfig
 }
 
 type Classifier struct {
@@ -26,20 +22,23 @@ type Classifier struct {
 }
 
 type Classification struct {
-	Cost             kvadmission.Cost
-	Timing           ClassificationTiming
-	JSONFieldsKnown  bool
-	StreamingPresent bool
-	StreamingKnown   bool
-	Streaming        bool
-	DecodeSequences  int64
+	Supported              bool
+	SingleSequenceFallback bool
+	UnsupportedReason      string
+	Timing                 ClassificationTiming
+	JSONFieldsKnown        bool
+	StreamingPresent       bool
+	StreamingKnown         bool
+	Streaming              bool
+	BasePromptCount        int64
+	DecodeSequences        int64
 }
 
 type ClassificationTiming struct {
 	BodyRead          time.Duration
-	Estimator         time.Duration
+	ShapeScan         time.Duration
 	BodyReadMeasured  bool
-	EstimatorMeasured bool
+	ShapeScanMeasured bool
 }
 
 type ProtocolError struct {

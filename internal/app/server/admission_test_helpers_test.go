@@ -11,15 +11,11 @@ import (
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 )
 
-const testAdmissionFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+const testAdmissionRuntimeIdentity = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 type admissionRuntimeTestConfig struct {
 	Mode         string
 	BackendKind  string
-	KVCapacity   int64
-	MaxModelLen  int64
-	KVHardRatio  float64
-	UsedKVTokens int64
 	Running      int64
 	Waiting      int64
 	MaximumAge   time.Duration
@@ -40,28 +36,19 @@ func newAdmissionRuntimeForTest(
 	if config.BackendKind == "" {
 		config.BackendKind = "vllm"
 	}
-	if config.KVCapacity == 0 {
-		config.KVCapacity = 1_000_000
-	}
-	if config.MaxModelLen == 0 {
-		config.MaxModelLen = 650 * 1024
-	}
-	if config.KVHardRatio == 0 {
-		config.KVHardRatio = 0.9
-	}
 	if config.MaximumAge == 0 {
 		config.MaximumAge = time.Hour
 	}
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability: coreadmission.Capability{Fingerprint: testAdmissionFingerprint},
-		TPS:        coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
+		RuntimeIdentity: testAdmissionRuntimeIdentity,
+		TPS:             coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
 	})
 	if err != nil {
 		t.Fatalf("construct admission test Controller: %v", err)
 	}
 	clock := &manualTestClock{now: time.Unix(100, 0)}
 	publishAdmissionObservationForTest(t, controller, coreadmission.BackendObservation{
-		CapabilityFingerprint: testAdmissionFingerprint,
+		RuntimeIdentity:       testAdmissionRuntimeIdentity,
 		ObservedAt:            clock.Now(),
 		MaximumAge:            config.MaximumAge,
 		Running:               config.Running,

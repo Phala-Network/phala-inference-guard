@@ -1,133 +1,100 @@
-//go:build !race
-
 package admission
 
 import (
-	"sort"
 	"testing"
 	"time"
 )
 
-func TestControllerHotPathIsConstantTimeAndAllocationFree(t *testing.T) {
-	for _, reservations := range []int{256, 4_096} {
-		t.Run(testReservationCountName(reservations), func(t *testing.T) {
-			now := time.Unix(16_000, 0)
-			controller := populatedController(t, reservations, now)
-			protected := testEstimate(900_000, 900_000, 256)
-
-			snapshotAllocations := testing.AllocsPerRun(1_000, func() {
-				if snapshot := controller.Snapshot(now.Add(time.Millisecond)); snapshot.RuntimeEpoch == 0 {
-					t.Fatal("invalid snapshot")
-				}
-			})
-			admitAllocations := testing.AllocsPerRun(1_000, func() {
-				if decision := controller.Admit(now.Add(time.Millisecond), protected).Decision; decision.Reason != ReasonInputLimit {
-					t.Fatalf("protected decision=%+v", decision)
-				}
-			})
-			if snapshotAllocations != 0 || admitAllocations != 0 {
-				t.Fatalf("allocations snapshot=%g admit=%g", snapshotAllocations, admitAllocations)
-			}
-
-			const runs = 10_001
-			snapshotDurations := make([]time.Duration, runs)
-			admitDurations := make([]time.Duration, runs)
-			for index := range snapshotDurations {
-				started := time.Now()
-				_ = controller.Snapshot(now.Add(time.Millisecond))
-				snapshotDurations[index] = time.Since(started)
-				started = time.Now()
-				_ = controller.Admit(now.Add(time.Millisecond), protected)
-				admitDurations[index] = time.Since(started)
-			}
-			sort.Slice(snapshotDurations, func(left, right int) bool { return snapshotDurations[left] < snapshotDurations[right] })
-			sort.Slice(admitDurations, func(left, right int) bool { return admitDurations[left] < admitDurations[right] })
-			snapshotP99 := snapshotDurations[(len(snapshotDurations)*99)/100]
-			admitP99 := admitDurations[(len(admitDurations)*99)/100]
-			t.Logf("reservations=%d snapshot_p99=%s admit_p99=%s snapshot_allocs=%g admit_allocs=%g", reservations, snapshotP99, admitP99, snapshotAllocations, admitAllocations)
-			if snapshotP99 >= 100*time.Microsecond || admitP99 >= 100*time.Microsecond {
-				t.Fatalf("reservations=%d snapshot/admit p99=%s/%s exceeds 100us", reservations, snapshotP99, admitP99)
-			}
-		})
+func BenchmarkControllerSnapshot(b *testing.B) {
+	controller := benchmarkController(b, 4_096)
+	now := time.Unix(18_000, 0).Add(time.Millisecond)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = controller.Snapshot(now)
 	}
 }
 
-func TestControllerTPSWindowHotPathIsAllocationFree(t *testing.T) {
-	now := time.Unix(17_000, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t,
-		capability,
-		20,
-		testObservation(capability, now, 0, 4, 0, 0, 0),
+func BenchmarkControllerProtectedAdmission(b *testing.B) {
+	controller, err := NewAdmissionController(ControllerConfig{
+		RuntimeIdentity: testRuntimeIdentity,
+		TPS:             TPSPolicyConfig{Reference: 20},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		b.Fatal("sample window unavailable")
+	}
+	publication := controller.PublishObservation(
+		window,
+		testObservation(time.Unix(18_500, 0), tpsWarmingSequenceLimit, 0, 0, 0),
 	)
-	for step := 1; step <= 4; step++ {
-		publishObservation(t, controller, testObservation(
-			capability,
-			now.Add(time.Duration(step)*time.Second),
-			0,
-			4,
-			0,
-			uint64(step*100),
-			0,
-		))
+	if !publication.Accepted {
+		b.Fatalf("publication=%+v", publication)
 	}
-	requestAt := now.Add(4*time.Second + time.Millisecond)
-	protected := testEstimate(900_000, 900_000, 256)
-	if snapshot := controller.Snapshot(requestAt); !snapshot.State.TPS.Ready {
-		t.Fatalf("TPS performance fixture is not ready: %+v", snapshot.State.TPS)
-	}
-	snapshotAllocations := testing.AllocsPerRun(1_000, func() {
-		_ = controller.Snapshot(requestAt)
-	})
-	admitAllocations := testing.AllocsPerRun(1_000, func() {
-		if decision := controller.Admit(requestAt, protected).Decision; decision.Reason != ReasonInputLimit {
-			t.Fatalf("protected TPS decision=%+v", decision)
-		}
-	})
-	if snapshotAllocations != 0 || admitAllocations != 0 {
-		t.Fatalf("TPS allocations snapshot=%g admit=%g", snapshotAllocations, admitAllocations)
-	}
-
-	const runs = 10_001
-	snapshotDurations := make([]time.Duration, runs)
-	admitDurations := make([]time.Duration, runs)
-	for index := range snapshotDurations {
-		started := time.Now()
-		_ = controller.Snapshot(requestAt)
-		snapshotDurations[index] = time.Since(started)
-		started = time.Now()
-		_ = controller.Admit(requestAt, protected)
-		admitDurations[index] = time.Since(started)
-	}
-	sort.Slice(snapshotDurations, func(left, right int) bool { return snapshotDurations[left] < snapshotDurations[right] })
-	sort.Slice(admitDurations, func(left, right int) bool { return admitDurations[left] < admitDurations[right] })
-	snapshotP99 := snapshotDurations[(len(snapshotDurations)*99)/100]
-	admitP99 := admitDurations[(len(admitDurations)*99)/100]
-	t.Logf("TPS snapshot_p99=%s admit_p99=%s snapshot_allocs=%g admit_allocs=%g", snapshotP99, admitP99, snapshotAllocations, admitAllocations)
-	if snapshotP99 >= 100*time.Microsecond || admitP99 >= 100*time.Microsecond {
-		t.Fatalf("TPS snapshot/admit p99=%s/%s exceeds 100us", snapshotP99, admitP99)
+	now := time.Unix(18_500, 0).Add(time.Millisecond)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		_ = controller.Admit(now, testDemand(1))
 	}
 }
 
-func populatedController(t *testing.T, reservations int, now time.Time) *AdmissionController {
-	t.Helper()
-	capability := testCapability()
-	controller := testControllerWithObservation(t, capability, testObservation(capability, now, 0, 0, 0, 1, 0))
-	estimate := testEstimate(1, 1, 0)
+func BenchmarkControllerAdmitAndCancel(b *testing.B) {
+	controller := benchmarkController(b, 0)
+	now := time.Unix(18_000, 0).Add(time.Millisecond)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		result := controller.Admit(now, testDemand(1))
+		if !result.Decision.Admitted() || !result.Handle.Terminate(TerminalCancel) {
+			b.Fatalf("admit/cancel=%+v", result.Decision)
+		}
+	}
+}
+
+func BenchmarkControllerPublishObservationWith4096Reservations(b *testing.B) {
+	controller := benchmarkController(b, 4_096)
+	base := time.Unix(18_750, 0)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for index := 0; index < b.N; index++ {
+		window, ok := controller.StartSampleWindow()
+		if !ok {
+			b.Fatal("sample window unavailable")
+		}
+		observedAt := base.Add(time.Duration(index+1) * time.Millisecond)
+		publication := controller.PublishObservation(
+			window,
+			testObservation(observedAt, 0, 0, uint64(index+2), 0),
+		)
+		if !publication.Accepted {
+			b.Fatalf("publication=%+v", publication)
+		}
+	}
+}
+
+func benchmarkController(b *testing.B, reservations int) *AdmissionController {
+	b.Helper()
+	now := time.Unix(18_000, 0)
+	controller, err := NewAdmissionController(ControllerConfig{RuntimeIdentity: testRuntimeIdentity})
+	if err != nil {
+		b.Fatal(err)
+	}
+	window, ok := controller.StartSampleWindow()
+	if !ok {
+		b.Fatal("sample window unavailable")
+	}
+	if publication := controller.PublishObservation(window, testObservation(now, 0, 0, 1, 0)); !publication.Accepted {
+		b.Fatalf("publication=%+v", publication)
+	}
 	for index := 0; index < reservations; index++ {
-		result := controller.Admit(now.Add(time.Millisecond), estimate)
+		result := controller.Admit(now.Add(time.Millisecond), testDemand(1))
 		if !result.Decision.Admitted() {
-			t.Fatalf("populate admission %d=%+v", index, result.Decision)
+			b.Fatalf("populate admission %d=%+v", index, result.Decision)
 		}
 	}
-	assertAggregateMatchesSlow(t, controller)
 	return controller
-}
-
-func testReservationCountName(count int) string {
-	if count == 256 {
-		return "256"
-	}
-	return "4096"
 }

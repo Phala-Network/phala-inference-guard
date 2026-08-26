@@ -27,6 +27,8 @@ list_compatibility_files() {
 }
 
 for path in \
+    cmd/pig-request-aware-sim \
+    cmd/pig-tps-debt-sim \
     cmd/pig-kv-sim \
     cmd/pig-predictive-goodput-sim \
     scenarios/kv-admission \
@@ -38,16 +40,22 @@ for path in \
     internal/domain/dynamic \
     internal/domain/lane \
     internal/domain/latency \
+    internal/domain/kvadmission \
+    internal/domain/lexical \
     internal/domain/output \
+    internal/domain/predictive \
     internal/domain/qos \
     internal/domain/tier \
     internal/runtime/dynamic \
     internal/runtime/kvshadow \
     internal/runtime/prefill \
+    internal/runtime/predictive \
     internal/runtime/token \
     internal/simulation/goodput \
     internal/simulation/kv \
-    internal/simulation/predictive
+    internal/simulation/predictive \
+    internal/simulation/requestaware \
+    tools/tokenizer_oracle
 do
     if [ -e "$path" ]; then
         fail "retired path remains: $path"
@@ -86,8 +94,10 @@ for path in \
     internal/runtime/predictive/count_coordinator.go \
     internal/runtime/predictive/count_cost.go \
     internal/runtime/predictive/input_size_calibrator.go \
-    internal/runtime/predictive/request.go \
-    internal/runtime/predictive/scheduler.go
+	internal/runtime/predictive/request.go \
+    internal/runtime/predictive/scheduler.go \
+    internal/domain/request/endpoint_json.go \
+    internal/domain/request/output_tokens.go
 do
     if [ -e "$path" ]; then
         fail "retired file remains: $path"

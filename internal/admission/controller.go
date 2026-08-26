@@ -5,8 +5,6 @@ import (
 	"math"
 	"sync"
 	"time"
-
-	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 const maximumTPSReservations = int64(1 << 20)
@@ -45,28 +43,25 @@ func (h ReservationHandle) Terminate(cause TerminalCause) bool {
 type AdmissionController struct {
 	mu sync.Mutex
 
-	capability Capability
-	policy     admissionPolicy
-	projector  stateProjector
-	tpsWindow  tpsWindow
-	now        func() time.Time
-	exposure   sequenceExposureLedger
+	runtimeIdentity string
+	policy          admissionPolicy
+	projector       stateProjector
+	tpsWindow       tpsWindow
+	now             func() time.Time
+	exposure        sequenceExposureLedger
 
-	runtimeEpoch         uint64
-	capabilityRebinds    uint64
-	eventSequence        uint64
-	sampleSequence       uint64
-	observationSequence  uint64
-	lastPublishedSample  uint64
-	lastExposure         sequenceExposureSnapshot
-	policyRevision       uint64
-	policyUpdatedAt      time.Time
-	tpsPolicyEpoch       uint64
-	observation          observedState
-	hasObservation       bool
-	closedReason         Reason
-	runtimeRebindPending bool
-
+	runtimeEpoch        uint64
+	eventSequence       uint64
+	sampleSequence      uint64
+	observationSequence uint64
+	lastPublishedSample uint64
+	lastExposure        sequenceExposureSnapshot
+	policyRevision      uint64
+	policyUpdatedAt     time.Time
+	tpsPolicyEpoch      uint64
+	observation         observedState
+	hasObservation      bool
+	closedReason        Reason
 	reservations        map[uint64]reservation
 	overlay             reservationOverlay
 	nextReservationID   uint64
@@ -74,42 +69,19 @@ type AdmissionController struct {
 }
 
 func NewAdmissionController(config ControllerConfig) (*AdmissionController, error) {
-	return newAdmissionController(config, defaultQoSBudgetForecast())
-}
-
-// NewTPSDebtSimulationController is an internal simulation seam. A zero
-// control horizon selects the complete-declared-lifetime baseline; a positive
-// horizon selects a bounded candidate. It is deliberately separate from
-// ControllerConfig so the horizon cannot become a production environment or
-// dynamic-policy setting by accident.
-func NewTPSDebtSimulationController(
-	config ControllerConfig,
-	controlHorizon time.Duration,
-) (*AdmissionController, error) {
-	if controlHorizon < 0 || controlHorizon > tpsWindowDuration {
-		return nil, fmt.Errorf("TPS debt simulation control horizon must be in [0, %s]", tpsWindowDuration)
-	}
-	return newAdmissionController(config, qosBudgetForecast{controlHorizon: controlHorizon})
-}
-
-func newAdmissionController(
-	config ControllerConfig,
-	qosBudget qosBudgetForecast,
-) (*AdmissionController, error) {
-	capability := config.Capability
-	if err := capability.validateTPSIdentity(); err != nil {
-		return nil, err
+	if config.RuntimeIdentity == "" {
+		return nil, fmt.Errorf("admission runtime identity is invalid")
 	}
 	if !finiteNonnegative(config.TPS.Reference) || config.TPS.Reference > 1_000_000 {
 		return nil, fmt.Errorf("TPS reference must be finite and in [0, 1000000]")
 	}
-	policy := newAdmissionPolicy(qosBudget)
+	policy := newAdmissionPolicy()
 	now := config.Now
 	if now == nil {
 		now = time.Now
 	}
 	return &AdmissionController{
-		capability:          capability,
+		runtimeIdentity:     config.RuntimeIdentity,
 		policy:              policy,
 		tpsWindow:           newTPSWindow(config.TPS.Reference),
 		now:                 now,
@@ -150,25 +122,6 @@ func (c *AdmissionController) StartSampleWindow() (SampleWindow, bool) {
 	}, true
 }
 
-func (c *AdmissionController) BeginRuntimeRebind(observation BackendObservation) bool {
-	if c == nil {
-		return false
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.closedReason != "" || !c.hasObservation || !validBackendObservation(observation) {
-		return false
-	}
-	current := c.observation.observation
-	if current.RuntimeStartTime <= 0 || observation.RuntimeStartTime <= 0 ||
-		current.RuntimeStartTime == observation.RuntimeStartTime ||
-		!c.capability.matchesStableObservation(observation) {
-		return false
-	}
-	c.runtimeRebindPending = true
-	return true
-}
-
 func (c *AdmissionController) PublishObservation(window SampleWindow, observation BackendObservation) PublicationResult {
 	if c == nil {
 		return PublicationResult{Reason: ReasonControllerUnavailable}
@@ -186,12 +139,12 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	runtimeIdentityChanged := c.hasObservation &&
 		observation.RuntimeStartTime > 0 && c.observation.observation.RuntimeStartTime > 0 &&
 		observation.RuntimeStartTime != c.observation.observation.RuntimeStartTime
-	if !c.capability.matchesStableObservation(observation) {
-		c.failClosedLocked(ReasonCapabilityDrift)
+	if observation.RuntimeIdentity != c.runtimeIdentity {
+		c.failClosedLocked(ReasonRuntimeIdentityDrift)
 		return PublicationResult{
-			CapabilityDrift: true,
-			Reason:          ReasonCapabilityDrift,
-			RuntimeEpoch:    c.runtimeEpoch,
+			RuntimeIdentityDrift: true,
+			Reason:               ReasonRuntimeIdentityDrift,
+			RuntimeEpoch:         c.runtimeEpoch,
 		}
 	}
 	if c.hasObservation && observation.ObservedAt.Before(c.observation.observation.ObservedAt) {
@@ -259,8 +212,6 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			generatedTokens:               generationDelta,
 			previousRunning:               c.observation.observation.Running,
 			running:                       observation.Running,
-			previousLocalActiveDecode:     c.observation.localActiveDecode,
-			localActiveDecode:             c.overlay.localActiveDecode,
 			forwardedSequenceLiabilities:  forwardedSequenceLiabilities,
 			localExposureMeasured:         true,
 			localForwardedSequenceSeconds: forwardedSequenceSeconds,
@@ -273,87 +224,81 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 
 	c.observationSequence++
 	c.observation = observedState{
-		observation:       observation,
-		sequence:          c.observationSequence,
-		generationDelta:   generationDelta,
-		preemptionDelta:   preemptionDelta,
-		interval:          observationInterval,
-		previousRunning:   previousRunning,
-		localActiveDecode: c.overlay.localActiveDecode,
+		observation:     observation,
+		sequence:        c.observationSequence,
+		generationDelta: generationDelta,
+		preemptionDelta: preemptionDelta,
+		interval:        observationInterval,
+		previousRunning: previousRunning,
 	}
 	c.hasObservation = true
-	c.runtimeRebindPending = false
 	return PublicationResult{
 		Accepted:            true,
 		RuntimeReset:        runtimeReset,
-		CapabilityRebound:   false,
 		Reason:              ReasonOpen,
 		ObservationSequence: c.observationSequence,
 		RuntimeEpoch:        c.runtimeEpoch,
 	}
 }
 
-func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEstimate) AdmissionResult {
+func (c *AdmissionController) Admit(now time.Time, demand TPSRequestDemand) AdmissionResult {
 	if c == nil {
 		return AdmissionResult{Decision: DecisionRecord{
 			Action: ActionProtect, Reason: ReasonControllerUnavailable, Scope: ProtectionAvailability,
-			Estimate: estimate,
+			Demand: demand,
 		}}
 	}
-	demand, err := tpsRequestDemandFromEstimate(estimate)
-	if err != nil {
+	if !demand.valid() {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		return AdmissionResult{Decision: DecisionRecord{
 			Action: ActionProtect, Reason: ReasonInvalidRequest, Scope: ProtectionRequest,
-			Estimate:            estimate,
+			Demand:              demand,
 			ObservationSequence: c.observationSequence,
 			ControllerSequence:  c.eventSequence, RuntimeEpoch: c.runtimeEpoch,
 			PolicyRevision: c.policyRevision,
 		}}
 	}
-	work := predictive.RequestWork{}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state, reason, ok := c.stateLocked(now)
 	if !ok {
-		return AdmissionResult{Decision: c.unavailableDecisionLocked(reason, estimate, work, state)}
+		return AdmissionResult{Decision: c.unavailableDecisionLocked(reason, demand, state)}
 	}
 	policy := c.policy.evaluateDemand(state, demand)
-	decision := c.decisionLocked(policy, demand, estimate, work, state)
+	decision := c.decisionLocked(policy, demand, state)
 	if policy.action != ActionAdmit {
 		return AdmissionResult{Decision: decision}
 	}
 	if int64(len(c.reservations)) >= c.maximumReservations {
 		c.failClosedLocked(ReasonResourceExhausted)
-		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonResourceExhausted, estimate, work, state)}
+		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonResourceExhausted, demand, state)}
 	}
 	if c.nextReservationID == math.MaxUint64 {
 		c.failClosedLocked(ReasonCounterOverflow)
-		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonCounterOverflow, estimate, work, state)}
+		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonCounterOverflow, demand, state)}
 	}
 	reservationID := c.nextReservationID + 1
 	item := reservation{
 		id:           reservationID,
 		runtimeEpoch: c.runtimeEpoch,
 		demand:       demand,
-		work:         work,
 		phase:        reservationReserved,
 		qosBudgeted:  policy.tpsQoSBudgeted,
 	}
 	contribution, valid := item.contribution()
 	if !valid {
 		c.failClosedLocked(ReasonControllerUnavailable)
-		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonControllerUnavailable, estimate, work, state)}
+		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonControllerUnavailable, demand, state)}
 	}
 	nextOverlay, valid := addOverlay(c.overlay, contribution)
 	if !valid {
 		c.failClosedLocked(ReasonResourceExhausted)
-		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonResourceExhausted, estimate, work, state)}
+		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonResourceExhausted, demand, state)}
 	}
 	sequence, valid := c.nextEventSequenceLocked()
 	if !valid {
-		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonCounterOverflow, estimate, work, state)}
+		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonCounterOverflow, demand, state)}
 	}
 	item.admittedSequence = sequence
 	c.nextReservationID = reservationID
@@ -378,42 +323,36 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 	defer c.mu.Unlock()
 	state, reason, ok := c.stateLocked(now)
 	if !ok {
-		decision := c.unavailableDecisionLocked(reason, predictive.RequestEstimate{}, predictive.RequestWork{}, state)
+		decision := c.unavailableDecisionLocked(reason, TPSRequestDemand{}, state)
 		return CapacitySnapshot{
-			IntakeOpen:           c.closedReason == "",
-			HasObservation:       c.hasObservation,
-			MinimumDecision:      decision,
-			State:                state,
-			Observation:          c.observation.observation,
-			ObservationSequence:  c.observationSequence,
-			ControllerSequence:   c.eventSequence,
-			RuntimeEpoch:         c.runtimeEpoch,
-			CapabilityRebinds:    c.capabilityRebinds,
-			RuntimeRebindPending: c.runtimeRebindPending,
-			Policy:               c.tpsPolicySnapshotLocked(),
+			IntakeOpen:          c.closedReason == "",
+			HasObservation:      c.hasObservation,
+			MinimumDecision:     decision,
+			State:               state,
+			Observation:         c.observation.observation,
+			ObservationSequence: c.observationSequence,
+			ControllerSequence:  c.eventSequence,
+			RuntimeEpoch:        c.runtimeEpoch,
+			Policy:              c.tpsPolicySnapshotLocked(),
 		}
 	}
 	minimumDemand := TPSRequestDemand{DecodeSequences: 1, Source: TPSDemandSourceFallback}
 	decision := c.decisionLocked(
 		c.policy.evaluateDemand(state, minimumDemand),
 		minimumDemand,
-		predictive.RequestEstimate{},
-		predictive.RequestWork{},
 		state,
 	)
 	return CapacitySnapshot{
-		IntakeOpen:           true,
-		HasObservation:       true,
-		Available:            decision.Admitted(),
-		MinimumDecision:      decision,
-		State:                state,
-		Observation:          c.observation.observation,
-		ObservationSequence:  c.observationSequence,
-		ControllerSequence:   c.eventSequence,
-		RuntimeEpoch:         c.runtimeEpoch,
-		CapabilityRebinds:    c.capabilityRebinds,
-		RuntimeRebindPending: c.runtimeRebindPending,
-		Policy:               c.tpsPolicySnapshotLocked(),
+		IntakeOpen:          true,
+		HasObservation:      true,
+		Available:           decision.Admitted(),
+		MinimumDecision:     decision,
+		State:               state,
+		Observation:         c.observation.observation,
+		ObservationSequence: c.observationSequence,
+		ControllerSequence:  c.eventSequence,
+		RuntimeEpoch:        c.runtimeEpoch,
+		Policy:              c.tpsPolicySnapshotLocked(),
 	}
 }
 
@@ -445,7 +384,7 @@ func (c *AdmissionController) markForwarded(epoch, id uint64) bool {
 		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
-	item.phase = reservationForwardedPrefill
+	item.phase = reservationForwarded
 	item.forwardedSequence = sequence
 	c.reservations[id] = item
 	return true
@@ -458,7 +397,7 @@ func (c *AdmissionController) markFirstByte(epoch, id uint64) bool {
 		return false
 	}
 	item, ok := c.reservations[id]
-	if !ok || item.runtimeEpoch != epoch || item.phase != reservationForwardedPrefill {
+	if !ok || item.runtimeEpoch != epoch || item.phase != reservationForwarded {
 		return false
 	}
 	oldContribution, oldValid := item.contribution()
@@ -547,9 +486,6 @@ func (c *AdmissionController) stateLocked(now time.Time) (ProjectedState, Reason
 	if !ok {
 		return ProjectedState{}, ReasonControllerUnavailable, false
 	}
-	if c.runtimeRebindPending {
-		return state, ReasonObservationStale, false
-	}
 	if !now.IsZero() && !now.Before(observation.ObservedAt) {
 		state.TPS = c.tpsWindow.snapshot(now)
 	}
@@ -559,11 +495,10 @@ func (c *AdmissionController) stateLocked(now time.Time) (ProjectedState, Reason
 	return state, ReasonOpen, true
 }
 
-func (c *AdmissionController) unavailableDecisionLocked(reason Reason, estimate predictive.RequestEstimate, work predictive.RequestWork, state ProjectedState) DecisionRecord {
+func (c *AdmissionController) unavailableDecisionLocked(reason Reason, demand TPSRequestDemand, state ProjectedState) DecisionRecord {
 	return DecisionRecord{
 		Action: ActionProtect, Reason: reason, Scope: ProtectionAvailability,
-		Estimate: estimate, Work: work, State: state,
-		HardKVLimitTokens:   c.capability.KVHardLimitTokens,
+		Demand: demand, State: state,
 		ObservationSequence: c.observationSequence,
 		ControllerSequence:  c.eventSequence,
 		RuntimeEpoch:        c.runtimeEpoch,
@@ -571,29 +506,20 @@ func (c *AdmissionController) unavailableDecisionLocked(reason Reason, estimate 
 	}
 }
 
-func (c *AdmissionController) decisionLocked(policy policyDecision, demand TPSRequestDemand, estimate predictive.RequestEstimate, work predictive.RequestWork, state ProjectedState) DecisionRecord {
-	remainingKV := int64(0)
-	if policy.postAdmitKVTokens >= 0 && policy.postAdmitKVTokens <= c.capability.KVHardLimitTokens {
-		remainingKV = c.capability.KVHardLimitTokens - policy.postAdmitKVTokens
-	}
+func (c *AdmissionController) decisionLocked(policy policyDecision, demand TPSRequestDemand, state ProjectedState) DecisionRecord {
 	return DecisionRecord{
 		Action: policy.action, Reason: policy.reason, Scope: policy.scope,
-		Demand: demand, PrefillClass: policy.prefillClass, Estimate: estimate, Work: work, State: state,
-		PostAdmitKVTokens:          policy.postAdmitKVTokens,
-		HardKVLimitTokens:          c.capability.KVHardLimitTokens,
-		RemainingKVTokens:          remainingKV,
-		PendingPrefillTokensBefore: state.PendingPrefillTokens,
-		PendingPrefillTokensAfter:  policy.pendingPrefillTokensAfter,
-		TPSSequenceLimit:           policy.tpsSequenceLimit,
-		TPSCurrentSequences:        policy.tpsCurrentSequences,
-		TPSPostAdmitSequences:      policy.tpsPostAdmitSequences,
-		TPSQoSBudgeted:             policy.action == ActionAdmit && policy.tpsQoSBudgeted,
-		TPSDecisionResult:          policy.tpsDecisionResult,
-		TPSDecisionSubreason:       policy.tpsDecisionSubreason,
-		ObservationSequence:        c.observationSequence,
-		ControllerSequence:         c.eventSequence,
-		RuntimeEpoch:               c.runtimeEpoch,
-		PolicyRevision:             c.policyRevision,
+		Demand: demand, State: state,
+		TPSSequenceLimit:      policy.tpsSequenceLimit,
+		TPSCurrentSequences:   policy.tpsCurrentSequences,
+		TPSPostAdmitSequences: policy.tpsPostAdmitSequences,
+		TPSQoSBudgeted:        policy.action == ActionAdmit && policy.tpsQoSBudgeted,
+		TPSDecisionResult:     policy.tpsDecisionResult,
+		TPSDecisionSubreason:  policy.tpsDecisionSubreason,
+		ObservationSequence:   c.observationSequence,
+		ControllerSequence:    c.eventSequence,
+		RuntimeEpoch:          c.runtimeEpoch,
+		PolicyRevision:        c.policyRevision,
 	}
 }
 
@@ -619,7 +545,6 @@ func (c *AdmissionController) failClosedLocked(reason Reason) {
 	c.exposure.reset()
 	c.lastExposure = sequenceExposureSnapshot{}
 	c.tpsWindow.reset()
-	c.runtimeRebindPending = false
 }
 
 func reservationExposureCounts(item reservation) (forwarded, response int64, valid bool) {
@@ -630,7 +555,7 @@ func reservationExposureCounts(item reservation) (forwarded, response int64, val
 	switch item.phase {
 	case reservationReserved:
 		return 0, 0, true
-	case reservationForwardedPrefill:
+	case reservationForwarded:
 		return demand.DecodeSequences, 0, true
 	case reservationActiveDecode:
 		return demand.DecodeSequences, 1, true
@@ -704,14 +629,13 @@ func reconcileReservation(item reservation, watermark uint64) (reservation, bool
 		return reservation{}, true, true
 	}
 	next := item
-	if item.phase == reservationForwardedPrefill && !item.sequenceCovered &&
+	if item.phase == reservationForwarded && !item.sequenceCovered &&
 		item.forwardedSequence > 0 && item.forwardedSequence <= watermark {
 		next.sequenceCovered = true
 	}
 	if item.phase == reservationActiveDecode && item.firstByteSequence > 0 &&
 		item.firstByteSequence <= watermark {
 		next.sequenceCovered = true
-		next.inputCovered = true
 	}
 	return next, false, next != item
 }
@@ -732,7 +656,7 @@ func (c *AdmissionController) slowOverlayLocked() (reservationOverlay, bool) {
 }
 
 func validBackendObservation(observation BackendObservation) bool {
-	if observation.CapabilityFingerprint == "" ||
+	if observation.RuntimeIdentity == "" ||
 		observation.ObservedAt.IsZero() || observation.MaximumAge <= 0 ||
 		observation.Running < 0 || observation.Waiting < 0 {
 		return false

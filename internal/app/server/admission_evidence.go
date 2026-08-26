@@ -3,11 +3,9 @@ package server
 import (
 	"fmt"
 	"io"
-	"math"
 	"sync/atomic"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 type admissionEvidenceOutcome uint8
@@ -36,14 +34,8 @@ const (
 	admissionEvidenceReasonObservationInvalid
 	admissionEvidenceReasonObservationStale
 	admissionEvidenceReasonInvalidRequest
-	admissionEvidenceReasonInputLimit
-	admissionEvidenceReasonKVCapacity
-	admissionEvidenceReasonPrefillContention
-	admissionEvidenceReasonPrefillBudget
-	admissionEvidenceReasonPrefillExclusive
-	admissionEvidenceReasonPrefillQuiescent
 	admissionEvidenceReasonTPSReference
-	admissionEvidenceReasonCapabilityDrift
+	admissionEvidenceReasonRuntimeIdentityDrift
 	admissionEvidenceReasonResourceExhausted
 	admissionEvidenceReasonCounterOverflow
 	admissionEvidenceReasonClosed
@@ -57,14 +49,8 @@ var admissionEvidenceProtectionReasonLabels = [...]string{
 	"observation_invalid",
 	"observation_stale",
 	"invalid_request",
-	"input_limit",
-	"kv_capacity",
-	"prefill_contention",
-	"prefill_budget",
-	"prefill_exclusive",
-	"prefill_quiescent",
 	"tps_reference",
-	"capability_drift",
+	"runtime_identity_drift",
 	"resource_exhausted",
 	"counter_overflow",
 	"closed",
@@ -85,40 +71,6 @@ var admissionEvidenceProtectionScopeLabels = [...]string{
 	"request",
 	"load",
 	"availability",
-}
-
-type admissionEvidenceConfidence uint8
-
-const (
-	admissionEvidenceConfidenceUnknown admissionEvidenceConfidence = iota
-	admissionEvidenceConfidenceLexical
-	admissionEvidenceConfidenceConservative
-	admissionEvidenceConfidenceCount
-)
-
-var admissionEvidenceConfidenceLabels = [...]string{
-	"unknown",
-	"lexical",
-	"conservative",
-}
-
-type admissionEvidencePrefillClass uint8
-
-const (
-	admissionEvidencePrefillUnknown admissionEvidencePrefillClass = iota
-	admissionEvidencePrefillRegular
-	admissionEvidencePrefillWeighted
-	admissionEvidencePrefillExclusive
-	admissionEvidencePrefillQuiescent
-	admissionEvidencePrefillClassCount
-)
-
-var admissionEvidencePrefillClassLabels = [...]string{
-	"unknown",
-	"regular",
-	"weighted",
-	"exclusive",
-	"quiescent",
 }
 
 type admissionEvidenceFanoutBucket uint8
@@ -144,44 +96,16 @@ var admissionEvidenceFanoutBucketLabels = [...]string{
 	">16",
 }
 
-var admissionEvidenceInputTokenBounds = [...]int64{
-	1_024,
-	4_096,
-	16_384,
-	65_536,
-	262_144,
-	524_288,
-	math.MaxInt64,
-}
-
-var admissionEvidenceInputTokenBoundLabels = [...]string{
-	"1024",
-	"4096",
-	"16384",
-	"65536",
-	"262144",
-	"524288",
-	"+Inf",
-}
-
 type admissionEvidence struct {
-	outcomes             [admissionEvidenceOutcomeCount]atomic.Uint64
-	protections          [admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]atomic.Uint64
-	confidence           [admissionEvidenceConfidenceCount][admissionEvidenceOutcomeCount]atomic.Uint64
-	prefillClass         [admissionEvidencePrefillClassCount][admissionEvidenceOutcomeCount]atomic.Uint64
-	decodeFanout         [admissionEvidenceFanoutBucketCount][admissionEvidenceOutcomeCount]atomic.Uint64
-	selectionInputTokens [len(admissionEvidenceInputTokenBounds)][admissionEvidenceOutcomeCount]atomic.Uint64
-	unknownInputTokens   [admissionEvidenceOutcomeCount]atomic.Uint64
+	outcomes     [admissionEvidenceOutcomeCount]atomic.Uint64
+	protections  [admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]atomic.Uint64
+	decodeFanout [admissionEvidenceFanoutBucketCount][admissionEvidenceOutcomeCount]atomic.Uint64
 }
 
 type admissionEvidenceSnapshot struct {
-	outcomes             [admissionEvidenceOutcomeCount]uint64
-	protections          [admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]uint64
-	confidence           [admissionEvidenceConfidenceCount][admissionEvidenceOutcomeCount]uint64
-	prefillClass         [admissionEvidencePrefillClassCount][admissionEvidenceOutcomeCount]uint64
-	decodeFanout         [admissionEvidenceFanoutBucketCount][admissionEvidenceOutcomeCount]uint64
-	selectionInputTokens [len(admissionEvidenceInputTokenBounds)][admissionEvidenceOutcomeCount]uint64
-	unknownInputTokens   [admissionEvidenceOutcomeCount]uint64
+	outcomes     [admissionEvidenceOutcomeCount]uint64
+	protections  [admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]uint64
+	decodeFanout [admissionEvidenceFanoutBucketCount][admissionEvidenceOutcomeCount]uint64
 }
 
 func (e *admissionEvidence) Record(decision coreadmission.DecisionRecord) {
@@ -195,18 +119,7 @@ func (e *admissionEvidence) Record(decision coreadmission.DecisionRecord) {
 		scope := admissionEvidenceScopeFor(decision.Scope)
 		e.protections[reason][scope].Add(1)
 	}
-	e.confidence[admissionEvidenceConfidenceFor(decision.Estimate.InputEstimateConfidence)][outcome].Add(1)
-	e.prefillClass[admissionEvidencePrefillClassFor(decision.PrefillClass)][outcome].Add(1)
-	e.decodeFanout[admissionEvidenceFanoutFor(decision.Estimate.DecodeSequences)][outcome].Add(1)
-	if decision.Estimate.SelectionInputTokens <= 0 {
-		e.unknownInputTokens[outcome].Add(1)
-		return
-	}
-	for bucket, upper := range admissionEvidenceInputTokenBounds {
-		if decision.Estimate.SelectionInputTokens <= upper {
-			e.selectionInputTokens[bucket][outcome].Add(1)
-		}
-	}
+	e.decodeFanout[admissionEvidenceFanoutFor(decision.Demand.DecodeSequences)][outcome].Add(1)
 }
 
 func (e *admissionEvidence) Snapshot() admissionEvidenceSnapshot {
@@ -216,31 +129,15 @@ func (e *admissionEvidence) Snapshot() admissionEvidenceSnapshot {
 	var snapshot admissionEvidenceSnapshot
 	for outcome := admissionEvidenceOutcome(0); outcome < admissionEvidenceOutcomeCount; outcome++ {
 		snapshot.outcomes[outcome] = e.outcomes[outcome].Load()
-		snapshot.unknownInputTokens[outcome] = e.unknownInputTokens[outcome].Load()
 	}
 	for reason := admissionEvidenceProtectionReason(0); reason < admissionEvidenceProtectionReasonCount; reason++ {
 		for scope := admissionEvidenceProtectionScope(0); scope < admissionEvidenceProtectionScopeCount; scope++ {
 			snapshot.protections[reason][scope] = e.protections[reason][scope].Load()
 		}
 	}
-	for confidence := admissionEvidenceConfidence(0); confidence < admissionEvidenceConfidenceCount; confidence++ {
-		for outcome := admissionEvidenceOutcome(0); outcome < admissionEvidenceOutcomeCount; outcome++ {
-			snapshot.confidence[confidence][outcome] = e.confidence[confidence][outcome].Load()
-		}
-	}
-	for prefill := admissionEvidencePrefillClass(0); prefill < admissionEvidencePrefillClassCount; prefill++ {
-		for outcome := admissionEvidenceOutcome(0); outcome < admissionEvidenceOutcomeCount; outcome++ {
-			snapshot.prefillClass[prefill][outcome] = e.prefillClass[prefill][outcome].Load()
-		}
-	}
 	for fanout := admissionEvidenceFanoutBucket(0); fanout < admissionEvidenceFanoutBucketCount; fanout++ {
 		for outcome := admissionEvidenceOutcome(0); outcome < admissionEvidenceOutcomeCount; outcome++ {
 			snapshot.decodeFanout[fanout][outcome] = e.decodeFanout[fanout][outcome].Load()
-		}
-	}
-	for bucket := range admissionEvidenceInputTokenBounds {
-		for outcome := admissionEvidenceOutcome(0); outcome < admissionEvidenceOutcomeCount; outcome++ {
-			snapshot.selectionInputTokens[bucket][outcome] = e.selectionInputTokens[bucket][outcome].Load()
 		}
 	}
 	return snapshot
@@ -261,28 +158,6 @@ func writeAdmissionEvidenceMetrics(w io.Writer, snapshot admissionEvidenceSnapsh
 			)
 		}
 	}
-	for confidence, confidenceLabel := range admissionEvidenceConfidenceLabels {
-		for outcome, outcomeLabel := range admissionEvidenceOutcomeLabels {
-			fmt.Fprintf(
-				w,
-				"pig_predictive_admission_estimate_confidence_total{confidence=%q,outcome=%q} %d\n",
-				confidenceLabel,
-				outcomeLabel,
-				snapshot.confidence[confidence][outcome],
-			)
-		}
-	}
-	for prefill, prefillLabel := range admissionEvidencePrefillClassLabels {
-		for outcome, outcomeLabel := range admissionEvidenceOutcomeLabels {
-			fmt.Fprintf(
-				w,
-				"pig_predictive_admission_prefill_class_total{outcome=%q,prefill_class=%q} %d\n",
-				outcomeLabel,
-				prefillLabel,
-				snapshot.prefillClass[prefill][outcome],
-			)
-		}
-	}
 	for fanout, fanoutLabel := range admissionEvidenceFanoutBucketLabels {
 		for outcome, outcomeLabel := range admissionEvidenceOutcomeLabels {
 			fmt.Fprintf(
@@ -293,25 +168,6 @@ func writeAdmissionEvidenceMetrics(w io.Writer, snapshot admissionEvidenceSnapsh
 				snapshot.decodeFanout[fanout][outcome],
 			)
 		}
-	}
-	for bucket, upperLabel := range admissionEvidenceInputTokenBoundLabels {
-		for outcome, outcomeLabel := range admissionEvidenceOutcomeLabels {
-			fmt.Fprintf(
-				w,
-				"pig_predictive_admission_selection_input_tokens_bucket{le=%q,outcome=%q} %d\n",
-				upperLabel,
-				outcomeLabel,
-				snapshot.selectionInputTokens[bucket][outcome],
-			)
-		}
-	}
-	for outcome, outcomeLabel := range admissionEvidenceOutcomeLabels {
-		fmt.Fprintf(
-			w,
-			"pig_predictive_admission_selection_input_tokens_unknown_total{outcome=%q} %d\n",
-			outcomeLabel,
-			snapshot.unknownInputTokens[outcome],
-		)
 	}
 }
 
@@ -341,22 +197,10 @@ func admissionEvidenceReasonFor(reason coreadmission.Reason) admissionEvidencePr
 		return admissionEvidenceReasonObservationStale
 	case coreadmission.ReasonInvalidRequest:
 		return admissionEvidenceReasonInvalidRequest
-	case coreadmission.ReasonInputLimit:
-		return admissionEvidenceReasonInputLimit
-	case coreadmission.ReasonKVCapacity:
-		return admissionEvidenceReasonKVCapacity
-	case coreadmission.ReasonPrefillContention:
-		return admissionEvidenceReasonPrefillContention
-	case coreadmission.ReasonPrefillBudget:
-		return admissionEvidenceReasonPrefillBudget
-	case coreadmission.ReasonPrefillExclusive:
-		return admissionEvidenceReasonPrefillExclusive
-	case coreadmission.ReasonPrefillQuiescent:
-		return admissionEvidenceReasonPrefillQuiescent
 	case coreadmission.ReasonTPSReference:
 		return admissionEvidenceReasonTPSReference
-	case coreadmission.ReasonCapabilityDrift:
-		return admissionEvidenceReasonCapabilityDrift
+	case coreadmission.ReasonRuntimeIdentityDrift:
+		return admissionEvidenceReasonRuntimeIdentityDrift
 	case coreadmission.ReasonResourceExhausted:
 		return admissionEvidenceReasonResourceExhausted
 	case coreadmission.ReasonCounterOverflow:
@@ -378,32 +222,6 @@ func admissionEvidenceScopeFor(scope coreadmission.ProtectionScope) admissionEvi
 		return admissionEvidenceScopeAvailability
 	default:
 		return admissionEvidenceScopeUnknown
-	}
-}
-
-func admissionEvidenceConfidenceFor(confidence domainpredictive.InputEstimateConfidence) admissionEvidenceConfidence {
-	switch confidence {
-	case domainpredictive.InputEstimateConfidenceLexical:
-		return admissionEvidenceConfidenceLexical
-	case domainpredictive.InputEstimateConfidenceConservative:
-		return admissionEvidenceConfidenceConservative
-	default:
-		return admissionEvidenceConfidenceUnknown
-	}
-}
-
-func admissionEvidencePrefillClassFor(class coreadmission.PrefillClass) admissionEvidencePrefillClass {
-	switch class {
-	case coreadmission.PrefillRegular:
-		return admissionEvidencePrefillRegular
-	case coreadmission.PrefillWeighted:
-		return admissionEvidencePrefillWeighted
-	case coreadmission.PrefillExclusive:
-		return admissionEvidencePrefillExclusive
-	case coreadmission.PrefillQuiescent:
-		return admissionEvidencePrefillQuiescent
-	default:
-		return admissionEvidencePrefillUnknown
 	}
 }
 

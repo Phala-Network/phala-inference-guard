@@ -19,6 +19,13 @@ func TestTPSOnlyAdmissionTypesDoNotOwnRetiredResourceFields(t *testing.T) {
 			},
 		},
 		{
+			name:   "TPSRequestDemand",
+			typeOf: reflect.TypeOf(TPSRequestDemand{}),
+			retired: []string{
+				"OutputLimitTokens", "OutputLimitKnown",
+			},
+		},
+		{
 			name:   "BackendObservation",
 			typeOf: reflect.TypeOf(BackendObservation{}),
 			retired: []string{
@@ -43,7 +50,7 @@ func TestTPSOnlyAdmissionTypesDoNotOwnRetiredResourceFields(t *testing.T) {
 			name:   "DecisionRecord",
 			typeOf: reflect.TypeOf(DecisionRecord{}),
 			retired: []string{
-				"PrefillClass", "Work", "PostAdmitKVTokens", "HardKVLimitTokens",
+				"Estimate", "PrefillClass", "Work", "PostAdmitKVTokens", "HardKVLimitTokens",
 				"RemainingKVTokens", "PendingPrefillTokensBefore",
 				"PendingPrefillTokensAfter",
 			},

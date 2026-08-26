@@ -1,5 +1,12 @@
 # PIG Observation Analysis
 
+This directory preserves the v0.12.18 observer schemas and analyzers so their
+historical evidence remains reproducible. It is not the current TPS-only
+release gate: estimator, declared-output comparison, input/KV admission, and
+fixed horizon pass/fail fields below describe that historical schema. Migrate
+metric names and interpret results as diagnostic experience before using these
+tools with TPS-only source.
+
 `analyze_window.py` analyzes fixed-interval serving evidence without treating a
 counter reset, container restart, or missing scrape as a healthy zero. It is an
 operator tool and is not linked into the PIG request path or production image.

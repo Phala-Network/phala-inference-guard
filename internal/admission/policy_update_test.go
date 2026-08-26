@@ -2,346 +2,200 @@ package admission
 
 import (
 	"errors"
-	"math"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestV01215TPSPolicyUpdateResetsEvidenceAndExcludesPreRevisionSample(t *testing.T) {
-	start := time.Unix(12_000, 0)
+func TestTPSPolicyUpdateResetsWindowAndExcludesStraddlingSample(t *testing.T) {
+	start := time.Unix(70_000, 0)
 	clock := &manualAdmissionClock{at: start}
-	capability := testCapability()
 	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability, WorkProfile: testRequestWorkProfile(),
-		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
+		RuntimeIdentity: testRuntimeIdentity,
+		TPS:             TPSPolicyConfig{Reference: 20},
+		Now:             clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishObservation(t, controller, testObservation(capability, start, 0, 2, 0, 0, 0))
+	publishObservation(t, controller, testObservation(start, 2, 0, 0, 0))
 	for step := 1; step <= 4; step++ {
-		at := start.Add(time.Duration(step) * 2 * time.Second)
-		clock.Set(at)
-		publishObservation(t, controller, testObservation(capability, at, 0, 2, 0, uint64(step*80), 0))
+		clock.Set(start.Add(time.Duration(step) * time.Second))
+		publishObservation(t, controller, testObservation(clock.Now(), 2, 0, uint64(step*80), 0))
 	}
-	before := controller.Snapshot(clock.Now())
-	if !before.State.TPS.Ready || before.State.TPS.Reference != 20 ||
-		before.Policy.Revision != 1 || before.Policy.Reference != 20 {
-		t.Fatalf("pre-update state=%+v", before)
+	if before := controller.Snapshot(clock.Now().Add(time.Millisecond)); !before.State.TPS.Ready {
+		t.Fatalf("window did not warm: %+v", before.State.TPS)
 	}
-
 	straddling, ok := controller.StartSampleWindow()
 	if !ok {
-		t.Fatal("start straddling sample")
+		t.Fatal("straddling sample unavailable")
 	}
-	updatedAt := start.Add(8250 * time.Millisecond)
-	clock.Set(updatedAt)
+	updateAt := clock.Now().Add(100 * time.Millisecond)
 	update, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
 		ExpectedRevision: 1,
 		Reference:        25,
-		UpdatedAt:        updatedAt,
+		UpdatedAt:        updateAt,
 	})
-	if err != nil {
-		t.Fatalf("update policy: %v", err)
+	if err != nil || !update.WindowReset || update.Policy.Revision != 2 {
+		t.Fatalf("policy update=%+v err=%v", update, err)
 	}
-	if update.PreviousReference != 20 || !update.WindowReset ||
-		update.Policy.Revision != 2 || update.Policy.Reference != 25 ||
-		!update.Policy.UpdatedAt.Equal(updatedAt) {
-		t.Fatalf("update=%+v", update)
-	}
-
-	clock.Set(start.Add(8500 * time.Millisecond))
-	publication := controller.PublishObservation(straddling, testObservation(
-		capability, clock.Now(), 0, 2, 0, 180, 0,
-	))
+	clock.Set(clock.Now().Add(time.Second))
+	publication := controller.PublishObservation(
+		straddling,
+		testObservation(clock.Now(), 2, 0, 200, 0),
+	)
 	if !publication.Accepted {
 		t.Fatalf("straddling publication=%+v", publication)
 	}
-	afterStraddling := controller.Snapshot(clock.Now())
-	if afterStraddling.State.TPS.Reference != 25 || afterStraddling.State.TPS.Ready ||
-		afterStraddling.State.TPS.QualifiedSamples != 0 ||
-		afterStraddling.State.TPS.QualifiedSequenceSeconds != 0 {
-		t.Fatalf("pre-revision sample refilled new window: %+v", afterStraddling.State.TPS)
-	}
-
-	clock.Set(start.Add(9 * time.Second))
-	publishObservation(t, controller, testObservation(capability, clock.Now(), 0, 2, 0, 200, 0))
-	afterFresh := controller.Snapshot(clock.Now())
-	if afterFresh.State.TPS.Reference != 25 || afterFresh.State.TPS.QualifiedSamples != 1 ||
-		afterFresh.State.TPS.QualifiedSequenceSamples != 1 {
-		t.Fatalf("first post-revision sample=%+v", afterFresh.State.TPS)
+	snapshot := controller.Snapshot(clock.Now().Add(time.Millisecond))
+	if snapshot.Policy.Reference != 25 ||
+		snapshot.State.TPS.QualifiedSamples != 0 ||
+		snapshot.State.TPS.QualifiedSequenceSeconds != 0 {
+		t.Fatalf("pre-update evidence entered new window: %+v", snapshot)
 	}
 }
 
-func TestV01215TPSPolicyUpdateIsCASValidatedAndEqualWriteDoesNotResetEvidence(t *testing.T) {
-	start := time.Unix(12_100, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t, capability, 20, testObservation(capability, start, 0, 2, 0, 0, 0),
-	)
-	publishObservation(t, controller, testObservation(capability, start.Add(time.Second), 0, 2, 0, 40, 0))
+func TestTPSPolicyUpdateCASAndValidation(t *testing.T) {
+	start := time.Unix(71_000, 0)
+	controller := testControllerWithTPSObservation(t, 20, testObservation(start, 1, 0, 0, 0))
+	publishObservation(t, controller, testObservation(start.Add(time.Second), 1, 0, 40, 0))
 
-	invalid, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-		ExpectedRevision: 1, Reference: math.NaN(), UpdatedAt: start.Add(time.Second),
-	})
-	if !errors.Is(err, ErrTPSPolicyInvalid) || invalid.Policy.Revision != 1 ||
-		controller.Snapshot(start.Add(time.Second)).State.TPS.QualifiedSamples != 1 {
-		t.Fatalf("invalid update=%+v err=%v", invalid, err)
+	for _, update := range []TPSPolicyUpdate{
+		{ExpectedRevision: 0, Reference: 20, UpdatedAt: start.Add(2 * time.Second)},
+		{ExpectedRevision: 1, Reference: -1, UpdatedAt: start.Add(2 * time.Second)},
+		{ExpectedRevision: 1, Reference: 20},
+	} {
+		if _, err := controller.UpdateTPSPolicy(update); !errors.Is(err, ErrTPSPolicyInvalid) {
+			t.Fatalf("invalid update=%+v err=%v", update, err)
+		}
 	}
-
-	first, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-		ExpectedRevision: 1, Reference: 20, UpdatedAt: start.Add(2 * time.Second),
+	equal, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
+		ExpectedRevision: 1,
+		Reference:        20,
+		UpdatedAt:        start.Add(2 * time.Second),
 	})
-	if err != nil || first.Policy.Revision != 2 || first.WindowReset ||
-		controller.Snapshot(start.Add(2*time.Second)).State.TPS.QualifiedSamples != 1 {
-		t.Fatalf("equal update=%+v err=%v", first, err)
+	if err != nil || equal.WindowReset || equal.Policy.Revision != 2 {
+		t.Fatalf("equal update=%+v err=%v", equal, err)
 	}
-	conflict, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-		ExpectedRevision: 1, Reference: 30, UpdatedAt: start.Add(3 * time.Second),
-	})
-	if !errors.Is(err, ErrTPSPolicyRevisionConflict) || conflict.Policy.Revision != 2 ||
-		conflict.Policy.Reference != 20 {
-		t.Fatalf("conflict update=%+v err=%v", conflict, err)
+	if _, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
+		ExpectedRevision: 1,
+		Reference:        25,
+		UpdatedAt:        start.Add(3 * time.Second),
+	}); !errors.Is(err, ErrTPSPolicyRevisionConflict) {
+		t.Fatalf("stale CAS err=%v", err)
+	}
+	snapshot := controller.Snapshot(start.Add(1500 * time.Millisecond))
+	if snapshot.State.TPS.QualifiedSamples != 1 {
+		t.Fatalf("equal update reset evidence: %+v", snapshot.State.TPS)
 	}
 }
 
-func TestV01215TPSPolicyConcurrentWritersHaveOneWinner(t *testing.T) {
-	start := time.Unix(12_200, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t, capability, 20, testObservation(capability, start, 0, 2, 0, 0, 0),
-	)
-
-	var wait sync.WaitGroup
-	wait.Add(2)
-	errorsSeen := make(chan error, 2)
-	for _, reference := range []float64{25, 30} {
-		reference := reference
-		go func() {
-			defer wait.Done()
+func TestTPSPolicyConcurrentWritersHaveOneWinner(t *testing.T) {
+	start := time.Unix(72_000, 0)
+	controller := testControllerWithTPSObservation(t, 20, testObservation(start, 1, 0, 0, 0))
+	const writers = 16
+	results := make(chan error, writers)
+	begin := make(chan struct{})
+	var group sync.WaitGroup
+	for index := 0; index < writers; index++ {
+		group.Add(1)
+		go func(reference float64) {
+			defer group.Done()
+			<-begin
 			_, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-				ExpectedRevision: 1, Reference: reference, UpdatedAt: start.Add(time.Second),
+				ExpectedRevision: 1,
+				Reference:        reference,
+				UpdatedAt:        start.Add(time.Second),
 			})
-			errorsSeen <- err
-		}()
+			results <- err
+		}(float64(21 + index))
 	}
-	wait.Wait()
-	close(errorsSeen)
-	var applied, conflicts int
-	for err := range errorsSeen {
+	close(begin)
+	group.Wait()
+	close(results)
+	var winners, conflicts int
+	for err := range results {
 		switch {
 		case err == nil:
-			applied++
+			winners++
 		case errors.Is(err, ErrTPSPolicyRevisionConflict):
 			conflicts++
 		default:
-			t.Fatalf("unexpected update error: %v", err)
+			t.Fatalf("unexpected writer error=%v", err)
 		}
 	}
-	policy := controller.Snapshot(start.Add(time.Second)).Policy
-	if applied != 1 || conflicts != 1 || policy.Revision != 2 ||
-		(policy.Reference != 25 && policy.Reference != 30) {
-		t.Fatalf("applied=%d conflicts=%d policy=%+v", applied, conflicts, policy)
+	if winners != 1 || conflicts != writers-1 {
+		t.Fatalf("winners/conflicts=%d/%d", winners, conflicts)
 	}
 }
 
-func TestV01215TPSPolicyUpdatePreservesQoSBudgetLeaseLifecycle(t *testing.T) {
-	start := time.Unix(12_300, 0)
+func TestTPSPolicyUpdatePreservesReservationLifecycle(t *testing.T) {
+	start := time.Unix(73_000, 0)
 	clock := &manualAdmissionClock{at: start}
-	capability := testCapability()
 	controller, err := NewAdmissionController(ControllerConfig{
-		Capability: capability, WorkProfile: testRequestWorkProfile(),
-		TPS: TPSPolicyConfig{Reference: 20}, Now: clock.Now,
+		RuntimeIdentity: testRuntimeIdentity,
+		Now:             clock.Now,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	publishObservation(t, controller, testObservation(capability, start, 0, 7, 0, 0, 0))
-	for step := 1; step <= 4; step++ {
-		at := start.Add(time.Duration(step) * 500 * time.Millisecond)
-		clock.Set(at)
-		publishObservation(t, controller, testObservation(capability, at, 0, 7, 0, uint64(step*75), 0))
+	publishObservation(t, controller, testObservation(start, 0, 0, 100, 0))
+	result := controller.Admit(start.Add(time.Millisecond), testDemand(3))
+	if !result.Decision.Admitted() {
+		t.Fatalf("admission=%+v", result.Decision)
 	}
-	estimate := testEstimate(1, 1, 16)
-	estimate.OutputLimitTokens = 16
-	estimate.OutputLimitKnown = true
-	admitted := controller.Admit(clock.Now(), estimate)
-	if !admitted.Decision.Admitted() || !admitted.Decision.TPSQoSBudgeted ||
-		!admitted.Handle.MarkForwarded() {
-		t.Fatalf("QoS-budget fixture=%+v", admitted.Decision)
+	clock.Set(start.Add(time.Millisecond))
+	if !result.Handle.MarkForwarded() {
+		t.Fatal("forward failed")
 	}
-	coveredAt := start.Add(2500 * time.Millisecond)
-	clock.Set(coveredAt)
-	publishObservation(t, controller, testObservation(capability, coveredAt, 0, 8, 0, 375, 0))
-
 	update, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-		ExpectedRevision: 1, Reference: 25, UpdatedAt: clock.Now(),
+		ExpectedRevision: 1,
+		Reference:        25,
+		UpdatedAt:        start.Add(2 * time.Millisecond),
 	})
 	if err != nil || !update.WindowReset {
 		t.Fatalf("policy update=%+v err=%v", update, err)
 	}
-	state := controller.Snapshot(clock.Now()).State
-	if state.QoSBudgetLeases != 1 || state.LiveReservations != 1 ||
-		state.TPS.Reference != 25 || state.TPS.QualifiedSamples != 0 {
-		t.Fatalf("policy update lost live lifecycle state: %+v", state)
+	afterUpdate := controller.Snapshot(start.Add(3 * time.Millisecond))
+	if afterUpdate.State.LiveReservations != 1 ||
+		afterUpdate.State.UnobservedSequences != 3 ||
+		afterUpdate.State.SequenceLiabilities != 3 {
+		t.Fatalf("policy update changed reservation: %+v", afterUpdate.State)
 	}
-	if !admitted.Handle.Terminate(TerminalSuccess) {
-		t.Fatal("pre-update handle did not terminate after policy update")
+	clock.Set(start.Add(3 * time.Millisecond))
+	if !result.Handle.MarkFirstByte() ||
+		!result.Handle.Terminate(TerminalError) {
+		t.Fatal("post-update lifecycle failed")
 	}
-	terminalDebt := controller.Snapshot(clock.Now()).State
-	if terminalDebt.QoSBudgetLeases != 1 || terminalDebt.LiveReservations != 0 ||
-		terminalDebt.ResidualDebts != 1 {
-		t.Fatalf("terminal policy-crossing debt=%+v", terminalDebt)
-	}
-	clock.Set(start.Add(3 * time.Second))
-	publishObservation(t, controller, testObservation(capability, clock.Now(), 0, 7, 0, 450, 0))
-	terminal := controller.Snapshot(clock.Now()).State
-	if terminal.QoSBudgetLeases != 0 || terminal.LiveReservations != 0 || terminal.ResidualDebts != 0 {
-		t.Fatalf("covered terminal policy-crossing lifecycle=%+v", terminal)
-	}
-}
-
-func TestV01215TPSPolicyUpdatePreservesEveryReservationPhase(t *testing.T) {
-	tests := []struct {
-		name         string
-		advance      func(t *testing.T, handle ReservationHandle)
-		terminal     TerminalCause
-		wantResidual int64
-	}{
-		{
-			name:     "reserved cancel",
-			advance:  func(*testing.T, ReservationHandle) {},
-			terminal: TerminalCancel,
-		},
-		{
-			name: "forwarded prefill cancel",
-			advance: func(t *testing.T, handle ReservationHandle) {
-				t.Helper()
-				if !handle.MarkForwarded() {
-					t.Fatal("reservation did not reach forwarded Prefill")
-				}
-			},
-			terminal:     TerminalCancel,
-			wantResidual: 1,
-		},
-		{
-			name: "active decode timeout",
-			advance: func(t *testing.T, handle ReservationHandle) {
-				t.Helper()
-				if !handle.MarkForwarded() || !handle.MarkFirstByte() {
-					t.Fatal("reservation did not reach active Decode")
-				}
-			},
-			terminal:     TerminalTimeout,
-			wantResidual: 1,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			start := time.Unix(12_400, 0)
-			capability := testCapability()
-			controller := testControllerWithTPSObservation(
-				t, capability, 0, testObservation(capability, start, 0, 0, 0, 100, 0),
-			)
-			admitted := controller.Admit(start.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
-			if !admitted.Decision.Admitted() {
-				t.Fatalf("admission=%+v", admitted.Decision)
-			}
-			test.advance(t, admitted.Handle)
-
-			updatedAt := start.Add(2 * time.Millisecond)
-			before := controller.Snapshot(updatedAt).State
-			update, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-				ExpectedRevision: 1, Reference: 25, UpdatedAt: updatedAt,
-			})
-			if err != nil || !update.WindowReset || update.Policy.Revision != 2 {
-				t.Fatalf("policy update=%+v err=%v", update, err)
-			}
-			afterSnapshot := controller.Snapshot(updatedAt)
-			after := afterSnapshot.State
-			before.TPS = TPSSnapshot{}
-			after.TPS = TPSSnapshot{}
-			if before != after || afterSnapshot.Policy.Revision != 2 || afterSnapshot.Policy.Reference != 25 {
-				t.Fatalf("policy update changed reservation phase: before=%+v after=%+v policy=%+v", before, after, afterSnapshot.Policy)
-			}
-
-			if !admitted.Handle.Terminate(test.terminal) || admitted.Handle.Terminate(test.terminal) {
-				t.Fatal("terminal event was not exact-once")
-			}
-			terminal := controller.Snapshot(updatedAt).State
-			if terminal.LiveReservations != 0 || terminal.ResidualDebts != test.wantResidual {
-				t.Fatalf("terminal state=%+v want_residual=%d", terminal, test.wantResidual)
-			}
-			publishObservation(t, controller, testObservation(
-				capability, start.Add(3*time.Millisecond), 0, 0, 0, 100, 0,
-			))
-			covered := controller.Snapshot(start.Add(3 * time.Millisecond)).State
-			if covered.LiveReservations != 0 || covered.ResidualDebts != 0 ||
-				covered.ReservationKVTokens != 0 || covered.SequenceLiabilities != 0 {
-				t.Fatalf("covering observation retained lifecycle debt: %+v", covered)
-			}
-		})
+	publishObservation(t, controller, testObservation(start.Add(4*time.Millisecond), 0, 0, 101, 0))
+	released := controller.Snapshot(start.Add(5 * time.Millisecond))
+	if released.State.ResidualDebts != 0 ||
+		released.State.SequenceLiabilities != 0 ||
+		released.Policy.Revision != 2 {
+		t.Fatalf("post-update release=%+v", released)
 	}
 }
 
-func TestV01215TPSPolicyUpdateThenBackendResetFencesOldHandle(t *testing.T) {
-	start := time.Unix(12_500, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t, capability, 0, testObservation(capability, start, 0, 0, 0, 100, 0),
-	)
-	admitted := controller.Admit(start.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
-	if !admitted.Decision.Admitted() || !admitted.Handle.MarkForwarded() {
-		t.Fatalf("admission=%+v", admitted.Decision)
-	}
-	update, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-		ExpectedRevision: 1, Reference: 25, UpdatedAt: start.Add(2 * time.Millisecond),
-	})
-	if err != nil || update.Policy.Revision != 2 {
-		t.Fatalf("policy update=%+v err=%v", update, err)
-	}
-	reset := publishObservation(t, controller, testObservation(
-		capability, start.Add(3*time.Millisecond), 0, 0, 0, 1, 0,
-	))
-	if !reset.RuntimeReset || admitted.Handle.MarkFirstByte() || admitted.Handle.Terminate(TerminalSuccess) {
-		t.Fatalf("runtime reset did not fence pre-update handle: %+v", reset)
-	}
-	snapshot := controller.Snapshot(start.Add(3 * time.Millisecond))
-	if snapshot.State.LiveReservations != 0 || snapshot.State.ResidualDebts != 0 ||
-		snapshot.State.ReservationKVTokens != 0 || snapshot.Policy.Revision != 2 ||
-		snapshot.Policy.Reference != 25 {
-		t.Fatalf("post-reset policy/lifecycle=%+v/%+v", snapshot.Policy, snapshot.State)
-	}
-}
-
-func TestV01215TPSPolicyUpdateThenCloseClearsStateAndFencesOldHandle(t *testing.T) {
-	start := time.Unix(12_600, 0)
-	capability := testCapability()
-	controller := testControllerWithTPSObservation(
-		t, capability, 0, testObservation(capability, start, 0, 0, 0, 100, 0),
-	)
-	admitted := controller.Admit(start.Add(time.Millisecond), testEstimate(1_024, 1_536, 256))
-	if !admitted.Decision.Admitted() || !admitted.Handle.MarkForwarded() {
+func TestTPSPolicyUpdateThenRuntimeResetFencesOldHandle(t *testing.T) {
+	start := time.Unix(74_000, 0)
+	controller := testControllerWithTPSObservation(t, 0, testObservation(start, 0, 0, 100, 0))
+	admitted := controller.Admit(start.Add(time.Millisecond), testDemand(1))
+	if !admitted.Decision.Admitted() {
 		t.Fatalf("admission=%+v", admitted.Decision)
 	}
 	if _, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-		ExpectedRevision: 1, Reference: 25, UpdatedAt: start.Add(2 * time.Millisecond),
+		ExpectedRevision: 1,
+		Reference:        25,
+		UpdatedAt:        start.Add(2 * time.Millisecond),
 	}); err != nil {
-		t.Fatalf("policy update: %v", err)
+		t.Fatal(err)
 	}
-	controller.Close()
-	if admitted.Handle.MarkFirstByte() || admitted.Handle.Terminate(TerminalShutdown) {
-		t.Fatal("closed Controller accepted pre-update handle")
+	reset := publishObservation(t, controller, testObservation(start.Add(3*time.Millisecond), 0, 0, 1, 0))
+	if !reset.RuntimeReset || admitted.Handle.MarkForwarded() || admitted.Handle.Terminate(TerminalCancel) {
+		t.Fatalf("runtime reset did not fence old handle: %+v", reset)
 	}
-	if _, err := controller.UpdateTPSPolicy(TPSPolicyUpdate{
-		ExpectedRevision: 2, Reference: 30, UpdatedAt: start.Add(3 * time.Millisecond),
-	}); !errors.Is(err, ErrTPSPolicyUnavailable) {
-		t.Fatalf("closed policy update error=%v", err)
-	}
-	snapshot := controller.Snapshot(start.Add(3 * time.Millisecond))
-	if snapshot.MinimumDecision.Reason != ReasonClosed || snapshot.State.LiveReservations != 0 ||
-		snapshot.State.ResidualDebts != 0 || snapshot.State.ReservationKVTokens != 0 {
-		t.Fatalf("closed policy/lifecycle=%+v/%+v", snapshot.Policy, snapshot.State)
+	snapshot := controller.Snapshot(start.Add(4 * time.Millisecond))
+	if snapshot.State.SequenceLiabilities != 0 || snapshot.Policy.Revision != 2 {
+		t.Fatalf("runtime reset state=%+v", snapshot)
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/env"
 )
 
@@ -15,8 +14,6 @@ func Load() (Config, error) {
 		Upstream:             upstream,
 		PredictiveMetricsURL: deriveMetricsURL(upstream),
 		Token:                env.String("TOKEN", ""),
-		OutputTokenFields:    env.CSV("OUTPUT_TOKEN_FIELD_NAMES", "max_tokens,max_completion_tokens,max_output_tokens"),
-		PredictiveEstimator:  kvadmission.DefaultEstimatorConfig(),
 	}
 	if err := loadOpenAIConfig(&cfg); err != nil {
 		return Config{}, err

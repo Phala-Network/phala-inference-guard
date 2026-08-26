@@ -15,29 +15,29 @@ import (
 )
 
 type admissionBackendObserverConfig struct {
-	BackendKind           string
-	MetricsURL            string
-	CapabilityFingerprint string
-	PollInterval          time.Duration
-	MaximumAge            time.Duration
-	RequestTimeout        time.Duration
-	Controller            *coreadmission.AdmissionController
-	Now                   func() time.Time
+	BackendKind     string
+	MetricsURL      string
+	RuntimeIdentity string
+	PollInterval    time.Duration
+	MaximumAge      time.Duration
+	RequestTimeout  time.Duration
+	Controller      *coreadmission.AdmissionController
+	Now             func() time.Time
 }
 
 type admissionBackendObserver struct {
-	pollMu                sync.Mutex
-	backendKind           string
-	metricsURL            string
-	capabilityFingerprint string
-	pollInterval          time.Duration
-	maximumAge            time.Duration
-	controller            *coreadmission.AdmissionController
-	now                   func() time.Time
-	client                *http.Client
-	cancel                context.CancelFunc
-	done                  chan struct{}
-	closeOnce             sync.Once
+	pollMu          sync.Mutex
+	backendKind     string
+	metricsURL      string
+	runtimeIdentity string
+	pollInterval    time.Duration
+	maximumAge      time.Duration
+	controller      *coreadmission.AdmissionController
+	now             func() time.Time
+	client          *http.Client
+	cancel          context.CancelFunc
+	done            chan struct{}
+	closeOnce       sync.Once
 }
 
 type admissionSampleDisposition uint8
@@ -45,7 +45,7 @@ type admissionSampleDisposition uint8
 const (
 	admissionSampleTransient admissionSampleDisposition = iota
 	admissionSampleUsable
-	admissionSampleCapabilityDrift
+	admissionSampleIdentityDrift
 )
 
 func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admissionBackendObserver, error) {
@@ -55,9 +55,9 @@ func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admiss
 		return nil, fmt.Errorf("admission backend metrics URL is invalid")
 	}
 	backendKind := strings.TrimSpace(config.BackendKind)
-	fingerprint := strings.ToLower(strings.TrimSpace(config.CapabilityFingerprint))
+	identity := strings.ToLower(strings.TrimSpace(config.RuntimeIdentity))
 	if (backendKind != "vllm" && backendKind != "sglang") ||
-		!validPredictiveModelIdentitySHA256(fingerprint) || config.PollInterval <= 0 ||
+		!validPredictiveModelIdentitySHA256(identity) || config.PollInterval <= 0 ||
 		config.MaximumAge < config.PollInterval || config.RequestTimeout <= 0 || config.Controller == nil {
 		return nil, fmt.Errorf("admission backend observer configuration is invalid")
 	}
@@ -68,15 +68,15 @@ func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admiss
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	observer := &admissionBackendObserver{
-		backendKind:           backendKind,
-		metricsURL:            config.MetricsURL,
-		capabilityFingerprint: fingerprint,
-		pollInterval:          config.PollInterval,
-		maximumAge:            config.MaximumAge,
-		controller:            config.Controller,
-		now:                   now,
-		client:                &http.Client{Timeout: config.RequestTimeout, Transport: transport},
-		done:                  make(chan struct{}),
+		backendKind:     backendKind,
+		metricsURL:      config.MetricsURL,
+		runtimeIdentity: identity,
+		pollInterval:    config.PollInterval,
+		maximumAge:      config.MaximumAge,
+		controller:      config.Controller,
+		now:             now,
+		client:          &http.Client{Timeout: config.RequestTimeout, Transport: transport},
+		done:            make(chan struct{}),
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	observer.cancel = cancel
@@ -134,16 +134,16 @@ func (o *admissionBackendObserver) observation(
 		sample.Running > maximumInt-sample.Waiting || observedAt.IsZero() {
 		return coreadmission.BackendObservation{}, admissionSampleTransient
 	}
-	fingerprint := predictiveModelIdentitySHA256(sample.ModelName)
+	identity := predictiveModelIdentitySHA256(sample.ModelName)
 	disposition := admissionSampleUsable
-	if sample.BackendKind != o.backendKind || fingerprint != o.capabilityFingerprint {
-		disposition = admissionSampleCapabilityDrift
+	if sample.BackendKind != o.backendKind || identity != o.runtimeIdentity {
+		disposition = admissionSampleIdentityDrift
 		if sample.BackendKind != o.backendKind {
-			fingerprint = "capability-drift"
+			identity = "runtime-identity-drift"
 		}
 	}
 	return coreadmission.BackendObservation{
-		CapabilityFingerprint: fingerprint,
+		RuntimeIdentity:       identity,
 		ObservedAt:            observedAt,
 		MaximumAge:            o.maximumAge,
 		Running:               int64(sample.Running),

@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
 	domainrequest "github.com/Phala-Network/phala-inference-guard/internal/domain/request"
 )
 
@@ -45,9 +44,8 @@ func (r *preservingReadCloser) Close() error {
 }
 
 func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *ProtocolError) {
-	unsupported := kvadmission.Cost{UnsupportedReason: "body_not_scannable"}
-	classification := Classification{Cost: unsupported}
-	if r == nil || c.cfg.MaximumBodyBytes <= 0 {
+	classification := Classification{UnsupportedReason: "body_not_scannable"}
+	if r == nil || c == nil || c.cfg.MaximumBodyBytes <= 0 {
 		return classification, nil
 	}
 	path := ""
@@ -55,26 +53,26 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 		path = r.URL.Path
 	}
 	endpoint := domainrequest.EndpointForPath(path)
-	if path != "" && endpoint == domainrequest.EndpointUnknown {
-		classification.Cost = kvadmission.Cost{UnsupportedReason: "unsupported_endpoint"}
+	if endpoint == domainrequest.EndpointUnknown {
+		classification.UnsupportedReason = "unsupported_endpoint"
 		return classification, nil
 	}
 	if r.Body == nil || r.ContentLength > c.cfg.MaximumBodyBytes {
 		if r.ContentLength > c.cfg.MaximumBodyBytes {
-			unsupported.UnsupportedReason = "body_too_large"
+			classification.UnsupportedReason = "body_too_large"
+			classification.SingleSequenceFallback = true
 		}
-		classification.Cost = unsupported
 		return classification, nil
 	}
 	if !requestContentTypeJSON(r.Header.Get("Content-Type")) {
-		unsupported.UnsupportedReason = "unsupported_content_type"
-		classification.Cost = unsupported
+		classification.UnsupportedReason = "unsupported_content_type"
+		classification.SingleSequenceFallback = true
 		return classification, nil
 	}
 	reservedBodyBytes, acquired := c.acquire(r.ContentLength)
 	if !acquired {
-		unsupported.UnsupportedReason = "classifier_saturated"
-		classification.Cost = unsupported
+		classification.UnsupportedReason = "classifier_saturated"
+		classification.SingleSequenceFallback = true
 		return classification, nil
 	}
 	defer c.releaseScanner()
@@ -96,128 +94,50 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 		r.Body = c.preserveBody(io.MultiReader(bytes.NewReader(body), originalBody), originalBody, buffer, reservedBodyBytes)
 		bodyLeaseTransferred = true
 		r.ContentLength = originalLength
-		unsupported.UnsupportedReason = "body_read_failed"
-		classification.Cost = unsupported
+		classification.UnsupportedReason = "body_read_failed"
+		classification.SingleSequenceFallback = true
 		return classification, nil
 	}
 	if int64(len(body)) > c.cfg.MaximumBodyBytes {
 		r.Body = c.preserveBody(io.MultiReader(bytes.NewReader(body), originalBody), originalBody, buffer, reservedBodyBytes)
 		bodyLeaseTransferred = true
 		r.ContentLength = originalLength
-		unsupported.UnsupportedReason = "body_too_large"
-		classification.Cost = unsupported
+		classification.UnsupportedReason = "body_too_large"
+		classification.SingleSequenceFallback = true
 		return classification, nil
 	}
 	r.Body = c.preserveBody(bytes.NewReader(body), originalBody, buffer, reservedBodyBytes)
 	bodyLeaseTransferred = true
 	r.ContentLength = originalLength
 
-	estimatorStarted := time.Now()
-	var classified Classification
-	var protocolError *ProtocolError
-	if endpoint == domainrequest.EndpointUnknown {
-		classified, protocolError = c.classifyBufferedJSON(body)
-	} else {
-		classified, protocolError = c.classifyBufferedEndpointJSON(body, endpoint)
-	}
-	classified.Timing = classification.Timing
-	classified.Timing.Estimator = time.Since(estimatorStarted)
-	classified.Timing.EstimatorMeasured = true
-	return classified, protocolError
-}
-
-func (c *Classifier) classifyBufferedEndpointJSON(
-	body []byte,
-	endpoint domainrequest.EndpointKind,
-) (Classification, *ProtocolError) {
-	fields, valid := domainrequest.ParseEndpointJSONFields(body, c.cfg.OutputTokenFields, endpoint)
+	scanStarted := time.Now()
+	shape, valid := domainrequest.ParseTPSRequestShape(body, endpoint)
+	classification.Timing.ShapeScan = time.Since(scanStarted)
+	classification.Timing.ShapeScanMeasured = true
 	if !valid {
-		if !json.Valid(body) {
-			return Classification{Cost: kvadmission.Cost{UnsupportedReason: "invalid_json"}},
-				&ProtocolError{Reason: "invalid_json"}
+		classification.UnsupportedReason = shape.UnsupportedReason
+		if classification.UnsupportedReason == "shape_scan_limit" {
+			classification.SingleSequenceFallback = true
+			return classification, nil
 		}
-		return Classification{Cost: kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}}, nil
-	}
-	classification := Classification{
-		JSONFieldsKnown:  true,
-		StreamingPresent: fields.StreamingPresent,
-		StreamingKnown:   fields.StreamingKnown,
-		Streaming:        fields.Streaming,
-		DecodeSequences:  fields.DecodeSequences,
-	}
-	if !fields.ShapeSupported {
-		reason := fields.UnsupportedReason
-		if reason == "" {
-			reason = "unsupported_request_shape"
+		classification.UnsupportedReason = "invalid_json"
+		if json.Valid(body) {
+			classification.UnsupportedReason = "unsupported_request_shape"
+			return classification, nil
 		}
-		classification.Cost = kvadmission.Cost{UnsupportedReason: reason}
-		return classification, nil
+		return classification, &ProtocolError{Reason: "invalid_json"}
 	}
-	classification.Cost = kvadmission.EstimateSemanticRequest(
-		kvadmission.SemanticRequestShape{
-			BodyBytes:       len(body),
-			BasePromptCount: fields.BasePromptCount,
-			DecodeSequences: fields.DecodeSequences,
-			Aggregate:       semanticInputFeatures(fields.Aggregate),
-			MaximumSequence: semanticInputFeatures(fields.MaximumSequence),
-		},
-		fields.OutputTokens,
-		fields.HasOutputTokens,
-		c.cfg.Estimator,
-	)
-	return classification, nil
-}
-
-func semanticInputFeatures(features domainrequest.EndpointInputFeatures) kvadmission.SemanticInputFeatures {
-	return kvadmission.SemanticInputFeatures{
-		PromptBytes:            features.PromptBytes,
-		TextBytes:              features.TextBytes,
-		ToolSchemaBytes:        features.ToolSchemaBytes,
-		MessageCount:           features.MessageCount,
-		ToolCount:              features.ToolCount,
-		ModalityCount:          features.ModalityCount,
-		ApproximateInputTokens: features.ApproximateInputTokens,
-		ExplicitPromptTokens:   features.ExplicitPromptTokens,
-		Conservative:           features.Conservative,
+	classification.JSONFieldsKnown = true
+	classification.StreamingPresent = shape.StreamingPresent
+	classification.StreamingKnown = shape.StreamingKnown
+	classification.Streaming = shape.Streaming
+	classification.BasePromptCount = shape.BasePromptCount
+	classification.DecodeSequences = shape.DecodeSequences
+	classification.Supported = shape.Supported
+	classification.UnsupportedReason = shape.UnsupportedReason
+	if !classification.Supported && classification.UnsupportedReason == "" {
+		classification.UnsupportedReason = "unsupported_request_shape"
 	}
-}
-
-func (c *Classifier) classifyBufferedJSON(body []byte) (Classification, *ProtocolError) {
-	fields, valid := domainrequest.ParseJSONFields(body, c.cfg.OutputTokenFields)
-	if !valid {
-		if !json.Valid(body) {
-			return Classification{Cost: kvadmission.Cost{UnsupportedReason: "invalid_json"}},
-				&ProtocolError{Reason: "invalid_json"}
-		}
-		return Classification{Cost: kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}}, nil
-	}
-	classification := Classification{
-		JSONFieldsKnown:  true,
-		StreamingPresent: fields.StreamingPresent,
-		StreamingKnown:   fields.StreamingKnown,
-		Streaming:        fields.Streaming,
-		DecodeSequences:  fields.DecodeSequences,
-	}
-	if !fields.ShapeSupported {
-		classification.Cost = kvadmission.Cost{UnsupportedReason: "unsupported_request_shape"}
-		return classification, nil
-	}
-	classification.Cost = kvadmission.EstimateValidatedJSONWithShape(
-		body,
-		fields.OutputTokens,
-		fields.HasOutputTokens,
-		kvadmission.RequestShape{
-			PromptBatchSize:                fields.PromptBatchSize,
-			PromptStringBytes:              fields.PromptStringBytes,
-			MaximumPromptStringBytes:       fields.MaximumPromptStringBytes,
-			PromptApproximateTokens:        fields.PromptApproximateTokens,
-			MaximumPromptApproximateTokens: fields.MaximumPromptApproximateTokens,
-			ExplicitPromptTokens:           fields.ExplicitPromptTokens,
-			MaximumExplicitPromptTokens:    fields.MaximumExplicitPromptTokens,
-			DecodeSequences:                fields.DecodeSequences,
-		},
-		c.cfg.Estimator,
-	)
 	return classification, nil
 }
 

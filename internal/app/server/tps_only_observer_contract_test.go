@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,6 +12,12 @@ import (
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
+
+func TestTPSOnlyServerDoesNotOwnRetiredPrefillLifecycleEvidence(t *testing.T) {
+	if _, exists := reflect.TypeOf(proxyServer{}).FieldByName("prefillLifecycleEvidence"); exists {
+		t.Fatal("TPS-only proxyServer retained per-request Prefill lifecycle evidence")
+	}
+}
 
 func TestTPSOnlyDefaultFactoryDoesNotRequireKVTelemetry(t *testing.T) {
 	var upstreamCalls atomic.Int64
@@ -120,9 +127,9 @@ func TestTPSOnlyServerObserverDoesNotRequireKVTelemetry(t *testing.T) {
 	at := time.Unix(40_100, 0)
 	fingerprint := predictiveModelIdentitySHA256("vendor/model")
 	observer := &admissionBackendObserver{
-		backendKind:           "sglang",
-		capabilityFingerprint: fingerprint,
-		maximumAge:            time.Second,
+		backendKind:     "sglang",
+		runtimeIdentity: fingerprint,
+		maximumAge:      time.Second,
 	}
 	observation, disposition := observer.observation(telemetry.Sample{
 		BackendKind:      "sglang",
@@ -141,7 +148,7 @@ func TestTPSOnlyServerObserverDoesNotRequireKVTelemetry(t *testing.T) {
 		t.Fatalf("TPS observer retained a KV telemetry dependency: disposition=%d observation=%+v", disposition, observation)
 	}
 	if observation != (coreadmission.BackendObservation{
-		CapabilityFingerprint: fingerprint,
+		RuntimeIdentity:       fingerprint,
 		ObservedAt:            at,
 		MaximumAge:            time.Second,
 		Running:               3,

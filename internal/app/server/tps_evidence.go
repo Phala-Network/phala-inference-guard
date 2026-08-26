@@ -40,14 +40,12 @@ const (
 	tpsEvidenceSubreasonBaseRate
 	tpsEvidenceSubreasonCurrentRate
 	tpsEvidenceSubreasonQoSBudgetGranted
-	tpsEvidenceSubreasonQoSBudgetOutputUnknown
 	tpsEvidenceSubreasonQoSBudgetMultiSequence
 	tpsEvidenceSubreasonQoSBudgetUnobserved
 	tpsEvidenceSubreasonQoSBudgetActiveLease
 	tpsEvidenceSubreasonQoSBudgetWaveLimit
 	tpsEvidenceSubreasonQoSBudgetNoSurplus
-	tpsEvidenceSubreasonQoSBudgetInvalidRate
-	tpsEvidenceSubreasonQoSBudgetLifetime
+	tpsEvidenceSubreasonQoSBudgetCurrentRate
 	tpsEvidenceSubreasonQoSBudgetIneligible
 	tpsEvidenceSubreasonCount
 )
@@ -63,14 +61,12 @@ var tpsEvidenceSubreasonLabels = [...]string{
 	"base_rate",
 	"current_rate",
 	"qos_budget_granted",
-	"qos_budget_output_unknown",
 	"qos_budget_multi_sequence",
 	"qos_budget_unobserved",
 	"qos_budget_active_lease",
 	"qos_budget_wave_limit",
 	"qos_budget_no_surplus",
-	"qos_budget_invalid_rate",
-	"qos_budget_lifetime",
+	"qos_budget_current_rate",
 	"qos_budget_ineligible",
 }
 
@@ -193,8 +189,6 @@ func tpsEvidenceSubreasonFor(subreason coreadmission.TPSDecisionSubreason) tpsEv
 		return tpsEvidenceSubreasonCurrentRate
 	case coreadmission.TPSDecisionSubreasonQoSBudgetGranted:
 		return tpsEvidenceSubreasonQoSBudgetGranted
-	case coreadmission.TPSDecisionSubreasonQoSBudgetOutputUnknown:
-		return tpsEvidenceSubreasonQoSBudgetOutputUnknown
 	case coreadmission.TPSDecisionSubreasonQoSBudgetMultiSequence:
 		return tpsEvidenceSubreasonQoSBudgetMultiSequence
 	case coreadmission.TPSDecisionSubreasonQoSBudgetUnobserved:
@@ -205,10 +199,8 @@ func tpsEvidenceSubreasonFor(subreason coreadmission.TPSDecisionSubreason) tpsEv
 		return tpsEvidenceSubreasonQoSBudgetWaveLimit
 	case coreadmission.TPSDecisionSubreasonQoSBudgetNoSurplus:
 		return tpsEvidenceSubreasonQoSBudgetNoSurplus
-	case coreadmission.TPSDecisionSubreasonQoSBudgetInvalidRate:
-		return tpsEvidenceSubreasonQoSBudgetInvalidRate
-	case coreadmission.TPSDecisionSubreasonQoSBudgetLifetime:
-		return tpsEvidenceSubreasonQoSBudgetLifetime
+	case coreadmission.TPSDecisionSubreasonQoSBudgetCurrentRate:
+		return tpsEvidenceSubreasonQoSBudgetCurrentRate
 	case coreadmission.TPSDecisionSubreasonQoSBudgetIneligible:
 		return tpsEvidenceSubreasonQoSBudgetIneligible
 	default:

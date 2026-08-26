@@ -12,7 +12,7 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/attestation"
 )
 
-// v0.12.21 retains the strict public surface and adds guarded legacy vLLM KV geometry.
+// Keep the last released identity until a separate release step assigns a new version.
 const version = "PIG-v0.12.21"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
@@ -69,11 +69,10 @@ type proxyServer struct {
 	admissionFailures         admissionFailureCounters
 	requestEvidence           requestEvidence
 	responseUsageEvidence     responseUsageEvidence
-	prefillLifecycleEvidence  prefillLifecycleEvidence
 	policyUpdates             predictivePolicyUpdateCounters
 	decisionDuration          durationHistogram
 	bodyReadDuration          durationHistogram
-	estimatorDuration         durationHistogram
+	shapeScanDuration         durationHistogram
 	proxyTTFB                 durationHistogram
 	proxyTotal                durationHistogram
 	internalOverhead          durationHistogram

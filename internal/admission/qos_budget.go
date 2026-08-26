@@ -1,24 +1,12 @@
 package admission
 
-import (
-	"math"
-	"time"
-)
+import "math"
 
-const defaultTPSDebtControlHorizon = 10 * time.Second
-
-// qosBudgetForecast spends rolling per-sequence TPS surplus only when the
-// selected forecast duration fits the remaining budget. Its zero value is the
-// explicit complete-declared-lifetime simulation baseline.
-type qosBudgetForecast struct {
-	controlHorizon time.Duration
-}
-
-func defaultQoSBudgetForecast() qosBudgetForecast {
-	return qosBudgetForecast{controlHorizon: defaultTPSDebtControlHorizon}
-}
-
-func (f qosBudgetForecast) sequenceLimit(
+// qosBudgetSequenceLimit permits one marginal sequence when observed rolling
+// surplus can cover its projected deficit until the next metrics observation.
+// It deliberately ignores declared request lifetime: the next observation and
+// the lease lifecycle are the feedback boundary.
+func qosBudgetSequenceLimit(
 	state ProjectedState,
 	currentSequences int64,
 	nonBudgetLimit int64,
@@ -28,9 +16,8 @@ func (f qosBudgetForecast) sequenceLimit(
 	baseLimit := rateDerivedBaseSequenceLimit(snapshot)
 	if !snapshot.Enabled || !snapshot.Ready || snapshot.Reference <= 0 ||
 		state.RawRunning <= 0 || state.RawWaiting > 0 || state.PreemptionDelta > 0 ||
-		currentSequences < baseLimit ||
-		state.GenerationDelta == 0 || !state.ObservationIntervalValid ||
-		snapshot.QualifiedSequenceSeconds <= 0 {
+		currentSequences < baseLimit || state.GenerationDelta == 0 ||
+		!state.ObservationIntervalValid || snapshot.QualifiedSequenceSeconds <= 0 {
 		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetIneligible
 	}
 	if state.UnobservedSequences > 0 {
@@ -41,10 +28,6 @@ func (f qosBudgetForecast) sequenceLimit(
 	}
 	if demand.additionalSequences != 1 {
 		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetMultiSequence
-	}
-	if (!demand.outputLimitKnown && f.controlHorizon == 0) ||
-		(demand.outputLimitKnown && demand.outputLimitTokens < 0) {
-		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetOutputUnknown
 	}
 	postAdmit, ok := addNonnegativeInt64(currentSequences, demand.additionalSequences)
 	if !ok {
@@ -61,76 +44,31 @@ func (f qosBudgetForecast) sequenceLimit(
 		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetWaveLimit
 	}
 
+	intervalSeconds := state.ObservationInterval.Seconds()
+	currentRate := float64(state.GenerationDelta) / intervalSeconds
+	currentMeanActiveTPS := currentRate / float64(state.RawRunning)
+	if !finiteNonnegative(intervalSeconds) || intervalSeconds <= 0 ||
+		!finiteNonnegative(currentRate) || !finiteNonnegative(currentMeanActiveTPS) ||
+		currentMeanActiveTPS < snapshot.Reference {
+		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetCurrentRate
+	}
+
 	rollingCost := snapshot.Reference * snapshot.QualifiedSequenceSeconds
 	rollingSurplus := snapshot.QualifiedSequenceTokens - rollingCost
 	if !finiteNonnegative(rollingCost) || !finiteNonnegative(rollingSurplus) || rollingSurplus <= 0 {
 		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetNoSurplus
 	}
-	intervalSeconds := state.ObservationInterval.Seconds()
-	currentRate := float64(state.GenerationDelta) / intervalSeconds
 	conservativeRate := math.Min(currentRate, snapshot.AggregateTPS)
-	if !finiteNonnegative(currentRate) ||
-		!finiteNonnegative(conservativeRate) || conservativeRate <= 0 {
-		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetInvalidRate
-	}
-	projectedPerSequence := conservativeRate / float64(postAdmit)
-	if !finiteNonnegative(projectedPerSequence) || projectedPerSequence <= 0 {
-		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetInvalidRate
-	}
 	deficitRate := snapshot.Reference*float64(postAdmit) - conservativeRate
 	if deficitRate < 0 {
 		deficitRate = 0
 	}
-	forecastSeconds, forecastSubreason, forecastValid := f.forecastSeconds(
-		demand,
-		projectedPerSequence,
-	)
-	if !forecastValid {
-		return nonBudgetLimit, false, forecastSubreason
-	}
-	requiredSurplus := deficitRate * forecastSeconds
-	if !finiteNonnegative(deficitRate) || !finiteNonnegative(forecastSeconds) ||
-		!finiteNonnegative(requiredSurplus) {
-		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetInvalidRate
-	}
-	if requiredSurplus > rollingSurplus {
-		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetLifetime
+	requiredUntilNextObservation := deficitRate * intervalSeconds
+	if !finiteNonnegative(conservativeRate) || conservativeRate <= 0 ||
+		!finiteNonnegative(deficitRate) ||
+		!finiteNonnegative(requiredUntilNextObservation) ||
+		requiredUntilNextObservation > rollingSurplus {
+		return nonBudgetLimit, false, TPSDecisionSubreasonQoSBudgetNoSurplus
 	}
 	return waveLimit, true, TPSDecisionSubreasonQoSBudgetGranted
-}
-
-func (f qosBudgetForecast) forecastSeconds(
-	demand tpsAdmissionDemand,
-	projectedPerSequence float64,
-) (float64, TPSDecisionSubreason, bool) {
-	if !finiteNonnegative(projectedPerSequence) || projectedPerSequence <= 0 ||
-		f.controlHorizon < 0 {
-		return 0, TPSDecisionSubreasonQoSBudgetInvalidRate, false
-	}
-	if f.controlHorizon == 0 {
-		if !demand.outputLimitKnown || demand.outputLimitTokens < 0 {
-			return 0, TPSDecisionSubreasonQoSBudgetOutputUnknown, false
-		}
-		seconds := float64(demand.outputLimitTokens) / projectedPerSequence
-		if !finiteNonnegative(seconds) {
-			return 0, TPSDecisionSubreasonQoSBudgetInvalidRate, false
-		}
-		return seconds, TPSDecisionSubreasonQoSBudgetGranted, true
-	}
-
-	horizonSeconds := f.controlHorizon.Seconds()
-	if !finiteNonnegative(horizonSeconds) || horizonSeconds <= 0 {
-		return 0, TPSDecisionSubreasonQoSBudgetInvalidRate, false
-	}
-	if !demand.outputLimitKnown {
-		return horizonSeconds, TPSDecisionSubreasonQoSBudgetGranted, true
-	}
-	if demand.outputLimitTokens < 0 {
-		return 0, TPSDecisionSubreasonQoSBudgetOutputUnknown, false
-	}
-	declaredSeconds := float64(demand.outputLimitTokens) / projectedPerSequence
-	if !finiteNonnegative(declaredSeconds) {
-		return 0, TPSDecisionSubreasonQoSBudgetInvalidRate, false
-	}
-	return math.Min(declaredSeconds, horizonSeconds), TPSDecisionSubreasonQoSBudgetGranted, true
 }

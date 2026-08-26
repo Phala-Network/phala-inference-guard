@@ -5,22 +5,19 @@ type admissionPolicy struct {
 }
 
 type policyDecision struct {
-	action                    Action
-	reason                    Reason
-	scope                     ProtectionScope
-	prefillClass              PrefillClass
-	postAdmitKVTokens         int64
-	pendingPrefillTokensAfter int64
-	tpsSequenceLimit          int64
-	tpsCurrentSequences       int64
-	tpsPostAdmitSequences     int64
-	tpsQoSBudgeted            bool
-	tpsDecisionResult         TPSDecisionResult
-	tpsDecisionSubreason      TPSDecisionSubreason
+	action                Action
+	reason                Reason
+	scope                 ProtectionScope
+	tpsSequenceLimit      int64
+	tpsCurrentSequences   int64
+	tpsPostAdmitSequences int64
+	tpsQoSBudgeted        bool
+	tpsDecisionResult     TPSDecisionResult
+	tpsDecisionSubreason  TPSDecisionSubreason
 }
 
-func newAdmissionPolicy(qosBudget qosBudgetForecast) admissionPolicy {
-	return admissionPolicy{tpsGate: tpsGate{qosBudget: qosBudget}}
+func newAdmissionPolicy() admissionPolicy {
+	return admissionPolicy{tpsGate: tpsGate{}}
 }
 
 func (p admissionPolicy) evaluateDemand(state ProjectedState, demand TPSRequestDemand) policyDecision {

@@ -19,8 +19,6 @@ type tpsSample struct {
 	generatedTokens               uint64
 	previousRunning               int64
 	running                       int64
-	previousLocalActiveDecode     int64
-	localActiveDecode             int64
 	forwardedSequenceLiabilities  int64
 	localExposureMeasured         bool
 	localForwardedSequenceSeconds float64
@@ -180,7 +178,6 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 	w.expire(sample.end)
 	if sample.start.IsZero() || sample.end.IsZero() || sample.maximumInterval <= 0 ||
 		sample.previousRunning < 0 || sample.running < 0 ||
-		sample.previousLocalActiveDecode < 0 || sample.localActiveDecode < 0 ||
 		sample.forwardedSequenceLiabilities < 0 ||
 		!finiteNonnegative(sample.localForwardedSequenceSeconds) ||
 		!finiteNonnegative(sample.localResponseSequenceSeconds) {
@@ -191,14 +188,8 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		return true
 	}
 
-	endpointSequences := maximumInt64(
-		sample.previousRunning,
-		sample.running,
-		sample.previousLocalActiveDecode,
-		sample.localActiveDecode,
-	)
-	knownDecode := sample.previousLocalActiveDecode > 0 || sample.localActiveDecode > 0 ||
-		sample.localResponseSequenceSeconds > 0
+	endpointSequences := maximumInt64(sample.previousRunning, sample.running)
+	knownDecode := sample.localResponseSequenceSeconds > 0
 	if sample.generatedTokens == 0 && !knownDecode {
 		return true
 	}

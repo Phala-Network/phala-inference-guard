@@ -14,7 +14,6 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 var blockedBackendNativePaths = []string{
@@ -562,14 +561,14 @@ type routePolicyAdmissionSpy struct {
 	liveReservations atomic.Int64
 }
 
-func (s *routePolicyAdmissionSpy) Decide(_ context.Context, estimate domainpredictive.RequestEstimate) admissionDecision {
+func (s *routePolicyAdmissionSpy) Decide(_ context.Context, demand coreadmission.TPSRequestDemand) admissionDecision {
 	s.decisions.Add(1)
 	s.liveReservations.Add(1)
 	return admissionDecision{
 		Record: coreadmission.DecisionRecord{
-			Action:   coreadmission.ActionAdmit,
-			Reason:   coreadmission.ReasonOpen,
-			Estimate: estimate,
+			Action: coreadmission.ActionAdmit,
+			Reason: coreadmission.ReasonOpen,
+			Demand: demand,
 		},
 		Reservation: &routePolicyReservationSpy{live: &s.liveReservations},
 	}

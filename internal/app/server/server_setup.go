@@ -61,7 +61,7 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 		started:               time.Now(),
 		decisionDuration:      newPredictiveDurationHistogram(),
 		bodyReadDuration:      newPredictiveDurationHistogram(),
-		estimatorDuration:     newPredictiveDurationHistogram(),
+		shapeScanDuration:     newPredictiveDurationHistogram(),
 		proxyTTFB:             newDurationHistogram(),
 		proxyTotal:            newDurationHistogram(),
 		internalOverhead:      newDurationHistogram(),
@@ -69,8 +69,6 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 	srv.requestClassifier = request.New(request.Config{
 		MaximumBodyBytes:  cfg.PredictiveScannerBodyBytes,
 		MaximumConcurrent: cfg.PredictiveScannerConcurrency,
-		OutputTokenFields: cfg.OutputTokenFields,
-		Estimator:         cfg.PredictiveEstimator,
 	})
 	srv.backend.SetHandlers(srv.modifyBackendResponse, func(w http.ResponseWriter, r *http.Request, _ error) {
 		if srv.recordClientDisconnect(r.Context(), clientDisconnectPhaseUpstream, true) {
@@ -88,15 +86,11 @@ func (s *proxyServer) modifyBackendResponse(response *http.Response) error {
 		evidence.WrapResponse(response)
 	}
 	if response != nil && response.Request != nil {
-		lifecycle := prefillLifecycleRequestEvidenceFrom(response)
 		reservation, _ := response.Request.Context().Value(admissionReservationContextKey{}).(admissionReservation)
 		var onFirst func()
-		if lifecycle != nil || reservation != nil {
+		if reservation != nil {
 			onFirst = func() {
-				if lifecycle != nil {
-					lifecycle.MarkFirstByte(time.Now())
-				}
-				if reservation != nil && !reservation.MarkFirstByte() {
+				if !reservation.MarkFirstByte() {
 					s.admissionFailures.firstByte.Add(1)
 				}
 			}

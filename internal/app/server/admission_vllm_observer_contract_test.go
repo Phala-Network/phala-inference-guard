@@ -33,7 +33,7 @@ func TestAdmissionVLLMObserverTransientFailureStalesThenRecoversAndDriftCloses(t
 
 	fingerprint := predictiveModelIdentitySHA256(modelName)
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability: coreadmission.Capability{Fingerprint: fingerprint},
+		RuntimeIdentity: fingerprint,
 	})
 	if err != nil {
 		t.Fatalf("construct observer Controller: %v", err)
@@ -41,7 +41,7 @@ func TestAdmissionVLLMObserverTransientFailureStalesThenRecoversAndDriftCloses(t
 	defer controller.Close()
 	clock := &manualTestClock{now: time.Unix(200, 0)}
 	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
-		BackendKind: "vllm", MetricsURL: metrics.URL, CapabilityFingerprint: fingerprint,
+		BackendKind: "vllm", MetricsURL: metrics.URL, RuntimeIdentity: fingerprint,
 		PollInterval: 20 * time.Millisecond, MaximumAge: 60 * time.Millisecond,
 		RequestTimeout: 100 * time.Millisecond, Controller: controller, Now: clock.Now,
 	})
@@ -82,7 +82,7 @@ func TestAdmissionVLLMObserverTransientFailureStalesThenRecoversAndDriftCloses(t
 	clock.Advance(time.Millisecond)
 	waitAdmissionCondition(t, func() bool {
 		snapshot := controller.Snapshot(clock.Now())
-		return !snapshot.IntakeOpen && snapshot.MinimumDecision.Reason == coreadmission.ReasonCapabilityDrift
+		return !snapshot.IntakeOpen && snapshot.MinimumDecision.Reason == coreadmission.ReasonRuntimeIdentityDrift
 	})
 	drifted := controller.Snapshot(clock.Now())
 	if drifted.IntakeOpen || drifted.MinimumDecision.Scope != coreadmission.ProtectionAvailability {
@@ -103,7 +103,7 @@ func TestAdmissionVLLMObserverResetsEpochImmediatelyWithoutMetadata(t *testing.T
 
 	fingerprint := predictiveModelIdentitySHA256(modelName)
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability: coreadmission.Capability{Fingerprint: fingerprint},
+		RuntimeIdentity: fingerprint,
 	})
 	if err != nil {
 		t.Fatalf("construct reset observer Controller: %v", err)
@@ -111,7 +111,7 @@ func TestAdmissionVLLMObserverResetsEpochImmediatelyWithoutMetadata(t *testing.T
 	defer controller.Close()
 	clock := &manualTestClock{now: time.Unix(300, 0)}
 	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
-		BackendKind: "vllm", MetricsURL: metrics.URL, CapabilityFingerprint: fingerprint,
+		BackendKind: "vllm", MetricsURL: metrics.URL, RuntimeIdentity: fingerprint,
 		PollInterval: time.Hour, MaximumAge: 2 * time.Hour,
 		RequestTimeout: 100 * time.Millisecond, Controller: controller, Now: clock.Now,
 	})
@@ -132,8 +132,7 @@ func TestAdmissionVLLMObserverResetsEpochImmediatelyWithoutMetadata(t *testing.T
 	observer.poll(context.Background())
 	restarted := controller.Snapshot(clock.Now())
 	if !restarted.Available || !restarted.IntakeOpen || restarted.RuntimeEpoch != initial.RuntimeEpoch+1 ||
-		restarted.Observation.RuntimeStartTime != 200 || restarted.Observation.GenerationTokensTotal != 1 ||
-		restarted.RuntimeRebindPending || restarted.CapabilityRebinds != 0 {
+		restarted.Observation.RuntimeStartTime != 200 || restarted.Observation.GenerationTokensTotal != 1 {
 		t.Fatalf("runtime restart did not reset the TPS epoch immediately: %+v", restarted)
 	}
 

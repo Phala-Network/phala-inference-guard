@@ -56,8 +56,6 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	policy := snapshot.Capacity.Policy
 	fmt.Fprintf(w, "pig_predictive_policy_revision %d\n", policy.Revision)
 	fmt.Fprintf(w, "pig_predictive_backend_runtime_epoch %d\n", snapshot.Capacity.RuntimeEpoch)
-	fmt.Fprintf(w, "pig_predictive_backend_capability_rebinds_total %d\n", snapshot.Capacity.CapabilityRebinds)
-	fmt.Fprintf(w, "pig_predictive_backend_rebind_pending %d\n", boolMetric(snapshot.Capacity.RuntimeRebindPending))
 	fmt.Fprintf(w, "pig_predictive_policy_last_updated_at_seconds %.6f\n", predictivePolicyUnixSeconds(policy.UpdatedAt))
 	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "applied", s.policyUpdates.applied.Load())
 	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "invalid", s.policyUpdates.invalid.Load())
@@ -69,7 +67,6 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	fmt.Fprintf(w, "pig_predictive_scanner_saturated_total %d\n", s.requestClassifier.Rejected())
 	writeRequestEvidenceMetrics(w, s.requestEvidence.Snapshot())
 	writeResponseUsageEvidenceMetrics(w, s.responseUsageEvidence.Snapshot())
-	writePrefillLifecycleEvidenceMetrics(w, s.prefillLifecycleEvidence.Snapshot())
 	metrics.WriteBackends(w, s.backendMetricsInput(snapshot, now))
 	metrics.WritePredictiveAdmission(w, input)
 	writeAdmissionEvidenceMetrics(w, snapshot.Report.Evidence)
@@ -116,7 +113,7 @@ func (s *proxyServer) predictiveAdmissionMetricsInput(
 		FailureFirstByte:   s.admissionFailures.firstByte.Load(),
 		FailureTerminal:    s.admissionFailures.terminal.Load(),
 		BodyReadDuration:   &s.bodyReadDuration,
-		EstimatorDuration:  &s.estimatorDuration,
+		ShapeScanDuration:  &s.shapeScanDuration,
 		PreForwardDuration: &s.decisionDuration,
 	}
 	snapshot := s.admissionTelemetry(now)
@@ -128,16 +125,8 @@ func (s *proxyServer) predictiveAdmissionMetricsInput(
 	input.IntakeOpen = snapshot.Capacity.IntakeOpen
 	input.Reservations = nonnegativeInt(snapshot.Capacity.State.LiveReservations)
 	input.VirtualDecodeSequences = projectedDecodeSequences(snapshot.Capacity.State)
-	input.ForwardedPendingPrefills = nonnegativeInt(snapshot.Capacity.State.PendingPrefillSequences)
-	input.ForwardedPendingPrefillInputTokens = snapshot.Capacity.State.PendingPrefillInputTokens
-	input.ForwardedPendingPrefillTokens = snapshot.Capacity.State.PendingPrefillTokens
-	input.ForwardedPendingCacheCreditTokens = snapshot.Capacity.State.PendingCacheCreditTokens
-	input.CacheObservationValid = snapshot.Capacity.State.CacheObservationValid
-	input.CacheHitFraction = snapshot.Capacity.State.CacheHitFraction
-	input.CacheCreditFraction = snapshot.Capacity.State.CacheCreditFraction
-	input.CacheEvidenceTokens = snapshot.Capacity.State.CacheEvidenceTokens
-	input.CacheCreditBudgetTokens = snapshot.Capacity.State.CacheCreditBudgetTokens
-	input.CacheCreditSpentTokens = snapshot.Capacity.State.CacheCreditSpentTokens
+	input.SequenceLiabilities = snapshot.Capacity.State.SequenceLiabilities
+	input.ResidualDebts = snapshot.Capacity.State.ResidualDebts
 	input.PredictionDuration = snapshot.PredictionDuration
 	applyTPSCapacityMetrics(&input, snapshot.Capacity)
 	if report.HasLastDecision {
@@ -164,63 +153,42 @@ func applyAdmissionDecisionMetrics(
 	input.AdmissionAction = admissionMetricAction(decision)
 	input.AdmissionReason = string(decision.Reason)
 	input.AdmissionPressureSource = admissionPressureSource(decision.Reason)
-	input.AdmissionInputEstimateConfidence = decision.Estimate.InputEstimateConfidence.String()
-	input.AdmissionSelectionInputTokens = decision.Estimate.SelectionInputTokens
-	input.AdmissionMaximumSequenceInputTokens = decision.Estimate.MaximumSequenceInputTokens
-	input.AdmissionBasePromptCount = decision.Estimate.BasePromptCount
-	input.AdmissionPrefillInputTokens = decision.Work.PrefillInputTokens
-	input.AdmissionFirstBytePendingPrefillInput = decision.Work.FirstBytePendingPrefillInputTokens
-	input.AdmissionFirstBytePendingPrefillCompute = decision.Work.FirstBytePendingPrefillComputeTokens
-	input.AdmissionFirstBytePendingPrefillSequences = decision.Work.FirstBytePendingPrefillSequences
-	input.AdmissionMaximumSequenceKVReservation = decision.Estimate.MaximumSequenceKVReservationInputTokens
-	input.AdmissionDecodeSequences = decision.Estimate.DecodeSequences
-	input.AdmissionOutputLimitTokens = decision.Estimate.OutputLimitTokens
-	input.AdmissionOutputLimitKnown = decision.Estimate.OutputLimitKnown
+	input.AdmissionDemandSource = string(decision.Demand.Source)
+	input.AdmissionDecodeSequences = decision.Demand.DecodeSequences
+	input.TPSDecisionResult = decision.TPSDecisionResult.String()
+	input.TPSDecisionSubreason = decision.TPSDecisionSubreason.String()
 	input.TPSLastDecisionQoSBudgeted = decision.TPSQoSBudgeted
-	input.AdmissionInputKVTokens = decision.Work.InputKVTokens
-	input.AdmissionFirstByteCoverableInputKV = decision.Work.FirstByteCoverableInputKVTokens
-	input.AdmissionFirstBytePendingInputKV = decision.Work.FirstBytePendingInputKVTokens
-	input.AdmissionFutureKVTokens = decision.Work.FutureKVTokens
-	input.AdmissionReservedTokens = decision.Work.TotalKVTokens
-	if decision.HardKVLimitTokens >= decision.State.EffectiveKVTokens {
-		input.AdmissionAllowanceTokens = decision.HardKVLimitTokens - decision.State.EffectiveKVTokens
-	}
-	input.AdmissionEffectiveKV = decision.State.EffectiveKVTokens
-	input.AdmissionPostAdmitKV = decision.PostAdmitKVTokens
-	input.AdmissionRemainingKV = decision.RemainingKVTokens
 	input.AdmissionRunning = nonnegativeInt(decision.State.RawRunning)
 	input.AdmissionWaiting = nonnegativeInt(decision.State.RawWaiting)
 	input.AdmissionEffectiveSequences = projectedDecodeSequences(decision.State)
+	input.AdmissionGenerationDelta = decision.State.GenerationDelta
+	input.AdmissionPreemptionDelta = decision.State.PreemptionDelta
 	input.AdmissionAggregateTPS, input.AdmissionMeanActiveTPS, input.AdmissionMeanActiveTPSValid =
 		admissionGenerationTPS(decision.State)
-	input.AdmissionPrefillClass = string(decision.PrefillClass)
-	input.AdmissionEstimatedPrefillTokens = decision.Work.PrefillComputeTokens
-	input.AdmissionPendingPrefillSequences = nonnegativeInt(decision.State.PendingPrefillSequences)
-	input.AdmissionPendingPrefillTokens = decision.PendingPrefillTokensBefore
-	input.AdmissionPostAdmitPendingPrefillTokens = decision.PendingPrefillTokensAfter
-	input.AdmissionPendingExclusiveSequences = nonnegativeInt(decision.State.PendingExclusiveSequences)
-	input.AdmissionPendingQuiescentSequences = nonnegativeInt(decision.State.PendingQuiescentSequences)
 }
 
 func admissionMetricAction(decision coreadmission.DecisionRecord) string {
 	if decision.Admitted() {
 		return "admit"
 	}
-	if decision.Scope == coreadmission.ProtectionRequest {
-		return "size_protect"
+	switch decision.Scope {
+	case coreadmission.ProtectionRequest:
+		return "request_protect"
+	case coreadmission.ProtectionLoad:
+		return "load_protect"
+	default:
+		return "availability_protect"
 	}
-	return "hard_protect"
 }
 
 func admissionPressureSource(reason coreadmission.Reason) string {
-	switch reason {
-	case coreadmission.ReasonPrefillContention,
-		coreadmission.ReasonPrefillBudget,
-		coreadmission.ReasonPrefillExclusive,
-		coreadmission.ReasonPrefillQuiescent:
-		return "prefill"
-	case coreadmission.ReasonTPSReference:
+	switch {
+	case reason == coreadmission.ReasonTPSReference:
 		return "tps"
+	case reason == coreadmission.ReasonInvalidRequest:
+		return "request"
+	case reason != coreadmission.ReasonOpen:
+		return "availability"
 	default:
 		return "none"
 	}
@@ -242,10 +210,6 @@ func admissionGenerationTPS(state coreadmission.ProjectedState) (aggregate, mean
 }
 
 func projectedDecodeSequences(state coreadmission.ProjectedState) int {
-	tracked, ok := addNonnegativeForMetrics(state.PendingPrefillSequences, state.LocalActiveDecode)
-	if !ok {
-		return int(^uint(0) >> 1)
-	}
 	rawDemand, ok := addNonnegativeForMetrics(state.RawRunning, state.RawWaiting)
 	if !ok {
 		return int(^uint(0) >> 1)
@@ -254,10 +218,7 @@ func projectedDecodeSequences(state coreadmission.ProjectedState) int {
 	if !ok {
 		return int(^uint(0) >> 1)
 	}
-	if rawDemand > tracked {
-		tracked = rawDemand
-	}
-	return nonnegativeInt(tracked)
+	return nonnegativeInt(rawDemand)
 }
 
 func applyTPSCapacityMetrics(input *metrics.PredictiveAdmissionInput, capacity coreadmission.CapacitySnapshot) {
@@ -334,20 +295,12 @@ func (s *proxyServer) backendMetricsInput(
 	fresh := capacity.IntakeOpen && capacity.HasObservation && !now.IsZero() &&
 		!now.Before(observation.ObservedAt) && now.Sub(observation.ObservedAt) <= observation.MaximumAge
 	aggregateTPS, _, _ := admissionGenerationTPS(capacity.State)
-	availableKV := observation.KVCapacityTokens - observation.UsedKVTokens
-	if availableKV < 0 {
-		availableKV = 0
-	}
 	status := runtimebackend.Runtime{
-		Name: "upstream", BackendKind: snapshot.BackendKind, KVCapacityTokens: observation.KVCapacityTokens,
-		KVUsedTokens: observation.UsedKVTokens, KVAvailableTokens: availableKV,
-		KVTokenMetricsValid: fresh, Running: nonnegativeInt(observation.Running),
+		Name: "upstream", BackendKind: snapshot.BackendKind,
+		Running: nonnegativeInt(observation.Running),
 		Waiting: nonnegativeInt(observation.Waiting), GenerationTPS: aggregateTPS,
 		GenerationTPSValid: fresh && aggregateTPS > 0, Updated: observation.ObservedAt,
 		Failed: !fresh,
-	}
-	if observation.KVCapacityTokens > 0 {
-		status.KVCacheUsage = float64(observation.UsedKVTokens) / float64(observation.KVCapacityTokens)
 	}
 	return []metrics.BackendSnapshot{{
 		Name: "upstream", Upstream: s.cfg.Upstream,

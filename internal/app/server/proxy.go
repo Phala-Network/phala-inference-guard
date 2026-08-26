@@ -5,7 +5,6 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 )
 
@@ -37,13 +36,11 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.requestEvidence.Record(classification)
 	responseEvidence := s.responseUsageEvidence.Begin(classification, r.URL.Path)
 	defer responseEvidence.Censor()
-	prefillEvidence := s.prefillLifecycleEvidence.Begin(classification)
-	defer func() { prefillEvidence.Terminate(time.Now()) }()
 	if classification.Timing.BodyReadMeasured {
 		s.bodyReadDuration.Observe(classification.Timing.BodyRead)
 	}
-	if classification.Timing.EstimatorMeasured {
-		s.estimatorDuration.Observe(classification.Timing.Estimator)
+	if classification.Timing.ShapeScanMeasured {
+		s.shapeScanDuration.Observe(classification.Timing.ShapeScan)
 	}
 	if protocolError != nil {
 		s.decisionDuration.Observe(time.Since(decisionStart))
@@ -55,15 +52,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		openai.WriteInvalidJSON(w)
 		return
 	}
-	estimate, estimateKnown := classification.Cost.PredictiveEstimate()
-	if !estimateKnown {
-		// Unsupported or temporarily unclassifiable inputs are request-scoped
-		// protection, not evidence that the whole upstream is unavailable. The
-		// Controller turns this invalid estimate into an observable, non-reserving
-		// decision while its canonical capacity probe remains independent.
-		estimate = domainpredictive.RequestEstimate{}
-	}
-	decision := s.decideAdmission(r.Context(), estimate)
+	demand := tpsDemandForClassification(classification)
+	decision := s.decideAdmission(r.Context(), demand)
 	reservation := decision.Reservation
 	if s.cfg.PredictiveAdmissionMode == "enforce" && !decision.Record.Admitted() {
 		s.predictiveEnforcedRejects.Add(1)
@@ -89,8 +79,6 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(attachAdmissionReservation(r.Context(), reservation))
 	}
 	r = r.WithContext(attachResponseUsageRequestEvidence(r.Context(), responseEvidence))
-	r = r.WithContext(attachPrefillLifecycleRequestEvidence(r.Context(), prefillEvidence))
-	prefillEvidence.MarkForwarded()
 	s.decisionDuration.Observe(time.Since(decisionStart))
 	result := s.proxyRequest(s.backend, w, r)
 	responseEvidence.Complete(result)

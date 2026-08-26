@@ -24,16 +24,10 @@ type predictiveBackendStartup struct {
 	BackendKind         string
 	modelName           string
 	ModelIdentitySHA256 string
-	CapacityTokens      int64
-	BlockSize           int
-	UsedTokens          int64
 	Running             int
 	Waiting             int
 	Preemptions         uint64
 	Generation          uint64
-	CacheQueryTokens    uint64
-	CacheHitTokens      uint64
-	CacheCountersValid  bool
 	RuntimeStartTime    float64
 	ObservedAt          time.Time
 }
@@ -110,16 +104,10 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 		BackendKind:         sample.BackendKind,
 		modelName:           sample.ModelName,
 		ModelIdentitySHA256: predictiveModelIdentitySHA256(sample.ModelName),
-		CapacityTokens:      sample.KVCapacityTokens,
-		BlockSize:           sample.KVBlockSize,
-		UsedTokens:          sample.KVUsedTokens,
 		Running:             sample.Running,
 		Waiting:             sample.Waiting,
 		Preemptions:         sample.Preemptions,
 		Generation:          sample.Generation,
-		CacheQueryTokens:    sample.CacheQueryTokens,
-		CacheHitTokens:      sample.CacheHitTokens,
-		CacheCountersValid:  sample.CacheTokensValid,
 		RuntimeStartTime:    sample.RuntimeStartTime,
 		ObservedAt:          observedAt,
 	}, nil

@@ -25,7 +25,7 @@ func TestPredictiveStartupAcceptsCoherentSGLangSample(t *testing.T) {
 	if err != nil {
 		t.Fatalf("coherent SGLang startup rejected: %v", err)
 	}
-	if startup.modelName != "meta/sglang-model" || startup.CapacityTokens != 1_000_000 || startup.BlockSize != 16 ||
+	if startup.modelName != "meta/sglang-model" ||
 		startup.Generation != 100 || startup.Preemptions != 3 {
 		t.Fatalf("SGLang startup=%#v", startup)
 	}

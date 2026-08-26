@@ -13,8 +13,6 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	"github.com/Phala-Network/phala-inference-guard/internal/domain/kvadmission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
 func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
@@ -53,7 +51,7 @@ func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
 	}
 }
 
-func TestPredictiveTimingSeparatesBodyReadEstimatorAndPreForwardDecision(t *testing.T) {
+func TestPredictiveTimingSeparatesBodyReadShapeScanAndPreForwardDecision(t *testing.T) {
 	const body = `{"model":"m","messages":[{"role":"user","content":"timing"}]}`
 	const readDelay = 40 * time.Millisecond
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -80,28 +78,88 @@ func TestPredictiveTimingSeparatesBodyReadEstimatorAndPreForwardDecision(t *test
 	srv.writeAdmissionAndRouterMetrics(&rendered)
 	metricsBody := rendered.String()
 	bodyRead := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_body_read_duration_seconds_sum")
-	estimator := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_estimator_duration_seconds_sum")
+	shapeScan := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_shape_scan_duration_seconds_sum")
 	preForward := requirePrometheusMetric(t, metricsBody, "pig_predictive_admission_pre_forward_duration_seconds_sum")
 	if bodyRead < readDelay.Seconds() {
 		t.Fatalf("body-read duration=%f, want at least injected delay %f", bodyRead, readDelay.Seconds())
 	}
-	if estimator >= readDelay.Seconds()/2 {
-		t.Fatalf("estimator duration=%f includes injected body-read delay %f", estimator, readDelay.Seconds())
+	if shapeScan >= readDelay.Seconds()/2 {
+		t.Fatalf("shape-scan duration=%f includes injected body-read delay %f", shapeScan, readDelay.Seconds())
 	}
-	if preForward < bodyRead+estimator {
-		t.Fatalf("pre-forward duration=%f, want at least body-read+estimator=%f", preForward, bodyRead+estimator)
+	if preForward < bodyRead+shapeScan {
+		t.Fatalf("pre-forward duration=%f, want at least body-read+shape-scan=%f", preForward, bodyRead+shapeScan)
 	}
 	if reserved := srv.requestClassifier.ReservedBodyBytes(); reserved != 0 {
 		t.Fatalf("scanner reserved body bytes=%d after proxy completion, want zero", reserved)
 	}
 	for _, name := range []string{
 		"pig_predictive_admission_body_read_duration_seconds_count",
-		"pig_predictive_admission_estimator_duration_seconds_count",
+		"pig_predictive_admission_shape_scan_duration_seconds_count",
 		"pig_predictive_admission_pre_forward_duration_seconds_count",
 	} {
 		if got := requirePrometheusMetric(t, metricsBody, name); got != 1 {
 			t.Fatalf("%s=%f, want one measured request", name, got)
 		}
+	}
+}
+
+func TestTPSOnlyScannerLimitsUseSingleSequenceFallbackInsteadOfLowLoad429(t *testing.T) {
+	largeContent := strings.Repeat("x", 2*1024*1024)
+	deepValue := strings.Repeat("[", 256) + "0" + strings.Repeat("]", 256)
+	tests := []struct {
+		name        string
+		body        string
+		contentType string
+	}{
+		{
+			name:        "body exceeds scanner limit",
+			body:        `{"model":"m","messages":[{"role":"user","content":"` + largeContent + `"}]}`,
+			contentType: "application/json",
+		},
+		{
+			name:        "valid json exceeds scanner depth",
+			body:        `{"model":"m","messages":` + deepValue + `}`,
+			contentType: "application/json",
+		},
+		{
+			name:        "content type is not scannable",
+			body:        `{"model":"m","messages":[]}`,
+			contentType: "text/plain",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var backendCalls int
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				backendCalls++
+				_, _ = io.Copy(io.Discard, r.Body)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"chatcmpl-fallback","choices":[{"message":{"content":"ok"}}]}`))
+			}))
+			defer backend.Close()
+
+			runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{})
+			srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+			request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(test.body))
+			request.Header.Set("Authorization", "Bearer secret")
+			if test.contentType != "" {
+				request.Header.Set("Content-Type", test.contentType)
+			}
+			response := httptest.NewRecorder()
+
+			srv.ServeHTTP(response, request)
+
+			if response.Code != http.StatusOK || backendCalls != 1 {
+				t.Fatalf("status=%d backend_calls=%d body=%s, want one forwarded request", response.Code, backendCalls, response.Body.String())
+			}
+			report := runtime.reporter.Snapshot()
+			if !report.HasLastDecision || !report.LastDecision.Admitted() ||
+				report.LastDecision.Demand.Source != coreadmission.TPSDemandSourceFallback ||
+				report.LastDecision.Demand.DecodeSequences != 1 {
+				t.Fatalf("fallback decision=%+v", report.LastDecision)
+			}
+		})
 	}
 }
 
@@ -422,8 +480,6 @@ func testProxyConfig(upstream string) config {
 		PredictiveAdmissionMode:            "enforce",
 		PredictiveScannerBodyBytes:         2 * 1024 * 1024,
 		PredictiveScannerConcurrency:       16,
-		OutputTokenFields:                  []string{"max_tokens", "max_completion_tokens", "max_output_tokens"},
-		PredictiveEstimator:                kvadmission.DefaultEstimatorConfig(),
 		PredictiveStartupProbeTimeout:      time.Second,
 		PredictiveMetricsRequestTimeout:    100 * time.Millisecond,
 		PredictiveObservationPollInterval:  500 * time.Millisecond,
@@ -441,10 +497,10 @@ func newTestProxyServer(cfg config) (*proxyServer, error) {
 
 type testForwardAdmissionService struct{}
 
-func (*testForwardAdmissionService) Decide(_ context.Context, estimate domainpredictive.RequestEstimate) admissionDecision {
+func (*testForwardAdmissionService) Decide(_ context.Context, demand coreadmission.TPSRequestDemand) admissionDecision {
 	return admissionDecision{
 		Record: coreadmission.DecisionRecord{
-			Action: coreadmission.ActionAdmit, Reason: coreadmission.ReasonOpen, Estimate: estimate,
+			Action: coreadmission.ActionAdmit, Reason: coreadmission.ReasonOpen, Demand: demand,
 		},
 		Reservation: &testForwardReservation{},
 	}

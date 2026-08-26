@@ -23,8 +23,8 @@ func TestTPSGateWarmingAllowsBoundedColdStartsButNotAnUnboundedBurst(t *testing.
 		limit   int64
 	}{
 		{state: ProjectedState{}, fits: true, current: 0, post: 1, limit: 2},
-		{state: ProjectedState{PendingPrefillSequences: 1}, fits: true, current: 1, post: 2, limit: 2},
-		{state: ProjectedState{PendingPrefillSequences: 2}, fits: false, current: 2, post: 3, limit: 2},
+		{state: ProjectedState{UnobservedSequences: 1, SequenceLiabilities: 1}, fits: true, current: 1, post: 2, limit: 2},
+		{state: ProjectedState{UnobservedSequences: 2, SequenceLiabilities: 2}, fits: false, current: 2, post: 3, limit: 2},
 		{state: ProjectedState{RawRunning: 2}, fits: true, current: 2, post: 3, limit: 3},
 		{state: ProjectedState{RawRunning: 2, UnobservedSequences: 1}, fits: false, current: 3, post: 4, limit: 3},
 		{state: ProjectedState{RawRunning: 2, RawWaiting: 1}, fits: false, current: 3, post: 4, limit: 3},
@@ -40,6 +40,22 @@ func TestTPSGateWarmingAllowsBoundedColdStartsButNotAnUnboundedBurst(t *testing.
 		if !test.fits && decision.reason != ReasonTPSReference {
 			t.Fatalf("warming protection reason=%s", decision.reason)
 		}
+	}
+}
+
+func TestTPSGateIdleProbeDoesNotBypassCompleteBatchFanout(t *testing.T) {
+	decision := (tpsGate{}).evaluateAdditional(
+		ProjectedState{TPS: TPSSnapshot{
+			Enabled: true, Ready: true, Reference: 20,
+			QualifiedSamples: 4, QualifiedSequenceSeconds: 8,
+			AggregateTPS: 20, MeanActiveTPS: 20,
+		}},
+		tpsAdmissionDemand{additionalSequences: 3},
+	)
+	if decision.fits || decision.reason != ReasonTPSReference ||
+		decision.currentSequences != 0 || decision.postAdmitSequences != 3 ||
+		decision.sequenceLimit != 1 {
+		t.Fatalf("idle batch bypassed ready base limit: %+v", decision)
 	}
 }
 
@@ -192,7 +208,7 @@ func TestTPSGateDoesNotRepeatUnsafeOneToTwoExplorationAfterWarming(t *testing.T)
 	}
 }
 
-func TestTPSGateUsesMaximumOfRawAndTrackedSequencesWithoutDoubleCounting(t *testing.T) {
+func TestTPSGateAddsOnlyReservationsNotYetVisibleUpstream(t *testing.T) {
 	gate := tpsGate{}
 	snapshot := TPSSnapshot{Enabled: true, Ready: true, Reference: 20, AggregateTPS: 100, MeanActiveTPS: 20}
 	for _, test := range []struct {
@@ -200,8 +216,8 @@ func TestTPSGateUsesMaximumOfRawAndTrackedSequencesWithoutDoubleCounting(t *test
 		state   ProjectedState
 		current int64
 	}{
-		{name: "already visible upstream", state: ProjectedState{RawRunning: 5, PendingPrefillSequences: 3, LocalActiveDecode: 2}, current: 5},
-		{name: "reservation not visible upstream", state: ProjectedState{RawRunning: 3, PendingPrefillSequences: 4, LocalActiveDecode: 2}, current: 6},
+		{name: "already visible upstream", state: ProjectedState{RawRunning: 5, SequenceLiabilities: 5}, current: 5},
+		{name: "reservation not visible upstream", state: ProjectedState{RawRunning: 3, UnobservedSequences: 4, SequenceLiabilities: 4}, current: 7},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := test.state
@@ -355,9 +371,7 @@ func TestV01215TPSGateDoesNotOpenKnownBelowFloorMarginalWave(t *testing.T) {
 }
 
 func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T) {
-	shortBounded := tpsAdmissionDemand{additionalSequences: 1, outputLimitTokens: 256, outputLimitKnown: true}
-	longBounded := tpsAdmissionDemand{additionalSequences: 1, outputLimitTokens: 10_000, outputLimitKnown: true}
-	unknown := tpsAdmissionDemand{additionalSequences: 1}
+	single := tpsAdmissionDemand{additionalSequences: 1}
 	positive := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 20,
 		QualifiedSamples: 20, QualifiedTokens: 2400, QualifiedActiveSeconds: 16,
@@ -380,15 +394,14 @@ func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T)
 		limit    int64
 		budgeted bool
 	}{
-		{name: "positive bounded surplus", state: base, demand: shortBounded, fits: true, limit: 8, budgeted: true},
-		{name: "same snapshot spent", state: withUnobservedSequences(base, 1), demand: shortBounded, fits: false, limit: 7},
-		{name: "live budget lease", state: withQoSBudgetLease(base), demand: shortBounded, fits: false, limit: 7},
-		{name: "long lifetime exceeds surplus", state: base, demand: longBounded, fits: false, limit: 7},
-		{name: "unknown lifetime", state: base, demand: unknown, fits: false, limit: 7},
-		{name: "negative surplus", state: base, demand: shortBounded, fits: false, limit: 7},
-		{name: "current rate too low", state: withGenerationDelta(base, 60), demand: shortBounded, fits: false, limit: 7},
-		{name: "waiting", state: withWaiting(base, 1), demand: shortBounded, fits: false, limit: 8},
-		{name: "preemption", state: withPreemptionDelta(base, 1), demand: shortBounded, fits: false, limit: 7},
+		{name: "positive observed surplus", state: base, demand: single, fits: true, limit: 8, budgeted: true},
+		{name: "same snapshot spent", state: withUnobservedSequences(base, 1), demand: single, fits: false, limit: 7},
+		{name: "live budget lease", state: withQoSBudgetLease(base), demand: single, fits: false, limit: 7},
+		{name: "multi-sequence wave", state: base, demand: tpsAdmissionDemand{additionalSequences: 2}, fits: false, limit: 7},
+		{name: "negative surplus", state: base, demand: single, fits: false, limit: 7},
+		{name: "current rate too low", state: withGenerationDelta(base, 60), demand: single, fits: false, limit: 7},
+		{name: "waiting", state: withWaiting(base, 1), demand: single, fits: false, limit: 8},
+		{name: "preemption", state: withPreemptionDelta(base, 1), demand: single, fits: false, limit: 7},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := test.state
@@ -398,7 +411,7 @@ func TestV01215TPSGateSpendsLongWindowSurplusOnOnlyOneMarginalWave(t *testing.T)
 			}
 			decision := (tpsGate{}).evaluateAdditional(state, test.demand)
 			if decision.fits != test.fits || decision.sequenceLimit != test.limit ||
-				decision.currentSequences+1 != decision.postAdmitSequences ||
+				decision.currentSequences+test.demand.additionalSequences != decision.postAdmitSequences ||
 				decision.qosBudgeted != test.budgeted {
 				t.Fatalf("QoS-budget decision=%+v state=%+v", decision, state)
 			}
@@ -435,20 +448,23 @@ func withPreemptionDelta(state ProjectedState, preemptions uint64) ProjectedStat
 	return state
 }
 
-func TestV01215TPSGateAllowsBoundedIdleRefillWithoutCurrentGeneration(t *testing.T) {
+func TestTPSGateUsesRecentReadyWindowForAtomicIdleRefill(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Ready: true, Reference: 20,
 		QualifiedSamples: 20, QualifiedSequenceSeconds: 100,
 		AggregateTPS: 240, MeanActiveTPS: 24,
 	}
 	first := (tpsGate{}).evaluate(ProjectedState{TPS: snapshot})
-	second := (tpsGate{}).evaluate(ProjectedState{PendingPrefillSequences: 1, TPS: snapshot})
-	third := (tpsGate{}).evaluate(ProjectedState{PendingPrefillSequences: 2, TPS: snapshot})
-	if !first.fits || first.sequenceLimit != tpsWarmingSequenceLimit ||
-		!second.fits || second.sequenceLimit != tpsWarmingSequenceLimit ||
-		third.fits || third.reason != ReasonTPSReference ||
-		third.sequenceLimit != tpsWarmingSequenceLimit {
-		t.Fatalf("bounded idle refill first=%+v second=%+v third=%+v", first, second, third)
+	atLimit := (tpsGate{}).evaluate(ProjectedState{
+		UnobservedSequences: 11, SequenceLiabilities: 11, TPS: snapshot,
+	})
+	aboveLimit := (tpsGate{}).evaluate(ProjectedState{
+		UnobservedSequences: 12, SequenceLiabilities: 12, TPS: snapshot,
+	})
+	if !first.fits || first.sequenceLimit != 12 || first.subreason != TPSDecisionSubreasonIdle ||
+		!atLimit.fits || atLimit.sequenceLimit != 12 ||
+		aboveLimit.fits || aboveLimit.reason != ReasonTPSReference || aboveLimit.sequenceLimit != 12 {
+		t.Fatalf("ready idle refill first=%+v at_limit=%+v above_limit=%+v", first, atLimit, aboveLimit)
 	}
 }
 
@@ -459,8 +475,9 @@ func TestV01218TPSGateAttributesProtectionAndBudgetSubreasonsWithoutChangingLimi
 		t.Fatalf("disabled attribution=%+v", disabled)
 	}
 	warming := (tpsGate{}).evaluate(ProjectedState{
-		PendingPrefillSequences: 2,
-		TPS:                     TPSSnapshot{Enabled: true, Reference: 20},
+		UnobservedSequences: 2,
+		SequenceLiabilities: 2,
+		TPS:                 TPSSnapshot{Enabled: true, Reference: 20},
 	})
 	if warming.result != TPSDecisionResultProtect || warming.subreason != TPSDecisionSubreasonWarming ||
 		warming.fits || warming.sequenceLimit != 2 {
@@ -495,25 +512,18 @@ func TestV01218TPSGateAttributesProtectionAndBudgetSubreasonsWithoutChangingLimi
 		ObservationInterval: 500 * time.Millisecond, ObservationIntervalValid: true,
 		TPS: snapshot,
 	}
-	granted := (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{
-		additionalSequences: 1, outputLimitTokens: 256, outputLimitKnown: true,
-	})
+	granted := (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{additionalSequences: 1})
 	if granted.result != TPSDecisionResultAdmit ||
 		granted.subreason != TPSDecisionSubreasonQoSBudgetGranted ||
 		!granted.fits || !granted.qosBudgeted || granted.sequenceLimit != 8 {
 		t.Fatalf("budget grant attribution=%+v", granted)
 	}
-	lifetime := (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{
-		additionalSequences: 1, outputLimitTokens: 10_000, outputLimitKnown: true,
-	})
-	if lifetime.result != TPSDecisionResultProtect ||
-		lifetime.subreason != TPSDecisionSubreasonQoSBudgetLifetime ||
-		lifetime.fits || lifetime.sequenceLimit != 7 {
-		t.Fatalf("budget lifetime attribution=%+v", lifetime)
-	}
-	unknown := (tpsGate{}).evaluateAdditional(state, tpsAdmissionDemand{additionalSequences: 1})
-	if unknown.result != TPSDecisionResultProtect ||
-		unknown.subreason != TPSDecisionSubreasonQoSBudgetOutputUnknown || unknown.fits {
-		t.Fatalf("unknown output attribution=%+v", unknown)
+	degraded := state
+	degraded.GenerationDelta = 60
+	currentRate := (tpsGate{}).evaluateAdditional(degraded, tpsAdmissionDemand{additionalSequences: 1})
+	if currentRate.result != TPSDecisionResultProtect ||
+		currentRate.subreason != TPSDecisionSubreasonQoSBudgetCurrentRate ||
+		currentRate.fits || currentRate.sequenceLimit != 7 {
+		t.Fatalf("budget current-rate attribution=%+v", currentRate)
 	}
 }

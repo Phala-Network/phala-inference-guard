@@ -7,23 +7,20 @@ import (
 	"testing"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
-func TestV01218AdmissionEvidenceNormalizesInvalidEnumsAndKeepsFixedCardinality(t *testing.T) {
+func TestAdmissionEvidenceNormalizesInvalidEnumsAndKeepsFixedCardinality(t *testing.T) {
 	var evidence admissionEvidence
 	var empty bytes.Buffer
 	writeAdmissionEvidenceMetrics(&empty, evidence.Snapshot())
 
 	evidence.Record(coreadmission.DecisionRecord{
-		Action:       coreadmission.ActionProtect,
-		Reason:       coreadmission.Reason("request-derived-reason"),
-		Scope:        coreadmission.ProtectionScope("request-derived-scope"),
-		PrefillClass: coreadmission.PrefillClass("request-derived-class"),
-		Estimate: domainpredictive.RequestEstimate{
-			SelectionInputTokens:    512,
-			DecodeSequences:         32,
-			InputEstimateConfidence: domainpredictive.InputEstimateConfidence(255),
+		Action: coreadmission.ActionProtect,
+		Reason: coreadmission.Reason("request-derived-reason"),
+		Scope:  coreadmission.ProtectionScope("request-derived-scope"),
+		Demand: coreadmission.TPSRequestDemand{
+			DecodeSequences: 32,
+			Source:          coreadmission.TPSDemandSource("request-derived-source"),
 		},
 	})
 	var output bytes.Buffer
@@ -39,7 +36,7 @@ func TestV01218AdmissionEvidenceNormalizesInvalidEnumsAndKeepsFixedCardinality(t
 	for _, forbidden := range []string{
 		"request-derived-reason",
 		"request-derived-scope",
-		"request-derived-class",
+		"request-derived-source",
 	} {
 		if strings.Contains(metricsBody, forbidden) {
 			t.Fatalf("request-derived metric label escaped normalization: %q", forbidden)
@@ -48,10 +45,7 @@ func TestV01218AdmissionEvidenceNormalizesInvalidEnumsAndKeepsFixedCardinality(t
 	for _, want := range []string{
 		`pig_predictive_admission_outcomes_total{outcome="availability_protected"} 1`,
 		`pig_predictive_admission_protections_total{reason="unknown",scope="unknown"} 1`,
-		`pig_predictive_admission_estimate_confidence_total{confidence="unknown",outcome="availability_protected"} 1`,
-		`pig_predictive_admission_prefill_class_total{outcome="availability_protected",prefill_class="unknown"} 1`,
 		`pig_predictive_admission_decode_fanout_total{bucket=">16",outcome="availability_protected"} 1`,
-		`pig_predictive_admission_selection_input_tokens_bucket{le="1024",outcome="availability_protected"} 1`,
 	} {
 		if !strings.Contains(metricsBody, want) {
 			t.Fatalf("normalized bounded evidence missing %q", want)
@@ -59,34 +53,25 @@ func TestV01218AdmissionEvidenceNormalizesInvalidEnumsAndKeepsFixedCardinality(t
 	}
 }
 
-func TestV01218AdmissionEvidenceSnapshotAndMetricsScrapeAreReadOnly(t *testing.T) {
+func TestAdmissionEvidenceSnapshotAndMetricsScrapeAreReadOnly(t *testing.T) {
 	var evidence admissionEvidence
 	for _, decision := range []coreadmission.DecisionRecord{
 		{
-			Action:       coreadmission.ActionAdmit,
-			Reason:       coreadmission.ReasonOpen,
-			PrefillClass: coreadmission.PrefillRegular,
-			Estimate: domainpredictive.RequestEstimate{
-				SelectionInputTokens:    1_000,
-				DecodeSequences:         1,
-				InputEstimateConfidence: domainpredictive.InputEstimateConfidenceLexical,
-			},
+			Action: coreadmission.ActionAdmit,
+			Reason: coreadmission.ReasonOpen,
+			Demand: coreadmission.TPSRequestDemand{DecodeSequences: 1},
 		},
 		{
-			Action:       coreadmission.ActionProtect,
-			Reason:       coreadmission.ReasonInputLimit,
-			Scope:        coreadmission.ProtectionRequest,
-			PrefillClass: coreadmission.PrefillWeighted,
-			Estimate: domainpredictive.RequestEstimate{
-				SelectionInputTokens:    2_000,
-				DecodeSequences:         2,
-				InputEstimateConfidence: domainpredictive.InputEstimateConfidenceConservative,
-			},
+			Action: coreadmission.ActionProtect,
+			Reason: coreadmission.ReasonInvalidRequest,
+			Scope:  coreadmission.ProtectionRequest,
+			Demand: coreadmission.TPSRequestDemand{DecodeSequences: 2},
 		},
 		{
 			Action: coreadmission.ActionProtect,
 			Reason: coreadmission.ReasonTPSReference,
 			Scope:  coreadmission.ProtectionLoad,
+			Demand: coreadmission.TPSRequestDemand{DecodeSequences: 4},
 		},
 		{
 			Action: coreadmission.ActionProtect,
@@ -117,11 +102,10 @@ func TestV01218AdmissionEvidenceSnapshotAndMetricsScrapeAreReadOnly(t *testing.T
 		after.outcomes[admissionEvidenceAvailabilityProtected] != 1 {
 		t.Fatalf("outcome partition=%v attempts=%d, want one of each outcome", after.outcomes, attempts)
 	}
-	if after.selectionInputTokens[0][admissionEvidenceAdmitted] != 1 ||
-		after.selectionInputTokens[0][admissionEvidenceRequestProtected] != 0 ||
-		after.selectionInputTokens[1][admissionEvidenceRequestProtected] != 1 ||
-		after.unknownInputTokens[admissionEvidenceLoadProtected] != 1 ||
-		after.unknownInputTokens[admissionEvidenceAvailabilityProtected] != 1 {
-		t.Fatalf("input histogram is not cumulative or did not preserve unknowns: %+v", after)
+	if after.decodeFanout[admissionEvidenceFanoutOne][admissionEvidenceAdmitted] != 1 ||
+		after.decodeFanout[admissionEvidenceFanoutTwo][admissionEvidenceRequestProtected] != 1 ||
+		after.decodeFanout[admissionEvidenceFanoutThreeToFour][admissionEvidenceLoadProtected] != 1 ||
+		after.decodeFanout[admissionEvidenceFanoutUnknown][admissionEvidenceAvailabilityProtected] != 1 {
+		t.Fatalf("fanout evidence=%+v", after.decodeFanout)
 	}
 }

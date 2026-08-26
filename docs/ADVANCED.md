@@ -56,7 +56,6 @@ not alter admission policy.
 | `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS` | `500` | `1..60000` |
 | `PREDICTIVE_MAX_METRICS_AGE_MS` | `3 x poll`, normally `1500` | At least one poll, at most `60000` |
 | `PREDICTIVE_TPS_REFERENCE` | `0` | Finite output tokens/s/active Decode sequence in `[0, 1000000]` |
-| `OUTPUT_TOKEN_FIELD_NAMES` | standard OpenAI output-limit fields | Unique supported JSON field names |
 
 `PREDICTIVE_TPS_REFERENCE` is a long-run service-quality target, not an
 instantaneous threshold or learned backend capability. A positive value enables
@@ -80,18 +79,38 @@ running/waiting and locally forwarded sequences are reconciled at the next
 observation watermark so concurrent requests cannot spend the same apparent
 headroom twice and completed work does not remain permanently double-counted.
 
+The bounded request scan reads only protocol shape needed for Decode fanout:
+`n`, Completions `best_of`, Completions prompt-batch cardinality, and `stream`
+for response-usage parsing. Declared input and output lengths do not enter TPS
+admission. Ambiguous or overflowing fanout is request-scoped protection and
+creates no reservation. If the scanner cannot inspect a request because of its
+own byte/depth bound, content type, read failure, or concurrent byte budget, the
+request uses one explicitly labelled fallback sequence and still passes through
+the same atomic TPS decision. Scanner resource bounds are not independent 429
+gates.
+
 ## Retired settings
 
 The following environment variables are ignored. They cannot restore the old
 Context, KV, input-size, cache-aware Prefill, or long-input gates:
 
 ```text
+GLOBAL_LIMIT
+DYNAMIC_*
+QOS_QUEUE_*
+KV_ADMISSION_*
+BACKEND_PRIORITY_*
+CLASSIFY_OUTPUT_TOKENS
+ADAPTIVE_OUTPUT_*
+PREDICTIVE_KV_TARGET_RATIO
 PREDICTIVE_KV_HARD_RATIO
 PREDICTIVE_MAX_MODEL_LEN_TOKENS
+PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS
 PREDICTIVE_PREFILL_REGULAR_TOKENS
 PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS
 PREDICTIVE_PREFILL_QUIESCENT_TOKENS
 PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS
+OUTPUT_TOKEN_FIELD_NAMES
 ```
 
 Remove them from production and test Compose files. Invalid values in these

@@ -71,6 +71,7 @@ func TestConfigHasNoRetiredModeOwnership(t *testing.T) {
 		"PredictiveKVHardRatio", "PredictiveMaxModelLenTokens",
 		"PredictivePrefillRegularTokens", "PredictivePrefillExclusiveTokens",
 		"PredictivePrefillQuiescentTokens", "PredictivePrefillAggregateBudgetTokens",
+		"OutputTokenFields", "PredictiveEstimator",
 		"SSEKeepAliveEnabled", "SSEEarlyBridgeEnabled",
 	}
 	typeOfConfig := reflect.TypeOf(Config{})
@@ -96,6 +97,7 @@ func TestRetiredEnvironmentCannotReenableRemovedModes(t *testing.T) {
 		"SSE_EARLY_BRIDGE_ENABLED":               "not-a-bool",
 		"PREDICTIVE_KV_TARGET_RATIO":             "not-a-float",
 		"PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS": "not-an-int",
+		"OUTPUT_TOKEN_FIELD_NAMES":               "retired,duplicate,retired",
 		"UPSTREAMS":                              "http://retired-a.invalid,http://retired-b.invalid",
 		"BACKENDS":                               "a=http://retired-a.invalid|http://retired-a.invalid/metrics",
 	}
@@ -162,9 +164,8 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	if cfg.PredictiveTPSReference != 0 {
 		t.Fatalf("default TPS reference=%v, want disabled zero", cfg.PredictiveTPSReference)
 	}
-	minimum650KBodyWindow := int64(650_000 * cfg.PredictiveEstimator.MaxBytesPerToken)
-	if cfg.PredictiveScannerBodyBytes < minimum650KBodyWindow {
-		t.Fatalf("production scanner ceiling=%d does not cover the model-neutral 650K window=%d", cfg.PredictiveScannerBodyBytes, minimum650KBodyWindow)
+	if cfg.PredictiveScannerBodyBytes != defaultPredictiveScannerBodyBytes {
+		t.Fatalf("production scanner ceiling=%d want=%d", cfg.PredictiveScannerBodyBytes, defaultPredictiveScannerBodyBytes)
 	}
 }
 

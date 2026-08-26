@@ -28,7 +28,7 @@ func TestAdmissionBackendObserverPublishesSGLangCountersAndRejectsIdentityDrift(
 
 	fingerprint := predictiveModelIdentitySHA256(modelName)
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability: coreadmission.Capability{Fingerprint: fingerprint},
+		RuntimeIdentity: fingerprint,
 	})
 	if err != nil {
 		t.Fatalf("construct SGLang observer Controller: %v", err)
@@ -37,8 +37,8 @@ func TestAdmissionBackendObserverPublishesSGLangCountersAndRejectsIdentityDrift(
 	clock := &manualTestClock{now: time.Unix(400, 0)}
 	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
 		BackendKind: "sglang", MetricsURL: metrics.URL,
-		CapabilityFingerprint: fingerprint,
-		PollInterval:          20 * time.Millisecond, MaximumAge: 60 * time.Millisecond,
+		RuntimeIdentity: fingerprint,
+		PollInterval:    20 * time.Millisecond, MaximumAge: 60 * time.Millisecond,
 		RequestTimeout: 100 * time.Millisecond, Controller: controller, Now: clock.Now,
 	})
 	if err != nil {
@@ -65,7 +65,7 @@ func TestAdmissionBackendObserverPublishesSGLangCountersAndRejectsIdentityDrift(
 	clock.Advance(time.Millisecond)
 	waitAdmissionCondition(t, func() bool {
 		snapshot := controller.Snapshot(clock.Now())
-		return !snapshot.IntakeOpen && snapshot.MinimumDecision.Reason == coreadmission.ReasonCapabilityDrift
+		return !snapshot.IntakeOpen && snapshot.MinimumDecision.Reason == coreadmission.ReasonRuntimeIdentityDrift
 	})
 }
 

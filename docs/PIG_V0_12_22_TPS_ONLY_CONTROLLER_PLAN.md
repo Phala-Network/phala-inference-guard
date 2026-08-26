@@ -26,8 +26,9 @@ pre-forward TPS controller that:
    low-flow self-lock;
 5. keeps backend waiting absent or short-lived without retaining a learned low
    cap after waiting clears;
-6. is measurably better than exact PIG `v0.8.13` on frozen, deterministic,
-   production-shaped traces before any release claim.
+6. compares against exact PIG `v0.8.13` and production-shaped traces to absorb
+   lessons, explain regressions, and guide follow-up work without turning one
+   baseline or numeric result into a hard release gate.
 
 The controlled reference for initial tests is `25 tok/s/active Decode
 sequence`. Production keeps one intended policy override:
@@ -128,7 +129,7 @@ separated before the TPS-only source can be considered coherent.
 
 ```text
 canonical inference request
-  -> decode sequence count and declared output bound
+  -> bounded JSON shape scan and Decode sequence count
   -> fresh backend identity/running/waiting/generation/preemption observation
   -> rolling TPS state plus unobserved local sequence leases
   -> post-admit TPS counterfactual
@@ -142,19 +143,19 @@ canonical inference request
 The controller consumes a small immutable `TPSRequestDemand`:
 
 - positive Decode sequence count;
-- optional declared output-token limit;
-- explicit confidence/fallback source for the sequence count.
+- explicit request or canonical-fallback source for the sequence count.
 
 Request tokenization and input-token estimates do not enter the decision. A
-well-formed supported inference request whose detailed token estimator is
-unsupported or uncertain falls back conservatively to one Decode sequence when
-the protocol shape does not prove a larger batch. It is not rejected as
-`invalid_request` merely because KV/Prefill estimation is unavailable. Proven
-batch multiplicity remains charged in full.
-
-The output bound may cap the duration used by a surplus lease. An unknown output
-bound uses the existing bounded control horizon and cannot create an unbounded
-lease.
+single bounded parser validates JSON and extracts only endpoint-supported
+fanout (`n`, Completions `best_of`, and Completions prompt-batch cardinality).
+Proven batch multiplicity is charged in full. Ambiguous, invalid, or
+overflowing fanout becomes request-scoped `invalid_request`, creates no
+reservation, and cannot reduce canonical node capacity. If the bounded scanner
+cannot prove fanout because of its byte/depth limit, content type, read failure,
+or concurrent byte budget, the request uses a labelled one-sequence fallback
+through the same atomic TPS transaction. A scanner boundary cannot independently
+cause a 429. There is no detailed token estimator and no declared output
+lifetime in the Controller contract.
 
 ### 4.2 Observation contract
 
@@ -194,9 +195,10 @@ The selected limit is the maximum eligible value among:
 
 Waiting or a current preemption disables all marginal admission for exactly the
 current observation. It does not mutate candidate 1 or survive a fresh clear
-observation. Idle and warming states permit only a bounded probe and can advance
-again on the next valid 500 ms observation; there is no hidden one-second hold,
-cooldown, or consecutive-green counter.
+observation. Warming state permits only a bounded probe. Ready-idle state may
+refill atomically up to its still-valid rolling base; once that evidence ages
+out, the window becomes unready and returns to the bounded warming rule. There
+is no hidden one-second hold, cooldown, or consecutive-green counter.
 
 Preventing waiting before it appears depends on atomic projection: backend
 running plus waiting, complete proven batch multiplicity, and every locally
@@ -222,31 +224,29 @@ coverage state. Reserve, forward, first response, success, client cancel,
 disconnect, upstream error, timeout, response EOF, panic cleanup, counter reset,
 runtime restart, policy update, and shutdown must each reconcile exactly once.
 
-## 5. Falsifiable Acceptance Contract
+## 5. Engineering And Learning Contract
 
 ### H1: removing non-TPS gates improves usable throughput
 
 On identical deterministic traces, TPS-only source must never protect because a
-KV/cache/Prefill/input field changes. For healthy traces whose qualified mean
-TPS stays at or above 25, it must:
+KV/cache/Prefill/input field or declared output lifetime changes. Historical
+v0.8.13 and production windows are comparison experience: record where the new
+controller admits more or less work, why the decision differs, and whether the
+result suggests over-protection or QoS risk. Do not require a fixed percentage,
+one model-specific fixture, or every trace to improve before source can advance.
 
-- admit at least as many successful requests as v0.8.13 on every trace;
-- improve successful completion goodput or admitted successful requests by at
-  least 5% on at least one previously overprotected mixed-load trace;
-- reduce total protections and protection time versus v0.8.13;
-- produce no sustained low-flow lock.
-
-If it cannot show a throughput improvement on any trace without violating the
-QoS contract, the new policy is not better and no version/image is authorized.
+Low-flow self-lock, reservation leaks, stale-epoch reuse, non-atomic batch
+admission, and decisions that consume retired non-TPS fields remain correctness
+failures rather than benchmark thresholds.
 
 ### H2: TPS quality remains bounded
 
 Across steady, burst, oscillating, and low-flow traces whose backend TPS
-capacity is stable enough for the reference:
+capacity is stable enough for the reference, inspect whether:
 
-- the qualified 60-second active-sequence-weighted mean TPS is at least the
-  configured reference after warmup, or any deficit is fully covered by the
-  bounded surplus accounting and resolves within its declared horizon;
+- the qualified 60-second active-sequence-weighted mean trends around the
+  configured reference without treating every below-reference interval as a
+  failure;
 - a single sub-reference poll does not collapse the limit;
 - sustained degradation stops new marginal admission without terminating
   existing streams;
@@ -265,21 +265,23 @@ TPS observation, and it must recover without retaining a learned low cap. This
 is an explicit consequence of the user-selected TPS-only boundary, not a green
 claim that extreme input has no QoS effect.
 
-The simulator may model backend capacity, Prefill stalls, and KV pressure to
-stress the TPS outcome, but those model variables cannot become production
-admission gates. Simulated successful completion goodput is counted only when
-the frozen backend oracle marks an admitted request successful and terminal;
-raw admits are not treated as completions.
+The simulator may model backend capacity, Prefill stalls, and KV pressure as
+external trace effects, but those variables cannot become production admission
+gates. Simulated results are diagnostic evidence, not a release oracle. Raw
+admits are never relabeled as successful completion goodput.
 
 ### H3: recovery is faster and simpler than v0.8.13
 
-When the trace returns to healthy output TPS with no waiting/preemption:
+When the trace returns to healthy output TPS with no waiting/preemption, inspect
+and retain the step-by-step evidence that:
 
 - one additional supported sequence becomes eligible no later than the first
   fresh 500 ms observation that proves it;
 - subsequent increases require fresh evidence or a bounded surplus lease;
 - idle/sparse traffic can probe from zero/one sequence without waiting for
   representative-load or consecutive-green learning;
+- a ready-idle snapshot can refill only up to its unexpired rolling base, and
+  every batch is charged by complete Decode fanout even when current is zero;
 - the decision reason is one of `open`, `tps_reference`, or an explicit
   availability/integrity failure, never an obsolete KV/Prefill/input reason.
 
@@ -305,8 +307,9 @@ When the trace returns to healthy output TPS with no waiting/preemption:
 2. Make the controller build and validate only the TPS counterfactual.
 3. Delete context/KV/Prefill/cache gates from policy composition rather than
    leaving disabled branches or no-op configuration.
-4. Make uncertain detailed token estimates fall back to a bounded sequence
-   demand instead of causing request protection.
+4. Make valid supported shapes produce one bounded sequence demand; reject
+   ambiguous or overflowing fanout as request-scoped protection without a
+   reservation.
 5. Retain atomic check-and-reserve under the existing controller mutex.
 
 ### Phase 2: correct TPS recovery and risk behavior
@@ -320,7 +323,6 @@ Add focused red tests before changing any TPS rule:
 - concurrent arrivals cannot double-spend that step or the surplus lease;
 - warming and idle recover at 500 ms without low-flow self-lock;
 - one poor poll is tolerated while sustained poor TPS protects;
-- unknown output uses the bounded horizon;
 - batch multiplicity is reserved atomically;
 - all terminal and runtime-reset paths reconcile once.
 
@@ -356,9 +358,10 @@ logged.
 
 ### Phase 4: deterministic comparison and clean-builder matrix
 
-On the approved nonproduction builder, run exact v0.8.13 and candidate source
-against identical frozen trace manifests. Retain raw per-step decisions and
-summaries for:
+On the approved nonproduction builder, run exact v0.8.13 evidence and candidate
+source against identical frozen trace manifests when the old oracle remains
+executable. Otherwise retain the historical result as context and state that it
+is not directly comparable. Retain raw per-step decisions and summaries for:
 
 - healthy steady load;
 - low-flow ramp and restart;
@@ -523,9 +526,68 @@ Three reviews were completed before behavior code:
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
   `README.md` and `docs/ADVANCED.md` now describe TPS-only source semantics and
   identify those six old settings as ignored/retired;
-- inherited cache accumulator: removed from the admission source and tests in
-  the current unverified source slice;
-- TPS behavior: unchanged from branch base;
+- final TPS-only source removes the complete KV/Prefill/input/tokenizer
+  admission stack, the inherited cache accumulator, the request-aware and TPS
+  debt simulators, their retired configuration surface, and the dead tokenizer
+  oracle/fixture. `scripts/verify-no-legacy-mode.sh` now rejects reintroduction
+  of those packages and files. The Controller contract is limited to Decode
+  sequence demand, normalized TPS observations, atomic projection, and the
+  reservation lifecycle;
+- implementation review corrections completed before the final matrix:
+  `demand_source=request` remains observable instead of being normalized to
+  `unknown`; ready-idle fanout cannot bypass the sequence limit; a still-valid
+  rolling base can refill a ready-idle controller atomically instead of forcing
+  it through the warming limit; and waiting/preemption affects marginal intake
+  for only the current observation, with no sticky learned cap or cooldown;
+- bounded scanner fallback red/green: source archive
+  `90b04cef6955817635bf7dd4c62f3d87d1cf88ad2083a5049fbe75661c97571f`
+  reproduced `body_too_large`, depth-limit, and non-JSON request shapes as
+  scanner-induced `429` responses with zero backend calls (red output SHA-256
+  `519630abb970d0459c28589e4948b1ec291815a73f324e1db4eca2d7aa180f49`).
+  The corrected source archive
+  `3d35d9091344d035123c45e95b3d0f0e26bb058dfc5069dba828571862ac311f`
+  routes scanner byte/depth/resource uncertainty through a labelled
+  one-sequence TPS fallback, while malformed JSON remains a local OpenAI-shaped
+  `400` and proven fanout ambiguity remains request-scoped protection. Focused
+  green output SHA-256 is
+  `75788a07baa2d1abc85d001501a9c2cc2454b2df989dc5d776181409cd57d899`;
+- final executable source archive SHA-256 is
+  `2cb348d805d1a1c3d094833db51ed63defa70d0a66c08dc5cfd752bdee68a8f0`.
+  The fixed builder was `4f167f6e-4c50-415f-99f2-94b65652beba` through helper
+  target `ff40ee31b95e89ebb242c223514adc715ac8a301`, using
+  `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`
+  and `go1.24.13 linux/amd64`;
+- the final builder matrix completed the legacy-source audit, formatting check,
+  `go test ./...`, `go test -race ./...`, `go vet ./...`, `go build ./...`, five
+  admission benchmark runs, five 4 MiB request-shape benchmark runs, and the
+  deterministic TPS simulation. The result archive SHA-256 is
+  `e0687831ecf0b415a57b7ce40702ab885365e943acadbf6f0da9ddd87882c06c`.
+  Material log SHA-256 values are: legacy audit
+  `455cf163ebdc8cd358ea90370bf09603ddeec7deb7a64d3c3018975046aba5c0`,
+  tests `5eb7ee320960b5fa472d77f7345a3426537a06d8a78413c51b473b897cd7fd73`,
+  race `8dc62b6a289d04b46b16c2e89f3d7a31c3c0cb080359048f1cb74ca725c3d832`,
+  admission benchmarks
+  `2b518fcc302886ba5cacbdc74fad5c2780e2b921aaae04ce0dbd7be948421eb3`,
+  request-shape benchmarks
+  `1e0f4974936edf88b871c966749ccc1a2ced5ae537e3005d1754b5f714fd7f79`,
+  and simulation
+  `7334b11c325bd3f2a5630463945f5ca1477d8433af5c9a0b8c5c57c8b1c455b1`.
+  Empty formatting, vet, and build logs each hash to
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+- diagnostic benchmark observations were `350.0-374.9 ns/op` for Controller
+  snapshots, `795.6-919.8 ns/op` for protected admission,
+  `647.9-729.6 ns/op` for admit/cancel, `453.9-504.0 us/op` for publication
+  with 4096 reservations, and `6.919-7.542 ms/op` (`556-606 MB/s`) for the 4 MiB
+  request-shape scan. These are implementation observations only, not hard
+  acceptance thresholds or production-throughput claims;
+- final three-pass review conclusion: the request path has a causal TPS-only
+  contract and scanner uncertainty no longer creates low-load protection; the
+  reservation ledger, counter reset, epoch transition, concurrent arrival, and
+  terminal paths passed race/lifecycle coverage; dead source, configuration,
+  metrics, simulations, oracle assets, and documentation were removed or
+  reconciled. GLM-5.2, exact v0.8.13, historical traffic windows, and benchmark
+  numbers supplied useful failure patterns but no fixed model, percentage,
+  latency, or window became a source promotion rule;
 - read-only GLM-5.2 production feedback on 2026-08-26 found approximately
   `470-473` enforced PIG rejections in the preceding rolling 12-hour window
   while backend waiting and preemption remained zero. The running v0.12.17
@@ -538,4 +600,7 @@ Three reviews were completed before behavior code:
   comparisons are experience to absorb, not hard acceptance thresholds. Keep
   universal correctness, race, lifecycle, and build verification, but do not
   block or approve a candidate solely from one exact model/window/percentage;
-- version/image/deployment: not authorized and not started.
+- source stage: implementation, documentation, focused red/green evidence, and
+  complete builder verification are complete; commit and push remain pending;
+- version/image/deployment: no version assigned, no image built or uploaded,
+  and no deployment started. Those remain separate later stages.
