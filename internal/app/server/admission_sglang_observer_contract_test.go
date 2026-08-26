@@ -9,7 +9,6 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 func TestAdmissionBackendObserverPublishesSGLangCountersAndRejectsIdentityDrift(t *testing.T) {
@@ -28,20 +27,8 @@ func TestAdmissionBackendObserverPublishesSGLangCountersAndRejectsIdentityDrift(
 	defer metrics.Close()
 
 	fingerprint := predictiveModelIdentitySHA256(modelName)
-	profile, err := runtimepredictive.NewBackendCapabilityProfile(runtimepredictive.CapabilityProfileInput{
-		ModelIdentitySHA256: fingerprint,
-		KVCapacityTokens:    1_000_000,
-		KVBlockSize:         16,
-		KVHardRatio:         0.9,
-		MaxModelLen:         650 * 1024,
-		Source:              runtimepredictive.CapabilityProfileAutomatic,
-	})
-	if err != nil {
-		t.Fatalf("construct SGLang observer capability: %v", err)
-	}
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability:  admissionCapabilityFromProfile(profile),
-		WorkProfile: mustPredictiveRequestWorkProfile(t, "sglang"),
+		Capability: coreadmission.Capability{Fingerprint: fingerprint},
 	})
 	if err != nil {
 		t.Fatalf("construct SGLang observer Controller: %v", err)
@@ -50,9 +37,8 @@ func TestAdmissionBackendObserverPublishesSGLangCountersAndRejectsIdentityDrift(
 	clock := &manualTestClock{now: time.Unix(400, 0)}
 	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
 		BackendKind: "sglang", MetricsURL: metrics.URL,
-		CapabilityFingerprint: fingerprint, MaxModelLenTokens: profile.MaxModelLenTokens,
-		KVCapacityTokens: profile.KVCapacityTokens, KVBlockSize: profile.KVBlockSize,
-		PollInterval: 20 * time.Millisecond, MaximumAge: 60 * time.Millisecond,
+		CapabilityFingerprint: fingerprint,
+		PollInterval:          20 * time.Millisecond, MaximumAge: 60 * time.Millisecond,
 		RequestTimeout: 100 * time.Millisecond, Controller: controller, Now: clock.Now,
 	})
 	if err != nil {

@@ -99,10 +99,6 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 	if !sample.ModelNameValid || strings.TrimSpace(sample.ModelName) == "" {
 		return predictiveBackendStartup{}, fmt.Errorf("predictive startup model identity is missing or ambiguous")
 	}
-	if !sample.KVTokenMetricsValid || sample.KVCapacityTokens <= 0 || sample.KVUsedTokens < 0 ||
-		sample.KVUsedTokens > sample.KVCapacityTokens || !sample.KVBlockSizeValid || sample.KVBlockSize <= 0 {
-		return predictiveBackendStartup{}, fmt.Errorf("predictive startup KV capacity or block size is invalid")
-	}
 	if !sample.RunningValid || !sample.WaitingValid || !sample.PreemptionsValid || !sample.GenerationValid ||
 		sample.Running < 0 || sample.Waiting < 0 || sample.Running > maximumInt-sample.Waiting {
 		return predictiveBackendStartup{}, fmt.Errorf("predictive startup request or generation counters are invalid")

@@ -128,13 +128,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
 		BackendKind:           startup.BackendKind,
 		MetricsURL:            metricsURL,
-		UpstreamURL:           cfg.Upstream,
-		ModelName:             startup.modelName,
-		RevalidateMetadata:    initialization.Reason == "metadata",
 		CapabilityFingerprint: profile.ModelIdentitySHA256,
-		MaxModelLenTokens:     profile.MaxModelLenTokens,
-		KVCapacityTokens:      profile.KVCapacityTokens,
-		KVBlockSize:           profile.KVBlockSize,
 		PollInterval:          cfg.PredictiveObservationPollInterval,
 		MaximumAge:            cfg.PredictiveMaximumMetricsAge,
 		RequestTimeout:        cfg.PredictiveMetricsRequestTimeout,
