@@ -29,7 +29,7 @@ func (s *proxyServer) metrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-	s.writeLocalMetrics(w)
+	s.writeRouterMetricsContract(w)
 }
 
 func (s *proxyServer) combinedMetrics(w http.ResponseWriter, r *http.Request) {
@@ -41,6 +41,19 @@ func (s *proxyServer) combinedMetrics(w http.ResponseWriter, r *http.Request) {
 	s.writeLocalMetrics(w)
 	_, _ = io.WriteString(w, "\n# --- Backend Metrics ---\n")
 	s.writeBackendMetricsRaw(w)
+}
+
+func (s *proxyServer) writeRouterMetricsContract(w io.Writer) {
+	snapshot := s.admissionTelemetry(time.Now())
+	projection := projectAdmissionCapacity(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, snapshot.Report)
+	compatibility := projectRouterCompatibility(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, projection)
+	applied := projection.Active && compatibility.GlobalLimit > 0
+
+	fmt.Fprintf(w, "pig_dynamic_observed_running %d\n", compatibility.ObservedRunning)
+	fmt.Fprintf(w, "pig_dynamic_observed_waiting %d\n", compatibility.ObservedWaiting)
+	fmt.Fprintf(w, "pig_dynamic_global_limit %d\n", compatibility.GlobalLimit)
+	fmt.Fprintf(w, "pig_predictive_admission_enforce %d\n", boolMetric(s.cfg.PredictiveAdmissionMode == "enforce"))
+	fmt.Fprintf(w, "pig_predictive_router_backpressure_applied %d\n", boolMetric(applied))
 }
 
 func (s *proxyServer) writeLocalMetrics(w io.Writer) {

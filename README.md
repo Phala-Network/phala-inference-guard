@@ -159,8 +159,8 @@ identity.
 | Endpoint | Purpose |
 | --- | --- |
 | `/healthz` | Process liveness |
-| `/pig/metrics` | PIG Prometheus metrics |
-| `/v1/metrics` | PIG metrics plus a bounded upstream metrics copy |
+| `/pig/metrics` | Minimal five-gauge Router capacity contract |
+| `/v1/metrics` | Full PIG diagnostics plus a bounded upstream metrics copy |
 | `/v1/upstream-status` | Router-facing admission status |
 | `/admin/v1/predictive-policy` | Read or atomically update TPS and admission bounds |
 | `/v1/attestation/report` | Attestation report |

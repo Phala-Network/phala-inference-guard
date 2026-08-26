@@ -5,12 +5,30 @@ snapshots. Reading them never reruns policy or changes admission.
 
 ## Local endpoints
 
-- `/pig/metrics` returns PIG metrics.
-- `/v1/metrics` returns PIG metrics and a bounded copy of native upstream
-  metrics.
+- `/pig/metrics` returns only the five-gauge Router capacity contract.
+- `/v1/metrics` returns full PIG diagnostics and a bounded copy of native
+  upstream metrics.
 - `/v1/upstream-status` returns Router-facing admission status.
 - `GET/PATCH /admin/v1/predictive-policy` reads or atomically updates the
   TPS reference, window concurrency, and running limit.
+
+The authenticated `/pig/metrics` response is exactly these five lines, in this
+order:
+
+```text
+pig_dynamic_observed_running <value>
+pig_dynamic_observed_waiting <value>
+pig_dynamic_global_limit <value>
+pig_predictive_admission_enforce <0|1>
+pig_predictive_router_backpressure_applied <0|1>
+```
+
+Open enforce capacity publishes `global_limit=0` and
+`backpressure_applied=0`. Protected enforce capacity publishes
+`backpressure_applied=1` and a strictly positive `global_limit`. Detailed PIG
+counters, histograms, policy state, TPS evidence, lifecycle data, and native
+backend metrics remain on `/v1/metrics`; they are intentionally absent from
+`/pig/metrics`.
 
 These routes are handled locally and preserve their configured authentication
 semantics. They never enter the public inference proxy.
