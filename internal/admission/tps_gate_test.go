@@ -168,6 +168,28 @@ func TestTPSGateUsesCurrentRateForOneBoundedMatureRecoveryStep(t *testing.T) {
 	}
 }
 
+func TestV01223HealthyWindowDoesNotTurnBlindFlightBudgetIntoConcurrencyCap(t *testing.T) {
+	state := ProjectedState{
+		RawRunning:               1,
+		UnobservedSequences:      3,
+		SequenceLiabilities:      3,
+		GenerationDelta:          50,
+		ObservationInterval:      500 * time.Millisecond,
+		ObservationIntervalValid: true,
+		TPS: TPSSnapshot{
+			Enabled: true, Ready: true, Reference: 25,
+			QualifiedSamples: 20, QualifiedSequenceSamples: 20,
+			QualifiedSequenceTokens: 7_140, QualifiedSequenceSeconds: 100,
+			AggregateTPS: 100, MeanActiveTPS: 71.4,
+		},
+	}
+
+	decision := (tpsGate{}).evaluate(state)
+	if !decision.fits || decision.reason != ReasonOpen {
+		t.Fatalf("healthy fourth blind-flight admission was treated as a concurrency cap: %+v", decision)
+	}
+}
+
 func TestTPSGateDoesNotUseCurrentRateWithoutCurrentSafeSignal(t *testing.T) {
 	snapshot := TPSSnapshot{
 		Enabled: true, Reference: 20,
