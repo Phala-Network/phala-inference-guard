@@ -71,6 +71,10 @@ running limit from a coherent top-level integer `max_running_requests` in
 remains disabled unless an operator sets it. These are initialized or
 administered bounds, not learned values.
 
+For SGLang, auto-discovery runs only when `PREDICTIVE_RUNNING_LIMIT` is absent.
+Setting it explicitly to `0` disables discovery and the running-limit gate;
+setting a positive value uses that value without probing `/server_info`.
+
 PIG startup requires coherent backend identity, running, waiting, generation,
 preemption, and runtime-epoch telemetry. It does not require KV/cache metrics or
 model context metadata and does not probe `/v1/models` to construct admission

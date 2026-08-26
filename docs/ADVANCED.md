@@ -84,6 +84,11 @@ coherent positive integer. Missing, malformed, inconsistent, timed-out, or
 out-of-range data leaves the limit unknown. Environment and admin values take
 precedence. No value is learned from traffic.
 
+SGLang discovery occurs only when `PREDICTIVE_RUNNING_LIMIT` is absent. An
+explicit startup value of `0` disables both discovery and the running gate; a
+positive value disables discovery and initializes that exact bound. The probe
+does not follow redirects or use an environment HTTP proxy.
+
 The bounded request scan reads only protocol shape needed for Decode fanout.
 Input size, declared output length, token counts, cache, KV, Prefill, and TTFT do
 not enter admission. Scanner-unavailable requests use one labelled fallback

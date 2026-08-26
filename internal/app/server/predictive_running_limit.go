@@ -49,7 +49,7 @@ func initializePredictiveRunningLimit(
 		MetricsURL: metricsURL, RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 	})
 	if err != nil {
-		log.Printf("level=warn component=tps_controller event=running_limit_discovery backend_kind=sglang source=unknown error=%q", err.Error())
+		log.Printf("level=warn component=tps_controller event=running_limit_discovery backend_kind=sglang result=unavailable source=unknown")
 		return predictiveRunningLimit{Source: coreadmission.RunningLimitSourceUnknown}
 	}
 	return predictiveRunningLimit{
