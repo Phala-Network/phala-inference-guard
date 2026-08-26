@@ -198,3 +198,25 @@ set. The new contract intentionally keeps that set on authenticated
 surface. The test must follow this endpoint ownership; restoring diagnostic
 metrics to `/pig/metrics` would violate the release contract. No later gate ran
 in this evidence directory, and the directory will not be reused.
+
+## 10. Third Green Runner Backend-Call Correction
+
+The endpoint compatibility correction was pushed at
+`d95914f03685c39d292cd388446d61fb03ac31c6`. Builder directory
+`green-d95914f-r3` again passed the legacy ownership audit, formatting check,
+and focused admission, waiting-lifecycle, and Router-metrics tests. Its focused
+log SHA-256 is
+`c3020959158a658ecf2e2ad821bdb3524c8ec9ea6a055bd1a57dc5f44929a6cc`.
+
+The full suite reached the corrected policy test and proved the complete
+metrics were available on `/v1/metrics`, then failed its old final expectation
+that policy and metrics requests together never call the backend. The combined
+metrics endpoint intentionally fetches backend metrics once. The corrected
+test now separately proves policy GET/PATCH calls have zero backend calls and
+that one authenticated `/v1/metrics` request has exactly one backend call. The
+full log SHA-256 is
+`e7373746bf77d62de9982e0d6d63ae5708b87c11a99ddae2690d47c9d21bd991`;
+the environment record SHA-256 is
+`a16b02d928f984d6df8769058899dadcc505cd1afc8e66c841284e615c1e1864`.
+No later gate ran in this evidence directory, and the directory will not be
+reused.

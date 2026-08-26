@@ -175,6 +175,9 @@ func TestV01215PredictivePolicyAPIAppliesCASAndExportsMetricsAndStatus(t *testin
 	if current.Revision != 2 || current.Mutable.TPSReference != 25 {
 		t.Fatalf("conflict changed policy: %+v", current)
 	}
+	if got := backendCalls.Load(); got != 0 {
+		t.Fatalf("policy requests reached backend %d times", got)
+	}
 
 	metricsRequest := httptest.NewRequest(http.MethodGet, "/v1/metrics", nil)
 	metricsRequest.Header.Set("Authorization", "Bearer secret")
@@ -197,8 +200,8 @@ func TestV01215PredictivePolicyAPIAppliesCASAndExportsMetricsAndStatus(t *testin
 	if !strings.Contains(status, "policy=2/runtime_api") || !strings.Contains(status, "tps=0.000/25.000") {
 		t.Fatalf("status does not expose policy revision: %s", status)
 	}
-	if backendCalls.Load() != 0 {
-		t.Fatalf("policy/metrics requests reached backend %d times", backendCalls.Load())
+	if got := backendCalls.Load(); got != 1 {
+		t.Fatalf("combined metrics reached backend %d times, want 1", got)
 	}
 }
 
