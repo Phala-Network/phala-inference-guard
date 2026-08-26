@@ -8,7 +8,6 @@ import (
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
-	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 type admissionReservation interface {
@@ -49,38 +48,31 @@ type serverDependencies struct {
 
 type admissionTelemetrySnapshot struct {
 	BackendKind        string
-	CapabilityProfile  runtimepredictive.BackendCapabilityProfile
-	CapabilityReason   string
 	Capacity           coreadmission.CapacitySnapshot
 	Report             admissionReportSnapshot
 	PredictionDuration *durationHistogram
 }
 
 type admissionRuntime struct {
-	controller       *coreadmission.AdmissionController
-	reporter         *admissionReporter
-	observer         admissionObserver
-	backendKind      string
-	profile          runtimepredictive.BackendCapabilityProfile
-	capabilityReason string
-	mode             string
-	now              func() time.Time
-	prediction       durationHistogram
-	closeOnce        sync.Once
-	closeErr         error
+	controller  *coreadmission.AdmissionController
+	reporter    *admissionReporter
+	observer    admissionObserver
+	backendKind string
+	mode        string
+	now         func() time.Time
+	prediction  durationHistogram
+	closeOnce   sync.Once
+	closeErr    error
 }
 
 func newAdmissionRuntime(
 	controller *coreadmission.AdmissionController,
 	reporter *admissionReporter,
-	profile runtimepredictive.BackendCapabilityProfile,
-	capabilityReason string,
 	backendKind string,
 	mode string,
 	now func() time.Time,
 ) (*admissionRuntime, error) {
-	if controller == nil || reporter == nil || profile.Validate() != nil ||
-		(capabilityReason != "metadata" && capabilityReason != "explicit_override" && capabilityReason != "test") ||
+	if controller == nil || reporter == nil ||
 		(backendKind != "vllm" && backendKind != "sglang") ||
 		(mode != "enforce" && mode != "shadow") {
 		return nil, fmt.Errorf("admission runtime configuration is invalid")
@@ -89,14 +81,12 @@ func newAdmissionRuntime(
 		now = time.Now
 	}
 	return &admissionRuntime{
-		controller:       controller,
-		reporter:         reporter,
-		backendKind:      backendKind,
-		profile:          profile,
-		capabilityReason: capabilityReason,
-		mode:             mode,
-		now:              now,
-		prediction:       newPredictiveDurationHistogram(),
+		controller:  controller,
+		reporter:    reporter,
+		backendKind: backendKind,
+		mode:        mode,
+		now:         now,
+		prediction:  newPredictiveDurationHistogram(),
 	}, nil
 }
 
@@ -136,14 +126,8 @@ func (r *admissionRuntime) Snapshot(now time.Time) admissionTelemetrySnapshot {
 		return admissionTelemetrySnapshot{}
 	}
 	capacity := r.controller.Snapshot(now)
-	profile := r.profile
-	if capacity.HasObservation && capacity.Observation.KVCapacityTokens > 0 {
-		profile.KVCapacityTokens = capacity.Observation.KVCapacityTokens
-	}
 	return admissionTelemetrySnapshot{
 		BackendKind:        r.backendKind,
-		CapabilityProfile:  profile,
-		CapabilityReason:   r.capabilityReason,
 		Capacity:           capacity,
 		Report:             r.reporter.Snapshot(),
 		PredictionDuration: &r.prediction,

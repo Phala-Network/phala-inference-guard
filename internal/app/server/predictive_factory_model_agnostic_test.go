@@ -9,36 +9,8 @@ import (
 	"testing"
 	"time"
 
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
-
-func TestV01215PredictiveRequestWorkProfileIsBackendProtocolSpecific(t *testing.T) {
-	tests := []struct {
-		backend string
-		want    domainpredictive.BackendExecutionProfile
-	}{
-		{backend: "sglang", want: domainpredictive.BackendExecutionProfile{
-			PrefillExecution:  domainpredictive.PrefillExecutionPageAlignedPrecache,
-			InputKVSharing:    domainpredictive.InputKVSharingPageAlignedPrefix,
-			FirstByteCoverage: domainpredictive.FirstByteCoveragePageAlignedSinglePrompt,
-		}},
-		{backend: "vllm", want: domainpredictive.BackendExecutionProfile{
-			PrefillExecution:  domainpredictive.PrefillExecutionIndependentSequences,
-			InputKVSharing:    domainpredictive.InputKVSharingIndependentSequences,
-			FirstByteCoverage: domainpredictive.FirstByteCoverageOneSequence,
-		}},
-	}
-	for _, test := range tests {
-		profile, err := predictiveRequestWorkProfile(test.backend)
-		if err != nil || profile != test.want {
-			t.Fatalf("backend=%s profile=%+v error=%v", test.backend, profile, err)
-		}
-	}
-	if _, err := predictiveRequestWorkProfile("other"); err == nil {
-		t.Fatal("unknown backend constructed a request work profile")
-	}
-}
 
 func TestPredictiveStartupAcceptsCoherentSGLangSample(t *testing.T) {
 	sample := telemetry.Sample{

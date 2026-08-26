@@ -9,8 +9,6 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	domainpredictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
-	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 const testAdmissionFingerprint = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -54,38 +52,18 @@ func newAdmissionRuntimeForTest(
 	if config.MaximumAge == 0 {
 		config.MaximumAge = time.Hour
 	}
-	profile, err := runtimepredictive.NewBackendCapabilityProfile(runtimepredictive.CapabilityProfileInput{
-		ModelIdentitySHA256: testAdmissionFingerprint,
-		KVCapacityTokens:    config.KVCapacity,
-		KVBlockSize:         64,
-		KVHardRatio:         config.KVHardRatio,
-		MaxModelLen:         config.MaxModelLen,
-		Source:              runtimepredictive.CapabilityProfileAutomatic,
-	})
-	if err != nil {
-		t.Fatalf("construct admission test capability: %v", err)
-	}
-	workProfile, err := predictiveRequestWorkProfile(config.BackendKind)
-	if err != nil {
-		t.Fatalf("construct admission test work profile: %v", err)
-	}
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		Capability:  admissionCapabilityFromProfile(profile),
-		WorkProfile: workProfile,
-		TPS:         coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
+		Capability: coreadmission.Capability{Fingerprint: testAdmissionFingerprint},
+		TPS:        coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
 	})
 	if err != nil {
 		t.Fatalf("construct admission test Controller: %v", err)
 	}
 	clock := &manualTestClock{now: time.Unix(100, 0)}
-	publishAdmissionObservationForTest(t, controller, profile, coreadmission.BackendObservation{
-		CapabilityFingerprint: profile.ModelIdentitySHA256,
-		MaxModelLenTokens:     profile.MaxModelLenTokens,
-		KVCapacityTokens:      profile.KVCapacityTokens,
-		KVBlockSize:           profile.KVBlockSize,
+	publishAdmissionObservationForTest(t, controller, coreadmission.BackendObservation{
+		CapabilityFingerprint: testAdmissionFingerprint,
 		ObservedAt:            clock.Now(),
 		MaximumAge:            config.MaximumAge,
-		UsedKVTokens:          config.UsedKVTokens,
 		Running:               config.Running,
 		Waiting:               config.Waiting,
 		GenerationTokensTotal: config.Generation,
@@ -95,8 +73,6 @@ func newAdmissionRuntimeForTest(
 	runtime, err := newAdmissionRuntime(
 		controller,
 		newAdmissionReporter(time.Hour, nil),
-		profile,
-		"test",
 		config.BackendKind,
 		config.Mode,
 		clock.Now,
@@ -109,39 +85,9 @@ func newAdmissionRuntimeForTest(
 	return runtime, controller, clock
 }
 
-func admissionCapabilityFromProfile(profile runtimepredictive.BackendCapabilityProfile) coreadmission.Capability {
-	return coreadmission.Capability{
-		Fingerprint:                  profile.ModelIdentitySHA256,
-		MaxModelLenTokens:            profile.MaxModelLenTokens,
-		KVCapacityTokens:             profile.KVCapacityTokens,
-		KVBlockSize:                  profile.KVBlockSize,
-		KVHardLimitTokens:            profile.KVHardLimitTokens,
-		MaximumInputTokens:           profile.MaximumAdmissibleInputTokens,
-		MinimumDecodeHorizonTokens:   runtimepredictive.DefaultCapabilityDecodeHorizonTokens,
-		PrefillRegularTokens:         profile.PrefillRegularTokens,
-		PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
-		PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
-		PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
-		PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
-	}
-}
-
-func mustPredictiveRequestWorkProfile(
-	t testing.TB,
-	backendKind string,
-) domainpredictive.BackendExecutionProfile {
-	t.Helper()
-	profile, err := predictiveRequestWorkProfile(backendKind)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return profile
-}
-
 func publishAdmissionObservationForTest(
 	t testing.TB,
 	controller *coreadmission.AdmissionController,
-	profile runtimepredictive.BackendCapabilityProfile,
 	observation coreadmission.BackendObservation,
 ) coreadmission.PublicationResult {
 	t.Helper()
@@ -151,7 +97,7 @@ func publishAdmissionObservationForTest(
 	}
 	result := controller.PublishObservation(window, observation)
 	if !result.Accepted {
-		t.Fatalf("publish admission test observation: %+v profile=%+v", result, profile)
+		t.Fatalf("publish admission test observation: %+v", result)
 	}
 	return result
 }

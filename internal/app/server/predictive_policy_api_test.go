@@ -24,18 +24,9 @@ type predictivePolicyAPIDocument struct {
 		TPSReference float64 `json:"tps_reference"`
 	} `json:"mutable"`
 	Effective struct {
-		AdmissionMode                string `json:"admission_mode"`
-		ObservationPollIntervalMS    int64  `json:"observation_poll_interval_ms"`
-		MaximumMetricsAgeMS          int64  `json:"maximum_metrics_age_ms"`
-		KVCapacityTokens             int64  `json:"kv_capacity_tokens"`
-		KVBlockSize                  int64  `json:"kv_block_size"`
-		KVHardLimitTokens            int64  `json:"kv_hard_limit_tokens"`
-		MaximumAdmissibleInputTokens int64  `json:"maximum_admissible_input_tokens"`
-		PrefillRegularTokens         int64  `json:"prefill_regular_tokens"`
-		PrefillExclusiveTokens       int64  `json:"prefill_exclusive_tokens"`
-		PrefillQuiescentTokens       int64  `json:"prefill_quiescent_tokens"`
-		PrefillAggregateBudgetTokens int64  `json:"prefill_aggregate_budget_tokens"`
-		PrefillContendedBudgetTokens int64  `json:"prefill_contended_budget_tokens"`
+		AdmissionMode             string `json:"admission_mode"`
+		ObservationPollIntervalMS int64  `json:"observation_poll_interval_ms"`
+		MaximumMetricsAgeMS       int64  `json:"maximum_metrics_age_ms"`
 	} `json:"effective"`
 }
 
@@ -74,16 +65,18 @@ func TestV01215PredictivePolicyAPIRequiresAuthDoesNotProxyAndReturnsEffectivePol
 	}
 	if document.Effective.AdmissionMode != "enforce" ||
 		document.Effective.ObservationPollIntervalMS != 500 ||
-		document.Effective.MaximumMetricsAgeMS != 1500 ||
-		document.Effective.KVCapacityTokens <= 0 || document.Effective.KVBlockSize <= 0 ||
-		document.Effective.KVHardLimitTokens <= 0 ||
-		document.Effective.MaximumAdmissibleInputTokens <= 0 ||
-		document.Effective.PrefillRegularTokens <= 0 ||
-		document.Effective.PrefillExclusiveTokens <= document.Effective.PrefillRegularTokens ||
-		document.Effective.PrefillQuiescentTokens <= document.Effective.PrefillExclusiveTokens ||
-		document.Effective.PrefillAggregateBudgetTokens <= 0 ||
-		document.Effective.PrefillContendedBudgetTokens <= 0 {
+		document.Effective.MaximumMetricsAgeMS != 1500 {
 		t.Fatalf("effective policy=%+v", document.Effective)
+	}
+	for _, retired := range []string{
+		"kv_capacity_tokens", "kv_block_size", "kv_hard_limit_tokens",
+		"maximum_admissible_input_tokens", "prefill_regular_tokens",
+		"prefill_exclusive_tokens", "prefill_quiescent_tokens",
+		"prefill_aggregate_budget_tokens", "prefill_contended_budget_tokens",
+	} {
+		if strings.Contains(response.Body.String(), `"`+retired+`"`) {
+			t.Fatalf("TPS-only policy document retained %q: %s", retired, response.Body.String())
+		}
 	}
 	if response.Header().Get("Cache-Control") != "no-store" ||
 		response.Header().Get("ETag") != `"1"` ||

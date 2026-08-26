@@ -120,20 +120,6 @@ func (s *proxyServer) predictiveAdmissionMetricsInput(
 		PreForwardDuration: &s.decisionDuration,
 	}
 	snapshot := s.admissionTelemetry(now)
-	profile := snapshot.CapabilityProfile
-	input.CapabilityProfileSource = string(profile.Source)
-	input.CapabilityProfileSchema = profile.SchemaVersion
-	input.CapabilityInitializationReason = snapshot.CapabilityReason
-	input.CapabilityKVCapacityTokens = profile.KVCapacityTokens
-	input.CapabilityKVBlockSize = profile.KVBlockSize
-	input.CapabilityKVHardLimitTokens = profile.KVHardLimitTokens
-	input.CapabilityMaxModelLenTokens = profile.MaxModelLenTokens
-	input.CapabilityMaximumAdmissibleInputTokens = profile.MaximumAdmissibleInputTokens
-	input.CapabilityPrefillRegularTokens = profile.PrefillRegularTokens
-	input.CapabilityPrefillExclusiveTokens = profile.PrefillExclusiveTokens
-	input.CapabilityPrefillQuiescentTokens = profile.PrefillQuiescentTokens
-	input.CapabilityPrefillContendedBudgetTokens = profile.PrefillContendedBudgetTokens
-	input.CapabilityPrefillAggregateBudgetTokens = profile.PrefillAggregateBudgetTokens
 	report := snapshot.Report
 	input.Attempts = report.Attempts
 	input.Fits = report.Admitted

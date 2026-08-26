@@ -117,12 +117,12 @@ post-admit    = 3
 decision      = admit because 3 <= 4
 ```
 
-The current branch is not TPS-only. Its policy still evaluates context, KV,
-Prefill, and TPS gates; startup still requires KV/model capability; reservations
-still own KV/Prefill liabilities; and commit
+The branch base was not TPS-only. Its policy still evaluated context, KV,
+Prefill, and TPS gates; startup still required KV/model capability; reservations
+still owned KV/Prefill liabilities; and commit
 `5b2d0276b9a383a8558d2bef50920a52bc880f33` added cache-Prefill evidence
 accumulation. All of those TPS-external decision dependencies must be removed or
-separated before source acceptance.
+separated before the TPS-only source can be considered coherent.
 
 ## 4. Target Architecture
 
@@ -371,7 +371,7 @@ summaries for:
 - cancellations, errors, disconnects, timeouts, counter rollback, epoch reset,
   and concurrent arrivals.
 
-The exact candidate must also pass:
+The exact candidate must also complete these correctness and build checks:
 
 ```text
 git diff --check
@@ -383,12 +383,15 @@ go vet ./...
 go build ./...
 ```
 
-Run five benchmark repetitions for small-request admission/rollback and
-observation publication. Median `ns/op` and `B/op` may regress by no more than
-5% from the pre-change v0.12.21 source; a noisy result is inconclusive. The
-accepted 4-MiB request path remains below 100 ms p99.
+Run repeated benchmarks for small-request admission/rollback, observation
+publication, and the bounded large-body request path. Record median `ns/op`,
+`B/op`, and latency distributions beside the pre-change source. The historical
+5% delta and 100 ms extreme-input budget are diagnostic references, not hard
+release gates: investigate a clear regression, explain the cause, and prefer the
+simpler/faster implementation when correctness is unchanged. No noisy or
+model-specific sample is allowed to masquerade as a universal threshold.
 
-### Phase 5: source acceptance and later release
+### Phase 5: source evidence and later release
 
 This plan authorizes plan/source/test commits and pushes only. It does not
 authorize an image, Compose change, CVM/container restart, Router mutation, or
@@ -397,20 +400,21 @@ synthetic production request.
 Release layers remain separate:
 
 1. plan reviewed;
-2. red tests valid;
-3. source green;
-4. deterministic v0.8.13 comparison accepted;
-5. full clean-builder matrix and benchmarks accepted;
+2. red tests explain the removed behavior;
+3. source correctness checks complete;
+4. deterministic v0.8.13 comparison recorded as historical context;
+5. full clean-builder matrix and benchmarks recorded and reviewed;
 6. source committed and pushed;
 7. `0.12.x` version assigned;
 8. image built and registry digest verified;
 9. deployment separately authorized;
-10. canary and matched live observation accepted.
+10. canary and matched live observation reviewed for obvious regressions.
 
-No source-only result proves production superiority. A later canary must compare
-matched traffic using successful completion goodput, mean-active TPS, below-
-reference episodes, waiting, preemption, errors/restarts, and protection reason
-rates.
+No source-only result proves production superiority. A later canary should
+compare matched traffic using successful completion goodput, mean-active TPS,
+below-reference episodes, waiting, preemption, errors/restarts, and protection
+reason rates. These observations guide follow-up work; a single window, model,
+or exact numeric boundary is not a hard promotion or rollback rule.
 
 ## 7. SOLID And Efficiency Boundaries
 
@@ -490,6 +494,18 @@ Three reviews were completed before behavior code:
   waiting/preemption hold, first-clear recovery, and same-snapshot atomic
   reservation already passed. The raw test output SHA-256 is
   `3ad02ef477770a70413013c370070a333f1cba5bc030d1446f5f739fe8986dc4`;
+- TPS-only factory dependency cleanup: the current source archive SHA-256 is
+  `7d8e6378aabb8ab9afd776329ade0b78f547c2b6108c17a0534c617207937832`.
+  On the independent builder `4f167f6e-4c50-415f-99f2-94b65652beba`, pinned
+  `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`
+  (`go1.24.13 linux/amd64`) passed the two default-factory dependency tests,
+  vLLM/SGLang observer tests, coherent SGLang startup, and dynamic TPS policy
+  API tests. The focused output SHA-256 is
+  `bec609e512a6b7c9b385a4a2a7bca2350827f737f15c325d3912cd2b8332c802`;
+  the empty formatting output SHA-256 is
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  A preceding run stopped at non-empty formatting output before executing any
+  test; it was corrected and is not treated as behavioral evidence;
 - inherited cache accumulator: removed from the admission source and tests in
   the current unverified source slice;
 - TPS behavior: unchanged from branch base;
@@ -501,4 +517,8 @@ Three reviews were completed before behavior code:
   feedback for generic fast clear-state recovery and TPS-only separation, not
   a model-specific threshold, exact-fixture release gate, or permission to
   weaken same-snapshot atomic reservations;
+- user clarification on 2026-08-26: production feedback and baseline
+  comparisons are experience to absorb, not hard acceptance thresholds. Keep
+  universal correctness, race, lifecycle, and build verification, but do not
+  block or approve a candidate solely from one exact model/window/percentage;
 - version/image/deployment: not authorized and not started.

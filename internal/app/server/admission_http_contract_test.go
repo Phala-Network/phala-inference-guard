@@ -199,11 +199,8 @@ func TestV01218TPSMetricsExposeDecisionAndDenominatorSourcesWithoutChangingAdmis
 		Mode: "enforce", Running: 1, Generation: 100, TPSReference: 25,
 	})
 	clock.Advance(time.Second)
-	publishAdmissionObservationForTest(t, controller, runtime.profile, coreadmission.BackendObservation{
-		CapabilityFingerprint: runtime.profile.ModelIdentitySHA256,
-		MaxModelLenTokens:     runtime.profile.MaxModelLenTokens,
-		KVCapacityTokens:      runtime.profile.KVCapacityTokens,
-		KVBlockSize:           runtime.profile.KVBlockSize,
+	publishAdmissionObservationForTest(t, controller, coreadmission.BackendObservation{
+		CapabilityFingerprint: testAdmissionFingerprint,
 		ObservedAt:            clock.Now(),
 		MaximumAge:            time.Hour,
 		Running:               1,
@@ -749,10 +746,9 @@ func TestAdmissionShadowAndEnforceAdmittedLifecyclesAreEquivalent(t *testing.T) 
 		}
 		terminal := controller.Snapshot(clock.Now()).State
 		clock.Advance(10)
-		publishAdmissionObservationForTest(t, controller, runtime.profile, coreadmission.BackendObservation{
-			CapabilityFingerprint: runtime.profile.ModelIdentitySHA256,
-			MaxModelLenTokens:     runtime.profile.MaxModelLenTokens, KVCapacityTokens: runtime.profile.KVCapacityTokens,
-			KVBlockSize: runtime.profile.KVBlockSize, ObservedAt: clock.Now(), MaximumAge: time.Hour,
+		publishAdmissionObservationForTest(t, controller, coreadmission.BackendObservation{
+			CapabilityFingerprint: testAdmissionFingerprint,
+			ObservedAt:            clock.Now(), MaximumAge: time.Hour,
 		})
 		covered := controller.Snapshot(clock.Now()).State
 		return state{decision: decision.Record, before: before, decode: decode, terminal: terminal, covered: covered}

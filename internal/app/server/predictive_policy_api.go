@@ -13,7 +13,6 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	runtimepredictive "github.com/Phala-Network/phala-inference-guard/internal/runtime/predictive"
 )
 
 const (
@@ -43,18 +42,9 @@ type predictivePolicyMutable struct {
 }
 
 type predictivePolicyEffective struct {
-	AdmissionMode                string `json:"admission_mode"`
-	ObservationPollIntervalMS    int64  `json:"observation_poll_interval_ms"`
-	MaximumMetricsAgeMS          int64  `json:"maximum_metrics_age_ms"`
-	KVCapacityTokens             int64  `json:"kv_capacity_tokens"`
-	KVBlockSize                  int64  `json:"kv_block_size"`
-	KVHardLimitTokens            int64  `json:"kv_hard_limit_tokens"`
-	MaximumAdmissibleInputTokens int64  `json:"maximum_admissible_input_tokens"`
-	PrefillRegularTokens         int64  `json:"prefill_regular_tokens"`
-	PrefillExclusiveTokens       int64  `json:"prefill_exclusive_tokens"`
-	PrefillQuiescentTokens       int64  `json:"prefill_quiescent_tokens"`
-	PrefillAggregateBudgetTokens int64  `json:"prefill_aggregate_budget_tokens"`
-	PrefillContendedBudgetTokens int64  `json:"prefill_contended_budget_tokens"`
+	AdmissionMode             string `json:"admission_mode"`
+	ObservationPollIntervalMS int64  `json:"observation_poll_interval_ms"`
+	MaximumMetricsAgeMS       int64  `json:"maximum_metrics_age_ms"`
 }
 
 type predictivePolicyErrorDocument struct {
@@ -88,11 +78,7 @@ func (s *proxyServer) getPredictivePolicy(w http.ResponseWriter) {
 		writePredictivePolicyError(w, http.StatusServiceUnavailable, "policy_unavailable", "predictive policy is unavailable")
 		return
 	}
-	writePredictivePolicyDocument(w, predictivePolicyDocumentFrom(
-		s.cfg,
-		telemetry.Capacity.Policy,
-		telemetry.CapabilityProfile,
-	))
+	writePredictivePolicyDocument(w, predictivePolicyDocumentFrom(s.cfg, telemetry.Capacity.Policy))
 }
 
 func (s *proxyServer) patchPredictivePolicy(w http.ResponseWriter, r *http.Request) {
@@ -127,12 +113,7 @@ func (s *proxyServer) patchPredictivePolicy(w http.ResponseWriter, r *http.Reque
 		result.Policy.Reference,
 		result.WindowReset,
 	)
-	telemetry := s.admissionTelemetry(time.Now())
-	writePredictivePolicyDocument(w, predictivePolicyDocumentFrom(
-		s.cfg,
-		result.Policy,
-		telemetry.CapabilityProfile,
-	))
+	writePredictivePolicyDocument(w, predictivePolicyDocumentFrom(s.cfg, result.Policy))
 }
 
 func updateAdmissionTPSPolicy(
@@ -210,7 +191,6 @@ func decodePredictivePolicyPatch(w http.ResponseWriter, r *http.Request) (predic
 func predictivePolicyDocumentFrom(
 	cfg config,
 	policy coreadmission.TPSPolicySnapshot,
-	profile runtimepredictive.BackendCapabilityProfile,
 ) predictivePolicyDocument {
 	document := predictivePolicyDocument{
 		SchemaVersion: predictivePolicyAPISchema,
@@ -221,18 +201,9 @@ func predictivePolicyDocumentFrom(
 			TPSReference: policy.Reference,
 		},
 		Effective: predictivePolicyEffective{
-			AdmissionMode:                cfg.PredictiveAdmissionMode,
-			ObservationPollIntervalMS:    cfg.PredictiveObservationPollInterval.Milliseconds(),
-			MaximumMetricsAgeMS:          cfg.PredictiveMaximumMetricsAge.Milliseconds(),
-			KVCapacityTokens:             profile.KVCapacityTokens,
-			KVBlockSize:                  profile.KVBlockSize,
-			KVHardLimitTokens:            profile.KVHardLimitTokens,
-			MaximumAdmissibleInputTokens: profile.MaximumAdmissibleInputTokens,
-			PrefillRegularTokens:         profile.PrefillRegularTokens,
-			PrefillExclusiveTokens:       profile.PrefillExclusiveTokens,
-			PrefillQuiescentTokens:       profile.PrefillQuiescentTokens,
-			PrefillAggregateBudgetTokens: profile.PrefillAggregateBudgetTokens,
-			PrefillContendedBudgetTokens: profile.PrefillContendedBudgetTokens,
+			AdmissionMode:             cfg.PredictiveAdmissionMode,
+			ObservationPollIntervalMS: cfg.PredictiveObservationPollInterval.Milliseconds(),
+			MaximumMetricsAgeMS:       cfg.PredictiveMaximumMetricsAge.Milliseconds(),
 		},
 	}
 	if !policy.UpdatedAt.IsZero() {
