@@ -18,17 +18,16 @@ Maximize accepted, successful completion goodput while keeping the sufficiently
 long mean output TPS per active Decode sequence near or above
 `PREDICTIVE_TPS_REFERENCE`.
 
-PIG is a performance health gate, not a concurrency allocator:
+PIG combines a performance health gate with two simple admission bounds:
 
-- it has no configured, learned, inferred, warming, or exploration sequence
-  limit;
+- it never derives, learns, warms, or explores a sequence limit from TPS;
 - it does not divide aggregate TPS by the reference to derive capacity;
-- it does not reject because current, post-admit, unobserved, reserved, or batch
-  sequence counts exceed a limit;
 - it accepts arbitrary healthy concurrency that the backend continues to serve
-  without material performance degradation;
+  without material performance degradation, up to the backend's configured
+  scheduler running limit when that limit is known;
 - it protects only subsequent requests after qualified TPS degradation,
-  waiting, or preemption is observed;
+  waiting, preemption, running-limit exhaustion, or same-observation window
+  concurrency exhaustion is observed;
 - it reopens from current evidence without retaining a learned low cap.
 
 The intended production override remains:
@@ -37,49 +36,76 @@ The intended production override remains:
 PREDICTIVE_TPS_REFERENCE=25
 ```
 
-Default backend polling remains 500 ms. No new public tuning parameter is added.
+Default backend polling remains 500 ms. The default window concurrency is 32
+Decode sequences. Production normally needs no explicit setting for that
+default, but `PREDICTIVE_WINDOW_CONCURRENCY` provides an initialization override.
+`PREDICTIVE_RUNNING_LIMIT` provides an optional initialization override when the
+backend cannot expose its scheduler limit. Both values are available through the
+same revisioned admin policy API as the TPS reference.
 
-## 2. Explicit Tradeoff And Blind-Window Pacing
+## 2. Running Limit And Window Concurrency
 
 Without a concurrency or resource forecast, forwarding every arrival against
 one unchanged observation for as long as 500 ms could create an arbitrarily
-large blind burst. PIG therefore separates sustainable concurrency from
-observation-lag pacing:
+large blind burst. PIG therefore separates three controls:
 
-- there is no final or learned concurrency cap;
-- each observation epoch has a dynamic blind-flight budget for new Decode
-  sequences not yet reflected by backend metrics;
-- exhausting that budget does not produce a protection decision or `429`; the
-  request waits for the next observation and is then evaluated again;
-- a fresh healthy observation replenishes the budget, so sustained healthy
-  concurrency continues to grow instead of stopping at a capacity estimate;
-- only degradation, waiting, preemption, or an availability failure produces a
-  final rejection.
+- the TPS health gate detects actual degradation and never selects capacity;
+- the running-limit gate prevents projected backend running demand from
+  exceeding the upstream scheduler's configured maximum when that maximum is
+  known;
+- the window-concurrency gate limits new Decode sequences that have been
+  admitted but are not yet reflected by backend metrics.
 
-The initial deterministic budget is:
+The atomic pre-forward bounds are:
 
 ```text
-observed_tps_support = floor(
-  max(rolling_aggregate_tps, latest_qualified_aggregate_tps) /
-  tps_reference
-)
+projected_running = observed_running + observed_waiting +
+                    unobserved_sequences + request_decode_sequences
 
-blind_flight_budget = max(1, observed_running, observed_tps_support)
+running gate fits = running_limit disabled OR
+                    projected_running <= running_limit
+
+window gate fits  = unobserved_sequences + request_decode_sequences <=
+                    window_concurrency
 ```
 
-Only valid nonnegative TPS evidence participates. During warming or without a
-qualified interval, the TPS-derived term is zero. Complete request fanout
-charges the budget atomically. Existing unobserved sequences consume the same
-epoch budget until observation reconciliation proves them visible. The budget
-does not limit total running sequences: after every fresh healthy 500 ms sample,
-another dynamic cohort can enter.
+Complete request fanout charges both gates atomically. Existing unobserved
+sequences consume window concurrency until observation reconciliation proves
+them visible. The window value does not limit total running sequences: after a
+fresh backend observation absorbs admitted work, another cohort can enter. A
+healthy backend can therefore sustain concurrency far above 32; it cannot
+receive more than 32 still-unobserved sequences from PIG at once by default.
 
-This design deliberately turns blind burst size into short local backpressure,
-not false capacity `429`s. It can add up to an observation interval of admission
-delay to excess burst members. It does not add a user-configurable queue size,
-concurrency limit, or model threshold. Waiting requests hold no reservation and
-are woken by observation publication; context cancellation and observation
-staleness still terminate safely.
+Exhausting either gate returns the existing OpenAI-shaped `429` immediately; PIG
+does not queue or wait. The bounded subreasons are `running_limit` and
+`window_concurrency`, so Router and operators can distinguish them from
+`below_reference`, `waiting`, and `preemption`.
+
+### 2.1 Upstream running-limit discovery
+
+The production adapters do not pretend that a current-running gauge is a
+maximum:
+
+- vLLM standard metrics expose `vllm:num_requests_running` but not
+  `max_num_seqs`. The production OpenAI API does not expose the scheduler
+  maximum. Current vLLM `/server_info` is a development endpoint with an
+  explicit production security warning, so PIG must not depend on it. vLLM uses
+  `PREDICTIVE_RUNNING_LIMIT` or the admin API when an operator wants this gate;
+  zero means unknown/disabled;
+- SGLang standard metrics expose `sglang:num_running_reqs` but not the configured
+  `max_running_requests`. Latest upstream has a different
+  `sglang:max_running_requests_under_SLO` gauge whose own source notes that it
+  has no setter; it is not scheduler capacity and must not be consumed;
+- SGLang's internal `/server_info` returns resolved startup `server_args`.
+  On dev SGLang v0.5.18 on 2026-08-26, both top-level and scheduler internal
+  state reported exact integer `max_running_requests=256`. PIG may read the
+  top-level field during its existing trusted startup capability probe. Missing,
+  noninteger, duplicate-inconsistent, out-of-range, wrong-content-type, timeout,
+  or unsupported responses leave the running limit unknown instead of guessing.
+
+An explicit environment or admin value overrides automatic SGLang discovery.
+The effective source (`sglang_server_info`, `environment`, `admin`, or
+`unknown`) is observable. This is initialization/administration, not learning.
 
 Waiting and preemption are immediate current-observation pressure evidence and
 pause new intake. They are not converted into a learned cap, cooldown, or
@@ -107,10 +133,9 @@ window snapshot in this order:
    not wait for the 60-second window to flush.
 9. Rolling and latest qualified interval means are both below the reference:
    protect with `below_reference` until either becomes healthy.
-10. When health is open, atomically reserve against the current observation's
-    remaining blind-flight budget. If the complete demand does not fit, return a
-    nonterminal `defer_until_observation` result with no reservation; the HTTP
-    runtime waits and retries after the observation sequence advances.
+10. When TPS health is open, evaluate the running and window gates atomically.
+    Protect with `running_limit` or `window_concurrency` when the complete demand
+    does not fit; otherwise reserve and forward.
 
 This OR-based recovery preserves the long-average objective: one short bad poll
 does not close a healthy long window, while a fresh healthy poll reopens a
@@ -130,7 +155,7 @@ request shape and Decode fanout validation
   -> fresh normalized backend observation
   -> TPS window updates rolling and latest qualified interval evidence
   -> pure TPS health decision
-  -> observation-epoch blind-flight budget or wait notification
+  -> running-limit and window-concurrency projection
   -> reserve lifecycle exposure only when admitted
   -> forward and reconcile terminal lifecycle
 ```
@@ -141,10 +166,12 @@ request shape and Decode fanout validation
 - The TPS window exclusively owns time weighting, denominator selection,
   qualification, rolling mean, and latest qualified interval evidence.
 - The TPS gate is a pure health predicate over an immutable snapshot.
-- A separate observation pacing policy derives one epoch's blind-flight budget;
-  it cannot change TPS health or return a final load rejection.
+- A running-limit policy consumes one immutable initialized/administered value;
+  it never infers capacity from TPS.
+- A window-concurrency policy consumes one immutable revisioned value and the
+  unobserved overlay; it never changes TPS health.
 - The reservation ledger owns sequence exposure and terminal reconciliation;
-  unobserved sequence totals only consume blind-flight pacing and never define
+  unobserved sequence totals only consume window concurrency and never define
   sustainable concurrency.
 - HTTP code maps decisions and emits bounded evidence; it never recomputes TPS.
 
@@ -153,14 +180,7 @@ a sequence limit: `qosBudgeted`, QoS-budget leases/subreasons, sequence limit,
 post-admit sequence count, and current-sequence capacity comparison. Keep
 unobserved sequences, sequence liabilities, live reservations, and residual
 debts where required for exposure accounting, lifecycle correctness, and the
-observation-epoch blind-flight budget.
-
-Observation publication owns a race-safe generation notification. A deferred
-request receives the immutable observation sequence and notification handle
-from the same locked decision. It creates no reservation before waking. On
-wake, every request re-enters the complete atomic decision; concurrent wakeups
-cannot overspend the new budget. Controller close/reset wakes all waiters so no
-goroutine remains stranded.
+window-concurrency projection.
 
 The hot decision path remains O(1), allocation-free after bounded request-shape
 parsing, and independent of the number of live reservations.
@@ -177,14 +197,13 @@ capacity estimate exists:
   denominator evidence;
 - running, waiting, preemption delta, unobserved sequences, liabilities, and
   live reservations as observations only;
+- effective running limit, its source, projected running, window concurrency,
+  and projected unobserved window demand;
 - decision result and one bounded subreason;
-- blind-flight budget, unobserved consumption, deferred request count, wait
-  duration, wake cause, and retry outcome;
 - enforced reject counters attributable to `waiting`, `preemption`, or
-  `below_reference`.
+  `below_reference`, `running_limit`, or `window_concurrency`.
 
-Delete sequence-limit, post-admit, and QoS-budget metrics/log fields. A deferred
-decision is not counted as an enforced rejection or Router-visible protection.
+Delete TPS-derived sequence-limit, post-admit, and QoS-budget metrics/log fields.
 Do not log
 request bodies, tokens, credentials, prefixes, user identifiers, or unbounded
 labels.
@@ -193,37 +212,43 @@ labels.
 
 ### Phase 1: freeze the v0.12.22 failure
 
-Add focused tests matching both dev risks:
+Add focused tests matching the dev risks and the revised contract:
 
-- a ready, healthy TPS window with zero waiting/preemption must not issue a
-  final rejection merely because prior requests remain unobserved;
-- a burst larger than the same-observation blind-flight budget must defer excess
-  requests rather than forwarding the entire burst or returning a capacity
-  `429`.
+- a healthy request that fits running and window bounds must not be rejected by
+  a lower TPS-derived sequence cap;
+- a same-observation burst admits complete fanout exactly through the configured
+  window concurrency, then rejects the next request with
+  `window_concurrency` and zero reservation;
+- a request whose projected running exceeds a known running limit rejects with
+  `running_limit` and zero reservation;
+- changing TPS evidence cannot change either configured bound, and changing a
+  bound cannot relabel TPS health.
 
 The first test must fail on v0.12.22 because its derived sequence limit is
-exhausted. The second must fail because v0.12.22 has no nonterminal observation
-backpressure result. Neither failure may come from invalid fixture state.
+exhausted. The other tests must fail because v0.12.22 lacks these independent
+policy contracts. No failure may come from invalid fixture state.
 
 ### Phase 2: implement the health gate
 
 1. Extend the TPS window snapshot with its latest qualified interval result.
 2. Replace capacity selection with the decision contract in section 3.
-3. Add atomic observation-epoch pacing and cancellation-safe wake/retry wiring.
-4. Remove QoS-budget policy and reservation ownership.
-5. Remove obsolete decision fields and reconcile logs, metrics, status, tests,
+3. Add strict optional SGLang startup discovery plus explicit initialization and
+   admin overrides for running limit.
+4. Add atomic running-limit and window-concurrency gates.
+5. Remove QoS-budget policy and reservation ownership.
+6. Remove obsolete decision fields and reconcile logs, metrics, status, tests,
    simulation, README, and advanced documentation.
-6. Preserve controller freshness, identity, atomic lifecycle, and runtime-reset
+7. Preserve controller freshness, identity, atomic lifecycle, and runtime-reset
    safety.
 
 Focused coverage must prove:
 
 - warming and idle do not reject high concurrency without pressure evidence;
 - healthy rolling TPS admits regardless of raw, unobserved, reserved, or batch
-  sequence counts once observation-paced waiters receive healthy refreshes;
-- a same-epoch burst spends one atomic blind-flight budget, excess demand waits
-  without a reservation or 429, and wakeup cannot double-spend;
-- canceled, stale, reset, and closed deferred requests cannot leak or hang;
+  sequence counts when both explicit bounds fit;
+- a same-epoch burst spends window concurrency atomically and excess demand gets
+  an immediate 429 with no reservation or backend call;
+- a known running limit cannot be overspent by concurrent requests;
 - one low current interval does not close a healthy rolling window;
 - sustained low rolling plus low current TPS protects;
 - current recovery reopens immediately while the long window is still low;
@@ -234,6 +259,8 @@ Focused coverage must prove:
 - stale metrics, counter rollback, runtime reset, cancellation, failure, and
   terminal races remain correct;
 - vLLM and SGLang adapters produce the same normalized TPS contract.
+- SGLang startup discovery accepts only coherent `max_running_requests`; vLLM
+  standard metrics never fabricate a maximum from current running.
 
 ### Phase 3: three reviews and clean-builder verification
 
@@ -284,4 +311,23 @@ published only after the complete builder verification succeeds.
 - `v0.12.22` source, tag, image, and dev PIG-B runtime are reproducible baseline
   evidence; they are not production candidates;
 - no v0.12.23 behavior code, version assignment, image, or deployment exists;
-- the immediate next step is the focused red test pair from Phase 1.
+- dev/backend capability audit on 2026-08-26 confirmed that SGLang-B standard
+  metrics contains only current `sglang:num_running_reqs`, while internal
+  `/server_info` and its scheduler state both return
+  `max_running_requests=256`. vLLM upstream source exposes only current
+  `vllm:num_requests_running` in standard metrics; its `/server_info` belongs to
+  explicitly unsafe development endpoints. These findings produced the strict
+  discovery contract in section 2.1;
+- the first focused red test is valid at exact pushed commit
+  `90c6d56b7dd39eda1495174768088999a2521996`, source archive SHA-256
+  `3b5f315d5cf676828dcdc89c53e32ec2e84e53d2f01bb09bff7e8a5e38971d92`.
+  On builder `4f167f6e-4c50-415f-99f2-94b65652beba` with pinned Go image
+  `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`,
+  `TestV01223HealthyWindowDoesNotTurnBlindFlightBudgetIntoConcurrencyCap`
+  failed for the intended behavior: healthy TPS with `running=1`,
+  `unobserved=3`, and the fourth window admission was rejected at inherited
+  `sequenceLimit=4`, `postAdmit=5`, subreason `qos_budget_unobserved`. The red
+  output SHA-256 is
+  `50719fc92444cddbcf7641f627ff6911f5aa7144a6c63f2f72bd76363439ea05`;
+- the immediate next step is to add the independent window/running gate contract
+  and replace TPS capacity selection.
