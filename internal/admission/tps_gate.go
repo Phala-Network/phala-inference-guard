@@ -8,6 +8,11 @@ const (
 	tpsWarmingSequenceLimit = int64(2)
 )
 
+type gateDecision struct {
+	fits   bool
+	reason Reason
+}
+
 type tpsGateDecision struct {
 	gateDecision
 	sequenceLimit      int64

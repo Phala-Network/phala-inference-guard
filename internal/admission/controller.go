@@ -103,10 +103,7 @@ func newAdmissionController(
 	if !finiteNonnegative(config.TPS.Reference) || config.TPS.Reference > 1_000_000 {
 		return nil, fmt.Errorf("TPS reference must be finite and in [0, 1000000]")
 	}
-	policy, err := newAdmissionPolicyWithQoSBudget(capability, config.WorkProfile, qosBudget)
-	if err != nil {
-		return nil, err
-	}
+	policy := newAdmissionPolicy(qosBudget)
 	now := config.Now
 	if now == nil {
 		now = time.Now
@@ -381,7 +378,7 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 	defer c.mu.Unlock()
 	state, reason, ok := c.stateLocked(now)
 	if !ok {
-		decision := c.unavailableDecisionLocked(reason, c.policy.minimumWork.Estimate, c.policy.minimumWork, state)
+		decision := c.unavailableDecisionLocked(reason, predictive.RequestEstimate{}, predictive.RequestWork{}, state)
 		return CapacitySnapshot{
 			IntakeOpen:           c.closedReason == "",
 			HasObservation:       c.hasObservation,
@@ -396,13 +393,12 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 			Policy:               c.tpsPolicySnapshotLocked(),
 		}
 	}
-	minimumWork := c.policy.minimumWork
-	minimumDemand, _ := tpsRequestDemandFromEstimate(minimumWork.Estimate)
+	minimumDemand := TPSRequestDemand{DecodeSequences: 1, Source: TPSDemandSourceFallback}
 	decision := c.decisionLocked(
 		c.policy.evaluateDemand(state, minimumDemand),
 		minimumDemand,
-		c.policy.minimumWork.Estimate,
-		minimumWork,
+		predictive.RequestEstimate{},
+		predictive.RequestWork{},
 		state,
 	)
 	return CapacitySnapshot{

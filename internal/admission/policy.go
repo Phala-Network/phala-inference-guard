@@ -1,17 +1,7 @@
 package admission
 
-import predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
-
 type admissionPolicy struct {
-	minimumWork predictive.RequestWork
-	tpsGate     tpsGate
-}
-
-func (p admissionPolicy) withObservedPrefillCost(
-	state ProjectedState,
-	work predictive.RequestWork,
-) predictive.RequestWork {
-	return work
+	tpsGate tpsGate
 }
 
 type policyDecision struct {
@@ -29,34 +19,8 @@ type policyDecision struct {
 	tpsDecisionSubreason      TPSDecisionSubreason
 }
 
-func newAdmissionPolicy(
-	capability Capability,
-	workProfile predictive.BackendExecutionProfile,
-) (admissionPolicy, error) {
-	return newAdmissionPolicyWithQoSBudget(capability, workProfile, defaultQoSBudgetForecast())
-}
-
-func newAdmissionPolicyWithQoSBudget(
-	capability Capability,
-	workProfile predictive.BackendExecutionProfile,
-	qosBudget qosBudgetForecast,
-) (admissionPolicy, error) {
-	return admissionPolicy{
-		minimumWork: predictive.RequestWork{},
-		tpsGate:     tpsGate{qosBudget: qosBudget},
-	}, nil
-}
-
-func (p admissionPolicy) evaluate(state ProjectedState, work predictive.RequestWork) policyDecision {
-	demand, err := tpsRequestDemandFromEstimate(work.Estimate)
-	if err != nil {
-		return policyDecision{action: ActionProtect, reason: ReasonInvalidRequest, scope: ProtectionRequest}
-	}
-	return p.evaluateDemand(state, demand)
-}
-
-func (p admissionPolicy) evaluateCandidate(state ProjectedState, work predictive.RequestWork) policyDecision {
-	return p.evaluate(state, work)
+func newAdmissionPolicy(qosBudget qosBudgetForecast) admissionPolicy {
+	return admissionPolicy{tpsGate: tpsGate{qosBudget: qosBudget}}
 }
 
 func (p admissionPolicy) evaluateDemand(state ProjectedState, demand TPSRequestDemand) policyDecision {
