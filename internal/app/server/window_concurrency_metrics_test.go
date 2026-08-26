@@ -9,7 +9,7 @@ import (
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 )
 
-func TestV01223WindowConcurrencyHistogramExportsFineBucketsAndOneOverflow(t *testing.T) {
+func TestWindowConcurrencyHistogramExportsFineBucketsAndOneOverflow(t *testing.T) {
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
 		RuntimeIdentity: testAdmissionRuntimeIdentity,
 	})

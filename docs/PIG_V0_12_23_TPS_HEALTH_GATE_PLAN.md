@@ -468,3 +468,58 @@ published only after the complete builder verification succeeds.
   all release tags only if every gate succeeds. Dev testing remains restricted
   to `phala-inference-guard-b` over SSH on
   `19a2d062-af63-49eb-807d-84ddfbbc905a`.
+
+## 8. Inclusive 64+ Histogram Correction
+
+The correction source and tests were pushed at exact commit
+`625dbebbf8e68418379d1de9221491bb3995921c`. The first two builder attempts are
+runner failures and are not code evidence: `r1` omitted Docker stdin, while
+`r2` invoked the archive copy of the legacy audit without `sh` and stopped on
+its absent executable bit. Neither attempt reached a Go test. Their evidence
+directories remain preserved and are not reused.
+
+The corrected `r3` matrix passed on builder
+`4f167f6e-4c50-415f-99f2-94b65652beba` from
+`2026-08-26T09:41:27Z` through `2026-08-26T09:43:07Z`, with
+`go1.24.13 linux/amd64` and the same pinned Go image. Evidence is
+`/var/volatile/dstack/persistent/.cache/pig-v01223-health-gate/histogram-625dbeb-r3`.
+The source archive SHA-256 is
+`da58c15b4d5632fcd1de6cae542c943dfdf35d1abc8a434d3c849f6bbfebe47a`.
+All eleven recorded exit codes are zero: legacy audit, formatting, focused
+tests, full tests, race, vet, build, controller benchmark, scanner benchmark,
+and two deterministic simulation executions. Material SHA-256 values are:
+
+- focused tests: `92ecdfa73abecb0a74a99eb69a8a6901b220db47202ab3b7f2b101f6badc9c95`;
+- full tests: `628ec0b58d35cbb9c32965920d5137c132cf18a632171f7686d27bb7a01d8cb8`;
+- race: `b73c01cd6d1978ec89e27332fd6e8a2a7ea17d9e87bde658e316191babe49954`;
+- controller benchmark: `e2aa9275e5d84523d7c5c7e9bc2bc02a672470948cfc83c0303e6055a899d831`;
+- scanner benchmark: `2675c0ce784131ca281125e6a78b8b2305dd826d9d318587f6ce9fa0e607c931`;
+- deterministic simulation: `e56d63166749ff968c26844d2a1909a00f0300c150b706399ee465dccd7ac13a`.
+
+### Correction review 1: semantics and causality
+
+The last finite bound is `63`, so the Prometheus cumulative delta
+`+Inf - le="63"` represents every observation at or above `64`. Integer bounds
+from zero through sixteen make low and ordinary concurrency directly readable;
+four-wide bounds then preserve useful tuning resolution without excessive
+series. The histogram receives only a successful non-reset observer sample and
+is not read by TPS health, running-limit, window admission, or reservations.
+
+### Correction review 2: lifecycle and efficiency
+
+The controller mutex already protects observation and snapshot state. Saturated
+count/sum behavior is unchanged, negative observations remain ignored, and
+runtime reset observations remain excluded. The fixed number of finite series
+increases from 21 to 29. The additional eight comparisons occur once per
+successful observer poll, not per request. The 4096-reservation observation
+benchmark remained zero-allocation at `358.760-422.756 us/op`; admission and
+snapshot hot paths also remained zero-allocation.
+
+### Correction review 3: release evidence
+
+Focused tests freeze the exact finite-bound array, prove that 63 enters the last
+finite bucket while 64 and 65 do not, and prove the metrics text contains no
+finite 64+ bound. Full, race, vet, build, benchmark, and byte-identical
+simulation gates passed at the exact pushed commit. Because `v0.12.23` already
+exists, the correction is eligible for `0.12.24` assignment; it is not eligible
+to move or overwrite any `0.12.23` tag.
