@@ -12,11 +12,11 @@ import (
 	"github.com/Phala-Network/phala-inference-guard/internal/runtime/telemetry"
 )
 
-func TestTPSOnlyDefaultFactoryDoesNotProbeModelMetadataOrRequireKVTelemetry(t *testing.T) {
+func TestTPSOnlyDefaultFactoryDoesNotRequireKVTelemetry(t *testing.T) {
 	var upstreamCalls atomic.Int64
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		upstreamCalls.Add(1)
-		http.Error(w, "metadata unavailable", http.StatusServiceUnavailable)
+		_, _ = fmt.Fprint(w, `{"data":[{"id":"vendor/model","max_model_len":1048576}]}`)
 	}))
 	t.Cleanup(upstream.Close)
 
@@ -42,7 +42,49 @@ vllm:generation_tokens_total{model_name="vendor/model",engine="0"} 1
 	cfg.PredictiveMaximumMetricsAge = 1500 * time.Millisecond
 	service, err := newDefaultAdmissionService(cfg)
 	if err != nil {
-		t.Fatalf("TPS-only factory retained a capability dependency: %v", err)
+		t.Fatalf("TPS-only factory retained a KV telemetry dependency: %v", err)
+	}
+	t.Cleanup(func() { _ = service.Close() })
+	if calls := upstreamCalls.Load(); calls > 1 {
+		t.Fatalf("TPS-only factory made %d unexpected upstream calls", calls)
+	}
+}
+
+func TestTPSOnlyDefaultFactoryDoesNotProbeModelMetadata(t *testing.T) {
+	var upstreamCalls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		http.Error(w, "metadata unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(upstream.Close)
+
+	metrics := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `
+# TYPE vllm:cache_config_info gauge
+# TYPE vllm:kv_cache_usage_perc gauge
+# TYPE vllm:num_requests_running gauge
+# TYPE vllm:num_requests_waiting gauge
+# TYPE vllm:num_preemptions_total counter
+# TYPE vllm:generation_tokens_total counter
+vllm:cache_config_info{block_size="64",kv_cache_size_tokens="1000000"} 1
+vllm:kv_cache_usage_perc{model_name="vendor/model",engine="0"} 0
+vllm:num_requests_running{model_name="vendor/model",engine="0"} 0
+vllm:num_requests_waiting{model_name="vendor/model",engine="0"} 0
+vllm:num_preemptions_total{model_name="vendor/model",engine="0"} 0
+vllm:generation_tokens_total{model_name="vendor/model",engine="0"} 1
+`)
+	}))
+	t.Cleanup(metrics.Close)
+
+	cfg := testProxyConfig(upstream.URL)
+	cfg.PredictiveMetricsURL = metrics.URL
+	cfg.PredictiveStartupProbeTimeout = time.Second
+	cfg.PredictiveMetricsRequestTimeout = 250 * time.Millisecond
+	cfg.PredictiveObservationPollInterval = 500 * time.Millisecond
+	cfg.PredictiveMaximumMetricsAge = 1500 * time.Millisecond
+	service, err := newDefaultAdmissionService(cfg)
+	if err != nil {
+		t.Fatalf("TPS-only factory retained a model metadata dependency: %v", err)
 	}
 	t.Cleanup(func() { _ = service.Close() })
 	if calls := upstreamCalls.Load(); calls != 0 {
