@@ -464,7 +464,7 @@ Three reviews were completed before behavior code:
 
 ## 9. Current Execution State
 
-- active goal: execute this TPS-only plan;
+- source goal: complete this TPS-only plan through reviewed and pushed source;
 - formal branch: `codex/pig-v0.12.22-tps-only`;
 - branch creation base: pushed commit
   `702a0b03c87bec6bc9293a6528041726682e59c5`;
@@ -601,6 +601,8 @@ Three reviews were completed before behavior code:
   universal correctness, race, lifecycle, and build verification, but do not
   block or approve a candidate solely from one exact model/window/percentage;
 - source stage: implementation, documentation, focused red/green evidence, and
-  complete builder verification are complete; commit and push remain pending;
+  complete builder verification were committed as
+  `ea4d474aeea97a16aeea74ee5a1d4a3817bb61fb` and pushed to
+  `pig-origin/codex/pig-v0.12.22-tps-only`;
 - version/image/deployment: no version assigned, no image built or uploaded,
   and no deployment started. Those remain separate later stages.
