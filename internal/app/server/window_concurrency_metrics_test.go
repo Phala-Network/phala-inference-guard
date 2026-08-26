@@ -36,8 +36,9 @@ func TestV01223WindowConcurrencyHistogramExportsFineBucketsAndOneOverflow(t *tes
 	body := output.String()
 	for _, want := range []string{
 		`pig_predictive_window_concurrency_observed_bucket{le="2"} 0`,
+		`pig_predictive_window_concurrency_observed_bucket{le="3"} 1`,
 		`pig_predictive_window_concurrency_observed_bucket{le="4"} 1`,
-		`pig_predictive_window_concurrency_observed_bucket{le="64"} 1`,
+		`pig_predictive_window_concurrency_observed_bucket{le="63"} 1`,
 		`pig_predictive_window_concurrency_observed_bucket{le="+Inf"} 1`,
 		"pig_predictive_window_concurrency_observed_count 1",
 		"pig_predictive_window_concurrency_observed_sum 3",
@@ -46,7 +47,7 @@ func TestV01223WindowConcurrencyHistogramExportsFineBucketsAndOneOverflow(t *tes
 			t.Fatalf("window histogram missing %q:\n%s", want, body)
 		}
 	}
-	if strings.Contains(body, `le="66"`) {
-		t.Fatalf("window histogram split values above 64:\n%s", body)
+	if strings.Contains(body, `le="64"`) || strings.Contains(body, `le="65"`) {
+		t.Fatalf("window histogram split values at or above 64:\n%s", body)
 	}
 }

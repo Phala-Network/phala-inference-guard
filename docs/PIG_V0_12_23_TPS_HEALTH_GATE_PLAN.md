@@ -1,8 +1,9 @@
 # PIG v0.12.23 TPS Health Gate Plan
 
-Status: active design and execution plan. Version `0.12.23` is reserved for the
-new behavior but must not be assigned in source, tagged, imaged, or deployed
-until the source and clean-builder gates pass.
+Status: active design and execution plan. Version `0.12.23` source and registry
+artifact are complete but were not deployed to the dev CVM. A post-release
+histogram-boundary correction is now pending builder validation and must use a
+new immutable patch version; the existing `v0.12.23` tag must not move.
 
 Formal starting branch: `codex/pig-v0.12.22-tps-only` at exact baseline commit
 `ffa65f2375a83c4c9a69a601d7902c273fedc487`.
@@ -339,10 +340,11 @@ published only after the complete builder verification succeeds.
   discovery, lifecycle reconciliation, reporting, metrics, logs, status, and
   deterministic simulations are wired to the new contract;
 - each successful non-reset observation samples unreconciled Decode sequences
-  before reconciliation. The cumulative histogram uses finite bounds
-  `0,1,2,4,6,8,10,12,16,20,24,28,32,36,40,44,48,52,56,60,64`; all values above
-  `64` are combined only in `+Inf`. This work runs on the observer path, not the
-  request admission hot path;
+  before reconciliation. After the user clarified that `64` itself belongs in
+  the high-concurrency band, the active cumulative histogram finite bounds are
+  `0..16,20,24,28,32,36,40,44,48,52,56,60,63`. Therefore
+  `+Inf - le="63"` is exactly the count of observations at or above `64`.
+  Histogram work runs on the observer path, not the request admission hot path;
 - the complete builder test at exact commit
   `83fe43da7fd862d57a1563e68eed758130efe08f` passed `go test ./... -count=1`
   with exit `0` on builder `4f167f6e-4c50-415f-99f2-94b65652beba`, using
@@ -371,9 +373,11 @@ published only after the complete builder verification succeeds.
   Presence-aware initialization at `bf89bce3538ef62c11731d349424c6f8ca5e3219`
   passed the focused config/server tests with log SHA-256
   `1ec053a6c77a230b5d422d288f119fe43c965975a038b7e1f5d4845299ea1ab3`;
-- the finalized histogram finite bounds are
-  `0,1,2,4,6,8,10,12,16,20,24,28,32,36,40,44,48,52,56,60,64`. All observations
-  above 64 are combined in the single Prometheus `+Inf` bucket.
+- the earlier `le="64"` boundary was not inclusive of the user's requested
+  high-concurrency band. The corrected finite bounds are every integer from
+  `0` through `16`, then `20,24,28,32,36,40,44,48,52,56,60,63`. The only
+  distinct band at or above `64` is the cumulative overflow delta
+  `+Inf - le="63"`; there are no finite buckets at or above `64`.
 
 ### Review 2: safety and lifecycle
 
@@ -451,4 +455,16 @@ published only after the complete builder verification succeeds.
   absent. The first direct push attempt wrote neither tag because the builder
   GHCR credential was expired. A GitHub device authorization with
   `write:packages` is pending; no registry tag will be overwritten. Dev PIG-B
-  remains unchanged until both tags and their common digest are verified.
+  remains unchanged;
+- after publication, the user clarified that concurrency `64` must be grouped
+  with higher observations and that lower bands should be finer. The source and
+  regression tests now use exact integer bounds through `16`, four-wide bounds
+  through `60`, and `63` as the last finite bound. This observability-only
+  correction supersedes the earlier histogram wording but does not alter TPS,
+  running-limit, window-admission, reservation, or lifecycle behavior;
+- because `v0.12.23` is already immutable, do not finish or deploy its missing
+  convenience tags. Push the correction as source first, rerun the complete
+  clean-builder matrix, then assign the next `0.12.x` patch version and publish
+  all release tags only if every gate succeeds. Dev testing remains restricted
+  to `phala-inference-guard-b` over SSH on
+  `19a2d062-af63-49eb-807d-84ddfbbc905a`.
