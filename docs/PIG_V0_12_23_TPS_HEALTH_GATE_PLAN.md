@@ -311,8 +311,8 @@ published only after the complete builder verification succeeds.
 - `v0.12.22` source, tag, image, and dev PIG-B runtime are reproducible baseline
   evidence; they are not production candidates;
 - the v0.12.23 behavior is implemented and pushed on branch
-  `codex/pig-v0.12.23-tps-health-gate` at exact commit
-  `83fe43da7fd862d57a1563e68eed758130efe08f`; source still reports
+  `codex/pig-v0.12.23-tps-health-gate`. The exact executable review HEAD is
+  `654931dcff21c844be977a70e103bf526a861db3`; source still reports
   `PIG-v0.12.22`, so no v0.12.23 version assignment, tag, image, or deployment
   exists yet;
 - dev/backend capability audit on 2026-08-26 confirmed that SGLang-B standard
@@ -352,6 +352,82 @@ published only after the complete builder verification succeeds.
   `/var/volatile/dstack/persistent/.cache/pig-v01223-health-gate/full-83fe43d-r1`;
   `test.log` SHA-256 is
   `0d23f562bc2117f7415d7977349bcfcdb96643d4baea28ea419eaf4e18f410f2`;
-- the remaining work is the three recorded reviews and the complete clean-builder
-  matrix in phase 3. Version assignment, image publication, and isolated dev
-  update remain forbidden until those gates pass.
+
+### Review 1: model and causality
+
+- TPS only reports health; it cannot select, learn, warm, or lower a concurrency
+  limit. Waiting, a fresh preemption, or qualified rolling and current TPS below
+  reference changes the pre-forward decision. Running and same-observation
+  bounds are independent configured facts;
+- request fanout changes only the atomic running/window projections and complete
+  reservation size. Histogram collection samples the pre-reconciliation overlay
+  on the observer path and cannot affect admission;
+- review found that an explicit startup `PREDICTIVE_RUNNING_LIMIT=0` was
+  indistinguishable from an absent variable, so SGLang discovery incorrectly
+  enabled a limit. The valid builder red at commit
+  `89f69e628842a3ca2ed6bc74bb76819467cb13da` observed
+  `Value=256 Source=sglang_server_info calls=1`; red log SHA-256 is
+  `3cfde40ac59b32ec6b8fc4dfc2ad316534740e9ba6cbfe68c449ee3b753a2118`.
+  Presence-aware initialization at `bf89bce3538ef62c11731d349424c6f8ca5e3219`
+  passed the focused config/server tests with log SHA-256
+  `1ec053a6c77a230b5d422d288f119fe43c965975a038b7e1f5d4845299ea1ab3`;
+- the finalized histogram finite bounds are
+  `0,1,2,4,6,8,10,12,16,20,24,28,32,36,40,44,48,52,56,60,64`. All observations
+  above 64 are combined in the single Prometheus `+Inf` bucket.
+
+### Review 2: safety and lifecycle
+
+- admission check and full-fanout reservation share one Controller mutex.
+  Reconciliation is sample-watermark fenced; completion, cancel, failure,
+  timeout, disconnect, reset, shutdown, duplicate terminal calls, and stale
+  handles converge on bounded lifecycle behavior;
+- startup discovery is initialization only. vLLM never infers a maximum.
+  SGLang accepts one bounded top-level integer only when the environment variable
+  is absent; explicit zero disables discovery and the gate;
+- review found that the default HTTP client could follow `/server_info`
+  redirects, violating the same-origin contract. The builder red at commit
+  `23a51ffa062c7f68c068ae8edf1f6917127833ca` accepted redirected value 256 and
+  called the target once; red log SHA-256 is
+  `dbcb571b140b02c0c2610a8cccb404010aa1d89672372e1e97bdd363cd2899fb`.
+  The fixed client disables redirects and environment proxying. Focused discovery
+  tests passed at `3c2890960904491d3b0db218da015bf5716cbf59` with log SHA-256
+  `cc00349e7f3528446b5297ac9616441e674ea2400c4769d804e65fc4291f15d4`;
+- discovery failure logging now uses fixed low-cardinality fields and does not
+  print the raw client error or endpoint URL. No request body, prompt, token,
+  credential, user identifier, or unbounded label was added.
+
+### Review 3: evidence and release
+
+- the first matrix at `da7ba4398d755df77156fda7df62a0eadbb442af`
+  passed legacy audit, formatting, full tests, race, vet, and build, then correctly
+  exposed stale benchmark setup: fixtures tried to preload 4096 reservations
+  under the production default window of 32. Only the benchmark fixture was
+  changed to declare its required window; the production default remains 32;
+- the complete clean-builder matrix passed at exact HEAD
+  `654931dcff21c844be977a70e103bf526a861db3` on builder
+  `4f167f6e-4c50-415f-99f2-94b65652beba`, `go1.24.13 linux/amd64`, using pinned
+  image `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`.
+  Evidence is
+  `/var/volatile/dstack/persistent/.cache/pig-v01223-health-gate/full-654931d-r1`;
+  source archive SHA-256 is
+  `afedc4d570ee853ace604da230579533fc4e71674b9bf3baab28fa5210a40496`;
+- all nine required step exit codes are zero. Material log SHA-256 values are:
+  legacy audit `455cf163ebdc8cd358ea90370bf09603ddeec7deb7a64d3c3018975046aba5c0`,
+  full tests `073aa3a027e79560c96e3ca342d5a3f43bf99c8d8f952846a7e280b0a45b3dbb`,
+  race `d4ff9ef3427cdb1a9f9de60692db65acd0e05f9c79cbb2d232515cb20f88af3e`,
+  controller benchmark
+  `d1273ecadd07021953c5ec7229144f61f7b9782d4a1bb1574e71b59a05f34f77`,
+  scanner benchmark
+  `b6f4f8d07dbe64ad6537e27516c4bafb9540ce9e6f2b032e008531c911e4c971`,
+  and simulation log
+  `633fedd632b40bbfebf5a1a20ea82da4abdd3f0f512d8c5cd2a034e03d43c4a5`.
+  Gofmt, vet, and build logs are empty by design;
+- deterministic simulation outputs were byte-identical with SHA-256
+  `e56d63166749ff968c26844d2a1909a00f0300c150b706399ee465dccd7ac13a`.
+  Controller hot paths used zero allocations: snapshot 471-476 ns/op,
+  protected admission 826-891 ns/op, admit/cancel 572-693 ns/op, and a 4096
+  reservation observation 365-384 microseconds/op. The 4 MiB full classifier was
+  6.86-8.01 ms/op and its zero-allocation shape parser was 5.51-5.68 ms/op;
+- phase 3 is complete. The next permitted step is the explicit v0.12.23 version
+  assignment followed by source push, immutable tag, builder image gates, and
+  isolated dev PIG-B validation. No image or runtime has been changed yet.
