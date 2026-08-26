@@ -1,31 +1,31 @@
 # PIG Advanced Configuration
 
-This document describes the current configuration contract. An assigned source
-identity does not by itself imply an accepted registry image or production
-deployment. The loader exposes bounded overrides for controlled tests, but
-parser capability does not define what belongs in production Compose.
+This document describes the current TPS-only configuration contract. Source,
+tests, images, deployment, and live observations remain separate evidence
+layers; a development branch is not a released image.
 
 ## Production contract
 
 A normal production deployment contains only:
 
 - `UPSTREAM`, exactly one absolute HTTP URL;
-- required authentication, TLS, and attestation infrastructure; and
-- a target-specific choice that genuinely differs from the accepted image
-  default.
+- required bearer, TLS, and attestation infrastructure; and
+- `PREDICTIVE_TPS_REFERENCE` when the deployment has a real long-run Decode
+  TPS target.
 
-Do not explicitly configure predictive mode, metrics URL, polling, freshness,
-the KV hard ratio, model length, or Prefill bounds when the accepted defaults
-are intended. Production enforce mode is proved with
-`PREDICTIVE_ADMISSION_MODE` absent. Shadow is a test-only override:
+Do not spell out source defaults in production Compose. Predictive admission is
+`enforce` by default, metrics are derived from the upstream origin, and the
+observer polls every 500 ms. `shadow` is a test-only override:
 
 ```text
 PREDICTIVE_ADMISSION_MODE=shadow
 ```
 
-Test and production manifests are separate artifacts. Never promote a test
-manifest by changing only its mode. Before deployment, compare the candidate
-with a fresh live Compose and audit every explicit `PREDICTIVE_*` value.
+The public forwarding surface is fixed. PIG accepts only
+`POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/responses`, and
+`GET /v1/models`. The generation routes use admission; model discovery does
+not. Unknown paths and method mismatches terminate locally with a generic
+OpenAI-shaped 404 and never reach the backend.
 
 ## Core infrastructure
 
@@ -37,184 +37,56 @@ with a fresh live Compose and audit every explicit `PREDICTIVE_*` value.
 | `API_AUTH_ENABLED` | true when `TOKEN` is set | Require bearer authentication |
 | `PROXY_TIMEOUT_SECONDS` | `1800` | End-to-end upstream timeout |
 | `PIG_STATUS_LOG_INTERVAL_SECONDS` | `30` | Compact Controller status interval; `0` disables periodic lines |
-| `PIG_LOG_LEVEL` | `info` | `info` emits compact events; `debug` also emits decision detail |
-| `UPSTREAM_ERROR_CLASSIFICATION_ENABLED` | `true` | Preserve the bounded upstream error classifier |
-
-The public forwarding surface is not configurable. PIG accepts only
-`POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/responses`, and
-`GET /v1/models`. The three generation routes use predictive admission; models
-discovery does not. All four use the public bearer policy when
-`API_AUTH_ENABLED=true`. Unknown paths and method mismatches terminate locally
-with a generic OpenAI-shaped 404. This fixed boundary prevents a Compose
-override from exposing backend-native interfaces outside PIG admission.
+| `PIG_LOG_LEVEL` | `info` | `debug` adds bounded decision detail |
+| `UPSTREAM_ERROR_CLASSIFICATION_ENABLED` | `true` | Preserve bounded upstream error classification |
 
 Attestation infrastructure remains configurable with `ATTESTATION_ENABLED`,
 `ATTESTATION_DSTACK_ENDPOINT`, `TLS_CERT_PATH`, `ATTESTATION_GPU_ARCH`, the
-NVIDIA evidence command/payload settings, and their timeout. These values do
+NVIDIA evidence command or payload settings, and their timeout. These values do
 not alter admission policy.
 
-Keep `PIG_LOG_LEVEL` absent in normal production Compose. A temporary
-`PIG_LOG_LEVEL=debug` adds one extended numeric record after each already
-rate-limited protection summary; it does not log prompts, request bodies,
-credentials, request IDs, or endpoint hosts. Remove the override after the
-diagnostic window. Prefer `/pig/metrics` for continuous high-detail analysis.
-
-## Predictive source defaults
+## TPS controller
 
 | Variable | Source default | Constraint |
 | --- | --- | --- |
-| `PREDICTIVE_ADMISSION_MODE` | `enforce` | Only `shadow` or `enforce` |
+| `PREDICTIVE_ADMISSION_MODE` | `enforce` | `shadow` or `enforce` |
 | `PREDICTIVE_METRICS_URL` | derived `${UPSTREAM_ORIGIN}/metrics` | One absolute HTTP URL |
 | `PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS` | `10000` | `1..300000` |
-| `PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS` | `500` | `1..60000`, not greater than startup timeout |
+| `PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS` | `500` | `1..60000`, no greater than startup timeout |
 | `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS` | `500` | `1..60000` |
 | `PREDICTIVE_MAX_METRICS_AGE_MS` | `3 x poll`, normally `1500` | At least one poll, at most `60000` |
-| `PREDICTIVE_KV_HARD_RATIO` | `0.88` | Strictly between 0 and 1 |
-| `PREDICTIVE_TPS_REFERENCE` | `0` (disabled) | Finite output tokens/s/active Decode sequence in `[0, 1000000]` |
+| `PREDICTIVE_TPS_REFERENCE` | `0` | Finite output tokens/s/active Decode sequence in `[0, 1000000]` |
 | `OUTPUT_TOKEN_FIELD_NAMES` | standard OpenAI output-limit fields | Unique supported JSON field names |
 
-The 1500-ms value is observation freshness, not a post-rejection hold. A
-current canonical probe recomputes Router-visible capacity on every inspection;
-the last-reject timestamp is telemetry only.
+`PREDICTIVE_TPS_REFERENCE` is a long-run service-quality target, not an
+instantaneous threshold or learned backend capability. A positive value enables
+the rolling TPS controller. Zero leaves the TPS reference disabled. Short low
+samples are evidence for later predictions and do not create a cooldown or a
+sticky low-capacity state.
 
-Cache-aware Prefill estimation has no production configuration knob. PIG reads
-vLLM token-level prefix query/hit counters or SGLang effective input/hit
-counters through the selected backend adapter. It requires consecutive valid
-counter samples and at least 4096 recent query tokens, carries a valid
-observation for at most 10 seconds, and caps hit credit at 75%. Missing,
-low-volume, reset, stale, or backend-incoherent cache evidence is a cold
-fallback, not a backend failure. The credit never changes KV reservation,
-maximum input, or the regular/weighted/exclusive/quiescent class.
+The observer publishes one coherent vLLM or SGLang identity with running,
+waiting, generation, preemption, and runtime-epoch signals. TPS admission does
+not require KV metrics, prefix-cache metrics, Prefill thresholds, model context
+metadata, or a `/v1/models` startup probe. Optional backend metrics may remain
+visible to operators, but they are not inputs to the TPS decision.
 
-`PREDICTIVE_TPS_REFERENCE` is not an upstream capability override. Set it only
-when the deployment has a real long-run per-user Decode TPS requirement, for
-example an OpenRouter ranking floor. A positive value enables the fixed
-60-second sustained-TPS controller; zero or omission leaves the TPS gate
-disabled. The source-owned semantics are four qualified samples, eight
-qualified sequence-seconds, five-percent healthy headroom, and at most one
-base-plus-one exploration sequence whose fixed-rate counterfactual remains at
-least 95 percent of the reference. These are algorithm constants, not extra
-production YAML values.
+Waiting or a fresh preemption pauses marginal intake for that observation only.
+The first fresh observation with both clear can reopen intake. There is no
+cooldown, consecutive-clear requirement, sticky recovery timer, learned low
+cap, or model-specific threshold.
 
-The sequence projection counts backend running and waiting plus only those
-local reservations newer than the latest observation watermark. The next
-covering poll absorbs that extra contribution. This prevents a concurrent
-same-poll burst from bypassing a learned limit while avoiding a permanent
-double count after the backend exposes the request.
+The controller still owns a same-snapshot atomic sequence reservation. Backend
+running/waiting and locally forwarded sequences are reconciled at the next
+observation watermark so concurrent requests cannot spend the same apparent
+headroom twice and completed work does not remain permanently double-counted.
 
-## Runtime predictive policy API
+## Retired settings
 
-The authenticated runtime policy endpoint is:
+The following environment variables are ignored. They cannot restore the old
+Context, KV, input-size, cache-aware Prefill, or long-input gates:
 
 ```text
-GET   /admin/v1/predictive-policy
-PATCH /admin/v1/predictive-policy
-```
-
-It always requires exactly one `Authorization: Bearer <token>` header, even
-when generation-path authentication is configured differently. Responses are
-bounded JSON with `Cache-Control: no-store`; they never return the token,
-upstream or metrics URL, request data, or model identity.
-
-GET returns schema `pig.predictive-policy.v1`, a monotonic revision, source,
-last update time, process-local persistence semantics, the mutable
-`tps_reference`, and non-secret effective admission/capability values. In v1,
-only the TPS reference is hot-mutable. Admission mode, polling/freshness,
-scanner/estimator construction, KV geometry/hard limit, and Prefill bounds are
-read-only because changing them requires a test-only restart, observer rebuild,
-or new backend capability epoch.
-
-PATCH uses compare-and-swap:
-
-```json
-{
-  "expected_revision": 1,
-  "tps_reference": 50
-}
-```
-
-Unknown or missing fields, trailing JSON, bodies over 4096 bytes, stale
-revisions, and values outside finite `[0, 1000000]` fail without changing the
-current policy. A stale revision returns HTTP 409. A successful write advances
-the revision and affects the next pre-forward decision. Changing the value
-clears old TPS-window evidence atomically; an equal-value write advances the
-revision without clearing valid evidence.
-
-Existing request reservations and QoS-budget leases keep their exact lifecycle
-across an update. A sample that began before a changed policy revision cannot
-refill the new TPS window. API state is intentionally not persistent: restart
-restores the validated `PREDICTIVE_TPS_REFERENCE` startup value and revision 1.
-
-Before the window has four qualified samples and eight qualified
-sequence-seconds, TPS warming admits at most two total sequences. If PIG starts
-while more than two are already running, it preserves that population but does
-not add to it. This bounded warming step supplies initial batching evidence
-without a special recurring one-to-two exception or an unlimited cold-start
-burst. Once the window is ready, only the rate-derived envelope applies.
-
-The window counts positive generation even when a short request begins and
-finishes between polls. A zero-generation interval counts as a Decode stall
-only when a PIG-owned reservation is known to be in active Decode; a pure
-Prefill/idle interval does not fabricate TPS zero. Runtime counter reset clears
-the window. Ordinary drain immediately permits a one-sequence probe without a
-sticky hold or cooldown.
-
-The scanner body ceiling (4 MiB) and scanner concurrency (64) are internal
-bounded defaults. The body ceiling covers a model-neutral 650K-token text
-window at the estimator's six-byte upper ratio without making body size another
-production knob.
-
-## Startup-derived capability
-
-The startup probe auto-detects exactly one coherent vLLM or SGLang metric
-identity and requires framework-correct KV capacity, block/page size, used KV,
-running, waiting, monotonic generation, and monotonic preemption signals. It
-never combines metric families from different frameworks. PIG then performs at
-most one bounded read-only `/v1/models`
-request. Automatic initialization succeeds only when the response contains
-exactly one model, its ID matches the metric identity, and `max_model_len` is
-positive. Missing, ambiguous, or inconsistent metadata fails startup; there is
-no geometry fallback.
-
-The immutable automatic profile is:
-
-```text
-kv_hard_limit = block_align_down(kv_capacity * 0.88)
-aligned_total = block_align_down(min(max_model_len, kv_hard_limit))
-maximum_admissible_input = aligned_total - 256 decode-horizon tokens
-
-regular boundary   = block_align_down(64 Ki tokens)
-exclusive boundary = block_align_down(256 Ki tokens)
-quiescent boundary = block_align_down(512 Ki tokens)
-contended budget   = block_align_down(min(64 Ki, maximum_admissible_input))
-aggregate budget   = block_align_down(min(256 Ki, maximum_admissible_input))
-```
-
-The 256-token Decode horizon is the bounded future-KV/QoS planning horizon.
-PIG deliberately does not add the client's complete declared `max_tokens` to
-the input and reproduce backend context validation. A known output limit is
-used only by the optional TPS lifetime-budget calculation; SGLang or vLLM
-remains authoritative for full request legality.
-
-The fixed 64K/256K/512K request bands are portable workload classes, not
-learned rates and not fractions of context length. `maximum_admissible_input`
-is the hard per-request input ceiling. A shorter model may therefore never
-reach a larger class even though the class boundary remains fixed.
-
-PIG sends no completion, warmup, cache query, or performance probe during
-initialization. Backend busy/idle state does not change the profile. KV and
-Prefill parameters are frozen for the Controller lifetime and are never
-learned. Ordinary observation polls do not repeat metadata I/O. When monotonic
-counters indicate a backend runtime reset, an automatically initialized profile
-performs one bounded `/v1/models` revalidation before publishing the reset
-sample; failure leaves the old observation to age stale, and a changed
-`max_model_len` closes capability availability.
-
-## Explicit capability override
-
-Controlled tests may bypass `/v1/models` only by setting all five values:
-
-```text
+PREDICTIVE_KV_HARD_RATIO
 PREDICTIVE_MAX_MODEL_LEN_TOKENS
 PREDICTIVE_PREFILL_REGULAR_TOKENS
 PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS
@@ -222,45 +94,60 @@ PREDICTIVE_PREFILL_QUIESCENT_TOKENS
 PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS
 ```
 
-All five must be omitted or all five must be positive. Before block alignment,
-they must satisfy:
+Remove them from production and test Compose files. Invalid values in these
+retired variables do not change loading or validation.
+
+## Runtime policy API
+
+The authenticated process-local policy endpoint is:
 
 ```text
-regular < exclusive < quiescent
-regular <= aggregate <= quiescent
+GET   /admin/v1/predictive-policy
+PATCH /admin/v1/predictive-policy
 ```
 
-The explicit model length is still combined with observed KV geometry and the
-256-token Decode horizon to derive the hard maximum input. Partial overrides
-fail configuration validation. These values are an auditable test/deployment
-exception, not a recommended production manifest.
+It always requires exactly one `Authorization: Bearer <token>` header. GET
+returns schema `pig.predictive-policy.v1`, a monotonic revision, source, update
+time, the mutable `tps_reference`, and non-secret mode/poll/freshness values. It
+does not return credentials, endpoint URLs, request data, model identity, KV
+geometry, or Prefill policy.
 
-## Test matrix rules
+PATCH uses compare-and-swap:
 
-Builder tests and Router-disabled experiments may explicitly configure cadence,
-freshness, the KV hard ratio, the complete capability override, metrics URL,
-and mode. Each result must include the exact override set and source commit.
+```json
+{
+  "expected_revision": 1,
+  "tps_reference": 25
+}
+```
 
-Shadow is observation-only. It cannot:
+Unknown or missing fields, trailing JSON, bodies over 4096 bytes, stale
+revisions, and values outside finite `[0, 1000000]` fail atomically. A changed
+reference clears incompatible TPS-window evidence; existing request leases keep
+their exact lifecycle. Restart restores the validated environment value and
+revision 1.
 
-- reject a request;
-- reserve capacity;
-- publish reduced Router capacity; or
-- mutate application bytes or business headers.
+## Test rules
 
-Enforce owns atomic check-and-reserve. A request receives one reservation
-before forwarding or is protected before the upstream call. Forward failure,
-completion, upstream error, timeout, cancellation, disconnect, panic, reset,
-and shutdown must converge on an exact-once terminal path.
+Builder tests may override cadence, freshness, metrics URL, TPS reference, and
+mode. Each result records the exact source and override set. A test manifest is
+not promoted unchanged to production.
+
+Shadow computes the counterfactual policy decision but never returns a TPS 429
+or reduces Router capacity. Enforce owns the atomic pre-forward decision and
+reservation. Forward failure, completion, upstream error, timeout,
+cancellation, disconnect, panic, reset, and shutdown must converge on one
+terminal lifecycle transition.
+
+Correctness, race, lifecycle, build, and protocol checks remain required source
+evidence. Production samples and historical comparisons guide optimization;
+one model, traffic window, rejection percentage, or benchmark number is not a
+universal hard acceptance threshold.
 
 ## Observer failure semantics
 
-An individual failed or incomplete scrape does not invalidate the immutable
-capability. PIG retains the last coherent snapshot until
-`PREDICTIVE_MAX_METRICS_AGE_MS`; after that, enforce closes intake until a
-coherent sample returns.
-
-An explicit served-model, KV-capacity, or block-size change, or a generation or
-preemption counter reset, invalidates the capability epoch. The old adapter
-cannot reopen; reconstruction is required so reservations from the old epoch
-cannot authorize work against a different backend.
+One failed scrape retains the last coherent snapshot until
+`PREDICTIVE_MAX_METRICS_AGE_MS`. A stale, missing, or identity-invalid snapshot
+closes enforce intake until coherent evidence returns. Generation or preemption
+counter rollback advances the runtime epoch, clears incompatible TPS evidence,
+and reconciles old leases without requiring KV or model metadata.

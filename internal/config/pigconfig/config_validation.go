@@ -68,17 +68,8 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 		cfg.PredictiveMaximumMetricsAge < cfg.PredictiveObservationPollInterval || cfg.PredictiveMaximumMetricsAge > predictiveMaximumMetricsRequestTime {
 		return fmt.Errorf("predictive metrics freshness bounds are invalid")
 	}
-	if !finite(cfg.PredictiveKVHardRatio) || cfg.PredictiveKVHardRatio <= 0 || cfg.PredictiveKVHardRatio >= 1 {
-		return fmt.Errorf("PREDICTIVE_KV_HARD_RATIO must be between 0 and 1")
-	}
 	if !finite(cfg.PredictiveTPSReference) || cfg.PredictiveTPSReference < 0 || cfg.PredictiveTPSReference > 1_000_000 {
 		return fmt.Errorf("PREDICTIVE_TPS_REFERENCE must be finite and in [0, 1000000]")
-	}
-	regular, exclusive, quiescent, aggregate := predictivePrefillBounds(cfg)
-	automatic := cfg.PredictiveMaxModelLenTokens == 0 && regular == 0 && exclusive == 0 && quiescent == 0 && aggregate == 0
-	if !automatic && (cfg.PredictiveMaxModelLenTokens <= 0 || regular <= 0 || exclusive <= regular ||
-		quiescent <= exclusive || aggregate < regular || aggregate > quiescent) {
-		return fmt.Errorf("predictive capability overrides must all be omitted or include max model length and ordered Prefill bounds/budget")
 	}
 	return nil
 }
@@ -113,11 +104,6 @@ func validateEstimator(cfg kvadmission.EstimatorConfig) error {
 		return fmt.Errorf("predictive estimator bounds are invalid")
 	}
 	return nil
-}
-
-func predictivePrefillBounds(cfg Config) (int64, int64, int64, int64) {
-	return cfg.PredictivePrefillRegularTokens, cfg.PredictivePrefillExclusiveTokens,
-		cfg.PredictivePrefillQuiescentTokens, cfg.PredictivePrefillAggregateBudgetTokens
 }
 
 func finite(value float64) bool {

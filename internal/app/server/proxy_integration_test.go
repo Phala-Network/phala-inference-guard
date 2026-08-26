@@ -428,7 +428,6 @@ func testProxyConfig(upstream string) config {
 		PredictiveMetricsRequestTimeout:    100 * time.Millisecond,
 		PredictiveObservationPollInterval:  500 * time.Millisecond,
 		PredictiveMaximumMetricsAge:        1500 * time.Millisecond,
-		PredictiveKVHardRatio:              0.88,
 	}
 }
 

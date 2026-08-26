@@ -33,20 +33,14 @@ type Config struct {
 	AttestationNVIDIACommandTimeout  time.Duration
 	AttestationRequireNVIDIAEvidence bool
 
-	PredictiveAdmissionMode                string
-	PredictiveScannerBodyBytes             int64
-	PredictiveScannerConcurrency           int
-	OutputTokenFields                      []string
-	PredictiveEstimator                    kvadmission.EstimatorConfig
-	PredictiveStartupProbeTimeout          time.Duration
-	PredictiveMetricsRequestTimeout        time.Duration
-	PredictiveObservationPollInterval      time.Duration
-	PredictiveMaximumMetricsAge            time.Duration
-	PredictiveKVHardRatio                  float64
-	PredictiveTPSReference                 float64
-	PredictiveMaxModelLenTokens            int64
-	PredictivePrefillRegularTokens         int64
-	PredictivePrefillExclusiveTokens       int64
-	PredictivePrefillQuiescentTokens       int64
-	PredictivePrefillAggregateBudgetTokens int64
+	PredictiveAdmissionMode           string
+	PredictiveScannerBodyBytes        int64
+	PredictiveScannerConcurrency      int
+	OutputTokenFields                 []string
+	PredictiveEstimator               kvadmission.EstimatorConfig
+	PredictiveStartupProbeTimeout     time.Duration
+	PredictiveMetricsRequestTimeout   time.Duration
+	PredictiveObservationPollInterval time.Duration
+	PredictiveMaximumMetricsAge       time.Duration
+	PredictiveTPSReference            float64
 }

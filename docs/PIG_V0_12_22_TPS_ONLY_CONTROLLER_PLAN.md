@@ -506,6 +506,23 @@ Three reviews were completed before behavior code:
   `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
   A preceding run stopped at non-empty formatting output before executing any
   test; it was corrected and is not treated as behavioral evidence;
+- TPS-external configuration retirement red: exact pushed commit
+  `79e24887095250894253b1f9cba6b6dc507671ae`, source archive SHA-256
+  `0915471a2ccdf80d76c44174e00052c5a6417ec5b4f57dcdb6d6bb44fd527bc8`,
+  failed for the intended two reasons: the typed configuration still owned the
+  six KV/model-length/Prefill fields, and invalid retired environment values
+  still changed loading. The red output SHA-256 is
+  `4a3ce123eeeec9f1d4850c3b230bb04f97b72cbdafa28a65c58e7854b87b579d`;
+- TPS-external configuration retirement green: current source archive SHA-256
+  `b3c6dfe7204b3bf4e8e693d69e5e55a2cea0b888834870f7a4e923e98a9ee0c2`
+  passed the complete `internal/config/pigconfig` package plus the focused
+  default-factory and dynamic TPS policy API tests on the independent builder.
+  The output SHA-256 is
+  `f15d1400444f547a1c0a7e9619a175e0cc24d3fa4d1b837a5fef5e4b7015eb52`;
+  the empty formatting output SHA-256 is
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  `README.md` and `docs/ADVANCED.md` now describe TPS-only source semantics and
+  identify those six old settings as ignored/retired;
 - inherited cache accumulator: removed from the admission source and tests in
   the current unverified source slice;
 - TPS behavior: unchanged from branch base;

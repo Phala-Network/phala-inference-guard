@@ -162,10 +162,6 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	if cfg.PredictiveTPSReference != 0 {
 		t.Fatalf("default TPS reference=%v, want disabled zero", cfg.PredictiveTPSReference)
 	}
-	if cfg.PredictiveMaxModelLenTokens != 0 || cfg.PredictivePrefillRegularTokens != 0 || cfg.PredictivePrefillExclusiveTokens != 0 ||
-		cfg.PredictivePrefillQuiescentTokens != 0 || cfg.PredictivePrefillAggregateBudgetTokens != 0 {
-		t.Fatalf("minimal production config unexpectedly disables startup Prefill derivation: %+v", cfg)
-	}
 	minimum650KBodyWindow := int64(650_000 * cfg.PredictiveEstimator.MaxBytesPerToken)
 	if cfg.PredictiveScannerBodyBytes < minimum650KBodyWindow {
 		t.Fatalf("production scanner ceiling=%d does not cover the model-neutral 650K window=%d", cfg.PredictiveScannerBodyBytes, minimum650KBodyWindow)
@@ -195,18 +191,12 @@ func TestRuntimeLogLevelIsBounded(t *testing.T) {
 	}
 }
 
-func TestTestsCanExplicitlyOverrideTypedPredictivePolicy(t *testing.T) {
+func TestTestsCanExplicitlyOverrideTypedTPSPolicy(t *testing.T) {
 	t.Setenv("PREDICTIVE_ADMISSION_MODE", "shadow")
 	t.Setenv("PREDICTIVE_METRICS_URL", "http://fixture:9000/custom-metrics")
 	t.Setenv("PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS", "20")
 	t.Setenv("PREDICTIVE_MAX_METRICS_AGE_MS", "100")
-	t.Setenv("PREDICTIVE_KV_HARD_RATIO", "0.90")
 	t.Setenv("PREDICTIVE_TPS_REFERENCE", "23.5")
-	t.Setenv("PREDICTIVE_MAX_MODEL_LEN_TOKENS", "8192")
-	t.Setenv("PREDICTIVE_PREFILL_REGULAR_TOKENS", "1024")
-	t.Setenv("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", "2048")
-	t.Setenv("PREDICTIVE_PREFILL_QUIESCENT_TOKENS", "4096")
-	t.Setenv("PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", "2048")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load explicit test policy: %v", err)
@@ -215,11 +205,7 @@ func TestTestsCanExplicitlyOverrideTypedPredictivePolicy(t *testing.T) {
 		t.Fatalf("Validate explicit test policy: %v", err)
 	}
 	if cfg.PredictiveAdmissionMode != "shadow" || cfg.PredictiveObservationPollInterval != 20*time.Millisecond ||
-		cfg.PredictiveMaximumMetricsAge != 100*time.Millisecond || cfg.PredictiveKVHardRatio != 0.90 ||
-		cfg.PredictiveTPSReference != 23.5 ||
-		cfg.PredictiveMaxModelLenTokens != 8192 ||
-		cfg.PredictivePrefillRegularTokens != 1024 || cfg.PredictivePrefillExclusiveTokens != 2048 ||
-		cfg.PredictivePrefillQuiescentTokens != 4096 || cfg.PredictivePrefillAggregateBudgetTokens != 2048 {
+		cfg.PredictiveMaximumMetricsAge != 100*time.Millisecond || cfg.PredictiveTPSReference != 23.5 {
 		t.Fatalf("explicit test policy was not loaded exactly: %+v", cfg)
 	}
 }
@@ -242,29 +228,5 @@ func TestPredictiveTPSReferenceValidation(t *testing.T) {
 		if err := Validate(candidate); err == nil || !strings.Contains(err.Error(), "PREDICTIVE_TPS_REFERENCE") {
 			t.Fatalf("Validate reference %v error=%v, want bounded finite rejection", reference, err)
 		}
-	}
-}
-
-func TestPredictiveCapabilityEnvironmentOverridesAreAllOrNone(t *testing.T) {
-	overrides := []struct {
-		name  string
-		value string
-	}{
-		{name: "PREDICTIVE_MAX_MODEL_LEN_TOKENS", value: "8192"},
-		{name: "PREDICTIVE_PREFILL_REGULAR_TOKENS", value: "1024"},
-		{name: "PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", value: "2048"},
-		{name: "PREDICTIVE_PREFILL_QUIESCENT_TOKENS", value: "4096"},
-		{name: "PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", value: "2048"},
-	}
-	for _, override := range overrides {
-		t.Run(override.name, func(t *testing.T) {
-			for _, value := range overrides {
-				t.Setenv(value.name, "")
-			}
-			t.Setenv(override.name, override.value)
-			if _, err := Load(); err == nil || !strings.Contains(err.Error(), "all be set or all be omitted") {
-				t.Fatalf("partial capability override error = %v", err)
-			}
-		})
 	}
 }

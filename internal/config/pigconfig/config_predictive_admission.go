@@ -34,31 +34,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	kvHardRatio, err := env.Float("PREDICTIVE_KV_HARD_RATIO", 0.88)
-	if err != nil {
-		return err
-	}
 	tpsReference, err := env.Float("PREDICTIVE_TPS_REFERENCE", 0)
-	if err != nil {
-		return err
-	}
-	maxModelLen, err := env.Int("PREDICTIVE_MAX_MODEL_LEN_TOKENS", 0)
-	if err != nil {
-		return err
-	}
-	prefillRegular, err := env.Int("PREDICTIVE_PREFILL_REGULAR_TOKENS", 0)
-	if err != nil {
-		return err
-	}
-	prefillExclusive, err := env.Int("PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS", 0)
-	if err != nil {
-		return err
-	}
-	prefillQuiescent, err := env.Int("PREDICTIVE_PREFILL_QUIESCENT_TOKENS", 0)
-	if err != nil {
-		return err
-	}
-	prefillAggregate, err := env.Int("PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS", 0)
 	if err != nil {
 		return err
 	}
@@ -82,20 +58,6 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if requestTimeoutMS > startupTimeoutMS {
 		return fmt.Errorf("PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS must not exceed PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS")
 	}
-	capabilityOverrides := []int{maxModelLen, prefillRegular, prefillExclusive, prefillQuiescent, prefillAggregate}
-	configured := 0
-	for _, value := range capabilityOverrides {
-		if value < 0 {
-			return fmt.Errorf("predictive capability overrides must be non-negative")
-		}
-		if value > 0 {
-			configured++
-		}
-	}
-	if configured != 0 && configured != len(capabilityOverrides) {
-		return fmt.Errorf("predictive capability overrides must all be set or all be omitted")
-	}
-
 	cfg.PredictiveMetricsURL = metricsURL
 	cfg.PredictiveScannerBodyBytes = defaultPredictiveScannerBodyBytes
 	cfg.PredictiveScannerConcurrency = defaultPredictiveScannerConcurrency
@@ -103,12 +65,6 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveMetricsRequestTimeout = time.Duration(requestTimeoutMS) * time.Millisecond
 	cfg.PredictiveObservationPollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 	cfg.PredictiveMaximumMetricsAge = time.Duration(maximumAgeMS) * time.Millisecond
-	cfg.PredictiveKVHardRatio = kvHardRatio
 	cfg.PredictiveTPSReference = tpsReference
-	cfg.PredictiveMaxModelLenTokens = int64(maxModelLen)
-	cfg.PredictivePrefillRegularTokens = int64(prefillRegular)
-	cfg.PredictivePrefillExclusiveTokens = int64(prefillExclusive)
-	cfg.PredictivePrefillQuiescentTokens = int64(prefillQuiescent)
-	cfg.PredictivePrefillAggregateBudgetTokens = int64(prefillAggregate)
 	return nil
 }
