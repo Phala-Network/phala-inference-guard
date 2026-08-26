@@ -220,3 +220,47 @@ the environment record SHA-256 is
 `a16b02d928f984d6df8769058899dadcc505cd1afc8e66c841284e615c1e1864`.
 No later gate ran in this evidence directory, and the directory will not be
 reused.
+
+## 11. Final Builder Matrix And Registry Release
+
+Exact executable source commit
+`a71798e0fb613edd6b47065ae029fb9fe8eb9eb2` passed the complete remote Linux
+matrix in the new immutable evidence directory `green-a71798e-r4`. The builder
+used `go1.24.13 linux/amd64`; every recorded exit code was zero. Material
+SHA-256 values are:
+
+```text
+environment.txt  09dfd46c6367bc62f41bc1ae15569fc3d5dcb0dc700a9ff831c5d2c0ed5eb027
+legacy.log       455cf163ebdc8cd358ea90370bf09603ddeec7deb7a64d3c3018975046aba5c0
+format.log       e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+focused.log      2dd2ac32960fdab245afbbea95d66c6ec902b214742d3c7fc9bfae6a263fcfed
+full.log         14bb0a4a3155532e3c8b3ebc7b1a90999b913e4ae37769e60c0c683cb7c1cefc
+race.log         20c5eeade7ec18fc0baa838b901fa307e17a638a8c0f6986858307eb9f60e4b5
+vet.log          e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+build.log        e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+benchmark.log    a3237bd7bbb9c726541f4f98c5d8055623a24737b8f6192edc9787fa5339098b
+simulation.json  1879913751a24484263a3d8833f8b11e4f73205d01b2f040df7525f71c526c6e
+image-contract   63d48323a388c55695719921ffcdc174c8b819fe0a201c1a646a1c5afa6bcc4e
+```
+
+The two deterministic simulation outputs were byte-identical. Admission and
+cancel remained allocation-free in the measured hot path (`0 allocs/op`); the
+three 100-iteration samples measured 1680--2364 ns/op. Publishing an
+observation with 4096 reservations remained allocation-free and measured
+492783--1182985 ns/op in the three samples. These are builder microbenchmarks,
+not production throughput claims.
+
+Annotated tag `v0.12.25` points to the exact tested commit. GitHub Actions run
+`32994915834` completed successfully, including its independent production
+image contract and GHCR push. A fresh builder pull verified:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:v0.12.25
+digest   sha256:3d558568430b0e16e7c2dde1a2122f2e759fa8805a1fe84a4999b7d95f9b30c2
+version  0.12.25
+revision a71798e0fb613edd6b47065ae029fb9fe8eb9eb2
+```
+
+Source, full builder validation, builder-local image contract, registry
+publication, and registry pullability are complete. Production Compose rollout
+and live readiness remain pending and must use the immutable digest above.
