@@ -133,3 +133,25 @@ func TestV01223SGLangRunningLimitProbeTimeoutIsBounded(t *testing.T) {
 		t.Fatalf("SGLang discovery timeout was not bounded: %s", elapsed)
 	}
 }
+
+func TestV01223SGLangRunningLimitProbeDoesNotFollowRedirects(t *testing.T) {
+	var targetCalls atomic.Int64
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"max_running_requests":256}`)
+	}))
+	t.Cleanup(target.Close)
+
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/server_info", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(redirect.Close)
+
+	limit, err := probeSGLangRunningLimit(sglangRunningLimitProbeConfig{
+		MetricsURL: redirect.URL + "/metrics", RequestTimeout: time.Second,
+	})
+	if err == nil || limit != 0 || targetCalls.Load() != 0 {
+		t.Fatalf("redirected SGLang discovery limit=%d error=%v target_calls=%d", limit, err, targetCalls.Load())
+	}
+}
