@@ -153,3 +153,20 @@ the environment record SHA-256 is
 `7efbbc23c81b06391e71920a448d0dfdabdb52e8c2db70547f3f43473ae18705`.
 No failure came from compilation, dependencies, invalid fixtures, or an
 unrelated package.
+
+## 8. First Green Runner Correction
+
+The first green candidate was pushed at
+`544f1e6ba7035997aff76f637d3c957f9bad7431`. Builder directory
+`green-544f1e6-r1` stopped at the first legacy audit, before formatting or any
+Go test. The five-line Router endpoint had rendered compatibility metric names
+directly in `internal/app/server/metrics.go`, while the repository contract
+requires those names to be owned exclusively by
+`internal/observability/metrics/router_capacity_compatibility.go`.
+
+This is a valid architecture failure in the earlier metrics-only change, not a
+waiting-test result. The correction moves the exact five-line rendering to a
+dedicated observability writer; server code now only computes the snapshot and
+passes typed values. No metric name, order, value, admission decision, or
+lifecycle behavior changes. The failed evidence directory is retained and is
+not reused.

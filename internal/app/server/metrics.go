@@ -49,11 +49,11 @@ func (s *proxyServer) writeRouterMetricsContract(w io.Writer) {
 	compatibility := projectRouterCompatibility(s.cfg.PredictiveAdmissionMode, snapshot.Capacity, projection)
 	applied := projection.Active && compatibility.GlobalLimit > 0
 
-	fmt.Fprintf(w, "pig_dynamic_observed_running %d\n", compatibility.ObservedRunning)
-	fmt.Fprintf(w, "pig_dynamic_observed_waiting %d\n", compatibility.ObservedWaiting)
-	fmt.Fprintf(w, "pig_dynamic_global_limit %d\n", compatibility.GlobalLimit)
-	fmt.Fprintf(w, "pig_predictive_admission_enforce %d\n", boolMetric(s.cfg.PredictiveAdmissionMode == "enforce"))
-	fmt.Fprintf(w, "pig_predictive_router_backpressure_applied %d\n", boolMetric(applied))
+	metrics.WriteRouterMetricsContract(w, metrics.RouterMetricsContract{
+		Capacity:            compatibility,
+		AdmissionEnforce:    s.cfg.PredictiveAdmissionMode == "enforce",
+		BackpressureApplied: applied,
+	})
 }
 
 func (s *proxyServer) writeLocalMetrics(w io.Writer) {
@@ -94,13 +94,6 @@ func predictivePolicyUnixSeconds(value time.Time) float64 {
 		return 0
 	}
 	return float64(value.UnixNano()) / float64(time.Second)
-}
-
-func boolMetric(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
 }
 
 func (s *proxyServer) admissionTelemetry(now time.Time) (snapshot admissionTelemetrySnapshot) {
