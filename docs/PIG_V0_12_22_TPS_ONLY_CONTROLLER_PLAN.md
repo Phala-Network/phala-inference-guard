@@ -478,8 +478,19 @@ Three reviews were completed before behavior code:
   login-shell PATH hid `gofmt`, then the builder host lacked `base64`; neither
   attempt executed a source test successfully;
 - TPS-only source: the first sequence-demand/policy/reservation vertical slice
-  is implemented locally and awaits exact-commit builder verification;
-- inherited cache accumulator: present and explicitly noncompliant; removal
-  pending Phase 0;
+  passed the focused builder test at exact commit
+  `a08aea482de8462b02b828217fa88627dcc0af1a`; focused output SHA-256 is
+  `536f78c935034cd16b54f695e823981587d8447ddec6d65d8ef5e762fcb2ced0`
+  and empty formatting output SHA-256 is
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`;
+- TPS-only startup/observation red tests: exact commit
+  `23c3fa4400786d340bf6f2e913b7dfbfc45f1e19` proved that the inherited
+  controller still rejected identity-only initialization and a TPS observation
+  without KV/cache telemetry, while the full Controller test for one-poll
+  waiting/preemption hold, first-clear recovery, and same-snapshot atomic
+  reservation already passed. The raw test output SHA-256 is
+  `3ad02ef477770a70413013c370070a333f1cba5bc030d1446f5f739fe8986dc4`;
+- inherited cache accumulator: removed from the admission source and tests in
+  the current unverified source slice;
 - TPS behavior: unchanged from branch base;
 - version/image/deployment: not authorized and not started.

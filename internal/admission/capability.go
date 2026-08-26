@@ -67,6 +67,13 @@ func (c Capability) Validate() error {
 	return nil
 }
 
+func (c Capability) validateTPSIdentity() error {
+	if c.Fingerprint == "" {
+		return fmt.Errorf("admission runtime identity is invalid")
+	}
+	return nil
+}
+
 func (c Capability) minimumWork(profile predictive.BackendExecutionProfile) (predictive.RequestWork, error) {
 	return predictive.BuildRequestWork(predictive.RequestEstimate{
 		SelectionInputTokens:                    1,
@@ -80,9 +87,7 @@ func (c Capability) minimumWork(profile predictive.BackendExecutionProfile) (pre
 }
 
 func (c Capability) matchesStableObservation(observation BackendObservation) bool {
-	return observation.CapabilityFingerprint == c.Fingerprint &&
-		observation.MaxModelLenTokens == c.MaxModelLenTokens &&
-		observation.KVBlockSize == c.KVBlockSize
+	return observation.CapabilityFingerprint == c.Fingerprint
 }
 
 func (c Capability) withKVCapacityFromObservation(observation BackendObservation) (Capability, bool) {

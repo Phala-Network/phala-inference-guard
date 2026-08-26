@@ -41,12 +41,8 @@ func newAdmissionPolicyWithQoSBudget(
 	workProfile predictive.BackendExecutionProfile,
 	qosBudget qosBudgetForecast,
 ) (admissionPolicy, error) {
-	minimumWork, err := capability.minimumWork(workProfile)
-	if err != nil {
-		return admissionPolicy{}, err
-	}
 	return admissionPolicy{
-		minimumWork: minimumWork,
+		minimumWork: predictive.RequestWork{},
 		tpsGate:     tpsGate{qosBudget: qosBudget},
 	}, nil
 }

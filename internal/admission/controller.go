@@ -9,6 +9,8 @@ import (
 	predictive "github.com/Phala-Network/phala-inference-guard/internal/domain/predictive"
 )
 
+const maximumTPSReservations = int64(1 << 20)
+
 type SampleWindow struct {
 	controller     *AdmissionController
 	runtimeEpoch   uint64
@@ -43,13 +45,12 @@ func (h ReservationHandle) Terminate(cause TerminalCause) bool {
 type AdmissionController struct {
 	mu sync.Mutex
 
-	capability  Capability
-	workProfile predictive.BackendExecutionProfile
-	policy      admissionPolicy
-	projector   stateProjector
-	tpsWindow   tpsWindow
-	now         func() time.Time
-	exposure    sequenceExposureLedger
+	capability Capability
+	policy     admissionPolicy
+	projector  stateProjector
+	tpsWindow  tpsWindow
+	now        func() time.Time
+	exposure   sequenceExposureLedger
 
 	runtimeEpoch         uint64
 	capabilityRebinds    uint64
@@ -58,7 +59,6 @@ type AdmissionController struct {
 	observationSequence  uint64
 	lastPublishedSample  uint64
 	lastExposure         sequenceExposureSnapshot
-	cacheLeaseSequence   uint64
 	policyRevision       uint64
 	policyUpdatedAt      time.Time
 	tpsPolicyEpoch       uint64
@@ -97,10 +97,7 @@ func newAdmissionController(
 	qosBudget qosBudgetForecast,
 ) (*AdmissionController, error) {
 	capability := config.Capability
-	if err := capability.Validate(); err != nil {
-		return nil, err
-	}
-	if err := config.WorkProfile.Validate(); err != nil {
+	if err := capability.validateTPSIdentity(); err != nil {
 		return nil, err
 	}
 	if !finiteNonnegative(config.TPS.Reference) || config.TPS.Reference > 1_000_000 {
@@ -116,7 +113,6 @@ func newAdmissionController(
 	}
 	return &AdmissionController{
 		capability:          capability,
-		workProfile:         config.WorkProfile,
 		policy:              policy,
 		tpsWindow:           newTPSWindow(config.TPS.Reference),
 		now:                 now,
@@ -124,7 +120,7 @@ func newAdmissionController(
 		policyRevision:      1,
 		tpsPolicyEpoch:      1,
 		reservations:        make(map[uint64]reservation),
-		maximumReservations: capability.KVHardLimitTokens / capability.KVBlockSize,
+		maximumReservations: maximumTPSReservations,
 	}, nil
 }
 
@@ -172,9 +168,6 @@ func (c *AdmissionController) BeginRuntimeRebind(observation BackendObservation)
 		!c.capability.matchesStableObservation(observation) {
 		return false
 	}
-	if _, safe := c.capability.withKVCapacityFromObservation(observation); !safe {
-		return false
-	}
 	c.runtimeRebindPending = true
 	return true
 }
@@ -204,23 +197,6 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			RuntimeEpoch:    c.runtimeEpoch,
 		}
 	}
-	capabilityRebound := false
-	reboundCapability := Capability{}
-	if observation.KVCapacityTokens != c.capability.KVCapacityTokens {
-		var safe bool
-		if runtimeIdentityChanged {
-			reboundCapability, safe = c.capability.withKVCapacityFromObservation(observation)
-		}
-		if !safe {
-			c.failClosedLocked(ReasonCapabilityDrift)
-			return PublicationResult{
-				CapabilityDrift: true,
-				Reason:          ReasonCapabilityDrift,
-				RuntimeEpoch:    c.runtimeEpoch,
-			}
-		}
-		capabilityRebound = true
-	}
 	if c.hasObservation && observation.ObservedAt.Before(c.observation.observation.ObservedAt) {
 		return PublicationResult{Reason: ReasonObservationInvalid, RuntimeEpoch: c.runtimeEpoch}
 	}
@@ -239,17 +215,10 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	var generationDelta, preemptionDelta uint64
 	var observationInterval time.Duration
 	var previousRunning int64
-	var cache cachePrefillObservation
-	var cacheAccumulator cachePrefillAccumulator
-	var newCacheLease bool
 	if runtimeReset {
-		if c.runtimeEpoch == math.MaxUint64 || (capabilityRebound && c.capabilityRebinds == math.MaxUint64) {
+		if c.runtimeEpoch == math.MaxUint64 {
 			c.failClosedLocked(ReasonCounterOverflow)
 			return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
-		}
-		if capabilityRebound {
-			c.capability.KVCapacityTokens = reboundCapability.KVCapacityTokens
-			c.capabilityRebinds++
 		}
 		c.runtimeEpoch++
 		clear(c.reservations)
@@ -257,7 +226,6 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		c.sampleSequence = 0
 		c.lastPublishedSample = 0
 		c.lastExposure = sequenceExposureSnapshot{}
-		c.cacheLeaseSequence = 0
 		c.exposure.reset()
 		c.tpsWindow.reset()
 	} else {
@@ -266,15 +234,6 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			preemptionDelta = observation.PreemptionsTotal - c.observation.observation.PreemptionsTotal
 			observationInterval = observation.ObservedAt.Sub(c.observation.observation.ObservedAt)
 			previousRunning = c.observation.observation.Running
-			cache, cacheAccumulator, newCacheLease = nextCachePrefillObservation(c.observation, observation)
-			if newCacheLease {
-				if c.cacheLeaseSequence == math.MaxUint64 {
-					c.failClosedLocked(ReasonCounterOverflow)
-					return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
-				}
-				c.cacheLeaseSequence++
-				cache.leaseSequence = c.cacheLeaseSequence
-			}
 		}
 		exposure, exposureOK := window.exposure.subtract(c.lastExposure)
 		if !exposureOK {
@@ -324,15 +283,13 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		interval:          observationInterval,
 		previousRunning:   previousRunning,
 		localActiveDecode: c.overlay.localActiveDecode,
-		cache:             cache,
-		cacheAccumulator:  cacheAccumulator,
 	}
 	c.hasObservation = true
 	c.runtimeRebindPending = false
 	return PublicationResult{
 		Accepted:            true,
 		RuntimeReset:        runtimeReset,
-		CapabilityRebound:   capabilityRebound,
+		CapabilityRebound:   false,
 		Reason:              ReasonOpen,
 		ObservationSequence: c.observationSequence,
 		RuntimeEpoch:        c.runtimeEpoch,
@@ -590,12 +547,7 @@ func (c *AdmissionController) stateLocked(now time.Time) (ProjectedState, Reason
 		return ProjectedState{}, ReasonObservationMissing, false
 	}
 	observation := c.observation.observation
-	projectedObservation := c.observation
-	if projectedObservation.cache.valid &&
-		!cachePrefillObservationActiveAt(projectedObservation.cache, now) {
-		projectedObservation.cache = cachePrefillObservation{}
-	}
-	state, ok := c.projector.project(projectedObservation, c.overlay)
+	state, ok := c.projector.project(c.observation, c.overlay)
 	if !ok {
 		return ProjectedState{}, ReasonControllerUnavailable, false
 	}
@@ -784,10 +736,8 @@ func (c *AdmissionController) slowOverlayLocked() (reservationOverlay, bool) {
 }
 
 func validBackendObservation(observation BackendObservation) bool {
-	if observation.CapabilityFingerprint == "" || observation.MaxModelLenTokens <= 0 ||
-		observation.KVCapacityTokens <= 0 || observation.KVBlockSize <= 0 ||
+	if observation.CapabilityFingerprint == "" ||
 		observation.ObservedAt.IsZero() || observation.MaximumAge <= 0 ||
-		observation.UsedKVTokens < 0 || observation.UsedKVTokens > observation.KVCapacityTokens ||
 		observation.Running < 0 || observation.Waiting < 0 {
 		return false
 	}
