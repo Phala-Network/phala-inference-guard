@@ -23,7 +23,7 @@ func TestControllerRejectsInvalidConfiguration(t *testing.T) {
 
 func TestControllerTPSReferenceChangesPreForwardDecision(t *testing.T) {
 	now := time.Unix(9_000, 0)
-	strict := testControllerWithTPSObservation(t, 20, testObservation(now, 5, 0, 0, 0))
+	strict := testControllerWithTPSObservation(t, 25, testObservation(now, 5, 0, 0, 0))
 	permissive := testControllerWithTPSObservation(t, 15, testObservation(now, 5, 0, 0, 0))
 	for step := 1; step <= 4; step++ {
 		observation := testObservation(
@@ -40,15 +40,13 @@ func TestControllerTPSReferenceChangesPreForwardDecision(t *testing.T) {
 	strictDecision := strict.Admit(now.Add(4*time.Second+time.Millisecond), testDemand(1)).Decision
 	permissiveDecision := permissive.Admit(now.Add(4*time.Second+time.Millisecond), testDemand(1)).Decision
 	if strictDecision.Reason != ReasonTPSReference ||
-		strictDecision.TPSSequenceLimit != 5 ||
-		strictDecision.TPSCurrentSequences != 5 ||
-		strictDecision.TPSPostAdmitSequences != 6 {
+		strictDecision.TPSDecisionSubreason != TPSDecisionSubreasonBelowReference ||
+		strictDecision.ReservationID != 0 {
 		t.Fatalf("strict TPS decision=%+v", strictDecision)
 	}
 	if !permissiveDecision.Admitted() ||
-		permissiveDecision.TPSSequenceLimit != 6 ||
-		permissiveDecision.TPSCurrentSequences != 5 ||
-		permissiveDecision.TPSPostAdmitSequences != 6 {
+		permissiveDecision.TPSDecisionSubreason != TPSDecisionSubreasonHealthyWindow ||
+		permissiveDecision.ProjectedRunning != 6 {
 		t.Fatalf("permissive TPS decision=%+v", permissiveDecision)
 	}
 }
@@ -81,30 +79,29 @@ func TestControllerWarmingReservationsAreAtomic(t *testing.T) {
 			}
 			continue
 		}
-		if result.Decision.Reason != ReasonTPSReference || result.Decision.ReservationID != 0 {
+		if result.Decision.Reason != ReasonWindowConcurrency || result.Decision.ReservationID != 0 {
 			t.Fatalf("unexpected concurrent protection: %+v", result.Decision)
 		}
 	}
-	if admittedSequences != tpsWarmingSequenceLimit {
-		t.Fatalf("same observation admitted sequences=%d want=%d", admittedSequences, tpsWarmingSequenceLimit)
+	if admittedSequences != DefaultWindowConcurrency {
+		t.Fatalf("same observation admitted sequences=%d want=%d", admittedSequences, DefaultWindowConcurrency)
 	}
 }
 
 func TestControllerReservesCompleteBatchMultiplicity(t *testing.T) {
 	now := time.Unix(9_750, 0)
-	controller := testControllerWithTPSObservation(t, 20, testObservation(now, 0, 0, 0, 0))
+	controller := testControllerWithBounds(t, ControllerConfig{
+		TPS:               TPSPolicyConfig{Reference: 20},
+		WindowConcurrency: 2,
+	}, testObservation(now, 0, 0, 0, 0))
 
 	first := controller.Admit(now.Add(time.Millisecond), testDemand(2))
-	if !first.Decision.Admitted() ||
-		first.Decision.TPSCurrentSequences != 0 ||
-		first.Decision.TPSPostAdmitSequences != 2 {
+	if !first.Decision.Admitted() || first.Decision.ProjectedWindowSequences != 2 {
 		t.Fatalf("batch admission=%+v", first.Decision)
 	}
 	second := controller.Admit(now.Add(time.Millisecond), testDemand(1)).Decision
-	if second.Admitted() ||
-		second.TPSCurrentSequences != 2 ||
-		second.TPSPostAdmitSequences != 3 ||
-		second.ReservationID != 0 {
+	if second.Admitted() || second.Reason != ReasonWindowConcurrency ||
+		second.ProjectedWindowSequences != 3 || second.ReservationID != 0 {
 		t.Fatalf("batch reservation was not atomic: %+v", second)
 	}
 	if !first.Handle.Terminate(TerminalCancel) {

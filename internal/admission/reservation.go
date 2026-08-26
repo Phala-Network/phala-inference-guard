@@ -20,7 +20,6 @@ type reservation struct {
 	firstByteSequence uint64
 	terminalSequence  uint64
 	terminalCause     TerminalCause
-	qosBudgeted       bool
 }
 
 func (r reservation) contribution() (reservationOverlay, bool) {
@@ -29,7 +28,6 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 	}
 	contribution := reservationOverlay{
 		sequenceLiabilities: r.demand.DecodeSequences,
-		qosBudgetLeases:     r.qosBudgetLease(),
 	}
 	if !r.sequenceCovered && (r.phase != reservationResidualDebt || r.terminalCause != TerminalSuccess) {
 		contribution.unobservedSequences = r.demand.DecodeSequences
@@ -49,13 +47,6 @@ func (r reservation) effectiveDemand() (TPSRequestDemand, bool) {
 	return r.demand, r.demand.valid()
 }
 
-func (r reservation) qosBudgetLease() int64 {
-	if r.qosBudgeted {
-		return 1
-	}
-	return 0
-}
-
 func addOverlay(left, right reservationOverlay) (reservationOverlay, bool) {
 	var result reservationOverlay
 	var ok bool
@@ -63,9 +54,6 @@ func addOverlay(left, right reservationOverlay) (reservationOverlay, bool) {
 		return reservationOverlay{}, false
 	}
 	if result.sequenceLiabilities, ok = addNonnegativeInt64(left.sequenceLiabilities, right.sequenceLiabilities); !ok {
-		return reservationOverlay{}, false
-	}
-	if result.qosBudgetLeases, ok = addNonnegativeInt64(left.qosBudgetLeases, right.qosBudgetLeases); !ok {
 		return reservationOverlay{}, false
 	}
 	if result.liveReservations, ok = addNonnegativeInt64(left.liveReservations, right.liveReservations); !ok {
@@ -81,7 +69,6 @@ func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) 
 	if !left.valid() || !right.valid() ||
 		left.unobservedSequences < right.unobservedSequences ||
 		left.sequenceLiabilities < right.sequenceLiabilities ||
-		left.qosBudgetLeases < right.qosBudgetLeases ||
 		left.liveReservations < right.liveReservations ||
 		left.residualDebts < right.residualDebts {
 		return reservationOverlay{}, false
@@ -89,7 +76,6 @@ func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) 
 	result := reservationOverlay{
 		unobservedSequences: left.unobservedSequences - right.unobservedSequences,
 		sequenceLiabilities: left.sequenceLiabilities - right.sequenceLiabilities,
-		qosBudgetLeases:     left.qosBudgetLeases - right.qosBudgetLeases,
 		liveReservations:    left.liveReservations - right.liveReservations,
 		residualDebts:       left.residualDebts - right.residualDebts,
 	}
@@ -105,9 +91,7 @@ func replaceOverlay(current, oldContribution, newContribution reservationOverlay
 }
 
 func (o reservationOverlay) valid() bool {
-	leaseCapacity, leaseCapacityValid := addNonnegativeInt64(o.liveReservations, o.residualDebts)
 	return o.unobservedSequences >= 0 && o.sequenceLiabilities >= 0 &&
-		o.unobservedSequences <= o.sequenceLiabilities && leaseCapacityValid &&
-		o.qosBudgetLeases >= 0 && o.qosBudgetLeases <= leaseCapacity &&
+		o.unobservedSequences <= o.sequenceLiabilities &&
 		o.liveReservations >= 0 && o.residualDebts >= 0
 }

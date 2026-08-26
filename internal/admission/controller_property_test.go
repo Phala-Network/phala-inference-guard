@@ -73,8 +73,7 @@ func TestControllerDeterministicLifecyclePropertyKeepsAggregateExact(t *testing.
 		}
 		assertAggregateMatchesSlow(t, controller)
 		snapshot := controller.Snapshot(stepNow)
-		if snapshot.State.UnobservedSequences > snapshot.State.SequenceLiabilities ||
-			snapshot.State.QoSBudgetLeases > snapshot.State.LiveReservations+snapshot.State.ResidualDebts {
+		if snapshot.State.UnobservedSequences > snapshot.State.SequenceLiabilities {
 			t.Fatalf("step %d invalid aggregate state=%+v", step, snapshot.State)
 		}
 	}

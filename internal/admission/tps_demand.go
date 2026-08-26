@@ -26,7 +26,3 @@ func (d TPSRequestDemand) valid() bool {
 	return d.DecodeSequences > 0 &&
 		(d.Source == TPSDemandSourceRequest || d.Source == TPSDemandSourceFallback)
 }
-
-func (d TPSRequestDemand) gateDemand() tpsAdmissionDemand {
-	return tpsAdmissionDemand{additionalSequences: d.DecodeSequences}
-}

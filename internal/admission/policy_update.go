@@ -7,71 +7,104 @@ import (
 )
 
 var (
-	ErrTPSPolicyInvalid          = errors.New("TPS policy update is invalid")
-	ErrTPSPolicyRevisionConflict = errors.New("TPS policy revision conflict")
-	ErrTPSPolicyUnavailable      = errors.New("TPS policy is unavailable")
+	ErrPolicyInvalid          = errors.New("predictive policy update is invalid")
+	ErrPolicyRevisionConflict = errors.New("predictive policy revision conflict")
+	ErrPolicyUnavailable      = errors.New("predictive policy is unavailable")
 )
 
-type TPSPolicySnapshot struct {
-	Revision  uint64
-	Reference float64
-	UpdatedAt time.Time
+type PolicySnapshot struct {
+	Revision           uint64
+	TPSReference       float64
+	WindowConcurrency  int64
+	RunningLimit       int64
+	RunningLimitSource RunningLimitSource
+	UpdatedAt          time.Time
 }
 
-type TPSPolicyUpdate struct {
-	ExpectedRevision uint64
-	Reference        float64
-	UpdatedAt        time.Time
+type PolicyUpdate struct {
+	ExpectedRevision  uint64
+	TPSReference      *float64
+	WindowConcurrency *int64
+	RunningLimit      *int64
+	UpdatedAt         time.Time
 }
 
-type TPSPolicyUpdateResult struct {
-	Policy            TPSPolicySnapshot
-	PreviousReference float64
-	WindowReset       bool
+type PolicyUpdateResult struct {
+	Policy         PolicySnapshot
+	PreviousPolicy PolicySnapshot
+	TPSWindowReset bool
 }
 
-func (c *AdmissionController) UpdateTPSPolicy(update TPSPolicyUpdate) (TPSPolicyUpdateResult, error) {
+func (c *AdmissionController) UpdatePolicy(update PolicyUpdate) (PolicyUpdateResult, error) {
 	if c == nil {
-		return TPSPolicyUpdateResult{}, ErrTPSPolicyUnavailable
+		return PolicyUpdateResult{}, ErrPolicyUnavailable
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	current := c.tpsPolicySnapshotLocked()
-	result := TPSPolicyUpdateResult{
-		Policy:            current,
-		PreviousReference: current.Reference,
-	}
-	if update.ExpectedRevision == 0 || !finiteNonnegative(update.Reference) ||
-		update.Reference > 1_000_000 || update.UpdatedAt.IsZero() {
-		return result, ErrTPSPolicyInvalid
+	current := c.policySnapshotLocked()
+	result := PolicyUpdateResult{Policy: current, PreviousPolicy: current}
+	if !validPolicyUpdate(update) {
+		return result, ErrPolicyInvalid
 	}
 	if c.closedReason != "" || c.policyRevision == math.MaxUint64 {
-		return result, ErrTPSPolicyUnavailable
+		return result, ErrPolicyUnavailable
 	}
 	if update.ExpectedRevision != c.policyRevision {
-		return result, ErrTPSPolicyRevisionConflict
+		return result, ErrPolicyRevisionConflict
 	}
 
-	result.WindowReset = update.Reference != current.Reference
+	next := current
+	if update.TPSReference != nil {
+		next.TPSReference = *update.TPSReference
+	}
+	if update.WindowConcurrency != nil {
+		next.WindowConcurrency = *update.WindowConcurrency
+	}
+	if update.RunningLimit != nil {
+		next.RunningLimit = *update.RunningLimit
+		next.RunningLimitSource = RunningLimitSourceAdmin
+	}
+	result.TPSWindowReset = next.TPSReference != current.TPSReference
 	c.policyRevision++
 	c.policyUpdatedAt = update.UpdatedAt
-	if result.WindowReset {
+	c.windowConcurrency = next.WindowConcurrency
+	c.runningLimit = next.RunningLimit
+	c.runningLimitSource = next.RunningLimitSource
+	if result.TPSWindowReset {
 		c.tpsPolicyEpoch++
-		nextWindow := newTPSWindow(update.Reference)
+		nextWindow := newTPSWindow(next.TPSReference)
 		nextWindow.denominator = c.tpsWindow.denominator
 		c.tpsWindow = nextWindow
 	}
-	result.Policy = c.tpsPolicySnapshotLocked()
+	result.Policy = c.policySnapshotLocked()
 	return result, nil
 }
 
-func (c *AdmissionController) tpsPolicySnapshotLocked() TPSPolicySnapshot {
-	if c == nil {
-		return TPSPolicySnapshot{}
+func validPolicyUpdate(update PolicyUpdate) bool {
+	if update.ExpectedRevision == 0 || update.UpdatedAt.IsZero() ||
+		(update.TPSReference == nil && update.WindowConcurrency == nil && update.RunningLimit == nil) {
+		return false
 	}
-	return TPSPolicySnapshot{
-		Revision:  c.policyRevision,
-		Reference: c.tpsWindow.reference,
-		UpdatedAt: c.policyUpdatedAt,
+	if update.TPSReference != nil &&
+		(!finiteNonnegative(*update.TPSReference) || *update.TPSReference > 1_000_000) {
+		return false
+	}
+	if update.WindowConcurrency != nil && *update.WindowConcurrency <= 0 {
+		return false
+	}
+	return update.RunningLimit == nil || *update.RunningLimit >= 0
+}
+
+func (c *AdmissionController) policySnapshotLocked() PolicySnapshot {
+	if c == nil {
+		return PolicySnapshot{}
+	}
+	return PolicySnapshot{
+		Revision:           c.policyRevision,
+		TPSReference:       c.tpsWindow.reference,
+		WindowConcurrency:  c.windowConcurrency,
+		RunningLimit:       c.runningLimit,
+		RunningLimitSource: c.runningLimitSource,
+		UpdatedAt:          c.policyUpdatedAt,
 	}
 }

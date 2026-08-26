@@ -43,12 +43,15 @@ func (h ReservationHandle) Terminate(cause TerminalCause) bool {
 type AdmissionController struct {
 	mu sync.Mutex
 
-	runtimeIdentity string
-	policy          admissionPolicy
-	projector       stateProjector
-	tpsWindow       tpsWindow
-	now             func() time.Time
-	exposure        sequenceExposureLedger
+	runtimeIdentity    string
+	policy             admissionPolicy
+	projector          stateProjector
+	tpsWindow          tpsWindow
+	windowConcurrency  int64
+	runningLimit       int64
+	runningLimitSource RunningLimitSource
+	now                func() time.Time
+	exposure           sequenceExposureLedger
 
 	runtimeEpoch        uint64
 	eventSequence       uint64
@@ -66,6 +69,7 @@ type AdmissionController struct {
 	overlay             reservationOverlay
 	nextReservationID   uint64
 	maximumReservations int64
+	windowHistogram     windowConcurrencyHistogram
 }
 
 func NewAdmissionController(config ControllerConfig) (*AdmissionController, error) {
@@ -74,6 +78,17 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 	}
 	if !finiteNonnegative(config.TPS.Reference) || config.TPS.Reference > 1_000_000 {
 		return nil, fmt.Errorf("TPS reference must be finite and in [0, 1000000]")
+	}
+	if config.WindowConcurrency == 0 {
+		config.WindowConcurrency = DefaultWindowConcurrency
+	}
+	if config.RunningLimitSource == "" {
+		config.RunningLimitSource = RunningLimitSourceUnknown
+	}
+	if config.WindowConcurrency <= 0 || config.RunningLimit < 0 ||
+		!config.RunningLimitSource.valid() ||
+		(config.RunningLimit > 0 && config.RunningLimitSource == RunningLimitSourceUnknown) {
+		return nil, fmt.Errorf("admission running and window bounds are invalid")
 	}
 	policy := newAdmissionPolicy()
 	now := config.Now
@@ -84,6 +99,9 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 		runtimeIdentity:     config.RuntimeIdentity,
 		policy:              policy,
 		tpsWindow:           newTPSWindow(config.TPS.Reference),
+		windowConcurrency:   config.WindowConcurrency,
+		runningLimit:        config.RunningLimit,
+		runningLimitSource:  config.RunningLimitSource,
 		now:                 now,
 		runtimeEpoch:        1,
 		policyRevision:      1,
@@ -162,6 +180,9 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		(runtimeIdentityChanged ||
 			observation.GenerationTokensTotal < c.observation.observation.GenerationTokensTotal ||
 			observation.PreemptionsTotal < c.observation.observation.PreemptionsTotal)
+	if c.hasObservation && !runtimeReset {
+		c.windowHistogram.observe(c.overlay.unobservedSequences)
+	}
 	var generationDelta, preemptionDelta uint64
 	var observationInterval time.Duration
 	var previousRunning int64
@@ -265,7 +286,10 @@ func (c *AdmissionController) Admit(now time.Time, demand TPSRequestDemand) Admi
 	if !ok {
 		return AdmissionResult{Decision: c.unavailableDecisionLocked(reason, demand, state)}
 	}
-	policy := c.policy.evaluateDemand(state, demand)
+	policy := c.policy.evaluateDemand(state, demand, admissionBounds{
+		windowConcurrency: c.windowConcurrency,
+		runningLimit:      c.runningLimit,
+	})
 	decision := c.decisionLocked(policy, demand, state)
 	if policy.action != ActionAdmit {
 		return AdmissionResult{Decision: decision}
@@ -284,7 +308,6 @@ func (c *AdmissionController) Admit(now time.Time, demand TPSRequestDemand) Admi
 		runtimeEpoch: c.runtimeEpoch,
 		demand:       demand,
 		phase:        reservationReserved,
-		qosBudgeted:  policy.tpsQoSBudgeted,
 	}
 	contribution, valid := item.contribution()
 	if !valid {
@@ -325,34 +348,39 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 	if !ok {
 		decision := c.unavailableDecisionLocked(reason, TPSRequestDemand{}, state)
 		return CapacitySnapshot{
-			IntakeOpen:          c.closedReason == "",
-			HasObservation:      c.hasObservation,
-			MinimumDecision:     decision,
-			State:               state,
-			Observation:         c.observation.observation,
-			ObservationSequence: c.observationSequence,
-			ControllerSequence:  c.eventSequence,
-			RuntimeEpoch:        c.runtimeEpoch,
-			Policy:              c.tpsPolicySnapshotLocked(),
+			IntakeOpen:                 c.closedReason == "",
+			HasObservation:             c.hasObservation,
+			MinimumDecision:            decision,
+			State:                      state,
+			Observation:                c.observation.observation,
+			ObservationSequence:        c.observationSequence,
+			ControllerSequence:         c.eventSequence,
+			RuntimeEpoch:               c.runtimeEpoch,
+			Policy:                     c.policySnapshotLocked(),
+			WindowConcurrencyHistogram: c.windowHistogram.snapshot(),
 		}
 	}
 	minimumDemand := TPSRequestDemand{DecodeSequences: 1, Source: TPSDemandSourceFallback}
 	decision := c.decisionLocked(
-		c.policy.evaluateDemand(state, minimumDemand),
+		c.policy.evaluateDemand(state, minimumDemand, admissionBounds{
+			windowConcurrency: c.windowConcurrency,
+			runningLimit:      c.runningLimit,
+		}),
 		minimumDemand,
 		state,
 	)
 	return CapacitySnapshot{
-		IntakeOpen:          true,
-		HasObservation:      true,
-		Available:           decision.Admitted(),
-		MinimumDecision:     decision,
-		State:               state,
-		Observation:         c.observation.observation,
-		ObservationSequence: c.observationSequence,
-		ControllerSequence:  c.eventSequence,
-		RuntimeEpoch:        c.runtimeEpoch,
-		Policy:              c.tpsPolicySnapshotLocked(),
+		IntakeOpen:                 true,
+		HasObservation:             true,
+		Available:                  decision.Admitted(),
+		MinimumDecision:            decision,
+		State:                      state,
+		Observation:                c.observation.observation,
+		ObservationSequence:        c.observationSequence,
+		ControllerSequence:         c.eventSequence,
+		RuntimeEpoch:               c.runtimeEpoch,
+		Policy:                     c.policySnapshotLocked(),
+		WindowConcurrencyHistogram: c.windowHistogram.snapshot(),
 	}
 }
 
@@ -510,16 +538,17 @@ func (c *AdmissionController) decisionLocked(policy policyDecision, demand TPSRe
 	return DecisionRecord{
 		Action: policy.action, Reason: policy.reason, Scope: policy.scope,
 		Demand: demand, State: state,
-		TPSSequenceLimit:      policy.tpsSequenceLimit,
-		TPSCurrentSequences:   policy.tpsCurrentSequences,
-		TPSPostAdmitSequences: policy.tpsPostAdmitSequences,
-		TPSQoSBudgeted:        policy.action == ActionAdmit && policy.tpsQoSBudgeted,
-		TPSDecisionResult:     policy.tpsDecisionResult,
-		TPSDecisionSubreason:  policy.tpsDecisionSubreason,
-		ObservationSequence:   c.observationSequence,
-		ControllerSequence:    c.eventSequence,
-		RuntimeEpoch:          c.runtimeEpoch,
-		PolicyRevision:        c.policyRevision,
+		ProjectedRunning:         policy.projectedRunning,
+		ProjectedWindowSequences: policy.projectedWindowSequences,
+		RunningLimit:             c.runningLimit,
+		RunningLimitSource:       c.runningLimitSource,
+		WindowConcurrency:        c.windowConcurrency,
+		TPSDecisionResult:        policy.tpsDecisionResult,
+		TPSDecisionSubreason:     policy.tpsDecisionSubreason,
+		ObservationSequence:      c.observationSequence,
+		ControllerSequence:       c.eventSequence,
+		RuntimeEpoch:             c.runtimeEpoch,
+		PolicyRevision:           c.policyRevision,
 	}
 }
 

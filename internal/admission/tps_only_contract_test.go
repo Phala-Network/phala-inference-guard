@@ -101,16 +101,14 @@ func TestTPSOnlyControllerPressureHoldClearsOnFirstFreshObservation(t *testing.T
 				clearAt, 3, 0, generation, test.preemption,
 			))
 			first := controller.Admit(clearAt.Add(time.Millisecond), testDemand(1))
-			if !first.Decision.Admitted() || first.Decision.TPSCurrentSequences != 3 ||
-				first.Decision.TPSPostAdmitSequences != 4 {
+			if !first.Decision.Admitted() || first.Decision.ProjectedRunning != 4 {
 				t.Fatalf("first clear 500ms observation did not recover capacity: %+v", first.Decision)
 			}
-			second := controller.Admit(clearAt.Add(time.Millisecond), testDemand(1)).Decision
-			if second.Admitted() || second.TPSCurrentSequences != 4 ||
-				second.TPSPostAdmitSequences != 5 || second.ReservationID != 0 {
-				t.Fatalf("same-snapshot reservation allowed excessive recovery: %+v", second)
+			second := controller.Admit(clearAt.Add(time.Millisecond), testDemand(1))
+			if !second.Decision.Admitted() || second.Decision.ProjectedRunning != 5 {
+				t.Fatalf("healthy backend retained the old one-at-a-time recovery cap: %+v", second.Decision)
 			}
-			if !first.Handle.Terminate(TerminalCancel) {
+			if !first.Handle.Terminate(TerminalCancel) || !second.Handle.Terminate(TerminalCancel) {
 				t.Fatal("recovery fixture reservation rollback failed")
 			}
 		})

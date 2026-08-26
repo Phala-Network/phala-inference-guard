@@ -147,6 +147,7 @@ func incrementTPSDenominatorSelection(value *uint64) {
 type tpsWindow struct {
 	reference   float64
 	buckets     [tpsWindowBucketCount]tpsBucket
+	latest      TPSIntervalSnapshot
 	denominator tpsDenominatorEvidence
 }
 
@@ -163,6 +164,7 @@ func (w *tpsWindow) reset() {
 		return
 	}
 	clear(w.buckets[:])
+	w.latest = TPSIntervalSnapshot{}
 }
 
 // observe adds one coherent metrics interval. Invalid or unqualified intervals
@@ -175,6 +177,7 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 	if !w.enabled() {
 		return true
 	}
+	w.latest = TPSIntervalSnapshot{}
 	w.expire(sample.end)
 	if sample.start.IsZero() || sample.end.IsZero() || sample.maximumInterval <= 0 ||
 		sample.previousRunning < 0 || sample.running < 0 ||
@@ -217,6 +220,20 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 		sequenceSecondsTotal = maximumFloat64(sequenceSecondsTotal, fallbackSequenceSeconds)
 	}
 	sequenceCountReliable := sequenceSecondsTotal > 0
+	if sequenceCountReliable {
+		latest := TPSIntervalSnapshot{
+			Qualified:       true,
+			Tokens:          sample.generatedTokens,
+			DurationSeconds: intervalSeconds,
+			SequenceSeconds: sequenceSecondsTotal,
+			AggregateTPS:    float64(sample.generatedTokens) / intervalSeconds,
+			MeanActiveTPS:   float64(sample.generatedTokens) / sequenceSecondsTotal,
+		}
+		if !validTPSIntervalSnapshot(latest) {
+			return false
+		}
+		w.latest = latest
+	}
 	cutoff := sample.end.Add(-tpsWindowDuration)
 	cursor := sample.start
 	if cursor.Before(cutoff) {
@@ -275,7 +292,12 @@ func (w *tpsWindow) snapshot(now time.Time) TPSSnapshot {
 		return TPSSnapshot{}
 	}
 	denominator := w.denominator.snapshot
-	snapshot := TPSSnapshot{Reference: w.reference, Enabled: w.enabled(), Denominator: denominator}
+	snapshot := TPSSnapshot{
+		Reference:   w.reference,
+		Enabled:     w.enabled(),
+		Latest:      w.latest,
+		Denominator: denominator,
+	}
 	if !snapshot.Enabled {
 		return snapshot
 	}
@@ -387,7 +409,21 @@ func validTPSSnapshot(snapshot TPSSnapshot) bool {
 		finiteNonnegative(snapshot.QualifiedActiveSeconds) &&
 		finiteNonnegative(snapshot.QualifiedSequenceTokens) &&
 		finiteNonnegative(snapshot.QualifiedSequenceSeconds) &&
-		finiteNonnegative(snapshot.AggregateTPS) && finiteNonnegative(snapshot.MeanActiveTPS)
+		finiteNonnegative(snapshot.AggregateTPS) && finiteNonnegative(snapshot.MeanActiveTPS) &&
+		validTPSIntervalSnapshot(snapshot.Latest)
+}
+
+func validTPSIntervalSnapshot(snapshot TPSIntervalSnapshot) bool {
+	if !snapshot.Qualified {
+		return snapshot.Tokens == 0 && snapshot.DurationSeconds == 0 &&
+			snapshot.SequenceSeconds == 0 && snapshot.AggregateTPS == 0 &&
+			snapshot.MeanActiveTPS == 0
+	}
+	return snapshot.DurationSeconds > 0 && snapshot.SequenceSeconds > 0 &&
+		finiteNonnegative(snapshot.DurationSeconds) &&
+		finiteNonnegative(snapshot.SequenceSeconds) &&
+		finiteNonnegative(snapshot.AggregateTPS) &&
+		finiteNonnegative(snapshot.MeanActiveTPS)
 }
 
 func finiteNonnegative(value float64) bool {

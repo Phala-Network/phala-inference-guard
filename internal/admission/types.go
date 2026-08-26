@@ -21,6 +21,8 @@ const (
 	ReasonObservationStale      Reason = "observation_stale"
 	ReasonInvalidRequest        Reason = "invalid_request"
 	ReasonTPSReference          Reason = "tps_reference"
+	ReasonRunningLimit          Reason = "running_limit"
+	ReasonWindowConcurrency     Reason = "window_concurrency"
 	ReasonRuntimeIdentityDrift  Reason = "runtime_identity_drift"
 	ReasonResourceExhausted     Reason = "resource_exhausted"
 	ReasonCounterOverflow       Reason = "counter_overflow"
@@ -39,7 +41,6 @@ const (
 type ProjectedState struct {
 	UnobservedSequences      int64
 	SequenceLiabilities      int64
-	QoSBudgetLeases          int64
 	LiveReservations         int64
 	ResidualDebts            int64
 	RawRunning               int64
@@ -64,7 +65,17 @@ type TPSSnapshot struct {
 	QualifiedSequenceSeconds float64
 	AggregateTPS             float64
 	MeanActiveTPS            float64
+	Latest                   TPSIntervalSnapshot
 	Denominator              TPSDenominatorEvidence
+}
+
+type TPSIntervalSnapshot struct {
+	Qualified       bool
+	Tokens          uint64
+	DurationSeconds float64
+	SequenceSeconds float64
+	AggregateTPS    float64
+	MeanActiveTPS   float64
 }
 
 type TPSDenominatorEvidence struct {
@@ -115,17 +126,10 @@ const (
 	TPSDecisionSubreasonWaiting
 	TPSDecisionSubreasonPreemption
 	TPSDecisionSubreasonWarming
-	TPSDecisionSubreasonIdle
-	TPSDecisionSubreasonBaseRate
-	TPSDecisionSubreasonCurrentRate
-	TPSDecisionSubreasonQoSBudgetGranted
-	TPSDecisionSubreasonQoSBudgetMultiSequence
-	TPSDecisionSubreasonQoSBudgetUnobserved
-	TPSDecisionSubreasonQoSBudgetActiveLease
-	TPSDecisionSubreasonQoSBudgetWaveLimit
-	TPSDecisionSubreasonQoSBudgetNoSurplus
-	TPSDecisionSubreasonQoSBudgetCurrentRate
-	TPSDecisionSubreasonQoSBudgetIneligible
+	TPSDecisionSubreasonNoCurrentEvidence
+	TPSDecisionSubreasonHealthyWindow
+	TPSDecisionSubreasonRecoveredCurrent
+	TPSDecisionSubreasonBelowReference
 )
 
 func (r TPSDecisionSubreason) String() string {
@@ -140,28 +144,14 @@ func (r TPSDecisionSubreason) String() string {
 		return "preemption"
 	case TPSDecisionSubreasonWarming:
 		return "warming"
-	case TPSDecisionSubreasonIdle:
-		return "idle"
-	case TPSDecisionSubreasonBaseRate:
-		return "base_rate"
-	case TPSDecisionSubreasonCurrentRate:
-		return "current_rate"
-	case TPSDecisionSubreasonQoSBudgetGranted:
-		return "qos_budget_granted"
-	case TPSDecisionSubreasonQoSBudgetMultiSequence:
-		return "qos_budget_multi_sequence"
-	case TPSDecisionSubreasonQoSBudgetUnobserved:
-		return "qos_budget_unobserved"
-	case TPSDecisionSubreasonQoSBudgetActiveLease:
-		return "qos_budget_active_lease"
-	case TPSDecisionSubreasonQoSBudgetWaveLimit:
-		return "qos_budget_wave_limit"
-	case TPSDecisionSubreasonQoSBudgetNoSurplus:
-		return "qos_budget_no_surplus"
-	case TPSDecisionSubreasonQoSBudgetCurrentRate:
-		return "qos_budget_current_rate"
-	case TPSDecisionSubreasonQoSBudgetIneligible:
-		return "qos_budget_ineligible"
+	case TPSDecisionSubreasonNoCurrentEvidence:
+		return "no_current_evidence"
+	case TPSDecisionSubreasonHealthyWindow:
+		return "healthy_window"
+	case TPSDecisionSubreasonRecoveredCurrent:
+		return "recovered_current"
+	case TPSDecisionSubreasonBelowReference:
+		return "below_reference"
 	default:
 		return "unknown"
 	}
@@ -171,29 +161,54 @@ type TPSPolicyConfig struct {
 	Reference float64
 }
 
+const DefaultWindowConcurrency int64 = 32
+
+type RunningLimitSource string
+
+const (
+	RunningLimitSourceUnknown          RunningLimitSource = "unknown"
+	RunningLimitSourceEnvironment      RunningLimitSource = "environment"
+	RunningLimitSourceSGLangServerInfo RunningLimitSource = "sglang_server_info"
+	RunningLimitSourceAdmin            RunningLimitSource = "admin"
+)
+
+func (s RunningLimitSource) valid() bool {
+	switch s {
+	case RunningLimitSourceUnknown, RunningLimitSourceEnvironment,
+		RunningLimitSourceSGLangServerInfo, RunningLimitSourceAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
 type ControllerConfig struct {
-	RuntimeIdentity string
-	TPS             TPSPolicyConfig
-	Now             func() time.Time
+	RuntimeIdentity    string
+	TPS                TPSPolicyConfig
+	WindowConcurrency  int64
+	RunningLimit       int64
+	RunningLimitSource RunningLimitSource
+	Now                func() time.Time
 }
 
 type DecisionRecord struct {
-	Action                Action
-	Reason                Reason
-	Scope                 ProtectionScope
-	Demand                TPSRequestDemand
-	State                 ProjectedState
-	TPSSequenceLimit      int64
-	TPSCurrentSequences   int64
-	TPSPostAdmitSequences int64
-	TPSQoSBudgeted        bool
-	TPSDecisionResult     TPSDecisionResult
-	TPSDecisionSubreason  TPSDecisionSubreason
-	ObservationSequence   uint64
-	ControllerSequence    uint64
-	RuntimeEpoch          uint64
-	PolicyRevision        uint64
-	ReservationID         uint64
+	Action                   Action
+	Reason                   Reason
+	Scope                    ProtectionScope
+	Demand                   TPSRequestDemand
+	State                    ProjectedState
+	ProjectedRunning         int64
+	ProjectedWindowSequences int64
+	RunningLimit             int64
+	RunningLimitSource       RunningLimitSource
+	WindowConcurrency        int64
+	TPSDecisionResult        TPSDecisionResult
+	TPSDecisionSubreason     TPSDecisionSubreason
+	ObservationSequence      uint64
+	ControllerSequence       uint64
+	RuntimeEpoch             uint64
+	PolicyRevision           uint64
+	ReservationID            uint64
 }
 
 func (d DecisionRecord) Admitted() bool {
@@ -217,16 +232,17 @@ type AdmissionResult struct {
 }
 
 type CapacitySnapshot struct {
-	IntakeOpen          bool
-	HasObservation      bool
-	Available           bool
-	MinimumDecision     DecisionRecord
-	State               ProjectedState
-	Observation         BackendObservation
-	ObservationSequence uint64
-	ControllerSequence  uint64
-	RuntimeEpoch        uint64
-	Policy              TPSPolicySnapshot
+	IntakeOpen                 bool
+	HasObservation             bool
+	Available                  bool
+	MinimumDecision            DecisionRecord
+	State                      ProjectedState
+	Observation                BackendObservation
+	ObservationSequence        uint64
+	ControllerSequence         uint64
+	RuntimeEpoch               uint64
+	Policy                     PolicySnapshot
+	WindowConcurrencyHistogram WindowConcurrencyHistogramSnapshot
 }
 
 type PublicationResult struct {

@@ -35,8 +35,8 @@ func TestV01223RunningLimitAdmitsExactlyThroughConfiguredBound(t *testing.T) {
 	controller := testControllerWithBounds(
 		t,
 		ControllerConfig{
-			WindowConcurrency: 10,
-			RunningLimit:      8,
+			WindowConcurrency:  10,
+			RunningLimit:       8,
 			RunningLimitSource: RunningLimitSourceEnvironment,
 		},
 		testObservation(now, 6, 0, 0, 0),
@@ -59,8 +59,8 @@ func TestV01223ConcurrentAdmissionsCannotOverspendWindowOrRunningBound(t *testin
 	controller := testControllerWithBounds(
 		t,
 		ControllerConfig{
-			WindowConcurrency: 32,
-			RunningLimit:      40,
+			WindowConcurrency:  32,
+			RunningLimit:       40,
 			RunningLimitSource: RunningLimitSourceEnvironment,
 		},
 		testObservation(now, 8, 0, 0, 0),
@@ -110,9 +110,9 @@ func TestV01223PolicyUpdatesKeepTPSAndBoundsIndependent(t *testing.T) {
 	controller := testControllerWithBounds(
 		t,
 		ControllerConfig{
-			TPS:               TPSPolicyConfig{Reference: reference},
-			WindowConcurrency: 32,
-			RunningLimit:      256,
+			TPS:                TPSPolicyConfig{Reference: reference},
+			WindowConcurrency:  32,
+			RunningLimit:       256,
 			RunningLimitSource: RunningLimitSourceSGLangServerInfo,
 		},
 		testObservation(now, 0, 0, 0, 0),
@@ -134,8 +134,8 @@ func TestV01223PolicyUpdatesKeepTPSAndBoundsIndependent(t *testing.T) {
 	nextReference := 30.0
 	update, err = controller.UpdatePolicy(PolicyUpdate{
 		ExpectedRevision: 2,
-		TPSReference:    &nextReference,
-		UpdatedAt:       now.Add(2 * time.Second),
+		TPSReference:     &nextReference,
+		UpdatedAt:        now.Add(2 * time.Second),
 	})
 	if err != nil || !update.TPSWindowReset || update.Policy.Revision != 3 ||
 		update.Policy.WindowConcurrency != 48 || update.Policy.RunningLimit != 256 {
@@ -146,7 +146,7 @@ func TestV01223PolicyUpdatesKeepTPSAndBoundsIndependent(t *testing.T) {
 	update, err = controller.UpdatePolicy(PolicyUpdate{
 		ExpectedRevision: 3,
 		RunningLimit:     &running,
-		UpdatedAt:       now.Add(3 * time.Second),
+		UpdatedAt:        now.Add(3 * time.Second),
 	})
 	if err != nil || update.TPSWindowReset || update.Policy.Revision != 4 ||
 		update.Policy.RunningLimit != 192 || update.Policy.RunningLimitSource != RunningLimitSourceAdmin ||
