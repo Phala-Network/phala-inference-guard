@@ -1,5 +1,12 @@
 # PIG v0.12.22 Cache-Aware KV And TPS Controller Plan
 
+> Superseded on 2026-08-26 by
+> `PIG_V0_12_22_TPS_ONLY_CONTROLLER_PLAN.md`. The user explicitly ended KV and
+> cache-aware admission work. No remaining phase in this document authorizes
+> behavior code, a version, an image, or deployment. The bounded cache
+> accumulator inherited by the TPS-only branch is removal work, not accepted
+> TPS-only source.
+
 Status: active design and evidence plan; no v0.12.22 version has been assigned.
 
 Baseline:
