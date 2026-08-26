@@ -207,4 +207,5 @@ func TestTPSOnlyControllerPressureHoldClearsOnFirstFreshObservation(t *testing.T
 				t.Fatal("recovery fixture reservation rollback failed")
 			}
 		})
+	}
 }
