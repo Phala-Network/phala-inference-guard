@@ -79,7 +79,14 @@ func BenchmarkControllerPublishObservationWith4096Reservations(b *testing.B) {
 func benchmarkController(b *testing.B, reservations int) *AdmissionController {
 	b.Helper()
 	now := time.Unix(18_000, 0)
-	controller, err := NewAdmissionController(ControllerConfig{RuntimeIdentity: testRuntimeIdentity})
+	windowConcurrency := int64(reservations)
+	if windowConcurrency < DefaultWindowConcurrency {
+		windowConcurrency = DefaultWindowConcurrency
+	}
+	controller, err := NewAdmissionController(ControllerConfig{
+		RuntimeIdentity:   testRuntimeIdentity,
+		WindowConcurrency: windowConcurrency,
+	})
 	if err != nil {
 		b.Fatal(err)
 	}
