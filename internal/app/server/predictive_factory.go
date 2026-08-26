@@ -22,16 +22,23 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	if err != nil {
 		return nil, err
 	}
+	runningLimit := initializePredictiveRunningLimit(cfg, startup, metricsURL)
 	log.Printf(
-		"level=info component=tps_controller event=initialized backend_kind=%s model_identity=%s tps_reference=%.6f observation_poll_ms=%d",
+		"level=info component=tps_controller event=initialized backend_kind=%s model_identity=%s tps_reference=%.6f observation_poll_ms=%d window_concurrency=%d running_limit=%d running_limit_source=%s",
 		startup.BackendKind,
 		startup.ModelIdentitySHA256,
 		cfg.PredictiveTPSReference,
 		cfg.PredictiveObservationPollInterval.Milliseconds(),
+		cfg.PredictiveWindowConcurrency,
+		runningLimit.Value,
+		runningLimit.Source,
 	)
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		RuntimeIdentity: startup.ModelIdentitySHA256,
-		TPS:             coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
+		RuntimeIdentity:    startup.ModelIdentitySHA256,
+		TPS:                coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
+		WindowConcurrency:  cfg.PredictiveWindowConcurrency,
+		RunningLimit:       runningLimit.Value,
+		RunningLimitSource: runningLimit.Source,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct admission Controller: %w", err)

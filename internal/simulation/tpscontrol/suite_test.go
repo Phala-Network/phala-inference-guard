@@ -38,26 +38,25 @@ func TestDefaultSuiteExercisesRecoveryAtomicityAndLifecycle(t *testing.T) {
 	for _, result := range suite.Scenarios {
 		summary := result.Summary
 		if summary.FinalLiveReservations != 0 || summary.FinalUnobserved != 0 ||
-			summary.FinalLiabilities != 0 || summary.FinalResidualDebts != 0 ||
-			summary.FinalQoSBudgetLeases != 0 {
+			summary.FinalLiabilities != 0 || summary.FinalResidualDebts != 0 {
 			t.Fatalf("scenario %s leaked controller state: %+v", result.Name, summary)
 		}
 	}
 
-	healthy := scenarioByName(t, suite, "healthy_current_rate_expansion")
-	requireArrival(t, healthy, "healthy-probe", "admit", "base_rate", 2, 3, 4)
+	healthy := scenarioByName(t, suite, "healthy_window_throughput")
+	requireArrival(t, healthy, "healthy-probe", "admit", "healthy_window", 3, 1, 32)
 
 	batch := scenarioByName(t, suite, "same_snapshot_batch_reservation")
-	requireArrival(t, batch, "batch-two", "admit", "base_rate", 2, 4, 4)
-	requireArrival(t, batch, "same-snapshot-extra", "protect", "qos_budget_unobserved", 4, 5, 4)
+	requireArrival(t, batch, "batch-32", "admit", "healthy_window", 34, 32, 32)
+	requireArrival(t, batch, "same-snapshot-extra", "protect", "healthy_window", 35, 33, 32)
 
 	waiting := scenarioByName(t, suite, "waiting_clear")
-	requireArrival(t, waiting, "waiting_clear-protected", "protect", "waiting", 4, 5, 4)
-	requireArrival(t, waiting, "waiting_clear-recovered", "admit", "base_rate", 3, 4, 4)
+	requireArrival(t, waiting, "waiting_clear-protected", "protect", "waiting", 0, 0, 32)
+	requireArrival(t, waiting, "waiting_clear-recovered", "admit", "healthy_window", 4, 1, 32)
 
 	preemption := scenarioByName(t, suite, "preemption_clear")
-	requireArrival(t, preemption, "preemption_clear-protected", "protect", "preemption", 3, 4, 3)
-	requireArrival(t, preemption, "preemption_clear-recovered", "admit", "base_rate", 3, 4, 4)
+	requireArrival(t, preemption, "preemption_clear-protected", "protect", "preemption", 0, 0, 32)
+	requireArrival(t, preemption, "preemption_clear-recovered", "admit", "healthy_window", 4, 1, 32)
 
 	lowFlow := scenarioByName(t, suite, "low_flow_no_self_lock")
 	if lowFlow.Summary.Arrivals != 2 || lowFlow.Summary.Admitted != 2 || lowFlow.Summary.Protected != 0 {
@@ -119,13 +118,13 @@ func requireArrival(
 	t *testing.T,
 	result ScenarioResult,
 	requestID, action, subreason string,
-	current, post, limit int64,
+	projectedRunning, projectedWindow, windowLimit int64,
 ) {
 	t.Helper()
 	step := arrivalByID(t, result, requestID)
 	if step.Action != action || step.TPSSubreason != subreason ||
-		step.CurrentSequences != current || step.PostAdmitSequences != post ||
-		step.SequenceLimit != limit || (action == "admit") != (step.ReservationID > 0) {
+		step.ProjectedRunning != projectedRunning || step.ProjectedWindowSequences != projectedWindow ||
+		step.WindowConcurrency != windowLimit || (action == "admit") != (step.ReservationID > 0) {
 		t.Fatalf("scenario %s arrival %s=%+v", result.Name, requestID, step)
 	}
 }

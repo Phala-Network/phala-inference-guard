@@ -13,6 +13,8 @@ const (
 	predictiveMaximumMetricsRequestTime  = time.Minute
 	defaultPredictiveScannerBodyBytes    = 4 * 1024 * 1024
 	defaultPredictiveScannerConcurrency  = 64
+	defaultPredictiveWindowConcurrency   = 32
+	maximumPredictiveSequenceBound       = 1 << 20
 )
 
 func loadPredictiveAdmissionConfig(cfg *Config) error {
@@ -38,6 +40,14 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	windowConcurrency, err := env.Int("PREDICTIVE_WINDOW_CONCURRENCY", defaultPredictiveWindowConcurrency)
+	if err != nil {
+		return err
+	}
+	runningLimit, err := env.Int("PREDICTIVE_RUNNING_LIMIT", 0)
+	if err != nil {
+		return err
+	}
 
 	integerBounds := []struct {
 		name    string
@@ -49,6 +59,8 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 		{"PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS", requestTimeoutMS, 1, int(predictiveMaximumMetricsRequestTime / time.Millisecond)},
 		{"PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS", pollIntervalMS, 1, int(predictiveMaximumMetricsRequestTime / time.Millisecond)},
 		{"PREDICTIVE_MAX_METRICS_AGE_MS", maximumAgeMS, 1, int(predictiveMaximumMetricsRequestTime / time.Millisecond)},
+		{"PREDICTIVE_WINDOW_CONCURRENCY", windowConcurrency, 1, maximumPredictiveSequenceBound},
+		{"PREDICTIVE_RUNNING_LIMIT", runningLimit, 0, maximumPredictiveSequenceBound},
 	}
 	for _, bound := range integerBounds {
 		if bound.value < bound.minimum || bound.value > bound.maximum {
@@ -66,5 +78,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveObservationPollInterval = time.Duration(pollIntervalMS) * time.Millisecond
 	cfg.PredictiveMaximumMetricsAge = time.Duration(maximumAgeMS) * time.Millisecond
 	cfg.PredictiveTPSReference = tpsReference
+	cfg.PredictiveWindowConcurrency = int64(windowConcurrency)
+	cfg.PredictiveRunningLimit = int64(runningLimit)
 	return nil
 }

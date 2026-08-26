@@ -164,6 +164,9 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	if cfg.PredictiveTPSReference != 0 {
 		t.Fatalf("default TPS reference=%v, want disabled zero", cfg.PredictiveTPSReference)
 	}
+	if cfg.PredictiveWindowConcurrency != 32 || cfg.PredictiveRunningLimit != 0 {
+		t.Fatalf("default admission bounds=%d/%d, want 32/0", cfg.PredictiveWindowConcurrency, cfg.PredictiveRunningLimit)
+	}
 	if cfg.PredictiveScannerBodyBytes != defaultPredictiveScannerBodyBytes {
 		t.Fatalf("production scanner ceiling=%d want=%d", cfg.PredictiveScannerBodyBytes, defaultPredictiveScannerBodyBytes)
 	}
@@ -198,6 +201,8 @@ func TestTestsCanExplicitlyOverrideTypedTPSPolicy(t *testing.T) {
 	t.Setenv("PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS", "20")
 	t.Setenv("PREDICTIVE_MAX_METRICS_AGE_MS", "100")
 	t.Setenv("PREDICTIVE_TPS_REFERENCE", "23.5")
+	t.Setenv("PREDICTIVE_WINDOW_CONCURRENCY", "48")
+	t.Setenv("PREDICTIVE_RUNNING_LIMIT", "192")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load explicit test policy: %v", err)
@@ -206,8 +211,35 @@ func TestTestsCanExplicitlyOverrideTypedTPSPolicy(t *testing.T) {
 		t.Fatalf("Validate explicit test policy: %v", err)
 	}
 	if cfg.PredictiveAdmissionMode != "shadow" || cfg.PredictiveObservationPollInterval != 20*time.Millisecond ||
-		cfg.PredictiveMaximumMetricsAge != 100*time.Millisecond || cfg.PredictiveTPSReference != 23.5 {
+		cfg.PredictiveMaximumMetricsAge != 100*time.Millisecond || cfg.PredictiveTPSReference != 23.5 ||
+		cfg.PredictiveWindowConcurrency != 48 || cfg.PredictiveRunningLimit != 192 {
 		t.Fatalf("explicit test policy was not loaded exactly: %+v", cfg)
+	}
+}
+
+func TestPredictiveAdmissionBoundValidation(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, test := range []struct {
+		name    string
+		window  int64
+		running int64
+	}{
+		{name: "zero window", window: 0, running: 0},
+		{name: "negative running", window: 32, running: -1},
+		{name: "window too large", window: maximumPredictiveSequenceBound + 1, running: 0},
+		{name: "running too large", window: 32, running: maximumPredictiveSequenceBound + 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			candidate := cfg
+			candidate.PredictiveWindowConcurrency = test.window
+			candidate.PredictiveRunningLimit = test.running
+			if err := Validate(candidate); err == nil {
+				t.Fatalf("invalid bounds %d/%d were accepted", test.window, test.running)
+			}
+		})
 	}
 }
 

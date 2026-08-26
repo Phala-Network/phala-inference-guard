@@ -207,9 +207,10 @@ func TestStatusLogSeparatesLastRequestFromCurrentCapacity(t *testing.T) {
 			RawRunning: 2,
 			TPS:        coreadmission.TPSSnapshot{Reference: 25},
 		},
-		TPSSequenceLimit:      3,
-		TPSCurrentSequences:   2,
-		TPSPostAdmitSequences: 3,
+		ProjectedRunning:         3,
+		ProjectedWindowSequences: 1,
+		RunningLimitSource:       coreadmission.RunningLimitSourceUnknown,
+		WindowConcurrency:        32,
 	}
 	last := coreadmission.DecisionRecord{
 		Action: coreadmission.ActionProtect,
@@ -230,7 +231,8 @@ func TestStatusLogSeparatesLastRequestFromCurrentCapacity(t *testing.T) {
 	line := srv.statusLogLine()
 	if !strings.Contains(line, "last=load_protect/tps_reference") ||
 		!strings.Contains(line, "capacity=admit/open") ||
-		!strings.Contains(line, "sequences=2/3/3") {
+		!strings.Contains(line, "projected_running=3") ||
+		!strings.Contains(line, "window=1/32") {
 		t.Fatalf("status conflated last request and current capacity: %s", line)
 	}
 }

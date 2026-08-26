@@ -23,8 +23,10 @@ const (
 )
 
 type predictivePolicyPatch struct {
-	ExpectedRevision *uint64  `json:"expected_revision"`
-	TPSReference     *float64 `json:"tps_reference"`
+	ExpectedRevision  *uint64  `json:"expected_revision"`
+	TPSReference      *float64 `json:"tps_reference"`
+	WindowConcurrency *int64   `json:"window_concurrency"`
+	RunningLimit      *int64   `json:"running_limit"`
 }
 
 type predictivePolicyDocument struct {
@@ -38,13 +40,16 @@ type predictivePolicyDocument struct {
 }
 
 type predictivePolicyMutable struct {
-	TPSReference float64 `json:"tps_reference"`
+	TPSReference      float64 `json:"tps_reference"`
+	WindowConcurrency int64   `json:"window_concurrency"`
+	RunningLimit      int64   `json:"running_limit"`
 }
 
 type predictivePolicyEffective struct {
 	AdmissionMode             string `json:"admission_mode"`
 	ObservationPollIntervalMS int64  `json:"observation_poll_interval_ms"`
 	MaximumMetricsAgeMS       int64  `json:"maximum_metrics_age_ms"`
+	RunningLimitSource        string `json:"running_limit_source"`
 }
 
 type predictivePolicyErrorDocument struct {
@@ -85,21 +90,23 @@ func (s *proxyServer) patchPredictivePolicy(w http.ResponseWriter, r *http.Reque
 	patch, status, err := decodePredictivePolicyPatch(w, r)
 	if err != nil {
 		s.policyUpdates.invalid.Add(1)
-		logPredictivePolicyUpdate("invalid", 0, 0, 0, false)
+		logPredictivePolicyUpdate("invalid", 0, coreadmission.PolicySnapshot{}, false)
 		writePredictivePolicyError(w, status, "invalid_request", err.Error())
 		return
 	}
 	service, ok := s.admission.(admissionPolicyService)
 	if !ok {
 		s.policyUpdates.failed.Add(1)
-		logPredictivePolicyUpdate("failed", *patch.ExpectedRevision, 0, *patch.TPSReference, false)
+		logPredictivePolicyUpdate("failed", *patch.ExpectedRevision, coreadmission.PolicySnapshot{}, false)
 		writePredictivePolicyError(w, http.StatusServiceUnavailable, "policy_unavailable", "predictive policy is unavailable")
 		return
 	}
-	result, updateErr := updateAdmissionTPSPolicy(service, coreadmission.TPSPolicyUpdate{
-		ExpectedRevision: *patch.ExpectedRevision,
-		Reference:        *patch.TPSReference,
-		UpdatedAt:        time.Now(),
+	result, updateErr := updateAdmissionPolicy(service, coreadmission.PolicyUpdate{
+		ExpectedRevision:  *patch.ExpectedRevision,
+		TPSReference:      patch.TPSReference,
+		WindowConcurrency: patch.WindowConcurrency,
+		RunningLimit:      patch.RunningLimit,
+		UpdatedAt:         time.Now(),
 	})
 	if updateErr != nil {
 		s.writePredictivePolicyUpdateError(w, patch, result, updateErr)
@@ -109,51 +116,48 @@ func (s *proxyServer) patchPredictivePolicy(w http.ResponseWriter, r *http.Reque
 	logPredictivePolicyUpdate(
 		"applied",
 		*patch.ExpectedRevision,
-		result.Policy.Revision,
-		result.Policy.Reference,
-		result.WindowReset,
+		result.Policy,
+		result.TPSWindowReset,
 	)
 	writePredictivePolicyDocument(w, predictivePolicyDocumentFrom(s.cfg, result.Policy))
 }
 
-func updateAdmissionTPSPolicy(
+func updateAdmissionPolicy(
 	service admissionPolicyService,
-	update coreadmission.TPSPolicyUpdate,
-) (result coreadmission.TPSPolicyUpdateResult, err error) {
+	update coreadmission.PolicyUpdate,
+) (result coreadmission.PolicyUpdateResult, err error) {
 	if service == nil {
-		return result, coreadmission.ErrTPSPolicyUnavailable
+		return result, coreadmission.ErrPolicyUnavailable
 	}
 	defer func() {
 		if recover() != nil {
-			result = coreadmission.TPSPolicyUpdateResult{}
-			err = coreadmission.ErrTPSPolicyUnavailable
+			result = coreadmission.PolicyUpdateResult{}
+			err = coreadmission.ErrPolicyUnavailable
 		}
 	}()
-	return service.UpdateTPSPolicy(update)
+	return service.UpdatePolicy(update)
 }
 
 func (s *proxyServer) writePredictivePolicyUpdateError(
 	w http.ResponseWriter,
 	patch predictivePolicyPatch,
-	result coreadmission.TPSPolicyUpdateResult,
+	result coreadmission.PolicyUpdateResult,
 	updateErr error,
 ) {
-	if errors.Is(updateErr, coreadmission.ErrTPSPolicyRevisionConflict) {
+	if errors.Is(updateErr, coreadmission.ErrPolicyRevisionConflict) {
 		s.policyUpdates.conflict.Add(1)
-		logPredictivePolicyUpdate(
-			"conflict", *patch.ExpectedRevision, result.Policy.Revision, result.Policy.Reference, false,
-		)
+		logPredictivePolicyUpdate("conflict", *patch.ExpectedRevision, result.Policy, false)
 		writePredictivePolicyError(w, http.StatusConflict, "revision_conflict", "expected_revision is stale")
 		return
 	}
-	if errors.Is(updateErr, coreadmission.ErrTPSPolicyInvalid) {
+	if errors.Is(updateErr, coreadmission.ErrPolicyInvalid) {
 		s.policyUpdates.invalid.Add(1)
-		logPredictivePolicyUpdate("invalid", *patch.ExpectedRevision, result.Policy.Revision, *patch.TPSReference, false)
-		writePredictivePolicyError(w, http.StatusBadRequest, "invalid_request", "TPS policy update is invalid")
+		logPredictivePolicyUpdate("invalid", *patch.ExpectedRevision, result.Policy, false)
+		writePredictivePolicyError(w, http.StatusBadRequest, "invalid_request", "predictive policy update is invalid")
 		return
 	}
 	s.policyUpdates.failed.Add(1)
-	logPredictivePolicyUpdate("failed", *patch.ExpectedRevision, result.Policy.Revision, *patch.TPSReference, false)
+	logPredictivePolicyUpdate("failed", *patch.ExpectedRevision, result.Policy, false)
 	writePredictivePolicyError(w, http.StatusServiceUnavailable, "policy_unavailable", "predictive policy is unavailable")
 }
 
@@ -180,17 +184,26 @@ func decodePredictivePolicyPatch(w http.ResponseWriter, r *http.Request) (predic
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("request body must contain exactly one policy object")
 	}
-	if patch.ExpectedRevision == nil || *patch.ExpectedRevision == 0 || patch.TPSReference == nil ||
-		math.IsNaN(*patch.TPSReference) || math.IsInf(*patch.TPSReference, 0) ||
-		*patch.TPSReference < 0 || *patch.TPSReference > 1_000_000 {
-		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("expected_revision and a finite tps_reference in [0, 1000000] are required")
+	if patch.ExpectedRevision == nil || *patch.ExpectedRevision == 0 ||
+		(patch.TPSReference == nil && patch.WindowConcurrency == nil && patch.RunningLimit == nil) {
+		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("expected_revision and at least one mutable policy field are required")
+	}
+	if patch.TPSReference != nil && (math.IsNaN(*patch.TPSReference) || math.IsInf(*patch.TPSReference, 0) ||
+		*patch.TPSReference < 0 || *patch.TPSReference > 1_000_000) {
+		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("tps_reference must be finite and in [0, 1000000]")
+	}
+	if patch.WindowConcurrency != nil && (*patch.WindowConcurrency <= 0 || *patch.WindowConcurrency > maximumPredictiveSequenceBound) {
+		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("window_concurrency must be in [1, %d]", maximumPredictiveSequenceBound)
+	}
+	if patch.RunningLimit != nil && (*patch.RunningLimit < 0 || *patch.RunningLimit > maximumPredictiveSequenceBound) {
+		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("running_limit must be in [0, %d]", maximumPredictiveSequenceBound)
 	}
 	return patch, 0, nil
 }
 
 func predictivePolicyDocumentFrom(
 	cfg config,
-	policy coreadmission.TPSPolicySnapshot,
+	policy coreadmission.PolicySnapshot,
 ) predictivePolicyDocument {
 	document := predictivePolicyDocument{
 		SchemaVersion: predictivePolicyAPISchema,
@@ -198,12 +211,15 @@ func predictivePolicyDocumentFrom(
 		Source:        predictivePolicySource(policy),
 		Persistence:   policyPersistenceContract,
 		Mutable: predictivePolicyMutable{
-			TPSReference: policy.Reference,
+			TPSReference:      policy.TPSReference,
+			WindowConcurrency: policy.WindowConcurrency,
+			RunningLimit:      policy.RunningLimit,
 		},
 		Effective: predictivePolicyEffective{
 			AdmissionMode:             cfg.PredictiveAdmissionMode,
 			ObservationPollIntervalMS: cfg.PredictiveObservationPollInterval.Milliseconds(),
 			MaximumMetricsAgeMS:       cfg.PredictiveMaximumMetricsAge.Milliseconds(),
+			RunningLimitSource:        string(policy.RunningLimitSource),
 		},
 	}
 	if !policy.UpdatedAt.IsZero() {
@@ -213,7 +229,7 @@ func predictivePolicyDocumentFrom(
 	return document
 }
 
-func predictivePolicySource(policy coreadmission.TPSPolicySnapshot) string {
+func predictivePolicySource(policy coreadmission.PolicySnapshot) string {
 	if policy.Revision <= 1 || policy.UpdatedAt.IsZero() {
 		return "startup"
 	}
@@ -240,16 +256,18 @@ func writePredictivePolicyError(w http.ResponseWriter, status int, code, message
 func logPredictivePolicyUpdate(
 	result string,
 	expectedRevision uint64,
-	currentRevision uint64,
-	reference float64,
+	policy coreadmission.PolicySnapshot,
 	windowReset bool,
 ) {
 	log.Printf(
-		"level=info component=policy event=update result=%s expected_revision=%d revision=%d tps_reference=%.6f tps_window_reset=%t",
+		"level=info component=policy event=update result=%s expected_revision=%d revision=%d tps_reference=%.6f window_concurrency=%d running_limit=%d running_limit_source=%s tps_window_reset=%t",
 		result,
 		expectedRevision,
-		currentRevision,
-		reference,
+		policy.Revision,
+		policy.TPSReference,
+		policy.WindowConcurrency,
+		policy.RunningLimit,
+		policy.RunningLimitSource,
 		windowReset,
 	)
 }

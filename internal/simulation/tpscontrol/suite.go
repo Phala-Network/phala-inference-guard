@@ -39,24 +39,25 @@ type Event struct {
 }
 
 type StepResult struct {
-	AtMilliseconds      int64  `json:"at_ms"`
-	Kind                string `json:"kind"`
-	RequestID           string `json:"request_id,omitempty"`
-	Applied             bool   `json:"applied"`
-	Action              string `json:"action,omitempty"`
-	Reason              string `json:"reason,omitempty"`
-	TPSSubreason        string `json:"tps_subreason,omitempty"`
-	CurrentSequences    int64  `json:"current_sequences,omitempty"`
-	PostAdmitSequences  int64  `json:"post_admit_sequences,omitempty"`
-	SequenceLimit       int64  `json:"sequence_limit,omitempty"`
-	ReservationID       uint64 `json:"reservation_id,omitempty"`
-	RuntimeReset        bool   `json:"runtime_reset,omitempty"`
-	RuntimeEpoch        uint64 `json:"runtime_epoch"`
-	LiveReservations    int64  `json:"live_reservations"`
-	UnobservedSequences int64  `json:"unobserved_sequences"`
-	SequenceLiabilities int64  `json:"sequence_liabilities"`
-	ResidualDebts       int64  `json:"residual_debts"`
-	QoSBudgetLeases     int64  `json:"qos_budget_leases"`
+	AtMilliseconds           int64  `json:"at_ms"`
+	Kind                     string `json:"kind"`
+	RequestID                string `json:"request_id,omitempty"`
+	Applied                  bool   `json:"applied"`
+	Action                   string `json:"action,omitempty"`
+	Reason                   string `json:"reason,omitempty"`
+	TPSSubreason             string `json:"tps_subreason,omitempty"`
+	ProjectedRunning         int64  `json:"projected_running,omitempty"`
+	ProjectedWindowSequences int64  `json:"projected_window_sequences,omitempty"`
+	RunningLimit             int64  `json:"running_limit,omitempty"`
+	RunningLimitSource       string `json:"running_limit_source,omitempty"`
+	WindowConcurrency        int64  `json:"window_concurrency,omitempty"`
+	ReservationID            uint64 `json:"reservation_id,omitempty"`
+	RuntimeReset             bool   `json:"runtime_reset,omitempty"`
+	RuntimeEpoch             uint64 `json:"runtime_epoch"`
+	LiveReservations         int64  `json:"live_reservations"`
+	UnobservedSequences      int64  `json:"unobserved_sequences"`
+	SequenceLiabilities      int64  `json:"sequence_liabilities"`
+	ResidualDebts            int64  `json:"residual_debts"`
 }
 
 type ScenarioSummary struct {
@@ -71,7 +72,6 @@ type ScenarioSummary struct {
 	FinalUnobserved       int64 `json:"final_unobserved_sequences"`
 	FinalLiabilities      int64 `json:"final_sequence_liabilities"`
 	FinalResidualDebts    int64 `json:"final_residual_debts"`
-	FinalQoSBudgetLeases  int64 `json:"final_qos_budget_leases"`
 }
 
 type ScenarioResult struct {
@@ -161,7 +161,6 @@ func runScenario(spec scenario) (ScenarioResult, error) {
 	result.Summary.FinalUnobserved = final.UnobservedSequences
 	result.Summary.FinalLiabilities = final.SequenceLiabilities
 	result.Summary.FinalResidualDebts = final.ResidualDebts
-	result.Summary.FinalQoSBudgetLeases = final.QoSBudgetLeases
 	return result, nil
 }
 
@@ -215,9 +214,11 @@ func applyEvent(
 		step.Action = string(decision.Action)
 		step.Reason = string(decision.Reason)
 		step.TPSSubreason = decision.TPSDecisionSubreason.String()
-		step.CurrentSequences = decision.TPSCurrentSequences
-		step.PostAdmitSequences = decision.TPSPostAdmitSequences
-		step.SequenceLimit = decision.TPSSequenceLimit
+		step.ProjectedRunning = decision.ProjectedRunning
+		step.ProjectedWindowSequences = decision.ProjectedWindowSequences
+		step.RunningLimit = decision.RunningLimit
+		step.RunningLimitSource = string(decision.RunningLimitSource)
+		step.WindowConcurrency = decision.WindowConcurrency
 		step.ReservationID = decision.ReservationID
 		if decision.Admitted() {
 			handles[event.RequestID] = admission.Handle
@@ -253,7 +254,6 @@ func withSnapshot(step StepResult, snapshot coreadmission.CapacitySnapshot) Step
 	step.UnobservedSequences = snapshot.State.UnobservedSequences
 	step.SequenceLiabilities = snapshot.State.SequenceLiabilities
 	step.ResidualDebts = snapshot.State.ResidualDebts
-	step.QoSBudgetLeases = snapshot.State.QoSBudgetLeases
 	return step
 }
 
@@ -300,15 +300,15 @@ func healthyExpansionScenario() scenario {
 		arrival(4_100, "healthy-probe", 1),
 		terminal(4_200, "healthy-probe", coreadmission.TerminalCancel),
 	)
-	return scenario{name: "healthy_current_rate_expansion", category: "healthy", events: events}
+	return scenario{name: "healthy_window_throughput", category: "healthy", events: events}
 }
 
 func atomicBatchScenario() scenario {
 	events, _ := healthyObservations(2, 50)
 	events = append(events,
-		arrival(4_100, "batch-two", 2),
+		arrival(4_100, "batch-32", 32),
 		arrival(4_100, "same-snapshot-extra", 1),
-		terminal(4_200, "batch-two", coreadmission.TerminalCancel),
+		terminal(4_200, "batch-32", coreadmission.TerminalCancel),
 	)
 	return scenario{name: "same_snapshot_batch_reservation", category: "atomicity", events: events}
 }

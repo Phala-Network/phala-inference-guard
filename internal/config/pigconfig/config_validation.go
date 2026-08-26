@@ -54,6 +54,12 @@ func validatePredictiveAdmissionConfig(cfg Config) error {
 	if !finite(cfg.PredictiveTPSReference) || cfg.PredictiveTPSReference < 0 || cfg.PredictiveTPSReference > 1_000_000 {
 		return fmt.Errorf("PREDICTIVE_TPS_REFERENCE must be finite and in [0, 1000000]")
 	}
+	if cfg.PredictiveWindowConcurrency <= 0 || cfg.PredictiveWindowConcurrency > maximumPredictiveSequenceBound {
+		return fmt.Errorf("PREDICTIVE_WINDOW_CONCURRENCY must be in [1, %d]", maximumPredictiveSequenceBound)
+	}
+	if cfg.PredictiveRunningLimit < 0 || cfg.PredictiveRunningLimit > maximumPredictiveSequenceBound {
+		return fmt.Errorf("PREDICTIVE_RUNNING_LIMIT must be in [0, %d]", maximumPredictiveSequenceBound)
+	}
 	return nil
 }
 

@@ -21,12 +21,15 @@ type predictivePolicyAPIDocument struct {
 	Persistence   string     `json:"persistence"`
 	UpdatedAt     *time.Time `json:"updated_at"`
 	Mutable       struct {
-		TPSReference float64 `json:"tps_reference"`
+		TPSReference      float64 `json:"tps_reference"`
+		WindowConcurrency int64   `json:"window_concurrency"`
+		RunningLimit      int64   `json:"running_limit"`
 	} `json:"mutable"`
 	Effective struct {
 		AdmissionMode             string `json:"admission_mode"`
 		ObservationPollIntervalMS int64  `json:"observation_poll_interval_ms"`
 		MaximumMetricsAgeMS       int64  `json:"maximum_metrics_age_ms"`
+		RunningLimitSource        string `json:"running_limit_source"`
 	} `json:"effective"`
 }
 
@@ -60,12 +63,14 @@ func TestV01215PredictivePolicyAPIRequiresAuthDoesNotProxyAndReturnsEffectivePol
 	document := decodePredictivePolicyDocument(t, response, http.StatusOK)
 	if document.SchemaVersion != "pig.predictive-policy.v1" || document.Revision != 1 ||
 		document.Source != "startup" || document.Persistence != "restart_restores_startup" ||
-		document.UpdatedAt != nil || document.Mutable.TPSReference != 20 {
+		document.UpdatedAt != nil || document.Mutable.TPSReference != 20 ||
+		document.Mutable.WindowConcurrency != 32 || document.Mutable.RunningLimit != 0 {
 		t.Fatalf("initial policy=%+v", document)
 	}
 	if document.Effective.AdmissionMode != "enforce" ||
 		document.Effective.ObservationPollIntervalMS != 500 ||
-		document.Effective.MaximumMetricsAgeMS != 1500 {
+		document.Effective.MaximumMetricsAgeMS != 1500 ||
+		document.Effective.RunningLimitSource != "unknown" {
 		t.Fatalf("effective policy=%+v", document.Effective)
 	}
 	for _, retired := range []string{
@@ -109,6 +114,8 @@ func TestV01215PredictivePolicyAPIRejectsInvalidPatchAtomically(t *testing.T) {
 		{name: "trailing json", body: `{"expected_revision":1,"tps_reference":25}{}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "negative", body: `{"expected_revision":1,"tps_reference":-1}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "too large", body: `{"expected_revision":1,"tps_reference":1000001}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "zero window", body: `{"expected_revision":1,"window_concurrency":0}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "negative running", body: `{"expected_revision":1,"running_limit":-1}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "syntax", body: `{"expected_revision":1,`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 	}
 	for _, test := range tests {
@@ -120,7 +127,8 @@ func TestV01215PredictivePolicyAPIRejectsInvalidPatchAtomically(t *testing.T) {
 			current := decodePredictivePolicyDocument(
 				t, servePredictivePolicyAPI(t, srv, http.MethodGet, nil, ""), http.StatusOK,
 			)
-			if current.Revision != 1 || current.Mutable.TPSReference != 20 {
+			if current.Revision != 1 || current.Mutable.TPSReference != 20 ||
+				current.Mutable.WindowConcurrency != 32 || current.Mutable.RunningLimit != 0 {
 				t.Fatalf("invalid update changed policy: %+v", current)
 			}
 		})
@@ -134,7 +142,8 @@ func TestV01215PredictivePolicyAPIRejectsInvalidPatchAtomically(t *testing.T) {
 	current := decodePredictivePolicyDocument(
 		t, servePredictivePolicyAPI(t, srv, http.MethodGet, nil, ""), http.StatusOK,
 	)
-	if current.Revision != 1 || current.Mutable.TPSReference != 20 || backendCalls.Load() != 0 {
+	if current.Revision != 1 || current.Mutable.TPSReference != 20 ||
+		current.Mutable.WindowConcurrency != 32 || current.Mutable.RunningLimit != 0 || backendCalls.Load() != 0 {
 		t.Fatalf("post-invalid policy=%+v backend_calls=%d", current, backendCalls.Load())
 	}
 }
@@ -142,11 +151,15 @@ func TestV01215PredictivePolicyAPIRejectsInvalidPatchAtomically(t *testing.T) {
 func TestV01215PredictivePolicyAPIAppliesCASAndExportsMetricsAndStatus(t *testing.T) {
 	srv, _, backendCalls := newPredictivePolicyAPIFixture(t, admissionRuntimeTestConfig{TPSReference: 20})
 	applied := servePredictivePolicyAPI(
-		t, srv, http.MethodPatch, []byte(`{"expected_revision":1,"tps_reference":25}`), "application/json",
+		t, srv, http.MethodPatch,
+		[]byte(`{"expected_revision":1,"tps_reference":25,"window_concurrency":48,"running_limit":192}`),
+		"application/json",
 	)
 	document := decodePredictivePolicyDocument(t, applied, http.StatusOK)
 	if document.Revision != 2 || document.Source != "runtime_api" ||
 		document.UpdatedAt == nil || document.Mutable.TPSReference != 25 ||
+		document.Mutable.WindowConcurrency != 48 || document.Mutable.RunningLimit != 192 ||
+		document.Effective.RunningLimitSource != "admin" ||
 		applied.Header().Get("ETag") != `"2"` {
 		t.Fatalf("applied policy=%+v headers=%v", document, applied.Header())
 	}
@@ -346,8 +359,8 @@ type panickingPolicyAdmissionService struct {
 	admissionService
 }
 
-func (*panickingPolicyAdmissionService) UpdateTPSPolicy(
-	coreadmission.TPSPolicyUpdate,
-) (coreadmission.TPSPolicyUpdateResult, error) {
+func (*panickingPolicyAdmissionService) UpdatePolicy(
+	coreadmission.PolicyUpdate,
+) (coreadmission.PolicyUpdateResult, error) {
 	panic("policy update panic")
 }

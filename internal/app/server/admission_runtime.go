@@ -34,7 +34,7 @@ type admissionService interface {
 }
 
 type admissionPolicyService interface {
-	UpdateTPSPolicy(coreadmission.TPSPolicyUpdate) (coreadmission.TPSPolicyUpdateResult, error)
+	UpdatePolicy(coreadmission.PolicyUpdate) (coreadmission.PolicyUpdateResult, error)
 }
 
 type admissionObserver interface {
@@ -133,13 +133,13 @@ func (r *admissionRuntime) Snapshot(now time.Time) admissionTelemetrySnapshot {
 	}
 }
 
-func (r *admissionRuntime) UpdateTPSPolicy(
-	update coreadmission.TPSPolicyUpdate,
-) (coreadmission.TPSPolicyUpdateResult, error) {
+func (r *admissionRuntime) UpdatePolicy(
+	update coreadmission.PolicyUpdate,
+) (coreadmission.PolicyUpdateResult, error) {
 	if r == nil || r.controller == nil {
-		return coreadmission.TPSPolicyUpdateResult{}, coreadmission.ErrTPSPolicyUnavailable
+		return coreadmission.PolicyUpdateResult{}, coreadmission.ErrPolicyUnavailable
 	}
-	return r.controller.UpdateTPSPolicy(update)
+	return r.controller.UpdatePolicy(update)
 }
 
 func (r *admissionRuntime) Close() error {

@@ -19,6 +19,19 @@ func TestControllerRejectsInvalidConfiguration(t *testing.T) {
 			t.Fatalf("invalid TPS reference %v constructed a Controller", reference)
 		}
 	}
+	for _, config := range []ControllerConfig{
+		{RuntimeIdentity: testRuntimeIdentity, WindowConcurrency: -1},
+		{RuntimeIdentity: testRuntimeIdentity, WindowConcurrency: maximumTPSReservations + 1},
+		{RuntimeIdentity: testRuntimeIdentity, RunningLimit: -1},
+		{
+			RuntimeIdentity: testRuntimeIdentity, RunningLimit: maximumTPSReservations + 1,
+			RunningLimitSource: RunningLimitSourceEnvironment,
+		},
+	} {
+		if _, err := NewAdmissionController(config); err == nil {
+			t.Fatalf("invalid admission bounds constructed a Controller: %+v", config)
+		}
+	}
 }
 
 func TestControllerTPSReferenceChangesPreForwardDecision(t *testing.T) {

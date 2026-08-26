@@ -88,7 +88,7 @@ func TestAdmissionHTTPChargesCompleteFanoutBeforeForward(t *testing.T) {
 	}))
 	defer backend.Close()
 	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
-		Mode: "enforce", TPSReference: 50,
+		Mode: "enforce", WindowConcurrency: 4,
 	})
 	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
 	body := `{"model":"model-agnostic","messages":[{"role":"user","content":"hello"}],"n":8,"max_tokens":256}`
@@ -102,10 +102,11 @@ func TestAdmissionHTTPChargesCompleteFanoutBeforeForward(t *testing.T) {
 	decision := runtime.Snapshot(clock.Now()).Report.LastDecision
 	if response.Code != http.StatusTooManyRequests ||
 		backendCalls.Load() != 0 ||
-		decision.Reason != coreadmission.ReasonTPSReference ||
+		decision.Reason != coreadmission.ReasonWindowConcurrency ||
 		decision.Demand.DecodeSequences != 8 ||
-		decision.TPSCurrentSequences != 0 ||
-		decision.TPSPostAdmitSequences != 8 ||
+		decision.ProjectedRunning != 8 ||
+		decision.ProjectedWindowSequences != 8 ||
+		decision.WindowConcurrency != 4 ||
 		decision.ReservationID != 0 {
 		t.Fatalf(
 			"fanout was not charged atomically before forward: status=%d calls=%d decision=%+v",
@@ -324,9 +325,8 @@ func TestAdmissionDecisionLogContainsOnlyBoundedTPSDiagnostics(t *testing.T) {
 			Reason: coreadmission.ReasonTPSReference,
 			Scope:  coreadmission.ProtectionLoad,
 			State: coreadmission.ProjectedState{
-				RawRunning:      8,
-				RawWaiting:      1,
-				QoSBudgetLeases: 1,
+				RawRunning: 8,
+				RawWaiting: 1,
 				TPS: coreadmission.TPSSnapshot{
 					Enabled:       true,
 					Ready:         true,
@@ -334,11 +334,13 @@ func TestAdmissionDecisionLogContainsOnlyBoundedTPSDiagnostics(t *testing.T) {
 					MeanActiveTPS: 27.5,
 				},
 			},
-			TPSDecisionResult:     coreadmission.TPSDecisionResultProtect,
-			TPSDecisionSubreason:  coreadmission.TPSDecisionSubreasonWaiting,
-			TPSSequenceLimit:      9,
-			TPSCurrentSequences:   9,
-			TPSPostAdmitSequences: 10,
+			TPSDecisionResult:        coreadmission.TPSDecisionResultProtect,
+			TPSDecisionSubreason:     coreadmission.TPSDecisionSubreasonWaiting,
+			ProjectedRunning:         10,
+			RunningLimit:             192,
+			RunningLimitSource:       coreadmission.RunningLimitSourceAdmin,
+			ProjectedWindowSequences: 2,
+			WindowConcurrency:        48,
 		},
 	})
 	for _, secret := range []string{"request-123", "user prompt", "Bearer secret", "api-key", "public.example"} {
@@ -355,16 +357,19 @@ func TestAdmissionDecisionLogContainsOnlyBoundedTPSDiagnostics(t *testing.T) {
 		"tps_result=protect",
 		"tps_subreason=waiting",
 		"backend=8/1",
-		"sequences=9/10/9",
 		"tps=27.500/25.000",
 		"ready=true",
-		"leases=1",
+		"projected_running=10",
+		"running_limit=192",
+		"running_limit_source=admin",
+		"projected_window=2",
+		"window_concurrency=48",
 	} {
 		if !strings.Contains(line, required) {
 			t.Fatalf("admission log missing %q: %s", required, line)
 		}
 	}
-	for _, retired := range []string{"prefill", "kv_tokens", "cache_", "input_tokens"} {
+	for _, retired := range []string{"prefill", "kv_tokens", "cache_", "input_tokens", "sequences=", "leases="} {
 		if strings.Contains(line, retired) {
 			t.Fatalf("admission log retained retired field %q: %s", retired, line)
 		}

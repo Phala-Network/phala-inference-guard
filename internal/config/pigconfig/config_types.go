@@ -39,4 +39,6 @@ type Config struct {
 	PredictiveObservationPollInterval time.Duration
 	PredictiveMaximumMetricsAge       time.Duration
 	PredictiveTPSReference            float64
+	PredictiveWindowConcurrency       int64
+	PredictiveRunningLimit            int64
 }

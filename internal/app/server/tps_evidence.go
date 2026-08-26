@@ -36,17 +36,10 @@ const (
 	tpsEvidenceSubreasonWaiting
 	tpsEvidenceSubreasonPreemption
 	tpsEvidenceSubreasonWarming
-	tpsEvidenceSubreasonIdle
-	tpsEvidenceSubreasonBaseRate
-	tpsEvidenceSubreasonCurrentRate
-	tpsEvidenceSubreasonQoSBudgetGranted
-	tpsEvidenceSubreasonQoSBudgetMultiSequence
-	tpsEvidenceSubreasonQoSBudgetUnobserved
-	tpsEvidenceSubreasonQoSBudgetActiveLease
-	tpsEvidenceSubreasonQoSBudgetWaveLimit
-	tpsEvidenceSubreasonQoSBudgetNoSurplus
-	tpsEvidenceSubreasonQoSBudgetCurrentRate
-	tpsEvidenceSubreasonQoSBudgetIneligible
+	tpsEvidenceSubreasonNoCurrentEvidence
+	tpsEvidenceSubreasonHealthyWindow
+	tpsEvidenceSubreasonRecoveredCurrent
+	tpsEvidenceSubreasonBelowReference
 	tpsEvidenceSubreasonCount
 )
 
@@ -57,17 +50,10 @@ var tpsEvidenceSubreasonLabels = [...]string{
 	"waiting",
 	"preemption",
 	"warming",
-	"idle",
-	"base_rate",
-	"current_rate",
-	"qos_budget_granted",
-	"qos_budget_multi_sequence",
-	"qos_budget_unobserved",
-	"qos_budget_active_lease",
-	"qos_budget_wave_limit",
-	"qos_budget_no_surplus",
-	"qos_budget_current_rate",
-	"qos_budget_ineligible",
+	"no_current_evidence",
+	"healthy_window",
+	"recovered_current",
+	"below_reference",
 }
 
 type tpsDecisionEvidence struct {
@@ -181,28 +167,14 @@ func tpsEvidenceSubreasonFor(subreason coreadmission.TPSDecisionSubreason) tpsEv
 		return tpsEvidenceSubreasonPreemption
 	case coreadmission.TPSDecisionSubreasonWarming:
 		return tpsEvidenceSubreasonWarming
-	case coreadmission.TPSDecisionSubreasonIdle:
-		return tpsEvidenceSubreasonIdle
-	case coreadmission.TPSDecisionSubreasonBaseRate:
-		return tpsEvidenceSubreasonBaseRate
-	case coreadmission.TPSDecisionSubreasonCurrentRate:
-		return tpsEvidenceSubreasonCurrentRate
-	case coreadmission.TPSDecisionSubreasonQoSBudgetGranted:
-		return tpsEvidenceSubreasonQoSBudgetGranted
-	case coreadmission.TPSDecisionSubreasonQoSBudgetMultiSequence:
-		return tpsEvidenceSubreasonQoSBudgetMultiSequence
-	case coreadmission.TPSDecisionSubreasonQoSBudgetUnobserved:
-		return tpsEvidenceSubreasonQoSBudgetUnobserved
-	case coreadmission.TPSDecisionSubreasonQoSBudgetActiveLease:
-		return tpsEvidenceSubreasonQoSBudgetActiveLease
-	case coreadmission.TPSDecisionSubreasonQoSBudgetWaveLimit:
-		return tpsEvidenceSubreasonQoSBudgetWaveLimit
-	case coreadmission.TPSDecisionSubreasonQoSBudgetNoSurplus:
-		return tpsEvidenceSubreasonQoSBudgetNoSurplus
-	case coreadmission.TPSDecisionSubreasonQoSBudgetCurrentRate:
-		return tpsEvidenceSubreasonQoSBudgetCurrentRate
-	case coreadmission.TPSDecisionSubreasonQoSBudgetIneligible:
-		return tpsEvidenceSubreasonQoSBudgetIneligible
+	case coreadmission.TPSDecisionSubreasonNoCurrentEvidence:
+		return tpsEvidenceSubreasonNoCurrentEvidence
+	case coreadmission.TPSDecisionSubreasonHealthyWindow:
+		return tpsEvidenceSubreasonHealthyWindow
+	case coreadmission.TPSDecisionSubreasonRecoveredCurrent:
+		return tpsEvidenceSubreasonRecoveredCurrent
+	case coreadmission.TPSDecisionSubreasonBelowReference:
+		return tpsEvidenceSubreasonBelowReference
 	default:
 		return tpsEvidenceSubreasonUnknown
 	}

@@ -92,7 +92,11 @@ func validPolicyUpdate(update PolicyUpdate) bool {
 	if update.WindowConcurrency != nil && *update.WindowConcurrency <= 0 {
 		return false
 	}
-	return update.RunningLimit == nil || *update.RunningLimit >= 0
+	if update.WindowConcurrency != nil && *update.WindowConcurrency > maximumTPSReservations {
+		return false
+	}
+	return update.RunningLimit == nil ||
+		(*update.RunningLimit >= 0 && *update.RunningLimit <= maximumTPSReservations)
 }
 
 func (c *AdmissionController) policySnapshotLocked() PolicySnapshot {

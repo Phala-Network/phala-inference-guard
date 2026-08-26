@@ -50,6 +50,11 @@ type PredictiveAdmissionInput struct {
 	AdmissionAggregateTPS             float64
 	AdmissionMeanActiveTPS            float64
 	AdmissionMeanActiveTPSValid       bool
+	AdmissionProjectedRunning         int64
+	AdmissionProjectedWindowSequences int64
+	AdmissionRunningLimit             int64
+	AdmissionRunningLimitSource       string
+	AdmissionWindowConcurrency        int64
 	TPSReference                      float64
 	TPSWindowReady                    bool
 	TPSWindowQualifiedSamples         uint64
@@ -57,14 +62,13 @@ type PredictiveAdmissionInput struct {
 	TPSWindowQualifiedSequenceSeconds float64
 	TPSWindowAggregate                float64
 	TPSWindowMeanActive               float64
+	TPSLatestQualified                bool
+	TPSLatestAggregate                float64
+	TPSLatestMeanActive               float64
+	TPSLatestSequenceSeconds          float64
 	TPSUnobservedSequences            int64
-	TPSQoSBudgetLeases                int64
-	TPSLastDecisionQoSBudgeted        bool
 	TPSDecisionResult                 string
 	TPSDecisionSubreason              string
-	TPSSequenceLimit                  int64
-	TPSCurrentSequences               int64
-	TPSPostAdmitSequences             int64
 }
 
 type PredictiveRouterBackpressureInput struct {
@@ -109,6 +113,8 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 			"observation_stale",
 			"invalid_request",
 			"tps_reference",
+			"running_limit",
+			"window_concurrency",
 			"runtime_identity_drift",
 			"resource_exhausted",
 			"counter_overflow",
@@ -118,7 +124,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	)
 	admissionPressureSource := normalizedValue(
 		input.AdmissionPressureSource,
-		[]string{"none", "tps", "availability", "request"},
+		[]string{"none", "tps", "running", "window", "availability", "request"},
 		"none",
 	)
 	demandSource := normalizedValue(
@@ -139,17 +145,10 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 			"waiting",
 			"preemption",
 			"warming",
-			"idle",
-			"base_rate",
-			"current_rate",
-			"qos_budget_granted",
-			"qos_budget_multi_sequence",
-			"qos_budget_unobserved",
-			"qos_budget_active_lease",
-			"qos_budget_wave_limit",
-			"qos_budget_no_surplus",
-			"qos_budget_current_rate",
-			"qos_budget_ineligible",
+			"no_current_evidence",
+			"healthy_window",
+			"recovered_current",
+			"below_reference",
 		},
 		"unknown",
 	)
@@ -194,6 +193,11 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_tps_current_interval_aggregate %.6f\n", input.AdmissionAggregateTPS)
 	fmt.Fprintf(w, "pig_predictive_tps_current_interval_mean_active %.6f\n", input.AdmissionMeanActiveTPS)
 	fmt.Fprintf(w, "pig_predictive_tps_current_interval_mean_active_valid %d\n", num.BoolAsInt(input.AdmissionMeanActiveTPSValid))
+	fmt.Fprintf(w, "pig_predictive_projected_running %d\n", input.AdmissionProjectedRunning)
+	fmt.Fprintf(w, "pig_predictive_running_limit %d\n", input.AdmissionRunningLimit)
+	fmt.Fprintf(w, "pig_predictive_running_limit_info{source=%q} 1\n", nonempty(input.AdmissionRunningLimitSource, "unknown"))
+	fmt.Fprintf(w, "pig_predictive_projected_window_sequences %d\n", input.AdmissionProjectedWindowSequences)
+	fmt.Fprintf(w, "pig_predictive_window_concurrency_limit %d\n", input.AdmissionWindowConcurrency)
 	fmt.Fprintf(w, "pig_predictive_tps_reference %.6f\n", input.TPSReference)
 	fmt.Fprintf(w, "pig_predictive_tps_window_ready %d\n", num.BoolAsInt(input.TPSWindowReady))
 	fmt.Fprintf(w, "pig_predictive_tps_window_qualified_samples %d\n", input.TPSWindowQualifiedSamples)
@@ -201,12 +205,11 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_tps_window_qualified_sequence_seconds %.6f\n", input.TPSWindowQualifiedSequenceSeconds)
 	fmt.Fprintf(w, "pig_predictive_tps_window_aggregate %.6f\n", input.TPSWindowAggregate)
 	fmt.Fprintf(w, "pig_predictive_tps_window_mean_active %.6f\n", input.TPSWindowMeanActive)
+	fmt.Fprintf(w, "pig_predictive_tps_latest_interval_qualified %d\n", num.BoolAsInt(input.TPSLatestQualified))
+	fmt.Fprintf(w, "pig_predictive_tps_latest_interval_aggregate %.6f\n", input.TPSLatestAggregate)
+	fmt.Fprintf(w, "pig_predictive_tps_latest_interval_mean_active %.6f\n", input.TPSLatestMeanActive)
+	fmt.Fprintf(w, "pig_predictive_tps_latest_interval_sequence_seconds %.6f\n", input.TPSLatestSequenceSeconds)
 	fmt.Fprintf(w, "pig_predictive_tps_unobserved_sequences %d\n", input.TPSUnobservedSequences)
-	fmt.Fprintf(w, "pig_predictive_tps_qos_budget_leases %d\n", input.TPSQoSBudgetLeases)
-	fmt.Fprintf(w, "pig_predictive_tps_last_decision_qos_budgeted %d\n", num.BoolAsInt(input.TPSLastDecisionQoSBudgeted))
-	fmt.Fprintf(w, "pig_predictive_tps_sequence_limit %d\n", input.TPSSequenceLimit)
-	fmt.Fprintf(w, "pig_predictive_tps_current_sequences %d\n", input.TPSCurrentSequences)
-	fmt.Fprintf(w, "pig_predictive_tps_post_admit_sequences %d\n", input.TPSPostAdmitSequences)
 	fmt.Fprintf(w, "pig_predictive_router_inspect_capacity %d\n", input.RouterBackpressure.InspectCapacity)
 
 	fmt.Fprintf(w, "pig_predictive_admission_failures_total{phase=%q} %d\n", "close", input.FailureClose)

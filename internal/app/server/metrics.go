@@ -72,6 +72,7 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	writeAdmissionEvidenceMetrics(w, snapshot.Report.Evidence)
 	writeTPSDecisionEvidenceMetrics(w, snapshot.Report.TPSEvidence)
 	writeTPSDenominatorEvidenceMetrics(w, snapshot.Capacity.State.TPS.Denominator)
+	writeWindowConcurrencyHistogram(w, snapshot.Capacity.WindowConcurrencyHistogram)
 	metrics.WriteRouterCapacityCompatibility(w, compatibility)
 }
 
@@ -157,7 +158,11 @@ func applyAdmissionDecisionMetrics(
 	input.AdmissionDecodeSequences = decision.Demand.DecodeSequences
 	input.TPSDecisionResult = decision.TPSDecisionResult.String()
 	input.TPSDecisionSubreason = decision.TPSDecisionSubreason.String()
-	input.TPSLastDecisionQoSBudgeted = decision.TPSQoSBudgeted
+	input.AdmissionProjectedRunning = decision.ProjectedRunning
+	input.AdmissionProjectedWindowSequences = decision.ProjectedWindowSequences
+	input.AdmissionRunningLimit = decision.RunningLimit
+	input.AdmissionRunningLimitSource = string(decision.RunningLimitSource)
+	input.AdmissionWindowConcurrency = decision.WindowConcurrency
 	input.AdmissionRunning = nonnegativeInt(decision.State.RawRunning)
 	input.AdmissionWaiting = nonnegativeInt(decision.State.RawWaiting)
 	input.AdmissionEffectiveSequences = projectedDecodeSequences(decision.State)
@@ -185,6 +190,10 @@ func admissionPressureSource(reason coreadmission.Reason) string {
 	switch {
 	case reason == coreadmission.ReasonTPSReference:
 		return "tps"
+	case reason == coreadmission.ReasonRunningLimit:
+		return "running"
+	case reason == coreadmission.ReasonWindowConcurrency:
+		return "window"
 	case reason == coreadmission.ReasonInvalidRequest:
 		return "request"
 	case reason != coreadmission.ReasonOpen:
@@ -233,11 +242,28 @@ func applyTPSCapacityMetrics(input *metrics.PredictiveAdmissionInput, capacity c
 	input.TPSWindowQualifiedSequenceSeconds = snapshot.QualifiedSequenceSeconds
 	input.TPSWindowAggregate = snapshot.AggregateTPS
 	input.TPSWindowMeanActive = snapshot.MeanActiveTPS
+	input.TPSLatestQualified = snapshot.Latest.Qualified
+	input.TPSLatestAggregate = snapshot.Latest.AggregateTPS
+	input.TPSLatestMeanActive = snapshot.Latest.MeanActiveTPS
+	input.TPSLatestSequenceSeconds = snapshot.Latest.SequenceSeconds
 	input.TPSUnobservedSequences = capacity.State.UnobservedSequences
-	input.TPSQoSBudgetLeases = capacity.State.QoSBudgetLeases
-	input.TPSSequenceLimit = capacity.MinimumDecision.TPSSequenceLimit
-	input.TPSCurrentSequences = capacity.MinimumDecision.TPSCurrentSequences
-	input.TPSPostAdmitSequences = capacity.MinimumDecision.TPSPostAdmitSequences
+	input.AdmissionProjectedRunning = capacity.MinimumDecision.ProjectedRunning
+	input.AdmissionProjectedWindowSequences = capacity.MinimumDecision.ProjectedWindowSequences
+	input.AdmissionRunningLimit = capacity.Policy.RunningLimit
+	input.AdmissionRunningLimitSource = string(capacity.Policy.RunningLimitSource)
+	input.AdmissionWindowConcurrency = capacity.Policy.WindowConcurrency
+}
+
+func writeWindowConcurrencyHistogram(
+	w io.Writer,
+	snapshot coreadmission.WindowConcurrencyHistogramSnapshot,
+) {
+	for _, bucket := range snapshot.Buckets {
+		fmt.Fprintf(w, "pig_predictive_window_concurrency_observed_bucket{le=%q} %d\n", fmt.Sprint(bucket.UpperBound), bucket.CumulativeCount)
+	}
+	fmt.Fprintf(w, "pig_predictive_window_concurrency_observed_bucket{le=%q} %d\n", "+Inf", snapshot.Count)
+	fmt.Fprintf(w, "pig_predictive_window_concurrency_observed_count %d\n", snapshot.Count)
+	fmt.Fprintf(w, "pig_predictive_window_concurrency_observed_sum %d\n", snapshot.Sum)
 }
 
 func addNonnegativeForMetrics(left, right int64) (int64, bool) {

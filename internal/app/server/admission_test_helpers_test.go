@@ -14,15 +14,18 @@ import (
 const testAdmissionRuntimeIdentity = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
 type admissionRuntimeTestConfig struct {
-	Mode         string
-	BackendKind  string
-	Running      int64
-	Waiting      int64
-	MaximumAge   time.Duration
-	Generation   uint64
-	Preemptions  uint64
-	RuntimeStart float64
-	TPSReference float64
+	Mode               string
+	BackendKind        string
+	Running            int64
+	Waiting            int64
+	MaximumAge         time.Duration
+	Generation         uint64
+	Preemptions        uint64
+	RuntimeStart       float64
+	TPSReference       float64
+	WindowConcurrency  int64
+	RunningLimit       int64
+	RunningLimitSource coreadmission.RunningLimitSource
 }
 
 func newAdmissionRuntimeForTest(
@@ -40,8 +43,11 @@ func newAdmissionRuntimeForTest(
 		config.MaximumAge = time.Hour
 	}
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		RuntimeIdentity: testAdmissionRuntimeIdentity,
-		TPS:             coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
+		RuntimeIdentity:    testAdmissionRuntimeIdentity,
+		TPS:                coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
+		WindowConcurrency:  config.WindowConcurrency,
+		RunningLimit:       config.RunningLimit,
+		RunningLimitSource: config.RunningLimitSource,
 	})
 	if err != nil {
 		t.Fatalf("construct admission test Controller: %v", err)

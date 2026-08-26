@@ -85,7 +85,8 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 	if config.RunningLimitSource == "" {
 		config.RunningLimitSource = RunningLimitSourceUnknown
 	}
-	if config.WindowConcurrency <= 0 || config.RunningLimit < 0 ||
+	if config.WindowConcurrency <= 0 || config.WindowConcurrency > maximumTPSReservations ||
+		config.RunningLimit < 0 || config.RunningLimit > maximumTPSReservations ||
 		!config.RunningLimitSource.valid() ||
 		(config.RunningLimit > 0 && config.RunningLimitSource == RunningLimitSourceUnknown) {
 		return nil, fmt.Errorf("admission running and window bounds are invalid")
