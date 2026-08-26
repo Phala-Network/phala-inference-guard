@@ -176,7 +176,7 @@ func TestV01215PredictivePolicyAPIAppliesCASAndExportsMetricsAndStatus(t *testin
 		t.Fatalf("conflict changed policy: %+v", current)
 	}
 
-	metricsRequest := httptest.NewRequest(http.MethodGet, "/pig/metrics", nil)
+	metricsRequest := httptest.NewRequest(http.MethodGet, "/v1/metrics", nil)
 	metricsRequest.Header.Set("Authorization", "Bearer secret")
 	metricsResponse := httptest.NewRecorder()
 	srv.ServeHTTP(metricsResponse, metricsRequest)

@@ -170,3 +170,31 @@ dedicated observability writer; server code now only computes the snapshot and
 passes typed values. No metric name, order, value, admission decision, or
 lifecycle behavior changes. The failed evidence directory is retained and is
 not reused.
+
+## 9. Second Green Runner Compatibility Correction
+
+The architecture correction was pushed at
+`0f2482c865d4f58c21a90ee2abd7a373dcf39d76`. Builder directory
+`green-0f2482c-r2` passed the legacy ownership audit, formatting check, and all
+focused admission, waiting-lifecycle, and Router-metrics tests. The log hashes
+are:
+
+```text
+legacy.log
+455cf163ebdc8cd358ea90370bf09603ddeec7deb7a64d3c3018975046aba5c0
+
+format.log
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+
+focused.log
+1c9ca72104e137653a4dff38b2f645a0e093e757b3cd51fd4d108a09e5439fba
+```
+
+The full suite then stopped at
+`TestV01215PredictivePolicyAPIAppliesCASAndExportsMetricsAndStatus`. That
+pre-existing test still queried `/pig/metrics` for the complete policy metric
+set. The new contract intentionally keeps that set on authenticated
+`/v1/metrics` and reserves `/pig/metrics` for the fixed five-line Router
+surface. The test must follow this endpoint ownership; restoring diagnostic
+metrics to `/pig/metrics` would violate the release contract. No later gate ran
+in this evidence directory, and the directory will not be reused.
