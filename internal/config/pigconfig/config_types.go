@@ -41,4 +41,5 @@ type Config struct {
 	PredictiveTPSReference            float64
 	PredictiveWindowConcurrency       int64
 	PredictiveRunningLimit            int64
+	PredictiveRunningLimitConfigured  bool
 }

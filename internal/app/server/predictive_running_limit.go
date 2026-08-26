@@ -36,7 +36,7 @@ func initializePredictiveRunningLimit(
 	startup predictiveBackendStartup,
 	metricsURL string,
 ) predictiveRunningLimit {
-	if cfg.PredictiveRunningLimit > 0 {
+	if cfg.PredictiveRunningLimitConfigured || cfg.PredictiveRunningLimit > 0 {
 		return predictiveRunningLimit{
 			Value:  cfg.PredictiveRunningLimit,
 			Source: coreadmission.RunningLimitSourceEnvironment,

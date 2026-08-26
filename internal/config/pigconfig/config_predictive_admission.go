@@ -2,6 +2,7 @@ package pigconfig
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -48,6 +49,8 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	runningLimitRaw, runningLimitConfigured := os.LookupEnv("PREDICTIVE_RUNNING_LIMIT")
+	runningLimitConfigured = runningLimitConfigured && runningLimitRaw != ""
 
 	integerBounds := []struct {
 		name    string
@@ -80,5 +83,6 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveTPSReference = tpsReference
 	cfg.PredictiveWindowConcurrency = int64(windowConcurrency)
 	cfg.PredictiveRunningLimit = int64(runningLimit)
+	cfg.PredictiveRunningLimitConfigured = runningLimitConfigured
 	return nil
 }

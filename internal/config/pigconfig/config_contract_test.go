@@ -167,6 +167,9 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	if cfg.PredictiveWindowConcurrency != 32 || cfg.PredictiveRunningLimit != 0 {
 		t.Fatalf("default admission bounds=%d/%d, want 32/0", cfg.PredictiveWindowConcurrency, cfg.PredictiveRunningLimit)
 	}
+	if cfg.PredictiveRunningLimitConfigured {
+		t.Fatal("default running limit was marked explicitly configured")
+	}
 	if cfg.PredictiveScannerBodyBytes != defaultPredictiveScannerBodyBytes {
 		t.Fatalf("production scanner ceiling=%d want=%d", cfg.PredictiveScannerBodyBytes, defaultPredictiveScannerBodyBytes)
 	}
@@ -212,8 +215,20 @@ func TestTestsCanExplicitlyOverrideTypedTPSPolicy(t *testing.T) {
 	}
 	if cfg.PredictiveAdmissionMode != "shadow" || cfg.PredictiveObservationPollInterval != 20*time.Millisecond ||
 		cfg.PredictiveMaximumMetricsAge != 100*time.Millisecond || cfg.PredictiveTPSReference != 23.5 ||
-		cfg.PredictiveWindowConcurrency != 48 || cfg.PredictiveRunningLimit != 192 {
+		cfg.PredictiveWindowConcurrency != 48 || cfg.PredictiveRunningLimit != 192 ||
+		!cfg.PredictiveRunningLimitConfigured {
 		t.Fatalf("explicit test policy was not loaded exactly: %+v", cfg)
+	}
+}
+
+func TestExplicitZeroRunningLimitRemainsConfigured(t *testing.T) {
+	t.Setenv("PREDICTIVE_RUNNING_LIMIT", "0")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load explicit zero running limit: %v", err)
+	}
+	if cfg.PredictiveRunningLimit != 0 || !cfg.PredictiveRunningLimitConfigured {
+		t.Fatalf("explicit zero running limit lost presence: %+v", cfg)
 	}
 }
 
