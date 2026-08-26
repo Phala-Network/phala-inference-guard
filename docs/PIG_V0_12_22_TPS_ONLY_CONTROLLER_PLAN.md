@@ -1,7 +1,9 @@
 # PIG v0.12.22 TPS-Only Controller Plan
 
-Status: active source plan; version not assigned; image and deployment not
-authorized.
+Status: closed dev baseline. Source, image publication, and isolated dev test
+completed, but the concurrency-limit behavior failed the throughput objective
+and must not be promoted to production. The corrective work continues in
+`PIG_V0_12_23_TPS_HEALTH_GATE_PLAN.md`.
 
 Formal branch: `codex/pig-v0.12.22-tps-only`.
 
@@ -606,5 +608,83 @@ Three reviews were completed before behavior code:
   `pig-origin/codex/pig-v0.12.22-tps-only`;
 - release stage opened by explicit user authorization on 2026-08-26: version
   `0.12.22` is assigned in the runtime identity, OCI label, and release identity
-  test. Image build/publication and the isolated dev-CVM update remain pending
-  and must be recorded separately below after they actually complete.
+  test.
+
+## 10. v0.12.22 Release And Dev Evidence
+
+- exact release source is commit
+  `ffa65f2375a83c4c9a69a601d7902c273fedc487`; branch and pushed tag
+  `v0.12.22` resolve to that commit. The release archive SHA-256 is
+  `5412116fbbbe1f66b3d1ad4d5459d12dfb680cb9d31e578488ded8e76cf9b5cd`;
+- the valid clean-builder run used CVM
+  `4f167f6e-4c50-415f-99f2-94b65652beba`, helper revision
+  `ff40ee31b95e89ebb242c223514adc715ac8a301`, pinned Go image
+  `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`,
+  and `go1.24.13 linux/amd64`. Its evidence is
+  `/var/volatile/dstack/persistent/.cache/pig-v01222-release/build-ffa65f2-r2`.
+  Legacy audit, formatting, `go test ./...`, `go test -race ./...`,
+  `go vet ./...`, `go build ./...`, and the production image contract passed;
+- builder attempt `r1` is invalid evidence because its runner could hide a
+  failed legacy audit behind a pipeline without `pipefail`; it was terminated
+  and was not reused;
+- the candidate image ID was
+  `sha256:ebe955794b20762dbc232513159c1752e2e229dc683df2585d30143d6da6ee34`.
+  GHCR tags `0.12.22` and `0.12.22-ffa65f2375a8` resolve to digest
+  `sha256:8558b874374de0efad69d270d65660f5fa842df5a5c789031559cf51dccec42c`,
+  with OCI version `0.12.22` and OCI revision equal to the exact source commit;
+- the isolated dev target was CVM
+  `19a2d062-af63-49eb-807d-84ddfbbc905a`, service
+  `phala-inference-guard-b`. Because it is a dev image, the guest Compose was
+  read over SSH and only PIG-B was recreated. No `phala deploy`, CVM restart,
+  SGLang recreation, PIG-A recreation, or HAProxy recreation occurred;
+- the live Compose SHA-256 changed from
+  `5969632bfb0f1286c9da98bbf2394a19598b6d774229367ff7834a32e983da2e`
+  to `1bcc2d8502b50f9a9ab723c68582f2ef26d05ef9b41c8fe0cec3a8dfd94996e2`.
+  PIG-B ran image digest `sha256:8558b874...` as container
+  `dfb95c88d0654825d3eb390e2e2a945e3b44aa1c231d73ec75ef752ec145da4`
+  with restart count zero. Runtime secret values were inherited without echo;
+- dev runner attempts `r1` through `r4` rolled back safely. They failed because
+  of BusyBox `cp --preserve=all`, incorrect unauthenticated metrics expectation,
+  incorrect unauthenticated upstream-status expectation, and BusyBox
+  `xargs -0`, respectively. These were runner defects rather than PIG crashes.
+  Final attempt `r5` passed and retained evidence at
+  `/var/volatile/dstack/persistent/.cache/pig-v01222-release/dev-b-ffa65f2-r5`;
+- real-chain checks passed health, authenticated models, authenticated PIG
+  metrics, authenticated upstream status, local OpenAI-shaped route blocking,
+  normal chat, and streaming through terminal `[DONE]`. Unauthorized protected
+  endpoints returned `401`; `POST /v1/tokenize` and wrong-method
+  `POST /v1/models` returned local `404` responses.
+
+## 11. Dev Throughput Finding And Decision
+
+The release is functionally deployable but its admission behavior is not a
+throughput improvement. Six sequential requests returned six `200` responses.
+An eight-request burst at concurrency four returned three `200` responses and
+five PIG `429` responses while the backend had one running sequence, zero
+waiting, and no preemption. The decisive projection was:
+
+```text
+backend running             = 1
+local unobserved admissions = 3
+projected current           = 4
+post-admit                  = 5
+sequence limit              = 4
+subreason                   = qos_budget_unobserved
+```
+
+All reservations and liabilities returned to zero after the burst, so this was
+not a lifecycle leak. It was a policy failure: low-concurrency observations
+produced a low derived limit, while unobserved requests prevented the controller
+from acquiring evidence at a higher concurrency. The result is a conservative
+closed loop even when the backend can sustain materially higher concurrency.
+
+Decision on 2026-08-26:
+
+- keep the published `v0.12.22` tag and digest immutable as reproducible dev
+  baseline evidence;
+- do not promote `v0.12.22` to production nodes;
+- do not repair this by raising a static sequence limit, adding a model-specific
+  threshold, or allowing a larger bounded exploration cap;
+- retire sequence-limit selection completely. Continue with a TPS health gate
+  that rejects new work only after degradation evidence, as specified in the
+  v0.12.23 plan.
