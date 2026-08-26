@@ -141,10 +141,11 @@ pig_predictive_window_concurrency_observed_sum
 ```
 
 It samples the unreconciled Decode sequence count once per successful
-observation, before reconciliation. Finite cumulative buckets are
-`0,1,2,4,6,8,10,12,16,20,24,28,32,36,40,44,48,52,56,60,64`; every value above
-64 is combined in `+Inf`. Bucket iteration occurs on the observer path, not the
-request admission hot path.
+observation, before reconciliation. Finite cumulative buckets are every integer
+from `0` through `16`, then `20,24,28,32,36,40,44,48,52,56,60,63`. The
+high-concurrency band at or above `64` is the cumulative delta
+`+Inf - le="63"`; there are no finite 64+ buckets. Bucket iteration occurs on
+the observer path, not the request admission hot path.
 
 ## Lifecycle and timing
 

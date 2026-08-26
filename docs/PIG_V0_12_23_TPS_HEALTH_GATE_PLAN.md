@@ -1,9 +1,9 @@
 # PIG v0.12.23 TPS Health Gate Plan
 
-Status: active design and execution plan. Version `0.12.23` source and registry
-artifact are complete but were not deployed to the dev CVM. A post-release
-histogram-boundary correction is now pending builder validation and must use a
-new immutable patch version; the existing `v0.12.23` tag must not move.
+Status: complete for source, release, isolated dev deployment, functional
+validation, and short live observation. The inclusive 64+ histogram correction
+was released as `0.12.24`; the existing `v0.12.23` tag was not moved. This is
+not a production fleet rollout or long-horizon throughput proof.
 
 Formal starting branch: `codex/pig-v0.12.22-tps-only` at exact baseline commit
 `ffa65f2375a83c4c9a69a601d7902c273fedc487`.
@@ -523,3 +523,117 @@ finite 64+ bound. Full, race, vet, build, benchmark, and byte-identical
 simulation gates passed at the exact pushed commit. Because `v0.12.23` already
 exists, the correction is eligible for `0.12.24` assignment; it is not eligible
 to move or overwrite any `0.12.23` tag.
+
+## 9. v0.12.24 Release And Dev Validation
+
+### Immutable release
+
+Version `0.12.24` was assigned and pushed at exact release commit
+`4106ed49379935ca9ca99fb1493688776012caf8`. Annotated tag `v0.12.24` resolves
+to that commit. Its post-assignment clean-builder matrix passed all eleven
+recorded steps on builder `4f167f6e-4c50-415f-99f2-94b65652beba` using
+`go1.24.13 linux/amd64` and the pinned Go image. Evidence is
+`/var/volatile/dstack/persistent/.cache/pig-v01224-health-gate/release-source-4106ed4-r1`.
+The source archive SHA-256 is
+`aa6fac70e7f167ea7dc5fbe981ed8c21dc8d9beeb17291138213a7b57d8e5647`;
+focused/full/race/controller/simulation log hashes are respectively
+`19c84f2e25392a5768fbb0107d2638059c114af3eef916fa86b7b810758588a1`,
+`181987d5d5dd8559d8452d7a51314274d0fa0a42c097b89c8b3721d2824d5e6d`,
+`db0c9c61658b22debeab614fe345000547651bc8a52dfc11bd637690bc49eea5`,
+`67dd8ae77729fafb2f1191c38e49f2eace55865537f1ea3dfc14207ecf7ecd6a`,
+and `e56d63166749ff968c26844d2a1909a00f0300c150b706399ee465dccd7ac13a`.
+
+GitHub workflow `32954936770` passed the production image contract and published
+the release image. All final tags point to the same registry digest:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:v0.12.24
+ghcr.io/phala-network/phala-inference-guard:0.12.24
+ghcr.io/phala-network/phala-inference-guard:0.12.24-4106ed493799
+sha256:aac3887c6a9e04aa77a2005956ff2c7112c985bd5e935483fab6a3b806fa67d8
+```
+
+The first convenience-tag attempt correctly failed its equality gate. A normal
+Docker pull/tag/push rewrote the remote manifest and temporarily produced digest
+`sha256:cba1b422a396cfd676afdaccbb7f6ce1077b011e6f6b8db1966f86f248d8795e`.
+That result was not accepted. Registry evidence `registry-4106ed4-r2` copied the
+exact source manifest bytes to both tags, proved all GET/PUT digests and bytes
+equal, pulled by `aac3887...`, and passed the production image contract with OCI
+version `0.12.24` and exact release revision.
+
+### Dev deployment boundary
+
+The target was dev-image CVM `19a2d062-af63-49eb-807d-84ddfbbc905a`.
+The exact guest file was `/var/volatile/dstack/docker-compose.yaml`; neither
+`phala deploy` nor a CVM restart was used. The pre-change Compose SHA-256 was
+`1bcc2d8502b50f9a9ab723c68582f2ef26d05ef9b41c8fe0cec3a8dfd94996e2`.
+PIG-B was `0.12.22`; its environment was already minimal: upstream, bearer
+token, certificate path, and `PREDICTIVE_TPS_REFERENCE=25`. No legacy admission
+variables required removal. The candidate changed only
+`services.phala-inference-guard-b.image`; its SHA-256 is
+`42123a7054375877192d9882365ff258deda0eddaf84f84cd21fcd3bbaa4252e`.
+The live secret was retained from the existing PIG-B process without printing
+or persisting it.
+
+Deployment attempt `dev-pig-b-4106ed4-r1` used the obsolete `/health` probe,
+received the expected strict-route 404, and automatically restored both the old
+Compose hash and old PIG-B image. It was a probe error, not runtime failure.
+Attempt `r2` used `/healthz`, recreated only PIG-B, and passed. SGLang-B and
+HAProxy retained their exact container IDs and start times. Rollback Compose is
+`/var/volatile/dstack/docker-compose.pre-pig-b-v01224-4106ed4-r2.yaml`.
+
+### Functional validation
+
+Evidence directory
+`/var/volatile/dstack/persistent/.cache/pig-v01224-health-gate/dev-tests-4106ed4-r2`
+passed:
+
+- health 200; missing/wrong bearer both 401; authenticated models 200;
+- startup policy `TPS=25`, `window=32`, `running=256`, source
+  `sglang_server_info`, enforce mode, and 500 ms poll;
+- all required backend-native, wrong-method, noncanonical, prefix, suffix,
+  encoded, and large-declared-body paths returned local 404 with exactly 17
+  route rejects and no backend, scanner, admission, or reservation movement;
+- chat, streaming SSE, and Responses returned 200;
+- with the runtime API temporarily setting `TPS=0/window=2`, three concurrent
+  requests returned `200,200,429`; the 429 log reason was exactly
+  `window_concurrency` while backend running was 36;
+- the policy was restored to `25/32/256`; the next low-flow request returned
+  200; reservations, waiting, and preemption delta ended at zero;
+- the exported finite histogram bounds exactly matched
+  `0..16,20,24,28,32,36,40,44,48,52,56,60,63` with no finite 64+ bucket;
+- PIG-B, SGLang-B, and HAProxy remained running with unchanged identities and
+  no new panic, fatal, OOM, or restart.
+
+The first functional runner used urllib to transmit a full 1 MiB body to a
+locally blocked route and observed a connection reset after PIG rejected without
+reading it. It stopped before policy mutation. `r2` used
+`Expect: 100-continue`, proving the same large declared request receives the
+OpenAI-shaped local 404 without body upload or backend access.
+
+### Five-minute observation
+
+The read-only observation at
+`/var/volatile/dstack/persistent/.cache/pig-v01224-health-gate/dev-observe-4106ed4-r1`
+collected 61/61 samples over 299.97 seconds with zero collection errors. It sent
+no synthetic inference requests. Results were:
+
+```text
+backend observed running min/mean/max       34 / 34.21 / 35
+backend accepted / failed delta             21 / 0
+PIG total / enforced 429 delta              0 / 0
+waiting positive samples / max              0 / 0
+preemption positive samples / max delta     0 / 0
+ready active TPS p05 / mean                 48.53 / 49.31
+latest qualified TPS p05 / mean             47.75 / 49.71
+reservations max / final                    2 / 0
+residual debt max / final                   0 / 0
+histogram observer samples added            598
+```
+
+Summary SHA-256 is
+`dbc384893ca3ff0d758f51a73510c522616b01995b4395d763decd043accd1d9`.
+PIG-B stayed at exact image digest with restart count zero; SGLang-B and HAProxy
+kept their pre-observation container IDs, start times, and restart counts. This
+short window establishes immediate runtime health under real load, not a
+universal or long-term throughput claim.
