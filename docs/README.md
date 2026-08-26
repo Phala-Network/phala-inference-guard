@@ -35,6 +35,9 @@ standing instructions.
 - [v0.12.21 legacy vLLM KV geometry](PIG_V0_12_21_LEGACY_VLLM_KV_GEOMETRY_PLAN.md):
   guarded compatibility for full-attention vLLM runtimes that expose block
   count and block size but not the newer group-aware token-capacity label.
+- [v0.12.22 cache-aware KV and TPS controller plan](PIG_V0_12_22_CACHE_KV_TPS_CONTROLLER_PLAN.md):
+  active, independently attributable evidence plan for TPS healthy recovery and
+  the conditional request-scoped proof required before cache-aware KV accounting.
 
 ## Historical release evidence
 

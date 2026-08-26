@@ -168,7 +168,6 @@ func TestWritePredictiveAdmissionExposesCurrentOperationalState(t *testing.T) {
 		"pig_predictive_router_backpressure_effective_global_limit 4",
 		`pig_predictive_request_aware_last_decision_info{action="size_protect",reason="prefill_contention",pressure_source="prefill",prefill_class="weighted"} 1`,
 		`pig_predictive_request_aware_input_estimate_confidence_info{confidence="conservative"} 1`,
-		"pig_predictive_request_aware_pressure 0.000000",
 		"pig_predictive_request_aware_selection_input_tokens 1500",
 		"pig_predictive_request_aware_maximum_sequence_input_tokens 900",
 		"pig_predictive_request_aware_base_prompt_count 2",
@@ -338,6 +337,7 @@ func TestWritePredictiveAdmissionOmitsRetiredMetrics(t *testing.T) {
 		"pig_predictive_request_aware_decode_pacer_",
 		"pig_predictive_request_aware_projected_tps_proxy",
 		"pig_predictive_request_aware_tps_forecast_valid",
+		"pig_predictive_request_aware_pressure",
 		"pig_predictive_capability_kv_soft_limit_tokens",
 		"pig_predictive_capability_safe_cold_prefill_tokens_per_second",
 	} {
