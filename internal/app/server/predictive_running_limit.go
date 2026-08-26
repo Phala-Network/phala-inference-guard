@@ -65,7 +65,15 @@ func probeSGLangRunningLimit(config sglangRunningLimitProbeConfig) (int64, error
 	if err != nil {
 		return 0, err
 	}
-	client := &http.Client{Timeout: config.RequestTimeout}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	client := &http.Client{
+		Timeout:   config.RequestTimeout,
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	response, err := client.Get(endpoint)
 	if err != nil {
 		return 0, fmt.Errorf("fetch SGLang server_info: %w", err)
