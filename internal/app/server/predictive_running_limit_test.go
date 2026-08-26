@@ -79,6 +79,17 @@ func TestV01223RunningLimitInitializationHonorsExplicitAndBackendContracts(t *te
 		t.Fatalf("explicit initialization=%+v calls=%d", got, calls.Load())
 	}
 
+	t.Setenv("PREDICTIVE_RUNNING_LIMIT", "0")
+	disabled, err := loadConfig()
+	if err != nil {
+		t.Fatalf("load explicit zero running limit: %v", err)
+	}
+	disabled.PredictiveMetricsRequestTimeout = time.Second
+	got = initializePredictiveRunningLimit(disabled, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
+	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceEnvironment || calls.Load() != 0 {
+		t.Fatalf("explicit zero initialization=%+v calls=%d", got, calls.Load())
+	}
+
 	got = initializePredictiveRunningLimit(base, predictiveBackendStartup{BackendKind: "vllm"}, server.URL+"/metrics")
 	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceUnknown || calls.Load() != 0 {
 		t.Fatalf("vLLM initialization=%+v calls=%d", got, calls.Load())
