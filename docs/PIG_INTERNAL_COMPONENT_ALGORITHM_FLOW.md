@@ -1,37 +1,36 @@
 # PIG Internal Algorithm Flow
 
-This document describes the current unversioned TPS-only source architecture.
-PIG has one upstream and one pre-forward admission transaction. It does not
-route, tokenize input, estimate KV or Prefill cost, learn model capacity, or
+PIG has one upstream and one atomic pre-forward admission transaction. It does
+not route, tokenize input, estimate KV or Prefill cost, learn capacity, or
 rewrite application requests.
 
 ## Startup
 
 ```text
-configuration loader
-  -> validate one upstream, shadow/enforce mode, metrics cadence, and TPS reference
-  -> derive /metrics from the upstream origin unless explicitly configured
+load and validate infrastructure plus TPS/bound initialization
+  -> derive /metrics unless explicitly configured
   -> fetch one coherent vLLM or SGLang metrics sample
   -> validate backend kind, model identity, running, waiting, generation,
      preemption, and runtime-start evidence
-  -> construct AdmissionController and publish the startup observation
-  -> construct reporter/runtime and start the 500 ms observer
+  -> explicit running limit wins
+  -> otherwise, SGLang may read strict same-origin /server_info once
+  -> construct AdmissionController with TPS reference and fixed bounds
+  -> publish startup observation and start the 500 ms observer
   -> construct the single-upstream HTTP proxy
 ```
 
-Startup does not call `/v1/models`, send a completion, warm the backend, inspect
-prefixes, or derive KV/context/Prefill policy. Optional KV/cache values parsed
-from backend metrics are operator telemetry only and are not passed into the
-Controller.
+vLLM standard metrics do not expose a trusted configured maximum, so no limit
+is inferred from current running. SGLang discovery accepts only a coherent
+top-level positive integer `max_running_requests`; any failure leaves the limit
+`unknown/0`. This is initialization, not learning. Startup sends no inference
+request and does not call `/v1/models` to construct policy.
 
-The model name is hashed into a stable runtime identity. Backend kind or model
-identity drift closes admission. A changed runtime-start value or a rollback in
-generation/preemption counters starts a new Controller epoch and clears
-incompatible rolling evidence and reservations.
+The model name is hashed into runtime identity. Identity drift closes
+admission. A changed runtime-start value or generation/preemption counter
+rollback advances the controller epoch, clears incompatible TPS evidence and
+reservations, and fences old handles.
 
 ## Route and request ownership
-
-The HTTP boundary evaluates policies in this order:
 
 ```text
 LocalManagementRoutePolicy
@@ -40,195 +39,157 @@ LocalManagementRoutePolicy
   -> AdmissionRoutePolicy
 ```
 
-Local management routes are handled by PIG. Unknown paths, wrong methods,
-encoded aliases, prefixes, suffixes, trailing slashes, repeated slashes, and
-non-origin request targets receive a local generic OpenAI-shaped 404. They do
-not read the body, call admission, reserve capacity, or contact the backend.
+PIG handles local management routes itself. Unknown paths, wrong methods,
+encoded aliases, prefixes, suffixes, trailing or repeated slashes, and
+non-origin targets receive a local generic OpenAI-shaped 404 without body read,
+admission, reservation, or backend call.
 
-The generation routes are:
+Generation admission applies to `POST /v1/chat/completions`,
+`POST /v1/completions`, and `POST /v1/responses`. `GET /v1/models` is
+authenticated but has no sequence reservation.
 
-```text
-POST /v1/chat/completions
-POST /v1/completions
-POST /v1/responses
-```
+`internal/app/request` owns a bounded, one-pass JSON shape scan and restores the
+exact bytes for forwarding. It extracts only Decode fanout (`n`, Completions
+`best_of`, prompt-batch cardinality) and streaming state for response-usage
+parsing. Input text, tools, multimodal content, declared output limits, token
+counts, and cache identity are not admission features.
 
-`GET /v1/models` is authenticated and forwarded without admission.
+Malformed JSON returns local 400. Unsafe fanout is request-scoped protection.
+When bounded inspection is unavailable, the request receives one labelled
+fallback sequence through the same atomic policy.
 
-## Bounded shape scan
-
-For a generation route, `internal/app/request` reads at most the configured
-body limit under a bounded concurrent byte budget and restores the exact bytes
-and Content-Length for forwarding. The parser performs one linear scan and
-extracts only:
-
-- Chat/Completions `n`;
-- Completions `best_of`;
-- Completions prompt-batch cardinality;
-- `stream`, only to select response-usage parsing.
-
-`DecodeSequences` is the complete request demand. For Completions it is prompt
-batch cardinality multiplied by `max(n, best_of)`; for Chat it is `n`;
-Responses uses one sequence. Duplicate equal fanout values are accepted.
-Conflicting, non-positive, fractional, mixed-shape, or overflowing fanout is
-unsupported.
-
-Malformed JSON returns a local OpenAI-shaped 400. A valid but unsupported
-shape produces request-scoped `invalid_request`, no reservation, and no change
-to canonical node capacity. When inspection is unavailable because of the
-scanner's byte/depth bound, content type, read failure, or concurrent byte
-budget, the request receives a one-sequence `fallback` demand and continues
-through normal atomic TPS admission. Scanner limits are not independent 429
-gates. Input text, tools, multimodal payloads, declared output limits, cache
-identity, and token counts are not admission inputs. Forwarded bytes remain
-unchanged.
-
-## Pre-forward transaction
+## Admission transaction
 
 ```text
 TPSRequestDemand{DecodeSequences, Source}
-  -> admissionRuntime.Decide
-       -> AdmissionController.Admit under one mutex
-            -> project fresh observation + local sequence overlay
-            -> compute current and post-admit sequences
-            -> evaluate the pure TPS gate
-            -> atomically create a sequence reservation when admitted
-       -> reporter records the immutable decision outside the Controller lock
-  -> enforce: protected decision becomes local OpenAI-shaped 429
-  -> shadow: protected decision is observable but the request is forwarded
-  -> admitted: mark forwarded, proxy unchanged body, mark first response,
-     then terminate exactly once
+  -> AdmissionController.Admit under one mutex
+       -> project fresh observation plus local overlay
+       -> evaluate pure TPS health
+       -> evaluate projected running bound
+       -> evaluate same-observation window bound
+       -> atomically create complete-fanout reservation only when all fit
+  -> reporter records immutable decision
+  -> enforce protection: local OpenAI-shaped 429, no backend call
+  -> shadow protection: record only, forward without reservation
+  -> admit: mark forwarded, proxy unchanged request, mark first response,
+     terminate exactly once
 ```
 
-The admission hot path uses fixed-size TPS buckets and O(1) overlay counters.
-It does not scan live reservations. Observation reconciliation may scan the
-bounded reservation map because it runs at the polling cadence rather than on
-every request.
+The hot decision path is O(1) and does not scan live reservations. Observation
+reconciliation may scan the bounded reservation map at polling cadence.
 
-## Rolling TPS evidence
+## TPS health
 
-The Controller keeps 61 one-second buckets covering the latest 60 seconds. A
+The controller keeps 61 one-second buckets covering the latest 60 seconds. A
 window is ready after at least four qualified samples and eight qualified
-sequence-seconds. Each coherent metrics interval contributes cumulative output
-token delta and active sequence-seconds.
+sequence-seconds. Each coherent interval contributes generation-token delta
+and the maximum defensible Decode exposure among backend running, local
+forwarded exposure, local response exposure, and bounded fallback liability.
 
-The denominator is the maximum defensible exposure among backend endpoint
-running, locally forwarded sequence exposure, and local first-response
-exposure. This prevents a request completed between polls from disappearing
-from the denominator. A zero-token interval qualifies only when local response
-exposure proves Decode was active; pure Prefill or idle running is not invented
-as a Decode stall.
+A zero-token interval qualifies only when local response exposure proves Decode
+activity. Without reliable Decode evidence, idle or Prefill is not fabricated
+as a zero-TPS stall. The latest qualified interval is stored separately from
+the rolling window.
 
-The configured reference remains a business target. Observed rates update the
-window but never rewrite the reference or create a learned cap.
-
-## TPS gate
-
-When the reference is zero, the TPS gate is disabled. For a ready window:
+The pure gate is:
 
 ```text
-base_limit = max(1, floor(window_aggregate_tps / reference))
-current = raw_running + raw_waiting + unobserved_local_sequences
-post_admit = current + request_decode_sequences
+reference disabled                         -> open/disabled
+waiting > 0                                -> protect/waiting
+fresh preemption delta > 0                 -> protect/preemption
+rolling window not ready                   -> open/warming
+latest interval not qualified              -> open/no_current_evidence
+rolling mean >= reference                  -> open/healthy_window
+latest qualified mean >= reference         -> open/recovered_current
+rolling and latest both below reference    -> protect/below_reference
 ```
 
-The selected limit may increase by one through two bounded mechanisms:
+TPS never selects or learns a concurrency limit. One current dip cannot close a
+healthy long window, while one qualified current recovery does not wait for old
+low samples to expire.
 
-1. current-rate recovery permits `raw_running + 1` when the current
-   per-sequence rate has at least 5% headroom and, above one running sequence,
-   the projected rate remains at least 95% of the reference;
-2. one QoS-budget lease permits `base + 1` when current TPS is at least the
-   reference and rolling surplus covers the predicted deficit until the next
-   observation.
+## Running and window bounds
 
-Only one QoS-budget lease may be live. Multi-sequence requests cannot use that
-one-sequence lease. Unobserved local sequences, waiting, preemption, invalid
-intervals, or insufficient surplus make it ineligible.
+When TPS health is open:
 
-Any observed waiting or fresh preemption stops marginal admission for that
-observation. It does not change the rolling base, start a cooldown, require
-consecutive clear samples, or persist after the next fresh clear observation.
+```text
+projected_running = raw_running + raw_waiting
+                  + unobserved_sequences + request_decode_sequences
 
-Before the window is ready, intake is bounded around two sequences while fresh
-current-rate evidence may allow one further step. Ready-idle state may refill
-atomically up to its still-valid rolling base. Once the 60-second evidence ages
-out the window becomes unready and returns to warming. Complete request fanout
-must satisfy the limit even when current demand is zero; there is no special
-idle bypass, one-second timer, or background learner.
+projected_window = unobserved_sequences + request_decode_sequences
+```
+
+The running gate fits when its limit is disabled or `projected_running <=
+running_limit`. The window gate fits when `projected_window <=
+window_concurrency`. Arithmetic overflow protects availability. The complete
+fanout is charged atomically; partial reservation is impossible.
+
+The window bound limits only work not yet reflected by backend metrics. Once a
+fresh observation reconciles it, a healthy backend can admit another cohort.
+It is not a total sustainable-concurrency cap.
 
 ## Reservation lifecycle
 
 ```text
-Reserved
-  -> Forwarded
-  -> ActiveDecode on first positive upstream response-body read
-  -> Terminal exactly once
+Reserved -> Forwarded -> ActiveDecode -> Terminal exactly once
 ```
 
-Each reservation owns the complete Decode sequence fanout. The overlay tracks:
-
-- sequences not yet visible in backend running/waiting;
-- all outstanding sequence liabilities;
-- live reservations and residual debts;
-- ownership of the single QoS-budget lease.
-
-A request terminated before forwarding is removed immediately. Successful
-ActiveDecode completion releases immediately. Forwarded failures, cancellation,
-disconnect, timeout, or shutdown retain bounded residual debt until a sample
-watermark proves the exposure is covered. Duplicate terminal calls and stale
-epoch handles are no-ops.
+Each reservation owns complete Decode fanout. The overlay tracks unobserved
+sequences, sequence liabilities, live reservations, and residual debt. A
+request terminated before forwarding is removed immediately. Successful active
+Decode completion releases immediately. Forwarded failures, cancellation,
+disconnect, timeout, or shutdown retain bounded debt until an observation
+watermark proves coverage. Duplicate terminal calls and stale-epoch handles are
+no-ops.
 
 `StartSampleWindow` captures the event watermark before metrics I/O. Publishing
-the sample reconciles only events at or before that watermark. This prevents a
-concurrent request from being counted neither locally nor upstream, while also
-preventing permanent double counting after it becomes visible.
+reconciles only events at or before that watermark, preventing both missing and
+double-counted concurrent work.
 
-## Observation failure and shutdown
+The window-concurrency histogram samples unreconciled sequences before each
+successful reconciliation. It is observer-path work and never adds a bucket
+loop to request admission.
 
-A fetch failure or incomplete sample leaves the last coherent observation
-unchanged. Normal age calculation closes enforce intake after its freshness
-deadline. The next coherent sample recovers immediately.
+## Policy administration
 
-Numeric overflow, impossible aggregate state, identity drift, or lifecycle
-corruption fails closed. Runtime counter reset advances the epoch and fences all
-old handles. Shutdown stops the observer first, then closes Controller intake
-and clears owned state.
+The revisioned controller policy contains TPS reference, window concurrency,
+running limit, and running-limit source. A PATCH can update any subset under one
+compare-and-swap. Only a changed TPS reference resets TPS buckets; bound changes
+leave health evidence intact. An admin running-limit value, including zero,
+sets source `admin`.
 
 ## Reporting and Router projection
 
 ```text
 Controller snapshot + reporter snapshot
-  -> metrics
+  -> metrics and fixed histograms
   -> compact status/protection logs
   -> /v1/upstream-status
   -> Router compatibility projection
 ```
 
-Reporting never reruns policy and cannot mutate Controller state. A
-request-scoped invalid shape does not close Router capacity. A load or
-availability protection can project backpressure from the canonical one-
-sequence capacity decision. A scanner fallback request is reported with
-`demand_source=fallback`; it does not mutate canonical node capacity. Shadow
-mode never applies Router backpressure.
-
-Response-usage evidence is separate from admission. It may count exact
-successful completion tokens for observability, but it does not feed the TPS
-decision.
+Reporting never reruns policy. A request-scoped invalid shape does not close
+Router capacity. Current load or availability protection can project
+backpressure from the canonical one-sequence capacity inspection. Shadow never
+applies Router backpressure. Response usage is goodput observability only.
 
 ## Ownership map
 
 | Owner | Responsibility |
 | --- | --- |
-| `internal/domain/request` | Strict one-pass JSON shape parser |
-| `internal/app/request` | Bounded body ownership, shape classification, exact restoration |
-| `internal/admission/tps_window.go` | Fixed-size rolling TPS evidence |
-| `internal/admission/tps_gate.go` | Pure sequence-limit selection |
-| `internal/admission/qos_budget.go` | One bounded rolling-surplus step |
-| `internal/admission/controller.go` | Atomic decision, reservation, lifecycle, and epoch fencing |
-| `internal/app/server/admission_backend_observer.go` | vLLM/SGLang TPS observation publication |
+| `internal/domain/request` | Strict one-pass request-shape parser |
+| `internal/app/request` | Bounded body ownership and exact restoration |
+| `internal/admission/tps_window.go` | Rolling/latest TPS evidence and denominator selection |
+| `internal/admission/tps_gate.go` | Pure TPS health predicate |
+| `internal/admission/admission_bounds.go` | Pure running/window projection |
+| `internal/admission/controller.go` | Atomic decision, reservation, lifecycle, epoch fencing, histogram state |
+| `internal/admission/policy_update.go` | Revisioned partial policy update |
+| `internal/app/server/predictive_running_limit.go` | Strict optional SGLang initialization discovery |
+| `internal/app/server/admission_backend_observer.go` | Normalized vLLM/SGLang observation publication |
 | `internal/app/server/admission_runtime.go` | Controller/reporter service boundary |
-| `internal/app/server/proxy.go` | Route policy, mode mapping, forwarding, and terminal transaction |
+| `internal/app/server/proxy.go` | Mode mapping, forwarding, terminal transaction |
 | `internal/app/server/metrics.go` | Snapshot formatting and Router compatibility |
 
-No component owns routing, customer tiers, request rewriting, tokenizer/model
-profiles, KV/Prefill/input admission, TTFT protection, or online learning.
+No component owns backend routing, customer tiers, request rewriting,
+tokenizer/model profiles, KV/Prefill/input admission, TTFT protection, queueing,
+or online learning.

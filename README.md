@@ -23,8 +23,8 @@ canonical method + exact-path public policy
   -> public bearer authentication
   -> bounded request-shape scan for Decode sequence demand
   -> fresh backend identity/running/waiting/generation/preemption observation
-  -> rolling TPS state plus unobserved local sequence leases
-  -> post-admit TPS counterfactual
+  -> rolling and latest qualified TPS health
+  -> projected running and same-observation window bounds
   -> one atomic decision and sequence reservation
   -> unchanged request forwarded to the single upstream
   -> first-response and terminal lifecycle reconciliation
@@ -39,6 +39,9 @@ cap.
 Waiting or a fresh preemption pauses marginal intake for that observation only.
 The first fresh clear observation can reopen intake. Same-snapshot reservations
 remain atomic so concurrent arrivals cannot spend the same apparent headroom.
+TPS never derives a concurrency ceiling. The default window bound allows 32
+new, not-yet-observed Decode sequences per metrics window. A separate backend
+running limit is enforced only when explicitly configured or safely discovered.
 
 ## Production configuration
 
@@ -60,6 +63,13 @@ services:
 defaults to `enforce`, polls every 500 ms, and defaults observation freshness to
 three polls. Omit `PREDICTIVE_TPS_REFERENCE` or set it to `0` when no business
 TPS target exists.
+
+`PREDICTIVE_WINDOW_CONCURRENCY` defaults to `32` and normally stays implicit.
+`PREDICTIVE_RUNNING_LIMIT=0` means unknown/disabled. SGLang can initialize its
+running limit from a coherent top-level integer `max_running_requests` in
+`/server_info`; vLLM does not expose a trusted production maximum, so its limit
+remains disabled unless an operator sets it. These are initialized or
+administered bounds, not learned values.
 
 PIG startup requires coherent backend identity, running, waiting, generation,
 preemption, and runtime-epoch telemetry. It does not require KV/cache metrics or
@@ -90,7 +100,7 @@ OUTPUT_TOKEN_FIELD_NAMES
 ## Test configuration
 
 Controlled tests may explicitly set cadence, freshness, metrics URL, TPS
-reference, and:
+reference, window concurrency, running limit, and:
 
 ```text
 PREDICTIVE_ADMISSION_MODE=shadow
@@ -116,7 +126,7 @@ overrides are not copied unchanged into production Compose.
   explicitly labelled fallback sequence through the normal atomic TPS path.
   Scanner limits do not independently return 429; ambiguous, conflicting, or
   overflowing fanout still receives request-scoped protection.
-- A TPS protection returns HTTP 429 before forwarding and is reflected in
+- An admission protection returns HTTP 429 before forwarding and is reflected in
   structured low-cardinality logs and metrics.
 - Supported request bodies and application headers are forwarded unchanged.
 - A missing, stale, identity-invalid, or internally inconsistent observation
@@ -132,10 +142,13 @@ GET   /admin/v1/predictive-policy
 PATCH /admin/v1/predictive-policy
 ```
 
-Only `tps_reference` is mutable. PATCH uses a monotonic revision and
-compare-and-swap. Restart restores the validated environment value. Responses
-do not expose credentials, endpoint URLs, request content, KV geometry, or
-model identity.
+`tps_reference`, `window_concurrency`, and `running_limit` are independently
+mutable. PATCH includes one or more fields plus `expected_revision` and applies
+them atomically with compare-and-swap. Only a TPS-reference change resets the
+TPS window. An admin running-limit update becomes source `admin`; zero disables
+that gate. Restart restores validated initialization values. Responses do not
+expose credentials, endpoint URLs, request content, KV geometry, or model
+identity.
 
 ## Local endpoints
 
@@ -145,7 +158,7 @@ model identity.
 | `/pig/metrics` | PIG Prometheus metrics |
 | `/v1/metrics` | PIG metrics plus a bounded upstream metrics copy |
 | `/v1/upstream-status` | Router-facing admission status |
-| `/admin/v1/predictive-policy` | Read or atomically update the TPS reference |
+| `/admin/v1/predictive-policy` | Read or atomically update TPS and admission bounds |
 | `/v1/attestation/report` | Attestation report |
 
 Metrics, management, and attestation endpoints preserve their route-specific
@@ -161,7 +174,7 @@ production windows and benchmark comparisons are optimization evidence, not
 universal numeric hard gates.
 
 - [Documentation map](docs/README.md)
-- [TPS-only controller plan](docs/PIG_V0_12_22_TPS_ONLY_CONTROLLER_PLAN.md)
+- [Current TPS health-gate plan](docs/PIG_V0_12_23_TPS_HEALTH_GATE_PLAN.md)
 - [Advanced configuration](docs/ADVANCED.md)
 - [Observability](docs/OBSERVABILITY.md)
 - [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)

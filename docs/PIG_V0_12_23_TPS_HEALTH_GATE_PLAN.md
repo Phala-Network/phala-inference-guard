@@ -310,7 +310,11 @@ published only after the complete builder verification succeeds.
 
 - `v0.12.22` source, tag, image, and dev PIG-B runtime are reproducible baseline
   evidence; they are not production candidates;
-- no v0.12.23 behavior code, version assignment, image, or deployment exists;
+- the v0.12.23 behavior is implemented and pushed on branch
+  `codex/pig-v0.12.23-tps-health-gate` at exact commit
+  `83fe43da7fd862d57a1563e68eed758130efe08f`; source still reports
+  `PIG-v0.12.22`, so no v0.12.23 version assignment, tag, image, or deployment
+  exists yet;
 - dev/backend capability audit on 2026-08-26 confirmed that SGLang-B standard
   metrics contains only current `sglang:num_running_reqs`, while internal
   `/server_info` and its scheduler state both return
@@ -329,5 +333,25 @@ published only after the complete builder verification succeeds.
   `sequenceLimit=4`, `postAdmit=5`, subreason `qos_budget_unobserved`. The red
   output SHA-256 is
   `50719fc92444cddbcf7641f627ff6911f5aa7144a6c63f2f72bd76363439ea05`;
-- the immediate next step is to add the independent window/running gate contract
-  and replace TPS capacity selection.
+- focused and integration implementation now replaces TPS-derived capacity with
+  the independent TPS-health, running-limit, and same-observation window gates.
+  Request fanout is reserved atomically; policy updates, SGLang initialization
+  discovery, lifecycle reconciliation, reporting, metrics, logs, status, and
+  deterministic simulations are wired to the new contract;
+- each successful non-reset observation samples unreconciled Decode sequences
+  before reconciliation. The cumulative histogram uses finite bounds
+  `0,1,2,4,6,8,10,12,16,20,24,28,32,36,40,44,48,52,56,60,64`; all values above
+  `64` are combined only in `+Inf`. This work runs on the observer path, not the
+  request admission hot path;
+- the complete builder test at exact commit
+  `83fe43da7fd862d57a1563e68eed758130efe08f` passed `go test ./... -count=1`
+  with exit `0` on builder `4f167f6e-4c50-415f-99f2-94b65652beba`, using
+  `go1.24.13 linux/amd64` and pinned image
+  `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`.
+  Evidence directory is
+  `/var/volatile/dstack/persistent/.cache/pig-v01223-health-gate/full-83fe43d-r1`;
+  `test.log` SHA-256 is
+  `0d23f562bc2117f7415d7977349bcfcdb96643d4baea28ea419eaf4e18f410f2`;
+- the remaining work is the three recorded reviews and the complete clean-builder
+  matrix in phase 3. Version assignment, image publication, and isolated dev
+  update remain forbidden until those gates pass.
