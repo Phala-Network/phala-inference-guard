@@ -428,6 +428,27 @@ published only after the complete builder verification succeeds.
   protected admission 826-891 ns/op, admit/cancel 572-693 ns/op, and a 4096
   reservation observation 365-384 microseconds/op. The 4 MiB full classifier was
   6.86-8.01 ms/op and its zero-allocation shape parser was 5.51-5.68 ms/op;
-- phase 3 is complete. The next permitted step is the explicit v0.12.23 version
-  assignment followed by source push, immutable tag, builder image gates, and
-  isolated dev PIG-B validation. No image or runtime has been changed yet.
+- phase 3 is complete. Version `0.12.23` was assigned at exact release commit
+  `a4527759284b7ec3a7be060111f638740d7345a4`; the branch and annotated
+  `v0.12.23` source tag are pushed and resolve to that commit. The post-assignment
+  builder source gate passed legacy audit, formatting, full tests, race, vet,
+  and build in
+  `/var/volatile/dstack/persistent/.cache/pig-v01223-health-gate/release-source-a452775-r1`;
+  its source archive SHA-256 is
+  `4cdc60577a7a196f8965c5975b8b751e7ef93db98ce7698e488c51e37ba42234`;
+- the builder-local release candidate passed the production image contract with
+  image ID
+  `sha256:0ceca4eccb11c1ebcbe92fe7d9312c789b46e9bffface5827d77879c50e61ea1`,
+  OCI version `0.12.23`, and exact OCI revision. Evidence is
+  `/var/volatile/dstack/persistent/.cache/pig-v01223-health-gate/image-a452775-r1`;
+- the tag workflow independently published
+  `ghcr.io/phala-network/phala-inference-guard:v0.12.23` at digest
+  `sha256:d7a8161a6dd909b525369475c454f2508c8ccd716afb91733929f9d10cca6e56`.
+  A digest pull proved exact version/revision and passed the production image
+  contract; evidence is
+  `/var/volatile/dstack/persistent/.cache/pig-v01223-health-gate/ci-vtag-a452775-r1`;
+- the production-convention tags `0.12.23` and `0.12.23-a4527759284b` remain
+  absent. The first direct push attempt wrote neither tag because the builder
+  GHCR credential was expired. A GitHub device authorization with
+  `write:packages` is pending; no registry tag will be overwritten. Dev PIG-B
+  remains unchanged until both tags and their common digest are verified.
