@@ -493,4 +493,12 @@ Three reviews were completed before behavior code:
 - inherited cache accumulator: removed from the admission source and tests in
   the current unverified source slice;
 - TPS behavior: unchanged from branch base;
+- read-only GLM-5.2 production feedback on 2026-08-26 found approximately
+  `470-473` enforced PIG rejections in the preceding rolling 12-hour window
+  while backend waiting and preemption remained zero. The running v0.12.17
+  reason mix was dominated by retired Prefill/input/KV gates, and a smaller
+  TPS group showed low-flow residual-liability behavior. This is design
+  feedback for generic fast clear-state recovery and TPS-only separation, not
+  a model-specific threshold, exact-fixture release gate, or permission to
+  weaken same-snapshot atomic reservations;
 - version/image/deployment: not authorized and not started.
