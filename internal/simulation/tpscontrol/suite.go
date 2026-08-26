@@ -395,6 +395,7 @@ func degradationScenario() scenario {
 	events = append(events,
 		observation(4_500, 4, 0, generation, 0, 1),
 		arrival(4_550, "zero-output-stall", 1),
+		terminal(4_600, "zero-output-stall", coreadmission.TerminalCancel),
 	)
 	generation += 10
 	events = append(events,

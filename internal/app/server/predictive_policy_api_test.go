@@ -286,7 +286,7 @@ func TestV01215PredictivePolicyUpdateChangesNextPreForwardDecision(t *testing.T)
 	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
 
 	updated := servePredictivePolicyAPI(
-		t, srv, http.MethodPatch, []byte(`{"expected_revision":1,"tps_reference":50}`), "application/json",
+		t, srv, http.MethodPatch, []byte(`{"expected_revision":1,"running_limit":3}`), "application/json",
 	)
 	decodePredictivePolicyDocument(t, updated, http.StatusOK)
 	response := serveAdmissionRequest(t, srv, "small request")
@@ -294,8 +294,8 @@ func TestV01215PredictivePolicyUpdateChangesNextPreForwardDecision(t *testing.T)
 		t.Fatalf("post-update decision status=%d backend_calls=%d body=%s", response.Code, backendCalls.Load(), response.Body.String())
 	}
 	last := runtime.Snapshot(time.Now()).Report.LastDecision
-	if last.Reason != coreadmission.ReasonTPSReference || last.State.TPS.Reference != 50 ||
-		last.PolicyRevision != 2 {
+	if last.Reason != coreadmission.ReasonRunningLimit || last.RunningLimit != 3 ||
+		last.RunningLimitSource != coreadmission.RunningLimitSourceAdmin || last.PolicyRevision != 2 {
 		t.Fatalf("post-update decision=%+v", last)
 	}
 }

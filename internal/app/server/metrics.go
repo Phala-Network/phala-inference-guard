@@ -160,9 +160,6 @@ func applyAdmissionDecisionMetrics(
 	input.TPSDecisionSubreason = decision.TPSDecisionSubreason.String()
 	input.AdmissionProjectedRunning = decision.ProjectedRunning
 	input.AdmissionProjectedWindowSequences = decision.ProjectedWindowSequences
-	input.AdmissionRunningLimit = decision.RunningLimit
-	input.AdmissionRunningLimitSource = string(decision.RunningLimitSource)
-	input.AdmissionWindowConcurrency = decision.WindowConcurrency
 	input.AdmissionRunning = nonnegativeInt(decision.State.RawRunning)
 	input.AdmissionWaiting = nonnegativeInt(decision.State.RawWaiting)
 	input.AdmissionEffectiveSequences = projectedDecodeSequences(decision.State)
@@ -247,8 +244,8 @@ func applyTPSCapacityMetrics(input *metrics.PredictiveAdmissionInput, capacity c
 	input.TPSLatestMeanActive = snapshot.Latest.MeanActiveTPS
 	input.TPSLatestSequenceSeconds = snapshot.Latest.SequenceSeconds
 	input.TPSUnobservedSequences = capacity.State.UnobservedSequences
-	input.AdmissionProjectedRunning = capacity.MinimumDecision.ProjectedRunning
-	input.AdmissionProjectedWindowSequences = capacity.MinimumDecision.ProjectedWindowSequences
+	input.CapacityProjectedRunning = capacity.MinimumDecision.ProjectedRunning
+	input.CapacityProjectedWindowSequences = capacity.MinimumDecision.ProjectedWindowSequences
 	input.AdmissionRunningLimit = capacity.Policy.RunningLimit
 	input.AdmissionRunningLimitSource = string(capacity.Policy.RunningLimitSource)
 	input.AdmissionWindowConcurrency = capacity.Policy.WindowConcurrency

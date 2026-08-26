@@ -69,17 +69,21 @@ func TestDefaultSuiteExercisesRecoveryAtomicityAndLifecycle(t *testing.T) {
 	}
 }
 
-func TestObservedDegradationAndStalenessDoNotGrantMarginalIntake(t *testing.T) {
+func TestUnqualifiedGapStaysOpenWhileQualifiedDegradationAndStalenessProtect(t *testing.T) {
 	suite, err := RunDefaultSuite()
 	if err != nil {
 		t.Fatal(err)
 	}
 	degraded := scenarioByName(t, suite, "observed_output_degradation")
-	for _, requestID := range []string{"zero-output-stall", "degraded-output"} {
-		step := arrivalByID(t, degraded, requestID)
-		if step.Action != "protect" || step.Reason != "tps_reference" || step.ReservationID != 0 {
-			t.Fatalf("degradation arrival %s was not protected pre-forward: %+v", requestID, step)
-		}
+	unqualified := arrivalByID(t, degraded, "zero-output-stall")
+	if unqualified.Action != "admit" || unqualified.TPSSubreason != "no_current_evidence" ||
+		unqualified.ReservationID == 0 {
+		t.Fatalf("unqualified zero-output interval caused premature protection: %+v", unqualified)
+	}
+	degradedOutput := arrivalByID(t, degraded, "degraded-output")
+	if degradedOutput.Action != "protect" || degradedOutput.Reason != "tps_reference" ||
+		degradedOutput.TPSSubreason != "below_reference" || degradedOutput.ReservationID != 0 {
+		t.Fatalf("qualified sustained degradation was not protected pre-forward: %+v", degradedOutput)
 	}
 	stale := scenarioByName(t, suite, "stale_observation_recovery")
 	protected := arrivalByID(t, stale, "stale-protected")

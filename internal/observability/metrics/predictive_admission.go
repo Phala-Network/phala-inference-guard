@@ -52,6 +52,8 @@ type PredictiveAdmissionInput struct {
 	AdmissionMeanActiveTPSValid       bool
 	AdmissionProjectedRunning         int64
 	AdmissionProjectedWindowSequences int64
+	CapacityProjectedRunning          int64
+	CapacityProjectedWindowSequences  int64
 	AdmissionRunningLimit             int64
 	AdmissionRunningLimitSource       string
 	AdmissionWindowConcurrency        int64
@@ -98,6 +100,11 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	lastRejectReason := nonempty(input.LastRejectReason, "none")
 	lastRejectSource := nonempty(input.LastRejectSource, "unknown")
 	lastRejectScope := nonempty(input.LastRejectScope, "none")
+	runningLimitSource := normalizedValue(
+		input.AdmissionRunningLimitSource,
+		[]string{"unknown", "environment", "sglang_server_info", "admin"},
+		"unknown",
+	)
 	admissionAction := normalizedValue(
 		input.AdmissionAction,
 		[]string{"admit", "request_protect", "load_protect", "availability_protect"},
@@ -193,10 +200,12 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	fmt.Fprintf(w, "pig_predictive_tps_current_interval_aggregate %.6f\n", input.AdmissionAggregateTPS)
 	fmt.Fprintf(w, "pig_predictive_tps_current_interval_mean_active %.6f\n", input.AdmissionMeanActiveTPS)
 	fmt.Fprintf(w, "pig_predictive_tps_current_interval_mean_active_valid %d\n", num.BoolAsInt(input.AdmissionMeanActiveTPSValid))
-	fmt.Fprintf(w, "pig_predictive_projected_running %d\n", input.AdmissionProjectedRunning)
+	fmt.Fprintf(w, "pig_predictive_admission_last_projected_running %d\n", input.AdmissionProjectedRunning)
+	fmt.Fprintf(w, "pig_predictive_capacity_projected_running %d\n", input.CapacityProjectedRunning)
 	fmt.Fprintf(w, "pig_predictive_running_limit %d\n", input.AdmissionRunningLimit)
-	fmt.Fprintf(w, "pig_predictive_running_limit_info{source=%q} 1\n", nonempty(input.AdmissionRunningLimitSource, "unknown"))
-	fmt.Fprintf(w, "pig_predictive_projected_window_sequences %d\n", input.AdmissionProjectedWindowSequences)
+	fmt.Fprintf(w, "pig_predictive_running_limit_info{source=%q} 1\n", runningLimitSource)
+	fmt.Fprintf(w, "pig_predictive_admission_last_projected_window_sequences %d\n", input.AdmissionProjectedWindowSequences)
+	fmt.Fprintf(w, "pig_predictive_capacity_projected_window_sequences %d\n", input.CapacityProjectedWindowSequences)
 	fmt.Fprintf(w, "pig_predictive_window_concurrency_limit %d\n", input.AdmissionWindowConcurrency)
 	fmt.Fprintf(w, "pig_predictive_tps_reference %.6f\n", input.TPSReference)
 	fmt.Fprintf(w, "pig_predictive_tps_window_ready %d\n", num.BoolAsInt(input.TPSWindowReady))
