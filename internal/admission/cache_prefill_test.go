@@ -276,6 +276,121 @@ func TestV01222ControllerAccumulatesCoherentSubthresholdCacheDeltas(t *testing.T
 	}
 }
 
+func TestV01222ControllerAccumulatesHotAndColdDeltasWithoutOvercredit(t *testing.T) {
+	now := time.Unix(22_600, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(
+		t,
+		capability,
+		cacheObservation(capability, now, 10_000, 5_000),
+	)
+
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(500*time.Millisecond),
+		10_000+2*1024,
+		5_000+2*1024,
+	))
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(time.Second),
+		10_000+4*1024,
+		5_000+2*1024,
+	))
+
+	result := controller.Admit(
+		now.Add(time.Second+time.Microsecond),
+		testEstimate(4*1024, 4*1024, 256),
+	).Decision
+	if !result.Admitted() || result.Work.PrefillComputeTokens != 2*1024 ||
+		result.State.CacheHitFraction != 0.5 || result.State.CacheCreditBudgetTokens != 2*1024 ||
+		result.Work.InputKVTokens != result.Estimate.KVReservationInputTokens {
+		t.Fatalf("mixed hot/cold cache evidence was overcredited or changed KV: %+v", result)
+	}
+}
+
+func TestV01222ControllerZeroDeltaDoesNotExtendCacheAccumulation(t *testing.T) {
+	now := time.Unix(22_700, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(
+		t,
+		capability,
+		cacheObservation(capability, now, 10_000, 5_000),
+	)
+
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(500*time.Millisecond),
+		10_000+2*1024,
+		5_000+1536,
+	))
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(time.Second),
+		10_000+2*1024,
+		5_000+1536,
+	))
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(1500*time.Millisecond),
+		10_000+2*1024,
+		5_000+1536,
+	))
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(2*time.Second),
+		10_000+4*1024,
+		5_000+3072,
+	))
+
+	result := controller.Admit(
+		now.Add(2*time.Second+time.Microsecond),
+		testEstimate(4*1024, 4*1024, 256),
+	).Decision
+	if !result.Admitted() || result.Work.PrefillComputeTokens != 4*1024 ||
+		result.State.CacheObservationValid {
+		t.Fatalf("zero-delta polls extended expired cache accumulation: %+v", result)
+	}
+}
+
+func TestV01222ControllerCacheCounterRollbackClearsAccumulation(t *testing.T) {
+	now := time.Unix(22_800, 0)
+	capability := testCapability()
+	controller := testControllerWithObservation(
+		t,
+		capability,
+		cacheObservation(capability, now, 10_000, 5_000),
+	)
+
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(500*time.Millisecond),
+		10_000+2*1024,
+		5_000+1536,
+	))
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(time.Second),
+		100,
+		50,
+	))
+	publishObservation(t, controller, cacheObservation(
+		capability,
+		now.Add(1500*time.Millisecond),
+		100+2*1024,
+		50+1536,
+	))
+
+	result := controller.Admit(
+		now.Add(1500*time.Millisecond+time.Microsecond),
+		testEstimate(4*1024, 4*1024, 256),
+	).Decision
+	if !result.Admitted() || result.Work.PrefillComputeTokens != 4*1024 ||
+		result.State.CacheObservationValid {
+		t.Fatalf("cache counter rollback retained pre-reset accumulation: %+v", result)
+	}
+}
+
 func TestV01215ControllerCacheCreditExpiresAtRequestTime(t *testing.T) {
 	now := time.Unix(23_000, 0)
 	capability := testCapability()

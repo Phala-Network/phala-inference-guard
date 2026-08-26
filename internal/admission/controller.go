@@ -240,6 +240,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	var observationInterval time.Duration
 	var previousRunning int64
 	var cache cachePrefillObservation
+	var cacheAccumulator cachePrefillAccumulator
 	var newCacheLease bool
 	if runtimeReset {
 		if c.runtimeEpoch == math.MaxUint64 || (capabilityRebound && c.capabilityRebinds == math.MaxUint64) {
@@ -265,7 +266,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			preemptionDelta = observation.PreemptionsTotal - c.observation.observation.PreemptionsTotal
 			observationInterval = observation.ObservedAt.Sub(c.observation.observation.ObservedAt)
 			previousRunning = c.observation.observation.Running
-			cache, newCacheLease = nextCachePrefillObservation(c.observation, observation)
+			cache, cacheAccumulator, newCacheLease = nextCachePrefillObservation(c.observation, observation)
 			if newCacheLease {
 				if c.cacheLeaseSequence == math.MaxUint64 {
 					c.failClosedLocked(ReasonCounterOverflow)
@@ -324,6 +325,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		previousRunning:   previousRunning,
 		localActiveDecode: c.overlay.localActiveDecode,
 		cache:             cache,
+		cacheAccumulator:  cacheAccumulator,
 	}
 	c.hasObservation = true
 	c.runtimeRebindPending = false

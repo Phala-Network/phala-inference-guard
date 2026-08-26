@@ -11,6 +11,7 @@ type observedState struct {
 	previousRunning   int64
 	localActiveDecode int64
 	cache             cachePrefillObservation
+	cacheAccumulator  cachePrefillAccumulator
 }
 
 type reservationOverlay struct {
@@ -31,7 +32,9 @@ type reservationOverlay struct {
 type stateProjector struct{}
 
 func (stateProjector) project(observed observedState, overlay reservationOverlay) (ProjectedState, bool) {
-	if !validCachePrefillObservation(observed.cache) {
+	if !validCachePrefillObservation(observed.cache) ||
+		!validCachePrefillAccumulator(observed.cacheAccumulator, observed.observation.ObservedAt) ||
+		(observed.cache.valid && observed.cacheAccumulator.queryTokens > 0) {
 		return ProjectedState{}, false
 	}
 	effectiveKV, ok := addNonnegativeInt64(observed.observation.UsedKVTokens, overlay.kvTokens)

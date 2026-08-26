@@ -21,36 +21,69 @@ type cachePrefillObservation struct {
 	observedAt     time.Time
 }
 
+type cachePrefillAccumulator struct {
+	queryTokens uint64
+	hitTokens   uint64
+	startedAt   time.Time
+}
+
 func nextCachePrefillObservation(
 	previous observedState,
 	current BackendObservation,
-) (cachePrefillObservation, bool) {
+) (cachePrefillObservation, cachePrefillAccumulator, bool) {
 	if !previous.observation.CacheCountersValid || !current.CacheCountersValid ||
 		current.CacheHitTokensTotal > current.CacheQueryTokensTotal ||
 		previous.observation.CacheHitTokensTotal > previous.observation.CacheQueryTokensTotal ||
 		current.CacheQueryTokensTotal < previous.observation.CacheQueryTokensTotal ||
 		current.CacheHitTokensTotal < previous.observation.CacheHitTokensTotal ||
-		current.ObservedAt.Before(previous.observation.ObservedAt) {
-		return cachePrefillObservation{}, false
+		current.ObservedAt.Before(previous.observation.ObservedAt) ||
+		!validCachePrefillAccumulator(previous.cacheAccumulator, previous.observation.ObservedAt) {
+		return cachePrefillObservation{}, cachePrefillAccumulator{}, false
 	}
 	queryDelta := current.CacheQueryTokensTotal - previous.observation.CacheQueryTokensTotal
 	hitDelta := current.CacheHitTokensTotal - previous.observation.CacheHitTokensTotal
 	if hitDelta > queryDelta {
-		return cachePrefillObservation{}, false
+		return cachePrefillObservation{}, cachePrefillAccumulator{}, false
 	}
 	if queryDelta == 0 {
+		accumulator := activeCachePrefillAccumulatorAt(previous.cacheAccumulator, current.ObservedAt)
 		if previous.cache.valid && !current.ObservedAt.Before(previous.cache.observedAt) &&
 			current.ObservedAt.Sub(previous.cache.observedAt) <= cachePrefillObservationLifetime {
-			return previous.cache, false
+			return previous.cache, accumulator, false
 		}
-		return cachePrefillObservation{}, false
+		return cachePrefillObservation{}, accumulator, false
 	}
-	if queryDelta < cachePrefillMinimumEvidenceTokens {
-		return cachePrefillObservation{}, false
+
+	accumulator := activeCachePrefillAccumulatorAt(previous.cacheAccumulator, current.ObservedAt)
+	queryTokens := queryDelta
+	hitTokens := hitDelta
+	startedAt := previous.observation.ObservedAt
+	if accumulator.queryTokens > 0 {
+		if accumulator.queryTokens > math.MaxUint64-queryTokens ||
+			accumulator.hitTokens > math.MaxUint64-hitTokens {
+			return cachePrefillObservation{}, cachePrefillAccumulator{}, false
+		}
+		queryTokens += accumulator.queryTokens
+		hitTokens += accumulator.hitTokens
+		startedAt = accumulator.startedAt
 	}
-	hitFraction := float64(hitDelta) / float64(queryDelta)
+	if hitTokens > queryTokens {
+		return cachePrefillObservation{}, cachePrefillAccumulator{}, false
+	}
+	if queryTokens < cachePrefillMinimumEvidenceTokens {
+		if startedAt.IsZero() || current.ObservedAt.Before(startedAt) ||
+			current.ObservedAt.Sub(startedAt) > cachePrefillObservationLifetime {
+			return cachePrefillObservation{}, cachePrefillAccumulator{}, false
+		}
+		return cachePrefillObservation{}, cachePrefillAccumulator{
+			queryTokens: queryTokens,
+			hitTokens:   hitTokens,
+			startedAt:   startedAt,
+		}, false
+	}
+	hitFraction := float64(hitTokens) / float64(queryTokens)
 	if math.IsNaN(hitFraction) || math.IsInf(hitFraction, 0) || hitFraction < 0 || hitFraction > 1 {
-		return cachePrefillObservation{}, false
+		return cachePrefillObservation{}, cachePrefillAccumulator{}, false
 	}
 	credit := hitFraction
 	if credit > cachePrefillMaximumHitCredit {
@@ -60,9 +93,29 @@ func nextCachePrefillObservation(
 		valid:          true,
 		hitFraction:    hitFraction,
 		creditFraction: credit,
-		evidenceTokens: queryDelta,
+		evidenceTokens: queryTokens,
 		observedAt:     current.ObservedAt,
-	}, true
+	}, cachePrefillAccumulator{}, true
+}
+
+func validCachePrefillAccumulator(value cachePrefillAccumulator, observedAt time.Time) bool {
+	if value.queryTokens == 0 {
+		return value.hitTokens == 0 && value.startedAt.IsZero()
+	}
+	return value.queryTokens < cachePrefillMinimumEvidenceTokens &&
+		value.hitTokens <= value.queryTokens && !value.startedAt.IsZero() &&
+		!observedAt.IsZero() && !observedAt.Before(value.startedAt) &&
+		observedAt.Sub(value.startedAt) <= cachePrefillObservationLifetime
+}
+
+func activeCachePrefillAccumulatorAt(
+	value cachePrefillAccumulator,
+	now time.Time,
+) cachePrefillAccumulator {
+	if !validCachePrefillAccumulator(value, now) {
+		return cachePrefillAccumulator{}
+	}
+	return value
 }
 
 func validCachePrefillObservation(value cachePrefillObservation) bool {

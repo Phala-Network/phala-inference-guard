@@ -498,8 +498,14 @@ checked rather than only saying "passed".
   counters. Without deployment authorization, H1 is not yet eligible and TPS
   behavior remains unchanged;
 - Phase 2 focused cache-accumulation red test: authored; remote red evidence
-  pending. It requires two coherent 2,048-token deltas within one second to
-  qualify the existing 4,096-token evidence minimum while preserving full KV;
+  passed as a valid red test at exact pushed commit
+  `f01ef98a090a5467fca03a348482aa204f6d0003`. The focused test exited 1 because
+  the second coherent 2,048-token delta still left
+  `CacheObservationValid=false`, `CacheEvidenceTokens=0`, and full-cold Prefill;
+- Phase 2 source candidate: O(1), one-second bounded accumulation is implemented
+  separately from mature cache-credit leases. Coherent mixed hot/cold evidence,
+  zero-delta expiry, counter rollback, full-KV invariance, and arithmetic bounds
+  have focused coverage; remote green evidence pending;
 - TPS behavior: unchanged;
 - cache-aware KV behavior: unchanged;
 - remote test environment: not yet identified as approved nonproduction;
