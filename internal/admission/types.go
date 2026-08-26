@@ -163,6 +163,7 @@ type DecisionRecord struct {
 	Action                     Action
 	Reason                     Reason
 	Scope                      ProtectionScope
+	Demand                     TPSRequestDemand
 	PrefillClass               PrefillClass
 	Estimate                   predictive.RequestEstimate
 	Work                       predictive.RequestWork

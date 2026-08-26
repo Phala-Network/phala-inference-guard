@@ -464,8 +464,21 @@ Three reviews were completed before behavior code:
 - exact comparison baseline: tag `v0.8.13`, commit
   `8c224dbfb28a1e5019b7c2b524760cee707703de`;
 - plan reviews: three complete;
-- TPS-only red tests: pending;
-- TPS-only source: pending;
+- TPS-only red tests: valid on the approved builder at exact commit
+  `dad7861a5c8a073e4fb826c9fb5a8df4befde6f2`; the focused command exited `1`
+  for the four intended behavioral reasons (`input_limit`, `kv_capacity`,
+  `prefill_budget`, and missing-estimate `invalid_request`). The raw output
+  SHA-256 is
+  `6e7c22a014a219a7de375b42502a4af5c144dcbff9c942931739c61133c05d52`;
+  the empty `gofmt -d` output SHA-256 is
+  `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`.
+  The builder image was
+  `golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac`.
+  Two preceding runner attempts were rejected as environment evidence because
+  login-shell PATH hid `gofmt`, then the builder host lacked `base64`; neither
+  attempt executed a source test successfully;
+- TPS-only source: the first sequence-demand/policy/reservation vertical slice
+  is implemented locally and awaits exact-commit builder verification;
 - inherited cache accumulator: present and explicitly noncompliant; removal
   pending Phase 0;
 - TPS behavior: unchanged from branch base;

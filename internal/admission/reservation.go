@@ -14,6 +14,7 @@ const (
 type reservation struct {
 	id                uint64
 	runtimeEpoch      uint64
+	demand            TPSRequestDemand
 	work              predictive.RequestWork
 	prefillClass      PrefillClass
 	phase             reservationPhase
@@ -30,101 +31,55 @@ type reservation struct {
 }
 
 func (r reservation) contribution() (reservationOverlay, bool) {
-	if r.id == 0 || r.runtimeEpoch == 0 || r.work.Validate() != nil ||
-		!r.validCacheCredit() {
+	demand, valid := r.effectiveDemand()
+	if r.id == 0 || r.runtimeEpoch == 0 || !valid {
 		return reservationOverlay{}, false
 	}
 	switch r.phase {
 	case reservationReserved, reservationForwardedPrefill:
-		decodeSequences := r.work.Estimate.DecodeSequences
 		contribution := reservationOverlay{
-			kvTokens:                  r.work.TotalKVTokens,
-			pendingPrefillInputTokens: r.work.PrefillInputTokens,
-			pendingPrefillTokens:      r.work.PrefillComputeTokens,
-			pendingPrefillSequences:   decodeSequences,
-			sequenceLiabilities:       decodeSequences,
-			qosBudgetLeases:           r.qosBudgetLease(),
-			liveReservations:          1,
+			sequenceLiabilities: demand.DecodeSequences,
+			qosBudgetLeases:     r.qosBudgetLease(),
+			liveReservations:    1,
 		}
 		if !r.sequenceCovered {
-			contribution.unobservedSequences = decodeSequences
-		}
-		if !applyPendingPrefillClass(&contribution, r.prefillClass) {
-			return reservationOverlay{}, false
+			contribution.unobservedSequences = demand.DecodeSequences
 		}
 		return contribution, true
 	case reservationActiveDecode:
-		decodeSequences := r.work.Estimate.DecodeSequences
-		kvTokens := r.work.TotalKVTokens
-		if r.inputCovered {
-			var ok bool
-			kvTokens, ok = addNonnegativeInt64(
-				r.work.FirstBytePendingInputKVTokens,
-				r.work.FutureKVTokens,
-			)
-			if !ok {
-				return reservationOverlay{}, false
-			}
-		}
-		activeDecode := decodeSequences - r.work.FirstBytePendingPrefillSequences
 		contribution := reservationOverlay{
-			kvTokens:                  kvTokens,
-			pendingPrefillInputTokens: r.work.FirstBytePendingPrefillInputTokens,
-			pendingPrefillTokens:      r.work.FirstBytePendingPrefillComputeTokens,
-			pendingPrefillSequences:   r.work.FirstBytePendingPrefillSequences,
-			localActiveDecode:         activeDecode,
-			sequenceLiabilities:       decodeSequences,
-			qosBudgetLeases:           r.qosBudgetLease(),
-			liveReservations:          1,
-		}
-		if !applyPendingPrefillClass(&contribution, r.prefillClass) {
-			return reservationOverlay{}, false
+			sequenceLiabilities: demand.DecodeSequences,
+			qosBudgetLeases:     r.qosBudgetLease(),
+			liveReservations:    1,
 		}
 		if !r.sequenceCovered {
-			contribution.unobservedSequences = decodeSequences
+			contribution.unobservedSequences = demand.DecodeSequences
 		}
 		return contribution, true
 	case reservationResidualDebt:
-		decodeSequences := r.work.Estimate.DecodeSequences
-		kvTokens := r.work.TotalKVTokens
-		if r.inputCovered {
-			var ok bool
-			kvTokens, ok = addNonnegativeInt64(
-				r.work.FirstBytePendingInputKVTokens,
-				r.work.FutureKVTokens,
-			)
-			if !ok {
-				return reservationOverlay{}, false
-			}
-		}
 		contribution := reservationOverlay{
-			kvTokens:            kvTokens,
-			sequenceLiabilities: decodeSequences,
+			sequenceLiabilities: demand.DecodeSequences,
 			qosBudgetLeases:     r.qosBudgetLease(),
 			residualDebts:       1,
 		}
-		if r.terminalCause != TerminalSuccess {
-			if r.firstByteSequence > 0 {
-				contribution.pendingPrefillInputTokens = r.work.FirstBytePendingPrefillInputTokens
-				contribution.pendingPrefillTokens = r.work.FirstBytePendingPrefillComputeTokens
-				contribution.pendingPrefillSequences = r.work.FirstBytePendingPrefillSequences
-				contribution.localActiveDecode = decodeSequences - r.work.FirstBytePendingPrefillSequences
-			} else {
-				contribution.pendingPrefillInputTokens = r.work.PrefillInputTokens
-				contribution.pendingPrefillTokens = r.work.PrefillComputeTokens
-				contribution.pendingPrefillSequences = decodeSequences
-			}
-			if !applyPendingPrefillClass(&contribution, r.prefillClass) {
-				return reservationOverlay{}, false
-			}
-		}
 		if !r.sequenceCovered && r.terminalCause != TerminalSuccess {
-			contribution.unobservedSequences = decodeSequences
+			contribution.unobservedSequences = demand.DecodeSequences
 		}
 		return contribution, true
 	default:
 		return reservationOverlay{}, false
 	}
+}
+
+func (r reservation) effectiveDemand() (TPSRequestDemand, bool) {
+	if r.demand.valid() {
+		return r.demand, true
+	}
+	if r.work.Estimate.DecodeSequences <= 0 {
+		return TPSRequestDemand{}, false
+	}
+	demand, err := tpsRequestDemandFromEstimate(r.work.Estimate)
+	return demand, err == nil
 }
 
 func (r reservation) qosBudgetLease() int64 {

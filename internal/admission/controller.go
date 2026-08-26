@@ -346,27 +346,27 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 			Estimate: estimate,
 		}}
 	}
-	work, err := predictive.BuildRequestWork(estimate, c.workProfile, c.capability.KVBlockSize)
+	demand, err := tpsRequestDemandFromEstimate(estimate)
 	if err != nil {
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		return AdmissionResult{Decision: DecisionRecord{
 			Action: ActionProtect, Reason: ReasonInvalidRequest, Scope: ProtectionRequest,
-			Estimate: estimate, HardKVLimitTokens: c.capability.KVHardLimitTokens,
+			Estimate:            estimate,
 			ObservationSequence: c.observationSequence,
 			ControllerSequence:  c.eventSequence, RuntimeEpoch: c.runtimeEpoch,
 			PolicyRevision: c.policyRevision,
 		}}
 	}
+	work := predictive.RequestWork{}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	state, reason, ok := c.stateLocked(now)
 	if !ok {
 		return AdmissionResult{Decision: c.unavailableDecisionLocked(reason, estimate, work, state)}
 	}
-	work = c.policy.withObservedPrefillCost(state, work)
-	policy := c.policy.evaluate(state, work)
-	decision := c.decisionLocked(policy, estimate, work, state)
+	policy := c.policy.evaluateDemand(state, demand)
+	decision := c.decisionLocked(policy, demand, estimate, work, state)
 	if policy.action != ActionAdmit {
 		return AdmissionResult{Decision: decision}
 	}
@@ -379,21 +379,13 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonCounterOverflow, estimate, work, state)}
 	}
 	reservationID := c.nextReservationID + 1
-	cacheCreditTokens := work.PrefillInputTokens - work.PrefillComputeTokens
-	nextCache, cacheCreditLease, valid := spendCachePrefillCredit(c.observation.cache, cacheCreditTokens)
-	if !valid {
-		c.failClosedLocked(ReasonControllerUnavailable)
-		return AdmissionResult{Decision: c.unavailableDecisionLocked(ReasonControllerUnavailable, estimate, work, state)}
-	}
 	item := reservation{
-		id:                reservationID,
-		runtimeEpoch:      c.runtimeEpoch,
-		work:              work,
-		prefillClass:      policy.prefillClass,
-		phase:             reservationReserved,
-		cacheCreditTokens: cacheCreditTokens,
-		cacheCreditLease:  cacheCreditLease,
-		qosBudgeted:       policy.tpsQoSBudgeted,
+		id:           reservationID,
+		runtimeEpoch: c.runtimeEpoch,
+		demand:       demand,
+		work:         work,
+		phase:        reservationReserved,
+		qosBudgeted:  policy.tpsQoSBudgeted,
 	}
 	contribution, valid := item.contribution()
 	if !valid {
@@ -411,7 +403,6 @@ func (c *AdmissionController) Admit(now time.Time, estimate predictive.RequestEs
 	}
 	item.admittedSequence = sequence
 	c.nextReservationID = reservationID
-	c.observation.cache = nextCache
 	c.overlay = nextOverlay
 	c.reservations[reservationID] = item
 	decision.ControllerSequence = sequence
@@ -448,9 +439,11 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 			Policy:               c.tpsPolicySnapshotLocked(),
 		}
 	}
-	minimumWork := c.policy.withObservedPrefillCost(state, c.policy.minimumWork)
+	minimumWork := c.policy.minimumWork
+	minimumDemand, _ := tpsRequestDemandFromEstimate(minimumWork.Estimate)
 	decision := c.decisionLocked(
-		c.policy.evaluate(state, minimumWork),
+		c.policy.evaluateDemand(state, minimumDemand),
+		minimumDemand,
 		c.policy.minimumWork.Estimate,
 		minimumWork,
 		state,
@@ -494,7 +487,8 @@ func (c *AdmissionController) markForwarded(epoch, id uint64) bool {
 	if !ok {
 		return false
 	}
-	if !c.exposure.addForwarded(c.now(), item.work.Estimate.DecodeSequences) {
+	demand, valid := item.effectiveDemand()
+	if !valid || !c.exposure.addForwarded(c.now(), demand.DecodeSequences) {
 		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
@@ -527,8 +521,7 @@ func (c *AdmissionController) markFirstByte(epoch, id uint64) bool {
 	if !ok {
 		return false
 	}
-	responseSequences := next.work.Estimate.DecodeSequences - next.work.FirstBytePendingPrefillSequences
-	if responseSequences <= 0 || !c.exposure.addResponse(c.now(), responseSequences) {
+	if !c.exposure.addResponse(c.now(), 1) {
 		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
@@ -553,23 +546,8 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 		c.failClosedLocked(ReasonControllerUnavailable)
 		return false
 	}
-	nextCache := c.observation.cache
-	if item.phase == reservationReserved {
-		var cacheValid bool
-		nextCache, cacheValid = refundCachePrefillCredit(
-			c.observation.cache,
-			item.cacheCreditLease,
-			item.cacheCreditTokens,
-		)
-		if !cacheValid {
-			c.failClosedLocked(ReasonControllerUnavailable)
-			return false
-		}
-	}
 	remove := item.phase == reservationReserved ||
-		(item.phase == reservationActiveDecode && item.inputCovered &&
-			item.work.FirstBytePendingInputKVTokens == 0 &&
-			item.work.FirstBytePendingPrefillSequences == 0)
+		(item.phase == reservationActiveDecode && cause == TerminalSuccess)
 	var next reservation
 	var newContribution reservationOverlay
 	newValid := true
@@ -595,7 +573,6 @@ func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) b
 		return false
 	}
 	c.overlay = nextOverlay
-	c.observation.cache = nextCache
 	if remove {
 		delete(c.reservations, id)
 	} else {
@@ -646,14 +623,14 @@ func (c *AdmissionController) unavailableDecisionLocked(reason Reason, estimate 
 	}
 }
 
-func (c *AdmissionController) decisionLocked(policy policyDecision, estimate predictive.RequestEstimate, work predictive.RequestWork, state ProjectedState) DecisionRecord {
+func (c *AdmissionController) decisionLocked(policy policyDecision, demand TPSRequestDemand, estimate predictive.RequestEstimate, work predictive.RequestWork, state ProjectedState) DecisionRecord {
 	remainingKV := int64(0)
 	if policy.postAdmitKVTokens >= 0 && policy.postAdmitKVTokens <= c.capability.KVHardLimitTokens {
 		remainingKV = c.capability.KVHardLimitTokens - policy.postAdmitKVTokens
 	}
 	return DecisionRecord{
 		Action: policy.action, Reason: policy.reason, Scope: policy.scope,
-		PrefillClass: policy.prefillClass, Estimate: estimate, Work: work, State: state,
+		Demand: demand, PrefillClass: policy.prefillClass, Estimate: estimate, Work: work, State: state,
 		PostAdmitKVTokens:          policy.postAdmitKVTokens,
 		HardKVLimitTokens:          c.capability.KVHardLimitTokens,
 		RemainingKVTokens:          remainingKV,
@@ -698,20 +675,17 @@ func (c *AdmissionController) failClosedLocked(reason Reason) {
 }
 
 func reservationExposureCounts(item reservation) (forwarded, response int64, valid bool) {
-	if item.work.Validate() != nil {
+	demand, ok := item.effectiveDemand()
+	if !ok {
 		return 0, 0, false
 	}
 	switch item.phase {
 	case reservationReserved:
 		return 0, 0, true
 	case reservationForwardedPrefill:
-		return item.work.Estimate.DecodeSequences, 0, true
+		return demand.DecodeSequences, 0, true
 	case reservationActiveDecode:
-		response = item.work.Estimate.DecodeSequences - item.work.FirstBytePendingPrefillSequences
-		if response <= 0 {
-			return 0, 0, false
-		}
-		return item.work.Estimate.DecodeSequences, response, true
+		return demand.DecodeSequences, 1, true
 	default:
 		return 0, 0, false
 	}
@@ -722,10 +696,14 @@ func (c *AdmissionController) reconciledOverlayLocked(watermark uint64) (reserva
 	var forwardedSequenceLiabilities int64
 	for _, item := range c.reservations {
 		if item.forwardedSequence > 0 && item.forwardedSequence <= watermark {
+			demand, valid := item.effectiveDemand()
+			if !valid {
+				return reservationOverlay{}, 0, false
+			}
 			var ok bool
 			forwardedSequenceLiabilities, ok = addNonnegativeInt64(
 				forwardedSequenceLiabilities,
-				item.work.Estimate.DecodeSequences,
+				demand.DecodeSequences,
 			)
 			if !ok {
 				return reservationOverlay{}, 0, false
