@@ -65,8 +65,8 @@ func TestTPSHealthGateProtectsWindowSizedWaitingImmediately(t *testing.T) {
 
 func TestTPSHealthGateDoesNotConfirmWaitingAcrossInvalidInterval(t *testing.T) {
 	decision := (tpsGate{}).evaluate(ProjectedState{
-		RawWaiting:              1,
-		PreviousRawWaiting:      1,
+		RawWaiting:               1,
+		PreviousRawWaiting:       1,
 		ObservationIntervalValid: false,
 	}, 4)
 	if !decision.fits || decision.reason != ReasonOpen ||
