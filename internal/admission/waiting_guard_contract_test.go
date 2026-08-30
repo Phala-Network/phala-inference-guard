@@ -5,16 +5,55 @@ import (
 	"time"
 )
 
-func TestWaitingProtectsWhenTPSReferenceIsDisabled(t *testing.T) {
+func TestWaitingRequiresConfirmationWhenTPSReferenceIsDisabled(t *testing.T) {
 	now := time.Unix(20_000, 0)
 	controller := testControllerWithObservation(t, testObservation(now, 2, 1, 1, 0))
 
+	transient := controller.Admit(now.Add(time.Millisecond), testDemand(1))
+	if !transient.Decision.Admitted() ||
+		transient.Decision.TPSDecisionSubreason == TPSDecisionSubreasonWaiting {
+		t.Fatalf("first waiting observation was not treated as transient: %+v", transient.Decision)
+	}
+	if !transient.Handle.Terminate(TerminalCancel) {
+		t.Fatal("transient waiting admission cleanup failed")
+	}
+
+	confirmedAt := now.Add(500 * time.Millisecond)
+	publishObservation(t, controller, testObservation(confirmedAt, 2, 1, 2, 0))
+	confirmed := controller.Admit(confirmedAt.Add(time.Millisecond), testDemand(1)).Decision
+	if confirmed.Admitted() || confirmed.Reason != ReasonTPSReference ||
+		confirmed.TPSDecisionResult != TPSDecisionResultProtect ||
+		confirmed.TPSDecisionSubreason != TPSDecisionSubreasonWaiting ||
+		confirmed.ReservationID != 0 {
+		t.Fatalf("confirmed waiting decision=%+v", confirmed)
+	}
+
+	clearedAt := now.Add(time.Second)
+	publishObservation(t, controller, testObservation(clearedAt, 2, 0, 3, 0))
+	cleared := controller.Admit(clearedAt.Add(time.Millisecond), testDemand(1))
+	if !cleared.Decision.Admitted() {
+		t.Fatalf("first zero-waiting observation did not reopen intake: %+v", cleared.Decision)
+	}
+	if !cleared.Handle.Terminate(TerminalCancel) {
+		t.Fatal("cleared waiting admission cleanup failed")
+	}
+}
+
+func TestWaitingAtWindowConcurrencyProtectsImmediately(t *testing.T) {
+	now := time.Unix(20_250, 0)
+	controller, err := NewAdmissionController(ControllerConfig{
+		RuntimeIdentity:   testRuntimeIdentity,
+		WindowConcurrency: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	publishObservation(t, controller, testObservation(now, 1, 4, 1, 0))
+
 	decision := controller.Admit(now.Add(time.Millisecond), testDemand(1)).Decision
 	if decision.Admitted() || decision.Reason != ReasonTPSReference ||
-		decision.TPSDecisionResult != TPSDecisionResultProtect ||
-		decision.TPSDecisionSubreason != TPSDecisionSubreasonWaiting ||
-		decision.ReservationID != 0 {
-		t.Fatalf("disabled-TPS waiting decision=%+v", decision)
+		decision.TPSDecisionSubreason != TPSDecisionSubreasonWaiting {
+		t.Fatalf("window-sized waiting burst did not protect immediately: %+v", decision)
 	}
 }
 
