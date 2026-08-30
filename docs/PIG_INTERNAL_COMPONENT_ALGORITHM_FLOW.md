@@ -94,8 +94,10 @@ the rolling window.
 The pure gate is:
 
 ```text
-reference disabled                         -> open/disabled
-waiting > 0                                -> protect/waiting
+current waiting > 0, previous > 0,
+  and observation interval is fresh        -> protect/waiting
+current waiting >= window concurrency      -> protect/waiting
+one smaller waiting sample                 -> continue TPS evaluation
 fresh preemption delta > 0                 -> protect/preemption
 rolling window not ready                   -> open/warming
 latest interval not qualified              -> open/no_current_evidence

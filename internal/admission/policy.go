@@ -23,7 +23,7 @@ func (p admissionPolicy) evaluateDemand(
 	demand TPSRequestDemand,
 	bounds admissionBounds,
 ) policyDecision {
-	tps := p.tpsGate.evaluate(state)
+	tps := p.tpsGate.evaluate(state, bounds.windowConcurrency)
 	decision := policyDecision{
 		action:               ActionAdmit,
 		reason:               ReasonOpen,

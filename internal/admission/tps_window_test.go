@@ -237,7 +237,7 @@ func TestV01215CompletionBetweenPollsCannotFabricateCurrentTPSEvidence(t *testin
 		math.Abs(snapshot.QualifiedSequenceSeconds-8) > 1e-9 {
 		t.Fatalf("qualified mixed snapshot=%+v", snapshot)
 	}
-	decision := (tpsGate{}).evaluate(ProjectedState{RawRunning: 1, TPS: snapshot})
+	decision := (tpsGate{}).evaluate(ProjectedState{RawRunning: 1, TPS: snapshot}, DefaultWindowConcurrency)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.subreason != TPSDecisionSubreasonNoCurrentEvidence {
 		t.Fatalf("unreliable completion evidence became current TPS evidence: %+v", decision)
@@ -313,7 +313,7 @@ func TestV01223TPSWindowHealthUsesRollingToleranceAndCurrentRecovery(t *testing.
 			if !snapshot.Ready || !snapshot.Latest.Qualified {
 				t.Fatalf("TPS fixture did not become ready: %+v", snapshot)
 			}
-			decision := (tpsGate{}).evaluate(ProjectedState{TPS: snapshot})
+			decision := (tpsGate{}).evaluate(ProjectedState{TPS: snapshot}, DefaultWindowConcurrency)
 			if !decision.fits || decision.reason != ReasonOpen || decision.subreason != test.subreason {
 				t.Fatalf("TPS health decision=%+v snapshot=%+v", decision, snapshot)
 			}

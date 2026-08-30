@@ -9,6 +9,7 @@ type observedState struct {
 	preemptionDelta uint64
 	interval        time.Duration
 	previousRunning int64
+	previousWaiting int64
 }
 
 type reservationOverlay struct {
@@ -29,6 +30,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		RawRunning:               observed.observation.Running,
 		RawWaiting:               observed.observation.Waiting,
 		PreviousRawRunning:       observed.previousRunning,
+		PreviousRawWaiting:       observed.previousWaiting,
 		GenerationDelta:          observed.generationDelta,
 		PreemptionDelta:          observed.preemptionDelta,
 		ObservationInterval:      observed.interval,
@@ -45,6 +47,7 @@ func validProjectedState(state ProjectedState) bool {
 		state.SequenceLiabilities >= 0 && state.UnobservedSequences <= state.SequenceLiabilities &&
 		state.LiveReservations >= 0 && state.ResidualDebts >= 0 &&
 		state.RawRunning >= 0 && state.RawWaiting >= 0 && state.PreviousRawRunning >= 0 &&
+		state.PreviousRawWaiting >= 0 &&
 		state.ObservationInterval >= 0 &&
 		(!state.ObservationIntervalValid || state.ObservationInterval > 0) &&
 		validTPSSnapshot(state.TPS)

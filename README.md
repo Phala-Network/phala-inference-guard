@@ -36,15 +36,18 @@ are acceptable and become evidence for later predictions; they do not create a
 cooldown, consecutive-clear requirement, sticky recovery timer, or learned low
 cap.
 
-Waiting pauses marginal intake even when TPS reference protection is disabled;
-a fresh preemption pauses it when TPS health is enabled. Same-snapshot
-reservations remain atomic so concurrent arrivals cannot spend the same apparent
-headroom. TPS never derives a concurrency ceiling. The default window bound
-allows 32 Decode sequences that are still pending first byte. A normal metrics
-poll does not release that budget. First byte or terminal lifecycle releases it
-immediately; after three polling intervals, a fresh zero-waiting observation may
-release a long-TTFT lease. A separate backend running limit is enforced only
-when explicitly configured or safely discovered.
+Waiting pauses marginal intake even when TPS reference protection is disabled.
+One sub-window nonzero sample is treated as transient; a second adjacent fresh
+sample confirms waiting, while a first sample at or above the current window
+bound protects immediately. The first zero-waiting sample reopens immediately.
+A fresh preemption pauses intake when TPS health is enabled. Same-snapshot
+reservations remain atomic so concurrent arrivals cannot spend the same
+apparent headroom. TPS never derives a concurrency ceiling. The default window
+bound allows 32 Decode sequences that are still pending first byte. A normal
+metrics poll does not release that budget. First byte or terminal lifecycle
+releases it immediately; after three polling intervals, a fresh zero-waiting
+observation may release a long-TTFT lease. A separate backend running limit is
+enforced only when explicitly configured or safely discovered.
 
 ## Production configuration
 

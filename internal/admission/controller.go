@@ -195,7 +195,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 	}
 	var generationDelta, preemptionDelta uint64
 	var observationInterval time.Duration
-	var previousRunning int64
+	var previousRunning, previousWaiting int64
 	if runtimeReset {
 		if c.runtimeEpoch == math.MaxUint64 {
 			c.failClosedLocked(ReasonCounterOverflow)
@@ -215,6 +215,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			preemptionDelta = observation.PreemptionsTotal - c.observation.observation.PreemptionsTotal
 			observationInterval = observation.ObservedAt.Sub(c.observation.observation.ObservedAt)
 			previousRunning = c.observation.observation.Running
+			previousWaiting = c.observation.observation.Waiting
 		}
 		exposure, exposureOK := window.exposure.subtract(c.lastExposure)
 		if !exposureOK {
@@ -266,6 +267,7 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		preemptionDelta: preemptionDelta,
 		interval:        observationInterval,
 		previousRunning: previousRunning,
+		previousWaiting: previousWaiting,
 	}
 	c.hasObservation = true
 	return PublicationResult{

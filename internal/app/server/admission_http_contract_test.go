@@ -125,7 +125,7 @@ func TestAdmissionHTTPEnforceProtectionIsOpenAICompatibleAndObservable(t *testin
 	}))
 	defer backend.Close()
 	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
-		Mode: "enforce", TPSReference: 50, Waiting: 1,
+		Mode: "enforce", TPSReference: 50, Waiting: 1, WindowConcurrency: 1,
 	})
 	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
 	body := `{"model":"model-agnostic","messages":[{"role":"user","content":"hello"}],"n":8,"max_tokens":8}`
@@ -165,7 +165,7 @@ func TestAdmissionHTTPShadowProtectionForwardsWithoutReservation(t *testing.T) {
 	}))
 	defer backend.Close()
 	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
-		Mode: "shadow", TPSReference: 50, Waiting: 1,
+		Mode: "shadow", TPSReference: 50, Waiting: 1, WindowConcurrency: 1,
 	})
 	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "shadow", runtime)
 	body := `{"model":"model-agnostic","messages":[{"role":"user","content":"hello"}],"n":8,"max_tokens":8}`

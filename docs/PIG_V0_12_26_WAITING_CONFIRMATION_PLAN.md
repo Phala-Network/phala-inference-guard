@@ -17,7 +17,7 @@ flapping:
 
 1. the first nonzero waiting observation below `window_concurrency` remains
    open;
-2. a second consecutive nonzero waiting observation protects;
+2. a second adjacent fresh nonzero waiting observation protects;
 3. waiting at or above `window_concurrency` protects immediately;
 4. the first zero-waiting observation reopens immediately;
 5. `window_concurrency`, running-limit, TPS-window, preemption, lifecycle, and
@@ -31,7 +31,9 @@ threshold. Admission remains O(1).
 ## Implementation Contract
 
 - Preserve the previous raw waiting value from the immediately preceding
-  accepted backend observation in the immutable projected state.
+  accepted backend observation in the immutable projected state, but require
+  the current observation interval to remain valid before it can confirm
+  waiting.
 - Reset previous waiting to zero across controller initialization and backend
   runtime reset.
 - Confirm waiting when current and previous raw waiting are both nonzero.

@@ -315,16 +315,30 @@ func atomicBatchScenario() scenario {
 
 func pressureRecoveryScenario(name string, waiting bool) scenario {
 	events, generation := healthyObservations(3, 50)
-	preemptions := uint64(0)
-	waitingCount := int64(0)
 	if waiting {
-		waitingCount = 1
-	} else {
-		preemptions = 1
+		generation += 50
+		events = append(events,
+			observation(4_500, 3, 1, generation, 0, 1),
+			arrival(4_550, name+"-transient", 1),
+			terminal(4_600, name+"-transient", coreadmission.TerminalCancel),
+		)
+		generation += 50
+		events = append(events,
+			observation(5_000, 3, 1, generation, 0, 1),
+			arrival(5_050, name+"-protected", 1),
+		)
+		generation += 50
+		events = append(events,
+			observation(5_500, 3, 0, generation, 0, 1),
+			arrival(5_550, name+"-recovered", 1),
+			terminal(5_600, name+"-recovered", coreadmission.TerminalCancel),
+		)
+		return scenario{name: name, category: "pressure_recovery", events: events}
 	}
+	preemptions := uint64(1)
 	generation += 50
 	events = append(events,
-		observation(4_500, 3, waitingCount, generation, preemptions, 1),
+		observation(4_500, 3, 0, generation, preemptions, 1),
 		arrival(4_550, name+"-protected", 1),
 	)
 	generation += 50

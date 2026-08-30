@@ -13,13 +13,17 @@ type tpsGateDecision struct {
 
 type tpsGate struct{}
 
-func (g tpsGate) evaluate(state ProjectedState) tpsGateDecision {
+func (g tpsGate) evaluate(state ProjectedState, waitingImmediateThreshold int64) tpsGateDecision {
 	decision := tpsGateDecision{
 		gateDecision: gateDecision{fits: true, reason: ReasonOpen},
 		result:       TPSDecisionResultDisabled,
 		subreason:    TPSDecisionSubreasonDisabled,
 	}
-	if state.RawWaiting > 0 {
+	confirmedWaiting := state.RawWaiting > 0 && state.PreviousRawWaiting > 0 &&
+		state.ObservationIntervalValid
+	immediateWaiting := state.RawWaiting > 0 && waitingImmediateThreshold > 0 &&
+		state.RawWaiting >= waitingImmediateThreshold
+	if confirmedWaiting || immediateWaiting {
 		decision.fits = false
 		decision.reason = ReasonTPSReference
 		decision.result = TPSDecisionResultProtect

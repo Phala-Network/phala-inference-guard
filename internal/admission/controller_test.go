@@ -193,6 +193,7 @@ func TestControllerSnapshotIsOneCoherentObservation(t *testing.T) {
 		snapshot.State.GenerationDelta != 70 ||
 		snapshot.State.PreemptionDelta != 1 ||
 		snapshot.State.PreviousRawRunning != 3 ||
+		snapshot.State.PreviousRawWaiting != 1 ||
 		snapshot.State.ObservationInterval != 500*time.Millisecond {
 		t.Fatalf("incoherent snapshot=%+v", snapshot)
 	}

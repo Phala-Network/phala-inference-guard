@@ -67,7 +67,7 @@ func TestTPSOnlyControllerPressureHoldClearsOnFirstFreshObservation(t *testing.T
 		preemption uint64
 		subreason  TPSDecisionSubreason
 	}{
-		{name: "waiting", waiting: 1, subreason: TPSDecisionSubreasonWaiting},
+		{name: "waiting", waiting: DefaultWindowConcurrency, subreason: TPSDecisionSubreasonWaiting},
 		{name: "preemption", preemption: 1, subreason: TPSDecisionSubreasonPreemption},
 	} {
 		t.Run(test.name, func(t *testing.T) {

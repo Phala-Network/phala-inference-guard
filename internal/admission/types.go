@@ -46,6 +46,7 @@ type ProjectedState struct {
 	RawRunning               int64
 	RawWaiting               int64
 	PreviousRawRunning       int64
+	PreviousRawWaiting       int64
 	GenerationDelta          uint64
 	PreemptionDelta          uint64
 	ObservationInterval      time.Duration
