@@ -58,8 +58,9 @@ Attestation variables do not alter admission policy.
 TPS is a health signal, not a capacity formula. Waiting protection remains
 independent of TPS reference: a second adjacent fresh nonzero sample confirms it,
 and a first sample at or above `window_concurrency` protects immediately. One
-smaller waiting sample remains open and the first zero-waiting sample clears the
-confirmation. With TPS health enabled, the gate stays open while warming or
+smaller waiting sample remains open and the first zero-waiting sample clears
+waiting confirmation; independent guards may still protect. With TPS health
+enabled, the gate stays open while warming or
 when the latest interval has no reliable Decode denominator. It protects on a
 fresh preemption or when both the ready rolling mean and latest qualified mean
 are below the reference. One low interval does not close a healthy rolling

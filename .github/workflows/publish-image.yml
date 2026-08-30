@@ -28,6 +28,10 @@ jobs:
           EXPECTED_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           EXPECTED_REVISION: ${{ github.sha }}
         run: tools/validate-production-image-contract.sh
+      - name: Resolve immutable image tag
+        id: image
+        shell: bash
+        run: echo "revision_tag=${GITHUB_REF_NAME}-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
       - uses: docker/build-push-action@v6
         with:
           context: .
@@ -35,4 +39,6 @@ jobs:
           build-args: |
             SOURCE_REVISION=${{ github.sha }}
           push: true
-          tags: ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.ref_name }}
+            ${{ env.IMAGE_NAME }}:${{ steps.image.outputs.revision_tag }}

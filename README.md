@@ -39,7 +39,8 @@ cap.
 Waiting pauses marginal intake even when TPS reference protection is disabled.
 One sub-window nonzero sample is treated as transient; a second adjacent fresh
 sample confirms waiting, while a first sample at or above the current window
-bound protects immediately. The first zero-waiting sample reopens immediately.
+bound protects immediately. The first zero-waiting sample clears waiting
+protection immediately; independent guards may still protect.
 A fresh preemption pauses intake when TPS health is enabled. Same-snapshot
 reservations remain atomic so concurrent arrivals cannot spend the same
 apparent headroom. TPS never derives a concurrency ceiling. The default window

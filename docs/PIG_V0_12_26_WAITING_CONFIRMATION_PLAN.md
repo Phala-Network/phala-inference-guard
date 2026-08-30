@@ -19,7 +19,8 @@ flapping:
    open;
 2. a second adjacent fresh nonzero waiting observation protects;
 3. waiting at or above `window_concurrency` protects immediately;
-4. the first zero-waiting observation reopens immediately;
+4. the first zero-waiting observation clears waiting protection immediately,
+   while independent guards remain authoritative;
 5. `window_concurrency`, running-limit, TPS-window, preemption, lifecycle, and
    five-line Router metric semantics otherwise remain unchanged.
 
