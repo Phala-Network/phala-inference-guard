@@ -51,7 +51,7 @@ func TestDefaultSuiteExercisesRecoveryAtomicityAndLifecycle(t *testing.T) {
 	requireArrival(t, batch, "same-snapshot-extra", "protect", "healthy_window", 35, 33, 32)
 
 	waiting := scenarioByName(t, suite, "waiting_clear")
-	requireArrival(t, waiting, "waiting_clear-transient", "admit", "healthy_window", 4, 1, 32)
+	requireArrival(t, waiting, "waiting_clear-transient", "admit", "healthy_window", 5, 1, 32)
 	requireArrival(t, waiting, "waiting_clear-protected", "protect", "waiting", 0, 0, 32)
 	requireArrival(t, waiting, "waiting_clear-recovered", "admit", "healthy_window", 4, 1, 32)
 

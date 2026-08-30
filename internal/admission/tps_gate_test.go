@@ -30,7 +30,9 @@ func TestTPSHealthGateTreatsConfirmedWaitingAndPreemptionAsPressure(t *testing.T
 		state     ProjectedState
 		subreason TPSDecisionSubreason
 	}{
-		{name: "waiting", state: ProjectedState{RawWaiting: 1, PreviousRawWaiting: 1}, subreason: TPSDecisionSubreasonWaiting},
+		{name: "waiting", state: ProjectedState{
+			RawWaiting: 1, PreviousRawWaiting: 1, ObservationIntervalValid: true,
+		}, subreason: TPSDecisionSubreasonWaiting},
 		{name: "preemption", state: ProjectedState{PreemptionDelta: 1}, subreason: TPSDecisionSubreasonPreemption},
 	} {
 		t.Run(test.name, func(t *testing.T) {
