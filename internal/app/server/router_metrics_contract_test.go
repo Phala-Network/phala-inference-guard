@@ -96,7 +96,7 @@ func TestCombinedMetricsRetainsFullDiagnostics(t *testing.T) {
 		t.Fatalf("status=%d want=200 body=%q", response.Code, response.Body.String())
 	}
 	for _, required := range []string{
-		"pig_info{version=\"PIG-v0.12.26\"} 1\n",
+		"pig_info{version=\"PIG-v0.12.27\"} 1\n",
 		"pig_predictive_tps_reference ",
 		"# --- Backend Metrics ---\n",
 		"backend_test_metric 1\n",
