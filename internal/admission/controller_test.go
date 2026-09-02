@@ -95,7 +95,7 @@ func TestControllerPremiumStillRespectsTPSReference(t *testing.T) {
 	for step := 1; step <= 4; step++ {
 		publishObservation(t, controller, testObservation(
 			now.Add(time.Duration(step)*time.Second),
-			1, 0, uint64(step*10), 0,
+			2, 0, uint64(step*10), 0,
 		))
 	}
 	result := controller.Admit(now.Add(4*time.Second+time.Millisecond),

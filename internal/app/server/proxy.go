@@ -5,7 +5,6 @@ import (
 	"time"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
-	apprequest "github.com/Phala-Network/phala-inference-guard/internal/app/request"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 )
 
