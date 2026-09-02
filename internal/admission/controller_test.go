@@ -67,11 +67,11 @@ func TestControllerTPSReferenceChangesPreForwardDecision(t *testing.T) {
 func TestControllerPremiumUsesTPSOnlyAndKeepsReservationAccounting(t *testing.T) {
 	now := time.Unix(9_250, 0)
 	controller := testControllerWithBounds(t, ControllerConfig{
-		RuntimeIdentity:      testRuntimeIdentity,
-		TPS:                  TPSPolicyConfig{Reference: 25},
-		WindowConcurrency:    1,
-		RunningLimit:         1,
-		RunningLimitSource:   RunningLimitSourceAdmin,
+		RuntimeIdentity:    testRuntimeIdentity,
+		TPS:                TPSPolicyConfig{Reference: 25},
+		WindowConcurrency:  1,
+		RunningLimit:       1,
+		RunningLimitSource: RunningLimitSourceAdmin,
 	}, testObservation(now, 1, 1, 0, 0))
 
 	demand := testDemand(1).WithPriority(RequestPriorityPremium)

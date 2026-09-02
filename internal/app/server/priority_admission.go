@@ -53,11 +53,11 @@ type priorityAdmissionRequest struct {
 }
 
 type priorityQueueSnapshot struct {
-	Depth         int
-	Enqueued      uint64
-	Full          uint64
-	TimedOut      uint64
-	Canceled      uint64
+	Depth    int
+	Enqueued uint64
+	Full     uint64
+	TimedOut uint64
+	Canceled uint64
 }
 
 func newPriorityAdmissionService(delegate admissionService) *priorityAdmissionService {
@@ -358,10 +358,10 @@ func priorityQueueDecision(
 		scope = coreadmission.ProtectionAvailability
 	}
 	return admissionDecision{Record: coreadmission.DecisionRecord{
-		Action:  coreadmission.ActionProtect,
-		Reason:  reason,
-		Scope:   scope,
-		Demand:  demand,
+		Action: coreadmission.ActionProtect,
+		Reason: reason,
+		Scope:  scope,
+		Demand: demand,
 	}}
 }
 
