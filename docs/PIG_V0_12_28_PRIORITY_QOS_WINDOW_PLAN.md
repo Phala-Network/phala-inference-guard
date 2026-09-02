@@ -151,11 +151,109 @@ The focused red/green tests must prove:
 
 - [x] Withdraw v0.12.27 semantics in documentation; keep its immutable image
       tags untouched.
-- [ ] Add priority demand type and bounded enforce-mode queue.
-- [ ] Add focused regression, lifecycle, race, and metrics tests.
-- [ ] Run focused/full/race/vet/build/simulation gates on the approved remote
+- [x] Add priority demand type and bounded enforce-mode queue.
+- [x] Add focused regression, lifecycle, race, and metrics tests.
+- [x] Run focused/full/race/vet/build/simulation gates on the approved remote
       builder; do not run Go tests locally.
-- [ ] Perform the three review passes and record evidence.
-- [ ] Assign/push v0.12.28 source only after the source gates pass.
+- [x] Perform the three review passes and record evidence.
+- [x] Assign/push v0.12.28 source only after the source gates pass.
 - [ ] Build/publish v0.12.28 only after acceptance; deployment remains a
       separate user-authorized step.
+
+## 7. Source acceptance evidence (2026-09-02)
+
+The accepted source HEAD is:
+
+```text
+branch: codex/pig-v0.12.28-priority-tps
+commit: 9f2e4e6 (full: 9f2e4e65bc02f5e514226a8600a452adc87fff8c)
+pig-origin: https://github.com/Phala-Network/phala-inference-guard.git
+```
+
+The branch is pushed to `pig-origin` and the auxiliary `origin` mirror. The
+clean source archive used by the builder is:
+
+```text
+archive: pig-v01228-priority-tps-9f2e4e6.tar.gz
+sha256: 5bc01d694b7124e03bf630ebcc9bcc2ee52108c0ea638ef4d6902f19acd83eb4
+```
+
+Builder evidence is from app `ff40ee31b95e89ebb242c223514adc715ac8a301` using
+the immutable Go image:
+
+```text
+golang@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+go version: go1.24.13 linux/amd64
+evidence directory: /var/volatile/dstack/persistent/.cache/pig-v01228-priority/green-9f2e4e6-r1/src
+```
+
+The following commands all returned exit status 0 in one clean container;
+Go tests were not run on the Windows host:
+
+```text
+gofmt -l .                         (empty)
+go test ./internal/admission ./internal/app/server ./internal/simulation/tpscontrol -count=1
+go test ./... -count=1
+go test -race ./... -count=1
+go vet ./...
+go build ./...
+```
+
+An earlier focused run exposed two defects before acceptance: the queue wrapper
+hid the runtime `UpdatePolicy` interface, and the premium TPS regression fixture
+was still in the TPS warm-up state. The first was fixed by delegating
+`UpdatePolicy`; the second was corrected by supplying enough sequence-seconds
+evidence to exercise the intended below-reference branch. The final archive was
+then rebuilt and all gates were rerun.
+
+## 8. Three review passes
+
+### 8.1 Model and causality
+
+- `X-User-Tier: premium` is classified only after route, authentication, and
+  body classification; it is carried into the real pre-forward `Decide` call.
+- Premium bypasses only waiting/preemption/running/window load protections;
+  the controller's TPS/reference, observation validity, runtime identity, and
+  reservation checks remain authoritative.
+- The local queue coalesces for 2 ms and has a 50 ms hard bound; it never waits
+  for a 500 ms observation interval, invents backend waiting, or retries a TPS
+  rejection. Basic requests are aged after 25 ms so premium cannot starve them.
+- Warming remains an explicit controller state: with insufficient qualified TPS
+  evidence the controller admits to bootstrap observation for both priorities;
+  once evidence is ready, a below-reference TPS window rejects premium too.
+
+### 8.2 Safety and lifecycle
+
+- Queue depth is bounded at 64. Full, timeout, cancellation, close, panic, and
+  invalid-result paths return protection without a backend call.
+- Controller reservations remain owned by the underlying admission runtime.
+  Every forwarded result retains the existing success/error/cancel/timeout/
+  disconnect cleanup; a cancellation race terminates any reservation before a
+  canceled result is returned.
+- The queue delegates `UpdatePolicy` and records local queue protections through
+  an optional decision-recorder interface, so policy API, logs, and evidence do
+  not disappear behind the wrapper. The queue does not rewrite backend `waiting`
+  or Router compatibility metrics.
+- `go test -race ./...` passed, covering concurrent enqueue/dispatch/cancel/
+  close and reservation cleanup fixtures. The controller's finite
+  `maximumReservations` remains an overflow failsafe, not a premium capacity
+  entitlement.
+
+### 8.3 Evidence and release boundary
+
+- Source, archive, builder image, tests, and Git push are recorded separately.
+  No v0.12.28 image has been built or published, and no CVM has been restarted,
+  deployed, or sent synthetic inference traffic.
+- v0.12.27 remains withdrawn and immutable; no historical tag was overwritten.
+- The next release step, if authorized, is a pinned builder image build with
+  SBOM/provenance and registry digest verification. Until that separate step is
+  authorized and passes, v0.12.28 is a validated source candidate only.
+
+## 9. Decision
+
+The source implementation satisfies the current target at the source and clean
+builder-test layers: high-priority requests are preferentially ordered and may
+avoid non-TPS load gates, but they cannot bypass the TPS/reference gate or
+reservation lifecycle. Keep the candidate at v0.12.28 and do not publish or
+deploy an image in this task. Any future policy change must update this plan and
+rerun the focused/full/race gates before publication.
