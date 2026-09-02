@@ -37,6 +37,14 @@ type admissionPolicyService interface {
 	UpdatePolicy(coreadmission.PolicyUpdate) (coreadmission.PolicyUpdateResult, error)
 }
 
+// admissionDecisionRecorder is optional observability for decisions made by
+// an admission wrapper before the underlying controller is called. It keeps
+// local queue protection visible without making queueing part of the
+// controller's backend observation model.
+type admissionDecisionRecorder interface {
+	RecordExternalDecision(time.Time, coreadmission.DecisionRecord)
+}
+
 type admissionObserver interface {
 	Close() error
 }
@@ -140,6 +148,16 @@ func (r *admissionRuntime) UpdatePolicy(
 		return coreadmission.PolicyUpdateResult{}, coreadmission.ErrPolicyUnavailable
 	}
 	return r.controller.UpdatePolicy(update)
+}
+
+func (r *admissionRuntime) RecordExternalDecision(
+	now time.Time,
+	decision coreadmission.DecisionRecord,
+) {
+	if r == nil || r.reporter == nil {
+		return
+	}
+	r.reporter.Record(now, r.mode, decision)
 }
 
 func (r *admissionRuntime) Close() error {

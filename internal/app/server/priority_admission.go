@@ -118,7 +118,7 @@ func (s *priorityAdmissionService) Decide(
 	}
 	if ctx.Err() != nil {
 		s.canceled.Add(1)
-		return priorityQueueDecision(demand, coreadmission.ReasonPriorityQueueCanceled)
+		return s.queueDecision(demand, coreadmission.ReasonPriorityQueueCanceled)
 	}
 
 	item := &priorityAdmissionRequest{
@@ -130,12 +130,12 @@ func (s *priorityAdmissionService) Decide(
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
-		return priorityQueueDecision(demand, coreadmission.ReasonClosed)
+		return s.queueDecision(demand, coreadmission.ReasonClosed)
 	}
 	if len(s.queue) >= s.maxEntries {
 		s.mu.Unlock()
 		s.full.Add(1)
-		return priorityQueueDecision(demand, coreadmission.ReasonPriorityQueueFull)
+		return s.queueDecision(demand, coreadmission.ReasonPriorityQueueFull)
 	}
 	s.nextID++
 	item.id = s.nextID
@@ -316,12 +316,12 @@ func (s *priorityAdmissionService) chooseIndex(now time.Time) int {
 func (s *priorityAdmissionService) dispatch(item *priorityAdmissionRequest) {
 	if item.ctx.Err() != nil {
 		s.canceled.Add(1)
-		item.result <- priorityQueueDecision(item.demand, coreadmission.ReasonPriorityQueueCanceled)
+		item.result <- s.queueDecision(item.demand, coreadmission.ReasonPriorityQueueCanceled)
 		return
 	}
 	if s.now().Sub(item.enqueuedAt) >= s.maxWait {
 		s.timedOut.Add(1)
-		item.result <- priorityQueueDecision(item.demand, coreadmission.ReasonPriorityQueueTimeout)
+		item.result <- s.queueDecision(item.demand, coreadmission.ReasonPriorityQueueTimeout)
 		return
 	}
 	decision := safePriorityDelegateDecide(s.delegate, item.ctx, item.demand)
@@ -331,6 +331,7 @@ func (s *priorityAdmissionService) dispatch(item *priorityAdmissionRequest) {
 		}
 		s.canceled.Add(1)
 		decision = priorityQueueDecision(item.demand, coreadmission.ReasonPriorityQueueCanceled)
+		s.recordExternalDecision(decision.Record)
 	}
 	item.result <- decision
 }
@@ -341,7 +342,27 @@ func (s *priorityAdmissionService) drain(reason coreadmission.Reason) {
 	s.queue = nil
 	s.mu.Unlock()
 	for _, item := range items {
-		item.result <- priorityQueueDecision(item.demand, reason)
+		item.result <- s.queueDecision(item.demand, reason)
+	}
+}
+
+func (s *priorityAdmissionService) queueDecision(
+	demand coreadmission.TPSRequestDemand,
+	reason coreadmission.Reason,
+) admissionDecision {
+	decision := priorityQueueDecision(demand, reason)
+	s.recordExternalDecision(decision.Record)
+	return decision
+}
+
+func (s *priorityAdmissionService) recordExternalDecision(
+	decision coreadmission.DecisionRecord,
+) {
+	if s == nil || s.delegate == nil {
+		return
+	}
+	if recorder, ok := s.delegate.(admissionDecisionRecorder); ok {
+		recorder.RecordExternalDecision(s.now(), decision)
 	}
 }
 
