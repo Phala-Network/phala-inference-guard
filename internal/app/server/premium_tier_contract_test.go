@@ -25,6 +25,7 @@ func TestPremiumTierBypassesAllAdmissionBeforeForward(t *testing.T) {
 	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
 		Mode: "enforce", TPSReference: 50, Running: 1, Waiting: 0,
 		WindowConcurrency: 1, RunningLimit: 1,
+		RunningLimitSource: coreadmission.RunningLimitSourceAdmin,
 	})
 	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
