@@ -12,6 +12,7 @@ import (
 type priorityTestAdmissionService struct {
 	mu          sync.Mutex
 	priorities  []coreadmission.RequestPriority
+	recorded    []coreadmission.DecisionRecord
 	decision    admissionDecision
 	decideBlock <-chan struct{}
 	closed      bool
@@ -42,6 +43,15 @@ func (*priorityTestAdmissionService) Snapshot(time.Time) admissionTelemetrySnaps
 	return admissionTelemetrySnapshot{}
 }
 
+func (s *priorityTestAdmissionService) RecordExternalDecision(
+	_ time.Time,
+	decision coreadmission.DecisionRecord,
+) {
+	s.mu.Lock()
+	s.recorded = append(s.recorded, decision)
+	s.mu.Unlock()
+}
+
 func (s *priorityTestAdmissionService) Close() error {
 	s.mu.Lock()
 	s.closed = true
@@ -53,6 +63,12 @@ func (s *priorityTestAdmissionService) order() []coreadmission.RequestPriority {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]coreadmission.RequestPriority(nil), s.priorities...)
+}
+
+func (s *priorityTestAdmissionService) records() []coreadmission.DecisionRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]coreadmission.DecisionRecord(nil), s.recorded...)
 }
 
 func admittedPriorityDecision() admissionDecision {
@@ -177,6 +193,10 @@ func TestPriorityAdmissionCancellationDoesNotCallDelegate(t *testing.T) {
 	if result.Record.Admitted() || result.Record.Reason != coreadmission.ReasonPriorityQueueCanceled ||
 		len(delegate.order()) != 0 {
 		t.Fatalf("canceled request reached delegate: result=%+v order=%v", result.Record, delegate.order())
+	}
+	recorded := delegate.records()
+	if len(recorded) != 1 || recorded[0].Reason != coreadmission.ReasonPriorityQueueCanceled {
+		t.Fatalf("canceled request was not reported: %+v", recorded)
 	}
 }
 
