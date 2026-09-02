@@ -159,6 +159,22 @@ func (s *priorityAdmissionService) Snapshot(now time.Time) admissionTelemetrySna
 	return snapshot
 }
 
+// UpdatePolicy preserves the runtime policy-management surface while keeping
+// the queue as a transparent ordering layer. Policy mutations must reach the
+// underlying controller; the queue itself has no mutable admission policy.
+func (s *priorityAdmissionService) UpdatePolicy(
+	update coreadmission.PolicyUpdate,
+) (coreadmission.PolicyUpdateResult, error) {
+	if s == nil || s.delegate == nil {
+		return coreadmission.PolicyUpdateResult{}, coreadmission.ErrPolicyUnavailable
+	}
+	service, ok := s.delegate.(admissionPolicyService)
+	if !ok {
+		return coreadmission.PolicyUpdateResult{}, coreadmission.ErrPolicyUnavailable
+	}
+	return service.UpdatePolicy(update)
+}
+
 func (s *priorityAdmissionService) QueueSnapshot() priorityQueueSnapshot {
 	if s == nil {
 		return priorityQueueSnapshot{}
