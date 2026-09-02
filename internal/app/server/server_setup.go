@@ -34,6 +34,9 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 	if admission == nil {
 		return nil, fmt.Errorf("admission service constructor returned nil")
 	}
+	if cfg.PredictiveAdmissionMode == "enforce" {
+		admission = newPriorityAdmissionService(admission)
+	}
 	backends, _, _, err := backend.Build([]backend.Config{{
 		Name: "upstream", Upstream: strings.TrimRight(cfg.Upstream, "/"), MetricsURL: cfg.PredictiveMetricsURL,
 	}})

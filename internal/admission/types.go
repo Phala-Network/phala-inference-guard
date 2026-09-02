@@ -25,6 +25,9 @@ const (
 	ReasonWindowConcurrency     Reason = "window_concurrency"
 	ReasonRuntimeIdentityDrift  Reason = "runtime_identity_drift"
 	ReasonResourceExhausted     Reason = "resource_exhausted"
+	ReasonPriorityQueueFull     Reason = "priority_queue_full"
+	ReasonPriorityQueueTimeout  Reason = "priority_queue_timeout"
+	ReasonPriorityQueueCanceled Reason = "priority_queue_canceled"
 	ReasonCounterOverflow       Reason = "counter_overflow"
 	ReasonClosed                Reason = "closed"
 )

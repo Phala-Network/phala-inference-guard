@@ -64,6 +64,48 @@ func TestControllerTPSReferenceChangesPreForwardDecision(t *testing.T) {
 	}
 }
 
+func TestControllerPremiumUsesTPSOnlyAndKeepsReservationAccounting(t *testing.T) {
+	now := time.Unix(9_250, 0)
+	controller := testControllerWithBounds(t, ControllerConfig{
+		RuntimeIdentity:      testRuntimeIdentity,
+		TPS:                  TPSPolicyConfig{Reference: 25},
+		WindowConcurrency:    1,
+		RunningLimit:         1,
+		RunningLimitSource:   RunningLimitSourceAdmin,
+	}, testObservation(now, 1, 1, 0, 0))
+
+	demand := testDemand(1).WithPriority(RequestPriorityPremium)
+	result := controller.Admit(now.Add(time.Millisecond), demand)
+	if !result.Decision.Admitted() || result.Decision.Demand.Priority != RequestPriorityPremium ||
+		result.Decision.ProjectedRunning != 2 || result.Decision.ProjectedWindowSequences != 1 {
+		t.Fatalf("premium was blocked by a non-TPS gate: %+v", result.Decision)
+	}
+	if !result.Handle.Terminate(TerminalCancel) {
+		t.Fatal("premium reservation did not terminate")
+	}
+	state := controller.Snapshot(now.Add(time.Millisecond)).State
+	if state.LiveReservations != 0 || state.ResidualDebts != 0 {
+		t.Fatalf("premium reservation accounting leaked: %+v", state)
+	}
+}
+
+func TestControllerPremiumStillRespectsTPSReference(t *testing.T) {
+	now := time.Unix(9_350, 0)
+	controller := testControllerWithTPSObservation(t, 25, testObservation(now, 0, 0, 0, 0))
+	for step := 1; step <= 4; step++ {
+		publishObservation(t, controller, testObservation(
+			now.Add(time.Duration(step)*time.Second),
+			1, 0, uint64(step*10), 0,
+		))
+	}
+	result := controller.Admit(now.Add(4*time.Second+time.Millisecond),
+		testDemand(1).WithPriority(RequestPriorityPremium))
+	if result.Decision.Admitted() || result.Decision.Reason != ReasonTPSReference ||
+		result.Decision.TPSDecisionSubreason != TPSDecisionSubreasonBelowReference {
+		t.Fatalf("premium bypassed TPS reference: %+v", result.Decision)
+	}
+}
+
 func TestControllerWarmingReservationsAreAtomic(t *testing.T) {
 	now := time.Unix(9_500, 0)
 	controller := testControllerWithTPSObservation(t, 20, testObservation(now, 0, 0, 0, 0))

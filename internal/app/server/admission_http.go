@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	apprequest "github.com/Phala-Network/phala-inference-guard/internal/app/request"
@@ -16,6 +17,13 @@ func tpsDemandForClassification(classification apprequest.Classification) coread
 		return coreadmission.NewFallbackTPSRequestDemand()
 	}
 	return coreadmission.TPSRequestDemand{}
+}
+
+func priorityForRequest(r *http.Request) coreadmission.RequestPriority {
+	if apprequest.IsPremiumTier(r) {
+		return coreadmission.RequestPriorityPremium
+	}
+	return coreadmission.RequestPriorityBasic
 }
 
 func (s *proxyServer) decideAdmission(
@@ -33,6 +41,9 @@ func (s *proxyServer) decideAdmission(
 	}()
 	result = s.admission.Decide(ctx, demand)
 	if !result.valid() {
+		if result.Reservation != nil {
+			_ = result.Reservation.Terminate(coreadmission.TerminalCancel)
+		}
 		s.admissionFailures.decide.Add(1)
 		return unavailableAdmissionDecision(demand)
 	}

@@ -78,6 +78,7 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	fmt.Fprintf(w, "pig_predictive_scanner_inflight %d\n", s.requestClassifier.Inflight())
 	fmt.Fprintf(w, "pig_predictive_scanner_reserved_body_bytes %d\n", s.requestClassifier.ReservedBodyBytes())
 	fmt.Fprintf(w, "pig_predictive_scanner_saturated_total %d\n", s.requestClassifier.Rejected())
+	s.writePriorityQueueMetrics(w)
 	writeRequestEvidenceMetrics(w, s.requestEvidence.Snapshot())
 	writeResponseUsageEvidenceMetrics(w, s.responseUsageEvidence.Snapshot())
 	metrics.WriteBackends(w, s.backendMetricsInput(snapshot, now))
@@ -87,6 +88,24 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	writeTPSDenominatorEvidenceMetrics(w, snapshot.Capacity.State.TPS.Denominator)
 	writeWindowConcurrencyHistogram(w, snapshot.Capacity.WindowConcurrencyHistogram)
 	metrics.WriteRouterCapacityCompatibility(w, compatibility)
+}
+
+func (s *proxyServer) writePriorityQueueMetrics(w io.Writer) {
+	if s == nil || s.admission == nil {
+		return
+	}
+	queue, ok := s.admission.(interface {
+		QueueSnapshot() priorityQueueSnapshot
+	})
+	if !ok {
+		return
+	}
+	snapshot := queue.QueueSnapshot()
+	fmt.Fprintf(w, "pig_predictive_priority_queue_depth %d\n", snapshot.Depth)
+	fmt.Fprintf(w, "pig_predictive_priority_queue_enqueued_total %d\n", snapshot.Enqueued)
+	fmt.Fprintf(w, "pig_predictive_priority_queue_full_total %d\n", snapshot.Full)
+	fmt.Fprintf(w, "pig_predictive_priority_queue_timeout_total %d\n", snapshot.TimedOut)
+	fmt.Fprintf(w, "pig_predictive_priority_queue_canceled_total %d\n", snapshot.Canceled)
 }
 
 func predictivePolicyUnixSeconds(value time.Time) float64 {
@@ -197,6 +216,9 @@ func admissionPressureSource(reason coreadmission.Reason) string {
 		return "running"
 	case reason == coreadmission.ReasonWindowConcurrency:
 		return "window"
+	case reason == coreadmission.ReasonPriorityQueueFull ||
+		reason == coreadmission.ReasonPriorityQueueTimeout:
+		return "queue"
 	case reason == coreadmission.ReasonInvalidRequest:
 		return "request"
 	case reason != coreadmission.ReasonOpen:

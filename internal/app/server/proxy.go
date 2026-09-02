@@ -24,14 +24,6 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r = r.WithContext(attachClientContext(r.Context(), r.Context()))
 	requestStart := time.Now()
-	// Premium is a trusted ingress tier. It still passed local management,
-	// exact public-route, and bearer-authentication checks above, but it must
-	// not enter any PIG admission path. Forward the original request unchanged
-	// so premium traffic is never delayed or rejected by PIG policy.
-	if apprequest.IsPremiumTier(r) {
-		s.forwardPublicWithoutAdmission(w, r, requestStart)
-		return
-	}
 	if !s.admissionRoutes.RequiresAdmission(r) {
 		s.forwardPublicWithoutAdmission(w, r, requestStart)
 		return
@@ -61,7 +53,9 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		openai.WriteInvalidJSON(w)
 		return
 	}
-	demand := tpsDemandForClassification(classification)
+	demand := tpsDemandForClassification(classification).WithPriority(
+		priorityForRequest(r),
+	)
 	decision := s.decideAdmission(r.Context(), demand)
 	reservation := decision.Reservation
 	if s.cfg.PredictiveAdmissionMode == "enforce" && !decision.Record.Admitted() {

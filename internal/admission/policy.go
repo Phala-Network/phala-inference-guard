@@ -23,7 +23,7 @@ func (p admissionPolicy) evaluateDemand(
 	demand TPSRequestDemand,
 	bounds admissionBounds,
 ) policyDecision {
-	tps := p.tpsGate.evaluate(state, bounds.windowConcurrency)
+	tps := p.tpsGate.evaluate(state, bounds.windowConcurrency, demand.Priority)
 	decision := policyDecision{
 		action:               ActionAdmit,
 		reason:               ReasonOpen,
@@ -36,6 +36,27 @@ func (p admissionPolicy) evaluateDemand(
 		if tps.reason == ReasonTPSReference {
 			decision.scope = ProtectionLoad
 		} else {
+			decision.scope = ProtectionAvailability
+		}
+		return decision
+	}
+	if demand.Priority == RequestPriorityPremium {
+		// Premium is still subject to the TPS gate above, but non-TPS load
+		// protections are intentionally soft for this priority. The controller
+		// continues to create a normal reservation so lifecycle accounting and
+		// terminal cleanup remain identical to basic traffic.
+		var runningOK, windowOK bool
+		decision.projectedRunning, runningOK = addNonnegativeInt64(
+			state.RawRunning,
+			demand.DecodeSequences,
+		)
+		decision.projectedWindowSequences, windowOK = addNonnegativeInt64(
+			state.UnobservedSequences,
+			demand.DecodeSequences,
+		)
+		if !runningOK || !windowOK {
+			decision.action = ActionProtect
+			decision.reason = ReasonResourceExhausted
 			decision.scope = ProtectionAvailability
 		}
 		return decision

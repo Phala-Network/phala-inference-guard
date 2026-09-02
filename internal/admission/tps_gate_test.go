@@ -3,7 +3,7 @@ package admission
 import "testing"
 
 func TestTPSHealthGateDisabledIsOpen(t *testing.T) {
-	decision := (tpsGate{}).evaluate(ProjectedState{}, DefaultWindowConcurrency)
+	decision := (tpsGate{}).evaluate(ProjectedState{}, DefaultWindowConcurrency, RequestPriorityBasic)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.result != TPSDecisionResultDisabled ||
 		decision.subreason != TPSDecisionSubreasonDisabled {
@@ -16,7 +16,7 @@ func TestTPSHealthGateRejectsInvalidEnabledSnapshot(t *testing.T) {
 		Enabled:   true,
 		Reference: 25,
 		Latest:    TPSIntervalSnapshot{Qualified: true},
-	}}, DefaultWindowConcurrency)
+	}}, DefaultWindowConcurrency, RequestPriorityBasic)
 	if decision.fits || decision.reason != ReasonResourceExhausted ||
 		decision.result != TPSDecisionResultInvalid ||
 		decision.subreason != TPSDecisionSubreasonInvalidState {
@@ -38,7 +38,7 @@ func TestTPSHealthGateTreatsConfirmedWaitingAndPreemptionAsPressure(t *testing.T
 		t.Run(test.name, func(t *testing.T) {
 			state := test.state
 			state.TPS = healthyTPSSnapshot(25, 30, 30)
-			decision := (tpsGate{}).evaluate(state, DefaultWindowConcurrency)
+			decision := (tpsGate{}).evaluate(state, DefaultWindowConcurrency, RequestPriorityBasic)
 			if decision.fits || decision.reason != ReasonTPSReference ||
 				decision.result != TPSDecisionResultProtect || decision.subreason != test.subreason {
 				t.Fatalf("pressure decision=%+v", decision)
@@ -47,8 +47,21 @@ func TestTPSHealthGateTreatsConfirmedWaitingAndPreemptionAsPressure(t *testing.T
 	}
 }
 
+func TestTPSHealthGatePremiumIgnoresWaitingAndPreemptionPressure(t *testing.T) {
+	for _, state := range []ProjectedState{
+		{RawWaiting: 2, PreviousRawWaiting: 2, ObservationIntervalValid: true},
+		{PreemptionDelta: 1},
+	} {
+		state.TPS = healthyTPSSnapshot(25, 30, 30)
+		decision := (tpsGate{}).evaluate(state, DefaultWindowConcurrency, RequestPriorityPremium)
+		if !decision.fits || decision.reason != ReasonOpen {
+			t.Fatalf("premium non-TPS pressure blocked request: %+v", decision)
+		}
+	}
+}
+
 func TestTPSHealthGateKeepsOneSubWindowWaitingSampleOpen(t *testing.T) {
-	decision := (tpsGate{}).evaluate(ProjectedState{RawWaiting: 1}, 4)
+	decision := (tpsGate{}).evaluate(ProjectedState{RawWaiting: 1}, 4, RequestPriorityBasic)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.result != TPSDecisionResultDisabled ||
 		decision.subreason != TPSDecisionSubreasonDisabled {
@@ -57,7 +70,7 @@ func TestTPSHealthGateKeepsOneSubWindowWaitingSampleOpen(t *testing.T) {
 }
 
 func TestTPSHealthGateProtectsWindowSizedWaitingImmediately(t *testing.T) {
-	decision := (tpsGate{}).evaluate(ProjectedState{RawWaiting: 4}, 4)
+	decision := (tpsGate{}).evaluate(ProjectedState{RawWaiting: 4}, 4, RequestPriorityBasic)
 	if decision.fits || decision.reason != ReasonTPSReference ||
 		decision.result != TPSDecisionResultProtect ||
 		decision.subreason != TPSDecisionSubreasonWaiting {
@@ -70,7 +83,7 @@ func TestTPSHealthGateDoesNotConfirmWaitingAcrossInvalidInterval(t *testing.T) {
 		RawWaiting:               1,
 		PreviousRawWaiting:       1,
 		ObservationIntervalValid: false,
-	}, 4)
+	}, 4, RequestPriorityBasic)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.result != TPSDecisionResultDisabled ||
 		decision.subreason != TPSDecisionSubreasonDisabled {
@@ -82,21 +95,21 @@ func TestTPSHealthGateWarmingAndNoCurrentEvidenceStayOpen(t *testing.T) {
 	warming := (tpsGate{}).evaluate(ProjectedState{TPS: TPSSnapshot{
 		Enabled:   true,
 		Reference: 25,
-	}}, DefaultWindowConcurrency)
+	}}, DefaultWindowConcurrency, RequestPriorityBasic)
 	if !warming.fits || warming.subreason != TPSDecisionSubreasonWarming {
 		t.Fatalf("warming decision=%+v", warming)
 	}
 
 	noCurrent := healthyTPSSnapshot(25, 30, 1)
 	noCurrent.Latest = TPSIntervalSnapshot{}
-	decision := (tpsGate{}).evaluate(ProjectedState{TPS: noCurrent}, DefaultWindowConcurrency)
+	decision := (tpsGate{}).evaluate(ProjectedState{TPS: noCurrent}, DefaultWindowConcurrency, RequestPriorityBasic)
 	if !decision.fits || decision.subreason != TPSDecisionSubreasonNoCurrentEvidence {
 		t.Fatalf("no-current decision=%+v", decision)
 	}
 }
 
 func TestTPSHealthGateKeepsHealthyRollingWindowOpenAcrossOneLowInterval(t *testing.T) {
-	decision := (tpsGate{}).evaluate(ProjectedState{TPS: healthyTPSSnapshot(25, 30, 10)}, DefaultWindowConcurrency)
+	decision := (tpsGate{}).evaluate(ProjectedState{TPS: healthyTPSSnapshot(25, 30, 10)}, DefaultWindowConcurrency, RequestPriorityBasic)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.subreason != TPSDecisionSubreasonHealthyWindow {
 		t.Fatalf("healthy-window decision=%+v", decision)
@@ -104,7 +117,7 @@ func TestTPSHealthGateKeepsHealthyRollingWindowOpenAcrossOneLowInterval(t *testi
 }
 
 func TestTPSHealthGateReopensImmediatelyFromQualifiedCurrentRecovery(t *testing.T) {
-	decision := (tpsGate{}).evaluate(ProjectedState{TPS: healthyTPSSnapshot(25, 20, 30)}, DefaultWindowConcurrency)
+	decision := (tpsGate{}).evaluate(ProjectedState{TPS: healthyTPSSnapshot(25, 20, 30)}, DefaultWindowConcurrency, RequestPriorityBasic)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.subreason != TPSDecisionSubreasonRecoveredCurrent {
 		t.Fatalf("recovered-current decision=%+v", decision)
@@ -112,7 +125,7 @@ func TestTPSHealthGateReopensImmediatelyFromQualifiedCurrentRecovery(t *testing.
 }
 
 func TestTPSHealthGateProtectsOnlyWhenRollingAndCurrentAreBelowReference(t *testing.T) {
-	decision := (tpsGate{}).evaluate(ProjectedState{TPS: healthyTPSSnapshot(25, 20, 10)}, DefaultWindowConcurrency)
+	decision := (tpsGate{}).evaluate(ProjectedState{TPS: healthyTPSSnapshot(25, 20, 10)}, DefaultWindowConcurrency, RequestPriorityBasic)
 	if decision.fits || decision.reason != ReasonTPSReference ||
 		decision.result != TPSDecisionResultProtect ||
 		decision.subreason != TPSDecisionSubreasonBelowReference {
@@ -127,7 +140,7 @@ func TestV01223HealthyWindowDoesNotDeriveConcurrencyCapacity(t *testing.T) {
 		SequenceLiabilities: 32,
 		TPS:                 healthyTPSSnapshot(25, 71.4, 60),
 	}
-	decision := (tpsGate{}).evaluate(state, DefaultWindowConcurrency)
+	decision := (tpsGate{}).evaluate(state, DefaultWindowConcurrency, RequestPriorityBasic)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.subreason != TPSDecisionSubreasonHealthyWindow {
 		t.Fatalf("healthy TPS was turned into capacity=%+v", decision)

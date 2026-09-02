@@ -1,7 +1,9 @@
 # PIG v0.12.27 Premium Unlimited-Pass Plan
 
-Status: release complete. Deployment is explicitly out of scope; this release
-only pushed source and published a registry image.
+Status: withdrawn/superseded. The source and image remain immutable historical
+artifacts, but the premium admission-bypass behavior must not be deployed or
+used as the current QoS contract. See
+`PIG_V0_12_28_PRIORITY_QOS_WINDOW_PLAN.md` for the corrective behavior.
 
 ## Question And Current Finding
 

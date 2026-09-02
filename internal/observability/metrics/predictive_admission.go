@@ -124,6 +124,9 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 			"window_concurrency",
 			"runtime_identity_drift",
 			"resource_exhausted",
+			"priority_queue_full",
+			"priority_queue_timeout",
+			"priority_queue_canceled",
 			"counter_overflow",
 			"closed",
 		},
@@ -131,7 +134,7 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 	)
 	admissionPressureSource := normalizedValue(
 		input.AdmissionPressureSource,
-		[]string{"none", "tps", "running", "window", "availability", "request"},
+		[]string{"none", "tps", "running", "window", "queue", "availability", "request"},
 		"none",
 	)
 	demandSource := normalizedValue(

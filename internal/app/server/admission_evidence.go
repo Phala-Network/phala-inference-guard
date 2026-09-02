@@ -37,6 +37,9 @@ const (
 	admissionEvidenceReasonTPSReference
 	admissionEvidenceReasonRuntimeIdentityDrift
 	admissionEvidenceReasonResourceExhausted
+	admissionEvidenceReasonPriorityQueueFull
+	admissionEvidenceReasonPriorityQueueTimeout
+	admissionEvidenceReasonPriorityQueueCanceled
 	admissionEvidenceReasonCounterOverflow
 	admissionEvidenceReasonClosed
 	admissionEvidenceProtectionReasonCount
@@ -52,6 +55,9 @@ var admissionEvidenceProtectionReasonLabels = [...]string{
 	"tps_reference",
 	"runtime_identity_drift",
 	"resource_exhausted",
+	"priority_queue_full",
+	"priority_queue_timeout",
+	"priority_queue_canceled",
 	"counter_overflow",
 	"closed",
 }
@@ -203,6 +209,12 @@ func admissionEvidenceReasonFor(reason coreadmission.Reason) admissionEvidencePr
 		return admissionEvidenceReasonRuntimeIdentityDrift
 	case coreadmission.ReasonResourceExhausted:
 		return admissionEvidenceReasonResourceExhausted
+	case coreadmission.ReasonPriorityQueueFull:
+		return admissionEvidenceReasonPriorityQueueFull
+	case coreadmission.ReasonPriorityQueueTimeout:
+		return admissionEvidenceReasonPriorityQueueTimeout
+	case coreadmission.ReasonPriorityQueueCanceled:
+		return admissionEvidenceReasonPriorityQueueCanceled
 	case coreadmission.ReasonCounterOverflow:
 		return admissionEvidenceReasonCounterOverflow
 	case coreadmission.ReasonClosed:

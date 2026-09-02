@@ -13,7 +13,7 @@ import (
 )
 
 // Keep the last released identity until a separate release step assigns a new version.
-const version = "PIG-v0.12.27"
+const version = "PIG-v0.12.28"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 

@@ -11,7 +11,7 @@ import (
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 )
 
-func TestPremiumTierBypassesAllAdmissionBeforeForward(t *testing.T) {
+func TestPremiumTierUsesAdmissionAndPreservesRequestBodyContract(t *testing.T) {
 	var backendCalls atomic.Int64
 	var seenBody atomic.Value
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -23,13 +23,13 @@ func TestPremiumTierBypassesAllAdmissionBeforeForward(t *testing.T) {
 	}))
 	defer backend.Close()
 	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
-		Mode: "enforce", TPSReference: 50, Running: 1, Waiting: 0,
+		Mode: "enforce", TPSReference: 0, Running: 0, Waiting: 0,
 		WindowConcurrency: 1, RunningLimit: 1,
 		RunningLimitSource: coreadmission.RunningLimitSourceAdmin,
 	})
 	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
-		`not-json`,
+		`{"model":"m","messages":[{"role":"user","content":"hello"}]}`,
 	))
 	request.Header.Set("Authorization", "Bearer secret")
 	request.Header.Set("Content-Type", "application/json")
@@ -39,14 +39,15 @@ func TestPremiumTierBypassesAllAdmissionBeforeForward(t *testing.T) {
 	srv.ServeHTTP(response, request)
 
 	report := runtime.Snapshot(clock.Now()).Report
-	if response.Code != http.StatusOK || backendCalls.Load() != 1 || report.Attempts != 0 || report.HasLastDecision {
-		t.Fatalf("premium request entered admission: status=%d calls=%d attempts=%d has_last_decision=%t body=%q",
-			response.Code, backendCalls.Load(), report.Attempts, report.HasLastDecision, response.Body.String())
+	if response.Code != http.StatusOK || backendCalls.Load() != 1 || report.Attempts != 1 ||
+		!report.HasLastDecision || report.LastDecision.Demand.Priority != coreadmission.RequestPriorityPremium {
+		t.Fatalf("premium request did not use normal admission: status=%d calls=%d attempts=%d has_last_decision=%t decision=%+v body=%q",
+			response.Code, backendCalls.Load(), report.Attempts, report.HasLastDecision, report.LastDecision, response.Body.String())
 	}
 	if reserved := srv.requestClassifier.ReservedBodyBytes(); reserved != 0 {
 		t.Fatalf("premium request left scanner reservation=%d", reserved)
 	}
-	if got := seenBody.Load(); got != "not-json" {
+	if got := seenBody.Load(); got != `{"model":"m","messages":[{"role":"user","content":"hello"}]}` {
 		t.Fatalf("premium body=%q want original body", got)
 	}
 }
@@ -133,5 +134,36 @@ func TestBasicTierRemainsTPSProtected(t *testing.T) {
 		decision.Reason != coreadmission.ReasonTPSReference {
 		t.Fatalf("basic request bypassed TPS protection: status=%d calls=%d decision=%+v",
 			response.Code, backendCalls.Load(), decision)
+	}
+}
+
+func TestPremiumTierBypassesNonTPSProtectionButNotTPSReference(t *testing.T) {
+	var backendCalls atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		backendCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer backend.Close()
+	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
+		Mode: "enforce", TPSReference: 50, Running: 1, Waiting: 1,
+		WindowConcurrency: 1, RunningLimit: 1,
+		RunningLimitSource: coreadmission.RunningLimitSourceAdmin,
+	})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(
+		`{"model":"m","messages":[{"role":"user","content":"hello"}]}`,
+	))
+	request.Header.Set("Authorization", "Bearer secret")
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-User-Tier", "premium")
+	response := httptest.NewRecorder()
+
+	srv.ServeHTTP(response, request)
+
+	decision := runtime.Snapshot(clock.Now()).Report.LastDecision
+	if response.Code != http.StatusOK || backendCalls.Load() != 1 || !decision.Admitted() ||
+		decision.Demand.Priority != coreadmission.RequestPriorityPremium {
+		t.Fatalf("premium was blocked by non-TPS protection: status=%d calls=%d decision=%+v", response.Code, backendCalls.Load(), decision)
 	}
 }
