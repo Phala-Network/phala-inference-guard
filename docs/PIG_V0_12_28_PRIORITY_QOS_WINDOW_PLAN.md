@@ -1,6 +1,6 @@
 # PIG v0.12.28 Priority QoS Window Plan
 
-Status: active design and implementation plan. No CVM deployment is in scope.
+Status: source and registry release complete. No CVM deployment is in scope.
 
 ## 1. Correction and release boundary
 
@@ -15,8 +15,9 @@ digest: sha256:5f4c197c9ad8eb3ac9d61abef3657664e63ef579efc3e569c5655439780423e0
 
 The withdrawn behavior was an authenticated `X-User-Tier: premium` fast path
 that bypassed every PIG admission gate. That is incompatible with the current
-QoS objective. Version 0.12.28 is a corrective source release; it is not
-deployed or published until its tests and clean-builder evidence pass.
+QoS objective. Version 0.12.28 is the corrective release. Its source and
+registry image are published only after the tests and clean-builder evidence
+below passed; no Compose or CVM deployment is part of this release step.
 
 ## 2. Objective
 
@@ -157,7 +158,7 @@ The focused red/green tests must prove:
       builder; do not run Go tests locally.
 - [x] Perform the three review passes and record evidence.
 - [x] Assign/push v0.12.28 source only after the source gates pass.
-- [ ] Build/publish v0.12.28 only after acceptance; deployment remains a
+- [x] Build/publish v0.12.28 only after acceptance; deployment remains a
       separate user-authorized step.
 
 ## 7. Source acceptance evidence (2026-09-02)
@@ -167,7 +168,7 @@ The accepted source HEAD is:
 ```text
 branch: codex/pig-v0.12.28-priority-tps
 executable source commit: 9f2e4e6 (full: 9f2e4e65bc02f5e514226a8600a452adc87fff8c)
-current branch HEAD: beb56fc (documentation-only follow-up; executable tree is unchanged)
+current branch HEAD before registry publication record: 80d9cbb (documentation-only follow-up; executable tree is unchanged)
 pig-origin: https://github.com/Phala-Network/phala-inference-guard.git
 ```
 
@@ -242,19 +243,130 @@ then rebuilt and all gates were rerun.
 
 ### 8.3 Evidence and release boundary
 
-- Source, archive, builder image, tests, and Git push are recorded separately.
-  No v0.12.28 image has been built or published, and no CVM has been restarted,
-  deployed, or sent synthetic inference traffic.
+- Source, archive, builder image, registry publication, and deployment are
+  recorded separately. Section 10 records the authorized v0.12.28 registry
+  publication; no Compose or CVM was changed, no process was restarted, and no
+  production inference request was sent.
 - v0.12.27 remains withdrawn and immutable; no historical tag was overwritten.
-- The next release step, if authorized, is a pinned builder image build with
-  SBOM/provenance and registry digest verification. Until that separate step is
-  authorized and passes, v0.12.28 is a validated source candidate only.
+- The published image consumes the already accepted executable commit
+  `9f2e4e65bc02f5e514226a8600a452adc87fff8c`. Documentation-only commits do not
+  change the executable image boundary.
 
 ## 9. Decision
 
-The source implementation satisfies the current target at the source and clean
-builder-test layers: high-priority requests are preferentially ordered and may
-avoid non-TPS load gates, but they cannot bypass the TPS/reference gate or
-reservation lifecycle. Keep the candidate at v0.12.28 and do not publish or
-deploy an image in this task. Any future policy change must update this plan and
-rerun the focused/full/race gates before publication.
+The implementation satisfies the current target at the source, clean-builder
+test, and registry-publication layers: high-priority requests are preferentially
+ordered and may avoid non-TPS load gates, but they cannot bypass the
+TPS/reference gate or reservation lifecycle. The v0.12.28 image is published;
+deployment remains separately authorized and was not performed. Any future
+policy change must update this plan and rerun the focused/full/race gates before
+publication.
+
+## 10. Registry publication evidence (2026-09-02)
+
+### 10.1 Frozen inputs and independent rebuilds
+
+The registry image was built on Phala builder app
+`ff40ee31b95e89ebb242c223514adc715ac8a301` (`linux/amd64`, Docker 25.0.3)
+from the accepted executable commit and source archive in section 7. The frozen
+release inputs were:
+
+```text
+canonical source tree sha256: 6a8f9ddb5f2b450d5fb13a0dc0c023913086d854d23cf3b236efbcda1891fbbf
+Dockerfile sha256:             69c349cc3ae164a76b47afc33e2f41370681d19714274d19bc4947e32ed0892e
+go.mod sha256:                 54be72f3d874eafd8169f5239426d0e9423c3c1b8ffaacdf0170ea712490a06d
+go.sum sha256:                 5224908112865cb36354b9121b2b27846948239f7e956d8eadcf080fc538fe05
+SOURCE_DATE_EPOCH:             1788326933
+BuildKit:                      v0.32.2
+BuildKit image:                moby/buildkit@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+buildx:                        v0.36.1
+SBOM generator:                docker.io/docker/buildkit-syft-scanner@sha256:ae4f3b554449e7e25548e7d8ccc029d17357348e30c6e3df01b92bc93654d6a9
+build base:                    golang:1.24-bookworm@sha256:1a6d4452c65dea36aac2e2d606b01b4a029ec90cc1ae53890540ce6173ea77ac
+runtime base:                  gcr.io/distroless/base-debian12@sha256:348dac1808083ccc3366399d6db835875b4eaf7c9b694783f5a3f353c4b58a28
+frozen input manifest sha256:  c7001e840671594353d2cc8dca4a8ded9ea51ec53cd1fb6d7eca1a8dd62e339a
+release script sha256:         bb5913e9457e5d70bf2aa304412da3e349dc301e2cc3c083c957dda468a7cc14
+```
+
+Two independent BuildKit containers (`pig-v01228-repro-c` and
+`pig-v01228-repro-d`) each ran with `--no-cache`, immutable inputs,
+`--pull=false`, pinned SBOM generator, `--provenance=mode=max`, and registry
+exporter `rewrite-timestamp=true`. The timestamp rewrite was necessary because
+an earlier diagnostic pair produced byte-identical application binaries but
+different final COPY-layer mtimes. The corrected independent pair produced:
+
+```text
+run c candidate index: sha256:bcf899cbf4b9e2446ad97766339085e99c14d1dc2639a1a83de7e8779583f5ca
+run d candidate index: sha256:993b570b8f37da2cd3e8151c2473d1381d279a2a74482cac29b839a3feea85e8
+platform manifest:     sha256:c711aed2b6aef767e9e6a1a4f19a1985e2f0aaee7887f5a8deeeb89e3495f121
+config:                sha256:86e91b5784d4a840506407a3fe094e546797e6cc083ee6bd4511c73e53deec25
+application layer:     sha256:a3a4965ac0a347e65fea7335fdaa7f2bb05d8e74bf03bfeea535f34761e23740
+```
+
+The platform manifest, config, and every runnable layer are byte-identical.
+The SPDX SBOMs differ only in generated `creationInfo.created` and
+`documentNamespace`; after deleting only those two fields both hash to
+`7d9b236db7ee7f31b2899c9271a9e52998b857cbc344ecdbddc7fc3ca44b2894`.
+Provenance differs in its per-build invocation ID, start/end timestamps, and
+BuildKit-internal LLB metadata/digest mappings. Therefore the precise claim is
+`normalized-platform-manifest`, not byte-identical attested top-level indexes.
+
+### 10.2 Final tags, attestations, and release manifest
+
+Both published tags resolve to the same final OCI index:
+
+```text
+ghcr.io/phala-network/phala-inference-guard:v0.12.28
+ghcr.io/phala-network/phala-inference-guard:v0.12.28-9f2e4e65bc02
+final digest: sha256:e457391dda202fa789ae8d8291311f28218c2202c4ab34e56b93848231b1d3e6
+```
+
+The final index contains all required OpenContainers and Phala annotations and
+the run-d attestation manifest:
+
+```text
+attestation manifest: sha256:6f9d375551bc6e177e6435281b6575ccf414e4c89b1077aeb66e3a3aefe4c341
+SPDX SBOM:            sha256:0a3e8d697a6737f8c70d16be178a4213fec044b6b76971944a238fa15aa843b1
+SLSA provenance:      sha256:92eb54cdb2566222303b4ee5a0ca17b7488faa647faa182f7d1fa1c491d2a6ff
+attestation subject:  sha256:c711aed2b6aef767e9e6a1a4f19a1985e2f0aaee7887f5a8deeeb89e3495f121
+```
+
+The sanitized final `build-manifest.json` hashes to
+`713f12995d032095593400d5fe1490f5b36989fdd243e57f4a4b14fb2898adf2`
+and is attached to the final release digest as an OCI referrer:
+
+```text
+artifact type: application/vnd.phala.build-manifest.v1+json
+referrer:      sha256:cd1a8c993dbb03084001b98df119dbb5a9cd846d293f4919a4568bff970e73f3
+```
+
+The index annotation `org.phala.build.manifest.digest` identifies the frozen
+pre-build input manifest. The final build-manifest referrer necessarily depends
+on the final index digest and therefore cannot place its own digest back into
+that subject index without a circular digest dependency; it is verified through
+the OCI referrers API instead.
+
+### 10.3 Registry readback and production image contract
+
+The two tags were fetched independently and their raw index bytes both hashed
+to the final digest. The SBOM, provenance, and build-manifest blobs were fetched
+again by digest. Their raw hashes matched their descriptors; both attestations
+named the expected platform manifest subject, and the referrer named the final
+index subject. The read-back build-manifest was byte-identical to the published
+file.
+
+The final digest then passed:
+
+```text
+EXPECTED_VERSION=v0.12.28
+EXPECTED_REVISION=9f2e4e65bc02f5e514226a8600a452adc87fff8c
+PIG_IMAGE_UNDER_TEST=ghcr.io/phala-network/phala-inference-guard@sha256:e457391dda202fa789ae8d8291311f28218c2202c4ab34e56b93848231b1d3e6
+tools/validate-production-image-contract.sh
+
+PIG_PRODUCTION_IMAGE_CONTRACT_OK
+contract log sha256: 9959198ce9e78b51837841315d160c43f80927c3308a09b60c785d348ef72af2
+```
+
+No Git `v0.12.28` tag is created because the repository's legacy `v*` workflow
+could launch a second, different image publication path. This release publishes
+the reviewed source branch plus the two verified GHCR tags only. No Compose,
+CVM, Router, process, or production traffic was changed.
