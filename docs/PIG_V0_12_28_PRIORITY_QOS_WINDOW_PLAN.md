@@ -166,7 +166,8 @@ The accepted source HEAD is:
 
 ```text
 branch: codex/pig-v0.12.28-priority-tps
-commit: 9f2e4e6 (full: 9f2e4e65bc02f5e514226a8600a452adc87fff8c)
+executable source commit: 9f2e4e6 (full: 9f2e4e65bc02f5e514226a8600a452adc87fff8c)
+current branch HEAD: beb56fc (documentation-only follow-up; executable tree is unchanged)
 pig-origin: https://github.com/Phala-Network/phala-inference-guard.git
 ```
 
