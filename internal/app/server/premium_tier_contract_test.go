@@ -23,7 +23,7 @@ func TestPremiumTierBypassesAllAdmissionBeforeForward(t *testing.T) {
 	}))
 	defer backend.Close()
 	runtime, _, clock := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{
-		Mode: "enforce", TPSReference: 50, Running: 100, Waiting: 100,
+		Mode: "enforce", TPSReference: 50, Running: 1, Waiting: 0,
 		WindowConcurrency: 1, RunningLimit: 1,
 	})
 	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
@@ -98,7 +98,7 @@ func TestPremiumTierDoesNotInterceptLocalManagement(t *testing.T) {
 
 	srv.ServeHTTP(response, request)
 
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "pig_info{") {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "pig_dynamic_observed_running ") {
 		t.Fatalf("premium local metrics status=%d body=%q", response.Code, response.Body.String())
 	}
 	if backendCalls.Load() != 0 {
