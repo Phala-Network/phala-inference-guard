@@ -104,7 +104,7 @@ build.log                e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991
 simulation-1.json        25878d06c4f9b241a3e10773813106bd76c0366907b3344adc74a8d2f76ae7a4
 image-build.log          41f844dcd861b9d8b51e71bef17465722ce519fa30ca45c0ba07d058582858e3
 image-contract.log       0e9dea6382fc86d896deb7f318c8f188d7813d3210d338fc1c358e29e1e55199
-``` 
+```
 
 The builder host had no Docker buildx plugin, so its local image check used
 classic Docker only and did not publish from that host. The actual registry
