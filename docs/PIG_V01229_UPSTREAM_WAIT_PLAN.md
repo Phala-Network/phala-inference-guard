@@ -48,7 +48,9 @@ Other dirty/active worktrees must remain untouched.
 Source inspection complete. Root cause: `newDefaultAdmissionService` propagates
 the total startup-probe timeout through `newProxyServer` to `Run`, which exits.
 Runtime observer failures already retry; startup needs the missing lifecycle.
-Implementation and remote source gates passed; image release pending.
+Complete: implementation, remote source gates, source push, reproducible image
+builds, installed-image lifecycle checks, registry publication and immutable
+pull/readback. No deployment was requested or performed in this task.
 
 ## Source evidence and three reviews
 
@@ -97,3 +99,108 @@ SGLang and vLLM parsing are not conflated. Remote-only tests are retained with
 hashes. Source is assigned v0.12.29. Image release still requires two independent
 builds, installed-image lifecycle tests, native SBOM/max provenance, annotations
 and registry/referrer verification. No deployment is implied by source success.
+
+## Final release — 2026-09-12 CST
+
+Source commit: `ef0035cb60ef05568c2d2663d3881843ec25d16d`, pushed to
+`Phala-Network/phala-inference-guard`, branch
+`codex/pig-v0.12.29-upstream-wait`. Source tree:
+`33452037402ecd29ef885c7bb4b5b286601c73f4`.
+Clean Git archive SHA256:
+`9360228d7967e455e06135b19a37d2e8f1daf5eb4d124b4aea17237cb469405c`.
+The final documentation-only commit does not change this executable boundary.
+
+Accepted references (both read back to the same index):
+
+```text
+ghcr.io/phala-network/phala-inference-guard:v0.12.29
+ghcr.io/phala-network/phala-inference-guard:v0.12.29-ef0035cb60ef
+ghcr.io/phala-network/phala-inference-guard:v0.12.29@sha256:6c378595b5eb9f63eb0dc966adf3ef4dcb6e60a140458e200f19a059cf8ffcd2
+```
+
+- Index: `sha256:6c378595b5eb9f63eb0dc966adf3ef4dcb6e60a140458e200f19a059cf8ffcd2`.
+- Linux/amd64 platform: `sha256:13df3b6e1e20890859f707f277ba126369eb47acc521af2d943e27f1b9089f9c`.
+- Runtime config: `sha256:e70a4425bb38f3ded450d5e95840d148018a72809e7eab64360d5c1d5feb6024`.
+- Pre-build inputs: `sha256:f58dfdc2cee60904f3c893c7567e649ac8b5ee059167f15caba4d2cb45834c2d`;
+  OCI input artifact `sha256:35b4b7553d2e08f47d9c241a016be457787d37175a610743b3e18e3269f5ce2f`.
+- Post-build manifest content: `sha256:3a508db6ef08b7f870a848c0cdc7612cc7698e250566308dd3d75383e6d9c882`;
+  index referrer `sha256:ba62c210520cbd5993319405181d6ed9493889c21db86f7266b96b65cd5e1fb0`.
+
+The builder used BuildKit **v0.32.2** and buildx **v0.36.1**, pinned by immutable
+tool image digests in `build-inputs.json`; Go/runtime base digests and `go.sum`
+were also frozen. Two independent fresh workers built with `--no-cache`,
+`--pull=false`, source epoch `1789156478`, native SBOM and max provenance, and
+`rewrite-timestamp=true`. Platform manifest, runtime config and every runtime
+layer are byte-identical. SBOM comparisons normalize only generated
+`creationInfo.created` and `documentNamespace`; native build-specific
+attestations account for the different outer indexes. No identical-index or
+production-throughput claim is made.
+
+All required OCI/Phala annotations exist on both index and platform, including
+source/version/revision, Dockerfile digest, builder, epoch and pre-build-inputs
+link/digest. License metadata is GPL-3.0-only, based on this repository's GPLv3
+`LICENSE`; it is not inherited from a generic release template.
+
+Native statements, both bound to the accepted platform:
+
+- SPDX SBOM blob: `sha256:161d343b460aafec7adcb7fae1fd0fd01f01c0a4b4a8e47f423c90a30f2ac50c`.
+- SLSA v1 provenance blob: `sha256:a84714713a9a48d0b0c15eb51be22f4eb7ca4dc08450180735b5a3ac4ee264f9`.
+- Native attestation manifest: `sha256:b2b8fa1ce882e5f1d924c812521ab97debae7a7bcad047d1ddebef31cdf8f785`.
+- SPDX and provenance statements are also discoverable as OCI referrers:
+  `sha256:82ce2ce5e4d3231880d1df68f59f416fbc45fff234fc5f20b8f2755456f265b4`
+  and `sha256:75e0fbd5c387d84c6ef420aaf9c2b3bbddf1049f6d768654501f55c82de99a1b`.
+
+The raw native statements and referrer statement JSON have different formatting
+digests but identical parsed content/subjects. No signature or SLSA level is
+claimed. Post-build results are referrers; no image/artifact digest cycle exists.
+
+### Installed-image acceptance
+
+Using the exact built runtime config, without mounting source into PIG:
+
+- Mock SGLang remained unavailable across five 200ms diagnostic timeouts. PIG
+  stayed running with the same container/start time, restart policy `no`, no
+  inference calls, and no prematurely open listener.
+- Coherent metrics enabled `/v1/models` in that same container. Unauthorized
+  models/Router metrics returned 401; authorized metrics stayed exactly five
+  lines and `/v1/metrics` identified `PIG-v0.12.29`.
+- A subsequent runtime metrics outage caused stale protection with a positive
+  projected limit; recovery reopened admission without container restart.
+- SIGTERM exited normally in 0.072s during startup wait and 0.072s after
+  readiness. Invalid local configuration still exited nonzero.
+- Native NVML/CGO, distroless runtime, NVIDIA visibility and version/revision
+  checks passed via `tools/validate-production-image-contract.sh`.
+- Anonymous registry manifest/blob/referrer reads and a fresh immutable Docker
+  pull matched the tested config/layers. The production image contract passed
+  again against that registry digest.
+
+### Failed attempts retained, not accepted
+
+The first OCI build lacked an explicit image name, so BuildKit emitted empty
+attestation subjects; its generic license metadata was also inappropriate.
+It was not published as a release. Frozen inputs were superseded by the `r2`
+evidence set; named local OCI exports bind the native statements correctly.
+An initial ORAS copy used an unsupported generic authentication flag and failed
+before mutation. A post-build adapter used ORAS's documented
+`--to-registry-config`; frozen build inputs and executable source were unchanged.
+The original diagnostic input artifact is retained for audit, not an accepted
+image reference. No existing version tag was overwritten and no `v*` Git tag
+triggered an independent CI publisher.
+
+### Evidence and boundary audit
+
+Remote release evidence:
+`/var/volatile/dstack/persistent/pig-v01229-release-20260912/r2`.
+Local copy: `tmp/pig-v01229-release-assets/evidence` in the parent workspace.
+Release evidence archive SHA256:
+`8e6e5d32e6f36ca4252baade1cbae5a179d49f32520a28bea7ada96697d39f55`.
+Source evidence archive SHA256:
+`0469dec57350ffc0c34da6c812f7a973b13cbf000ff21360d6522e629e9a8485`.
+Final summary SHA256:
+`4db5e15ee32be225709c7170239f8dcbbee8ae705386c35e73fbf73edb9b70ca`.
+
+Temporary image-test containers and both temporary BuildKit workers were
+removed. Existing builder containers and read-only registry credentials were
+preserved. No production Compose, process, CVM, Router or Redpill state changed;
+no production inference or GPU benchmark was performed. Production rollout and
+real model loading-time validation remain outside this release-only task.
