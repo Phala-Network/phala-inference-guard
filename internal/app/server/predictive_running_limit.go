@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,6 +33,7 @@ type sglangRunningLimitProbeConfig struct {
 }
 
 func initializePredictiveRunningLimit(
+	ctx context.Context,
 	cfg config,
 	startup predictiveBackendStartup,
 	metricsURL string,
@@ -45,7 +47,7 @@ func initializePredictiveRunningLimit(
 	if startup.BackendKind != "sglang" {
 		return predictiveRunningLimit{Source: coreadmission.RunningLimitSourceUnknown}
 	}
-	limit, err := probeSGLangRunningLimit(sglangRunningLimitProbeConfig{
+	limit, err := probeSGLangRunningLimit(ctx, sglangRunningLimitProbeConfig{
 		MetricsURL: metricsURL, RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 	})
 	if err != nil {
@@ -57,7 +59,7 @@ func initializePredictiveRunningLimit(
 	}
 }
 
-func probeSGLangRunningLimit(config sglangRunningLimitProbeConfig) (int64, error) {
+func probeSGLangRunningLimit(ctx context.Context, config sglangRunningLimitProbeConfig) (int64, error) {
 	if strings.TrimSpace(config.MetricsURL) == "" || config.RequestTimeout <= 0 {
 		return 0, fmt.Errorf("SGLang running-limit probe configuration is invalid")
 	}
@@ -67,6 +69,7 @@ func probeSGLangRunningLimit(config sglangRunningLimitProbeConfig) (int64, error
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
+	defer transport.CloseIdleConnections()
 	client := &http.Client{
 		Timeout:   config.RequestTimeout,
 		Transport: transport,
@@ -74,7 +77,11 @@ func probeSGLangRunningLimit(config sglangRunningLimitProbeConfig) (int64, error
 			return http.ErrUseLastResponse
 		},
 	}
-	response, err := client.Get(endpoint)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, fmt.Errorf("construct SGLang server_info request: %w", err)
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return 0, fmt.Errorf("fetch SGLang server_info: %w", err)
 	}

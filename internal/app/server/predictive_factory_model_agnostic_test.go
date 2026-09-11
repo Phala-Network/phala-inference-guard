@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -50,7 +51,7 @@ vllm:generation_tokens_total{model_name="vendor/model-a",engine="0"} 0
 	}))
 	defer metrics.Close()
 	started := time.Now()
-	_, err := probePredictiveBackendStartup(predictiveBackendStartupProbeConfig{
+	_, err := probePredictiveBackendStartup(context.Background(), predictiveBackendStartupProbeConfig{
 		MetricsURL: metrics.URL, StartupTimeout: time.Second,
 		RequestTimeout: 250 * time.Millisecond, RetryInterval: 10 * time.Millisecond,
 	})
@@ -86,7 +87,7 @@ vllm:generation_tokens_total{model_name="vendor/model-a",engine="0"} 0
 	}))
 	defer metrics.Close()
 
-	_, err := probePredictiveBackendStartup(predictiveBackendStartupProbeConfig{
+	_, err := probePredictiveBackendStartup(context.Background(), predictiveBackendStartupProbeConfig{
 		MetricsURL: metrics.URL, StartupTimeout: 200 * time.Millisecond,
 		RequestTimeout: 50 * time.Millisecond, RetryInterval: time.Millisecond,
 	})

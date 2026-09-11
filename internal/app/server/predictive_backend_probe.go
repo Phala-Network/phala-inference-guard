@@ -5,7 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -32,14 +34,59 @@ type predictiveBackendStartup struct {
 	ObservedAt          time.Time
 }
 
-func probePredictiveBackendStartup(config predictiveBackendStartupProbeConfig) (predictiveBackendStartup, error) {
+func validatePredictiveBackendStartupProbe(config predictiveBackendStartupProbeConfig) error {
 	if strings.TrimSpace(config.MetricsURL) == "" || config.StartupTimeout <= 0 || config.RequestTimeout <= 0 ||
 		config.RequestTimeout > config.StartupTimeout || config.RetryInterval <= 0 {
-		return predictiveBackendStartup{}, fmt.Errorf("predictive backend startup probe configuration is invalid")
+		return fmt.Errorf("predictive backend startup probe configuration is invalid")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), config.StartupTimeout)
+	endpoint, err := url.Parse(config.MetricsURL)
+	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" {
+		return fmt.Errorf("predictive backend startup metrics URL is invalid")
+	}
+	return nil
+}
+
+// StartupTimeout bounds one diagnostic attempt, not the backend's loading time.
+// Only coherent metrics or caller cancellation ends the overall startup wait.
+func waitPredictiveBackendStartup(ctx context.Context, config predictiveBackendStartupProbeConfig) (predictiveBackendStartup, error) {
+	if err := validatePredictiveBackendStartupProbe(config); err != nil {
+		return predictiveBackendStartup{}, err
+	}
+	started := time.Now()
+	var lastLog time.Time
+	for {
+		if err := ctx.Err(); err != nil {
+			return predictiveBackendStartup{}, err
+		}
+		startup, err := probePredictiveBackendStartup(ctx, config)
+		if ctx.Err() != nil {
+			return predictiveBackendStartup{}, ctx.Err()
+		}
+		if err == nil {
+			log.Printf("level=info component=runtime event=upstream_ready backend_kind=%s waited_ms=%d", startup.BackendKind, time.Since(started).Milliseconds())
+			return startup, nil
+		}
+		// Fetch errors can contain credentials, URLs and upstream response text.
+		// Never include them in persistent operational logs.
+		if lastLog.IsZero() || time.Since(lastLog) >= 30*time.Second {
+			log.Printf("level=warn component=runtime event=upstream_waiting reason=coherent_metrics_unavailable waited_ms=%d retry=true", time.Since(started).Milliseconds())
+			lastLog = time.Now()
+		}
+		if err := waitStartupRetry(ctx, min(config.RetryInterval, 250*time.Millisecond)); err != nil {
+			return predictiveBackendStartup{}, err
+		}
+	}
+}
+
+func probePredictiveBackendStartup(parent context.Context, config predictiveBackendStartupProbeConfig) (predictiveBackendStartup, error) {
+	if err := validatePredictiveBackendStartupProbe(config); err != nil {
+		return predictiveBackendStartup{}, err
+	}
+	ctx, cancel := context.WithTimeout(parent, config.StartupTimeout)
 	defer cancel()
-	client := &http.Client{Timeout: config.RequestTimeout}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Timeout: config.RequestTimeout, Transport: transport}
 	retry := config.RetryInterval
 	if retry > 250*time.Millisecond {
 		retry = 250 * time.Millisecond
@@ -47,6 +94,9 @@ func probePredictiveBackendStartup(config predictiveBackendStartupProbeConfig) (
 	var lastValidationErr error
 	var lastFetchErr error
 	for {
+		if err := ctx.Err(); err != nil {
+			return predictiveBackendStartup{}, predictiveBackendStartupProbeError(err, lastValidationErr, lastFetchErr)
+		}
 		sample, fetchErr := prometheus.FetchSampleContext(ctx, client, config.MetricsURL)
 		if fetchErr == nil {
 			startup, validateErr := predictiveBackendStartupFromSample(sample, time.Now())
@@ -57,18 +107,20 @@ func probePredictiveBackendStartup(config predictiveBackendStartupProbeConfig) (
 		} else {
 			lastFetchErr = fetchErr
 		}
-		timer := time.NewTimer(retry)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			return predictiveBackendStartup{}, predictiveBackendStartupProbeError(ctx.Err(), lastValidationErr, lastFetchErr)
-		case <-timer.C:
+		if err := waitStartupRetry(ctx, retry); err != nil {
+			return predictiveBackendStartup{}, predictiveBackendStartupProbeError(err, lastValidationErr, lastFetchErr)
 		}
+	}
+}
+
+func waitStartupRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return ctx.Err()
 	}
 }
 

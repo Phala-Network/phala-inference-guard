@@ -72,6 +72,15 @@ three polls. The pending-first-byte lease is also three polls and is derived,
 not configured. Omit `PREDICTIVE_TPS_REFERENCE` or set it to `0` when no
 business TPS target exists; waiting protection remains active.
 
+Starting with v0.12.29, PIG waits for coherent upstream metrics for as long as
+SGLang/vLLM needs to load or recover. A failed startup probe retries; it no longer
+terminates PIG after a fixed timeout. Invalid local configuration still fails
+immediately. The HTTP listener starts only after initialization: a running
+process during this wait is **not yet ready**, and must not receive traffic.
+Readiness checks should not be used by an external watchdog to restart PIG
+repeatedly while the model is loading. SIGTERM/SIGINT cancels startup promptly;
+after readiness, shutdown drains HTTP requests for at most five seconds.
+
 `PREDICTIVE_WINDOW_CONCURRENCY` defaults to `32` and normally stays implicit.
 `PREDICTIVE_RUNNING_LIMIT=0` means unknown/disabled. SGLang can initialize its
 running limit from a coherent top-level integer `max_running_requests` in

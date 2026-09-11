@@ -17,7 +17,15 @@ import (
 type admissionReservationContextKey struct{}
 
 func newProxyServer(cfg config) (*proxyServer, error) {
-	return newProxyServerWithDependencies(cfg, serverDependencies{NewAdmission: newDefaultAdmissionService})
+	return newProxyServerContext(context.Background(), cfg)
+}
+
+func newProxyServerContext(ctx context.Context, cfg config) (*proxyServer, error) {
+	return newProxyServerWithDependencies(cfg, serverDependencies{
+		NewAdmission: func(cfg config) (admissionService, error) {
+			return newDefaultAdmissionServiceContext(ctx, cfg)
+		},
+	})
 }
 
 func newProxyServerWithDependencies(cfg config, dependencies serverDependencies) (*proxyServer, error) {

@@ -47,7 +47,7 @@ Attestation variables do not alter admission policy.
 | --- | --- | --- |
 | `PREDICTIVE_ADMISSION_MODE` | `enforce` | `shadow` or `enforce` |
 | `PREDICTIVE_METRICS_URL` | `${UPSTREAM_ORIGIN}/metrics` | One absolute HTTP URL |
-| `PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS` | `10000` | `1..300000` |
+| `PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS` | `10000` | `1..300000`; per diagnostic attempt, not an overall startup deadline |
 | `PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS` | `500` | `1..60000`, not above startup timeout |
 | `PREDICTIVE_OBSERVATION_POLL_INTERVAL_MS` | `500` | `1..60000` |
 | `PREDICTIVE_MAX_METRICS_AGE_MS` | `3 x poll` | At least one poll, at most `60000` |

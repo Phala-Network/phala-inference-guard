@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -9,11 +10,15 @@ import (
 )
 
 func newDefaultAdmissionService(cfg config) (admissionService, error) {
+	return newDefaultAdmissionServiceContext(context.Background(), cfg)
+}
+
+func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissionService, error) {
 	metricsURL, err := predictiveBackendMetricsURL(cfg)
 	if err != nil {
 		return nil, err
 	}
-	startup, err := probePredictiveBackendStartup(predictiveBackendStartupProbeConfig{
+	startup, err := waitPredictiveBackendStartup(ctx, predictiveBackendStartupProbeConfig{
 		MetricsURL:     metricsURL,
 		StartupTimeout: cfg.PredictiveStartupProbeTimeout,
 		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
@@ -22,7 +27,10 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	if err != nil {
 		return nil, err
 	}
-	runningLimit := initializePredictiveRunningLimit(cfg, startup, metricsURL)
+	runningLimit := initializePredictiveRunningLimit(ctx, cfg, startup, metricsURL)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	log.Printf(
 		"level=info component=tps_controller event=initialized backend_kind=%s model_identity=%s tps_reference=%.6f observation_poll_ms=%d window_concurrency=%d running_limit=%d running_limit_source=%s",
 		startup.BackendKind,

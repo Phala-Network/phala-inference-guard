@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"time"
@@ -54,13 +55,18 @@ func (s *proxyServer) statusLogLine() string {
 	)
 }
 
-func (s *proxyServer) statusLogLoop() {
+func (s *proxyServer) statusLogLoop(ctx context.Context) {
 	if s.cfg.StatusLogInterval <= 0 {
 		return
 	}
 	ticker := time.NewTicker(s.cfg.StatusLogInterval)
 	defer ticker.Stop()
-	for range ticker.C {
-		log.Print(s.statusLogLine())
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			log.Print(s.statusLogLine())
+		}
 	}
 }
