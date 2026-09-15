@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-func TestReleaseVersionIsAssignedV01228(t *testing.T) {
+func TestReleaseVersionIsAssignedDPAdapterRevision(t *testing.T) {
 	t.Parallel()
 
-	if version != "PIG-v0.12.28" {
-		t.Fatalf("runtime version = %q, want the assigned PIG-v0.12.28 identity", version)
+	if version != "PIG-v0.12.28-dp-metrics-r1" {
+		t.Fatalf("runtime version = %q, want the assigned PIG-v0.12.28-dp-metrics-r1 identity", version)
 	}
 }
 

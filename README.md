@@ -79,6 +79,21 @@ running limit from a coherent top-level integer `max_running_requests` in
 remains disabled unless an operator sets it. These are initialized or
 administered bounds, not learned values.
 
+For SGLang attention DP, set both `SGLANG_METRICS_TP_SIZE` and
+`SGLANG_METRICS_DP_SIZE` to the backend's actual global TP and attention DP
+sizes. For example, TP8 with DP8 uses `8` and `8`; TP8 with DP4 uses `8` and
+`4`. Both default to `0`, retaining the existing single-replica metrics
+contract. These fields describe metric geometry and do not change admission
+policy or start additional backends.
+
+With explicit geometry, PIG partitions scheduler metrics by attention group,
+deduplicates TP copies within each group, and sums independent running,
+waiting, generation, retraction and cache counters. A missing group or
+contradictory TP/DP labels invalidates the observation. The configured TPS
+reference, running limit and pending-first-byte window still apply to the
+whole upstream. Aggregated KV capacity describes all groups; a single
+request remains subject to the backend's context and per-group limits.
+
 For SGLang, auto-discovery runs only when `PREDICTIVE_RUNNING_LIMIT` is absent.
 Setting it explicitly to `0` disables discovery and the running-limit gate;
 setting a positive value uses that value without probing `/server_info`.

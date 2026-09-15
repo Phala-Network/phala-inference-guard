@@ -42,4 +42,6 @@ type Config struct {
 	PredictiveWindowConcurrency       int64
 	PredictiveRunningLimit            int64
 	PredictiveRunningLimitConfigured  bool
+	SGLangMetricsTPSize               int
+	SGLangMetricsDPSize               int
 }

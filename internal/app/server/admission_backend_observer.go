@@ -23,6 +23,7 @@ type admissionBackendObserverConfig struct {
 	RequestTimeout  time.Duration
 	Controller      *coreadmission.AdmissionController
 	Now             func() time.Time
+	SGLangTopology  prometheus.SGLangTopology
 }
 
 type admissionBackendObserver struct {
@@ -38,6 +39,7 @@ type admissionBackendObserver struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	closeOnce       sync.Once
+	sglangTopology  prometheus.SGLangTopology
 }
 
 type admissionSampleDisposition uint8
@@ -57,6 +59,7 @@ func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admiss
 	backendKind := strings.TrimSpace(config.BackendKind)
 	identity := strings.ToLower(strings.TrimSpace(config.RuntimeIdentity))
 	if (backendKind != "vllm" && backendKind != "sglang") ||
+		!config.SGLangTopology.Valid() ||
 		!validPredictiveModelIdentitySHA256(identity) || config.PollInterval <= 0 ||
 		config.MaximumAge < config.PollInterval || config.RequestTimeout <= 0 || config.Controller == nil {
 		return nil, fmt.Errorf("admission backend observer configuration is invalid")
@@ -71,6 +74,7 @@ func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admiss
 		backendKind:     backendKind,
 		metricsURL:      config.MetricsURL,
 		runtimeIdentity: identity,
+		sglangTopology:  config.SGLangTopology,
 		pollInterval:    config.PollInterval,
 		maximumAge:      config.MaximumAge,
 		controller:      config.Controller,
@@ -109,7 +113,7 @@ func (o *admissionBackendObserver) poll(ctx context.Context) {
 	if !ok {
 		return
 	}
-	sample, err := prometheus.FetchSampleContext(ctx, o.client, o.metricsURL)
+	sample, err := prometheus.FetchSampleContextWithSGLangTopology(ctx, o.client, o.metricsURL, o.sglangTopology)
 	if err != nil {
 		return
 	}

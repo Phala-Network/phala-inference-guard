@@ -16,6 +16,10 @@ func FetchSample(client *http.Client, metricsURL string) (telemetry.Sample, erro
 }
 
 func FetchSampleContext(ctx context.Context, client *http.Client, metricsURL string) (telemetry.Sample, error) {
+	return FetchSampleContextWithSGLangTopology(ctx, client, metricsURL, SGLangTopology{})
+}
+
+func FetchSampleContextWithSGLangTopology(ctx context.Context, client *http.Client, metricsURL string, topology SGLangTopology) (telemetry.Sample, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, metricsURL, nil)
 	if err != nil {
 		return telemetry.Sample{}, fmt.Errorf("%s: %w", metricsURL, err)
@@ -38,5 +42,5 @@ func FetchSampleContext(ctx context.Context, client *http.Client, metricsURL str
 	if response.StatusCode != http.StatusOK {
 		return telemetry.Sample{}, fmt.Errorf("%s: metrics status %d", metricsURL, response.StatusCode)
 	}
-	return ParseSample(string(body)), nil
+	return ParseSampleWithSGLangTopology(string(body), topology), nil
 }

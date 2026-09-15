@@ -18,6 +18,7 @@ type predictiveBackendStartupProbeConfig struct {
 	StartupTimeout time.Duration
 	RequestTimeout time.Duration
 	RetryInterval  time.Duration
+	SGLangTopology prometheus.SGLangTopology
 }
 
 type predictiveBackendStartup struct {
@@ -33,7 +34,7 @@ type predictiveBackendStartup struct {
 }
 
 func probePredictiveBackendStartup(config predictiveBackendStartupProbeConfig) (predictiveBackendStartup, error) {
-	if strings.TrimSpace(config.MetricsURL) == "" || config.StartupTimeout <= 0 || config.RequestTimeout <= 0 ||
+	if strings.TrimSpace(config.MetricsURL) == "" || !config.SGLangTopology.Valid() || config.StartupTimeout <= 0 || config.RequestTimeout <= 0 ||
 		config.RequestTimeout > config.StartupTimeout || config.RetryInterval <= 0 {
 		return predictiveBackendStartup{}, fmt.Errorf("predictive backend startup probe configuration is invalid")
 	}
@@ -47,7 +48,7 @@ func probePredictiveBackendStartup(config predictiveBackendStartupProbeConfig) (
 	var lastValidationErr error
 	var lastFetchErr error
 	for {
-		sample, fetchErr := prometheus.FetchSampleContext(ctx, client, config.MetricsURL)
+		sample, fetchErr := prometheus.FetchSampleContextWithSGLangTopology(ctx, client, config.MetricsURL, config.SGLangTopology)
 		if fetchErr == nil {
 			startup, validateErr := predictiveBackendStartupFromSample(sample, time.Now())
 			if validateErr == nil {

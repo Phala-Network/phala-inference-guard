@@ -51,6 +51,19 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	}
 	runningLimitRaw, runningLimitConfigured := os.LookupEnv("PREDICTIVE_RUNNING_LIMIT")
 	runningLimitConfigured = runningLimitConfigured && runningLimitRaw != ""
+	sglangTP, err := env.Int("SGLANG_METRICS_TP_SIZE", 0)
+	if err != nil {
+		return err
+	}
+	sglangDP, err := env.Int("SGLANG_METRICS_DP_SIZE", 0)
+	if err != nil {
+		return err
+	}
+	if (sglangTP != 0 || sglangDP != 0) &&
+		(sglangTP <= 0 || sglangTP > 4096 || sglangDP <= 0 ||
+			sglangDP > sglangTP || sglangTP%sglangDP != 0) {
+		return fmt.Errorf("SGLANG_METRICS_TP_SIZE and SGLANG_METRICS_DP_SIZE must both be unset, or define divisible TP/attention-DP sizes in [1, 4096]")
+	}
 
 	integerBounds := []struct {
 		name    string
@@ -84,5 +97,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveWindowConcurrency = int64(windowConcurrency)
 	cfg.PredictiveRunningLimit = int64(runningLimit)
 	cfg.PredictiveRunningLimitConfigured = runningLimitConfigured
+	cfg.SGLangMetricsTPSize = sglangTP
+	cfg.SGLangMetricsDPSize = sglangDP
 	return nil
 }

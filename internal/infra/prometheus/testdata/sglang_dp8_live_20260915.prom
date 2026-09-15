@@ -1,0 +1,144 @@
+# HELP sglang:max_total_num_tokens Maximum total number of tokens in the KV cache pool.
+# TYPE sglang:max_total_num_tokens gauge
+sglang:max_total_num_tokens{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 3.190592e+06
+sglang:max_total_num_tokens{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 3.190592e+06
+sglang:max_total_num_tokens{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 3.190592e+06
+sglang:max_total_num_tokens{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 3.190592e+06
+sglang:max_total_num_tokens{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 3.190592e+06
+sglang:max_total_num_tokens{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 3.190592e+06
+sglang:max_total_num_tokens{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 3.190592e+06
+sglang:max_total_num_tokens{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 3.190592e+06
+# HELP sglang:page_size KV cache page size in tokens.
+# TYPE sglang:page_size gauge
+sglang:page_size{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 64.0
+sglang:page_size{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 64.0
+sglang:page_size{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 64.0
+sglang:page_size{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 64.0
+sglang:page_size{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 64.0
+sglang:page_size{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 64.0
+sglang:page_size{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 64.0
+sglang:page_size{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 64.0
+# HELP sglang:num_pages Number of KV cache pages.
+# TYPE sglang:num_pages gauge
+sglang:num_pages{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 49853.0
+sglang:num_pages{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 49853.0
+sglang:num_pages{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 49853.0
+sglang:num_pages{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 49853.0
+sglang:num_pages{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 49853.0
+sglang:num_pages{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 49853.0
+sglang:num_pages{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 49853.0
+sglang:num_pages{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 49853.0
+# HELP sglang:num_running_reqs The number of running requests.
+# TYPE sglang:num_running_reqs gauge
+sglang:num_running_reqs{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 0.0
+sglang:num_running_reqs{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 0.0
+sglang:num_running_reqs{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.0
+sglang:num_running_reqs{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 0.0
+sglang:num_running_reqs{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 0.0
+sglang:num_running_reqs{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 0.0
+sglang:num_running_reqs{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.0
+sglang:num_running_reqs{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 0.0
+# HELP sglang:num_queue_reqs The number of requests in the waiting queue.
+# TYPE sglang:num_queue_reqs gauge
+sglang:num_queue_reqs{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 0.0
+sglang:num_queue_reqs{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 0.0
+sglang:num_queue_reqs{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.0
+sglang:num_queue_reqs{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 0.0
+sglang:num_queue_reqs{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 0.0
+sglang:num_queue_reqs{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 0.0
+sglang:num_queue_reqs{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.0
+sglang:num_queue_reqs{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 0.0
+# HELP sglang:kv_available_tokens Number of free token slots in the KV cache pool.
+# TYPE sglang:kv_available_tokens gauge
+sglang:kv_available_tokens{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 3.190592e+06
+sglang:kv_available_tokens{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 3.190592e+06
+sglang:kv_available_tokens{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 3.097728e+06
+sglang:kv_available_tokens{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 3.190592e+06
+sglang:kv_available_tokens{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 3.190592e+06
+sglang:kv_available_tokens{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 3.145088e+06
+sglang:kv_available_tokens{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 3.014912e+06
+sglang:kv_available_tokens{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 3.030848e+06
+# HELP sglang:kv_evictable_tokens Number of evictable (radix-cached) token slots in the KV cache pool.
+# TYPE sglang:kv_evictable_tokens gauge
+sglang:kv_evictable_tokens{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 0.0
+sglang:kv_evictable_tokens{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 0.0
+sglang:kv_evictable_tokens{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 92864.0
+sglang:kv_evictable_tokens{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 0.0
+sglang:kv_evictable_tokens{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 0.0
+sglang:kv_evictable_tokens{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 45504.0
+sglang:kv_evictable_tokens{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 175680.0
+sglang:kv_evictable_tokens{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 0.0
+# HELP sglang:kv_used_tokens Number of actively used token slots in the KV cache pool.
+# TYPE sglang:kv_used_tokens gauge
+sglang:kv_used_tokens{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 0.0
+sglang:kv_used_tokens{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 0.0
+sglang:kv_used_tokens{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.0
+sglang:kv_used_tokens{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 0.0
+sglang:kv_used_tokens{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 0.0
+sglang:kv_used_tokens{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 0.0
+sglang:kv_used_tokens{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.0
+sglang:kv_used_tokens{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 159744.0
+# HELP sglang:prefill_effective_tokens_total Effective prefill tokens with retracted-request re-counts excluded, updated on each log interval. mode: device_hit, host_hit, storage_hit, input. Windowed prefix cache hit rate = rate(sum of *_hit) / rate(sum of all modes); per-tier rate uses a single *_hit mode in the numerator.
+# TYPE sglang:prefill_effective_tokens_total counter
+sglang:prefill_effective_tokens_total{dp_rank="6",engine_type="unified",mode="input",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 192.0
+sglang:prefill_effective_tokens_total{dp_rank="6",engine_type="unified",mode="device_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="6",engine_type="unified",mode="host_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="6",engine_type="unified",mode="storage_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="7",engine_type="unified",mode="input",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 45696.0
+sglang:prefill_effective_tokens_total{dp_rank="7",engine_type="unified",mode="device_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="7",engine_type="unified",mode="host_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="7",engine_type="unified",mode="storage_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="0",engine_type="unified",mode="input",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 93248.0
+sglang:prefill_effective_tokens_total{dp_rank="0",engine_type="unified",mode="device_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="0",engine_type="unified",mode="host_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="0",engine_type="unified",mode="storage_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="3",engine_type="unified",mode="input",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 384.0
+sglang:prefill_effective_tokens_total{dp_rank="3",engine_type="unified",mode="device_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 128.0
+sglang:prefill_effective_tokens_total{dp_rank="3",engine_type="unified",mode="host_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="3",engine_type="unified",mode="storage_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="4",engine_type="unified",mode="input",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 320.0
+sglang:prefill_effective_tokens_total{dp_rank="4",engine_type="unified",mode="device_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="4",engine_type="unified",mode="host_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="4",engine_type="unified",mode="storage_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="5",engine_type="unified",mode="input",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 384.0
+sglang:prefill_effective_tokens_total{dp_rank="5",engine_type="unified",mode="device_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="5",engine_type="unified",mode="host_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="5",engine_type="unified",mode="storage_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="2",engine_type="unified",mode="input",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 155968.0
+sglang:prefill_effective_tokens_total{dp_rank="2",engine_type="unified",mode="device_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 128.0
+sglang:prefill_effective_tokens_total{dp_rank="2",engine_type="unified",mode="host_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="2",engine_type="unified",mode="storage_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="1",engine_type="unified",mode="input",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 176064.0
+sglang:prefill_effective_tokens_total{dp_rank="1",engine_type="unified",mode="device_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="1",engine_type="unified",mode="host_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.0
+sglang:prefill_effective_tokens_total{dp_rank="1",engine_type="unified",mode="storage_hit",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 0.0
+# HELP sglang:realtime_tokens_total Total number of tokens processed (updated on each log interval). mode: prefill_compute, prefill_cache, decode.
+# TYPE sglang:realtime_tokens_total counter
+sglang:realtime_tokens_total{dp_rank="6",engine_type="unified",mode="prefill_compute",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 192.0
+sglang:realtime_tokens_total{dp_rank="6",engine_type="unified",mode="decode",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="6"} 49.0
+sglang:realtime_tokens_total{dp_rank="7",engine_type="unified",mode="prefill_compute",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 45696.0
+sglang:realtime_tokens_total{dp_rank="7",engine_type="unified",mode="decode",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="7"} 39.0
+sglang:realtime_tokens_total{dp_rank="0",engine_type="unified",mode="prefill_compute",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 93248.0
+sglang:realtime_tokens_total{dp_rank="0",engine_type="unified",mode="decode",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="0"} 29.0
+sglang:realtime_tokens_total{dp_rank="3",engine_type="unified",mode="prefill_compute",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 384.0
+sglang:realtime_tokens_total{dp_rank="3",engine_type="unified",mode="decode",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 37.0
+sglang:realtime_tokens_total{dp_rank="3",engine_type="unified",mode="prefill_cache",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="3"} 128.0
+sglang:realtime_tokens_total{dp_rank="4",engine_type="unified",mode="prefill_compute",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 320.0
+sglang:realtime_tokens_total{dp_rank="4",engine_type="unified",mode="decode",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="4"} 27.0
+sglang:realtime_tokens_total{dp_rank="5",engine_type="unified",mode="prefill_compute",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 384.0
+sglang:realtime_tokens_total{dp_rank="5",engine_type="unified",mode="decode",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="5"} 34.0
+sglang:realtime_tokens_total{dp_rank="2",engine_type="unified",mode="prefill_compute",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 155968.0
+sglang:realtime_tokens_total{dp_rank="2",engine_type="unified",mode="decode",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 39.0
+sglang:realtime_tokens_total{dp_rank="2",engine_type="unified",mode="prefill_cache",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="2"} 128.0
+sglang:realtime_tokens_total{dp_rank="1",engine_type="unified",mode="prefill_compute",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 176064.0
+sglang:realtime_tokens_total{dp_rank="1",engine_type="unified",mode="decode",model_name="z-ai/glm-5.3",moe_ep_rank="0",pp_rank="0",tp_rank="1"} 57.0
+# HELP sglang:num_retracted_reqs The number of retracted requests.
+# TYPE sglang:num_retracted_reqs gauge
+sglang:num_retracted_reqs{dp_rank="1",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pid="1469",pp_rank="0",tp_rank="1"} 0.0
+sglang:num_retracted_reqs{dp_rank="3",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pid="1471",pp_rank="0",tp_rank="3"} 0.0
+sglang:num_retracted_reqs{dp_rank="2",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pid="1470",pp_rank="0",tp_rank="2"} 0.0
+sglang:num_retracted_reqs{dp_rank="4",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pid="1472",pp_rank="0",tp_rank="4"} 0.0
+sglang:num_retracted_reqs{dp_rank="0",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pid="1468",pp_rank="0",tp_rank="0"} 0.0
+sglang:num_retracted_reqs{dp_rank="6",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pid="1474",pp_rank="0",tp_rank="6"} 0.0
+sglang:num_retracted_reqs{dp_rank="7",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pid="1475",pp_rank="0",tp_rank="7"} 0.0
+sglang:num_retracted_reqs{dp_rank="5",engine_type="unified",model_name="z-ai/glm-5.3",moe_ep_rank="0",pid="1473",pp_rank="0",tp_rank="5"} 0.0

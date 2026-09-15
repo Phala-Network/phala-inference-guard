@@ -55,6 +55,13 @@ var sglangAdmissionSignatures = []string{
 }
 
 func ParseSample(metricsText string) telemetry.Sample {
+	return ParseSampleWithSGLangTopology(metricsText, SGLangTopology{})
+}
+
+func ParseSampleWithSGLangTopology(metricsText string, topology SGLangTopology) telemetry.Sample {
+	if !topology.Valid() {
+		return telemetry.Sample{}
+	}
 	index := newMetricIndex(metricsText, indexedAdmissionMetrics)
 	hasVLLM := index.hasAny(vllmAdmissionSignatures...)
 	hasSGLang := index.hasAny(sglangAdmissionSignatures...)
@@ -65,9 +72,15 @@ func ParseSample(metricsText string) telemetry.Sample {
 		// A direct backend scrape cannot coherently describe two serving
 		// frameworks. Return no admission fields rather than mixing families.
 	case hasVLLM:
-		sample = parseVLLMSample(index)
+		if !topology.Enabled() {
+			sample = parseVLLMSample(index)
+		}
 	case hasSGLang:
-		sample = parseSGLangSample(index)
+		if topology.Enabled() {
+			sample = parseSGLangDPSample(index, topology)
+		} else {
+			sample = parseSGLangSample(index)
+		}
 	}
 	applyRuntimeEpoch(index, &sample)
 	return sample

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
+	"github.com/Phala-Network/phala-inference-guard/internal/infra/prometheus"
 )
 
 func newDefaultAdmissionService(cfg config) (admissionService, error) {
@@ -13,11 +14,13 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 	if err != nil {
 		return nil, err
 	}
+	topology := prometheus.SGLangTopology{TPSize: cfg.SGLangMetricsTPSize, DPSize: cfg.SGLangMetricsDPSize}
 	startup, err := probePredictiveBackendStartup(predictiveBackendStartupProbeConfig{
 		MetricsURL:     metricsURL,
 		StartupTimeout: cfg.PredictiveStartupProbeTimeout,
 		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 		RetryInterval:  cfg.PredictiveObservationPollInterval,
+		SGLangTopology: topology,
 	})
 	if err != nil {
 		return nil, err
@@ -82,6 +85,7 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 		MaximumAge:      cfg.PredictiveMaximumMetricsAge,
 		RequestTimeout:  cfg.PredictiveMetricsRequestTimeout,
 		Controller:      controller,
+		SGLangTopology:  topology,
 	})
 	if err != nil {
 		_ = runtime.Close()
