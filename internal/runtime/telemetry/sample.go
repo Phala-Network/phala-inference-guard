@@ -2,6 +2,7 @@ package telemetry
 
 type Sample struct {
 	BackendKind           string
+	BackendRole           string
 	ModelName             string
 	ModelNameValid        bool
 	KVCapacityTokens      int64

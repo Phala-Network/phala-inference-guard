@@ -117,6 +117,9 @@ func parseLabelSet(raw string) (map[string]string, bool) {
 		if err != nil {
 			return nil, false
 		}
+		if _, duplicate := labels[name]; duplicate {
+			return nil, false
+		}
 		labels[name] = value
 	}
 	return labels, true

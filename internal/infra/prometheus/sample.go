@@ -25,6 +25,8 @@ var indexedAdmissionMetrics = metricNameSet(
 	"sglang:kv_used_tokens",
 	"sglang:num_running_reqs",
 	"sglang:num_queue_reqs",
+	"sglang:num_decode_prealloc_queue_reqs",
+	"sglang:num_decode_transfer_queue_reqs",
 	"sglang:realtime_tokens_total",
 	"sglang:prefill_effective_tokens_total",
 	"sglang:num_retracted_requests_total",

@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
-RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
+RUN GOMAXPROCS=2 GOMEMLIMIT=1400MiB CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -p 2 \
         -trimpath \
         -ldflags="-s -w" \
         -o /out/phala-inference-guard \
@@ -11,7 +11,7 @@ RUN CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build \
 
 FROM gcr.io/distroless/base-debian12@sha256:348dac1808083ccc3366399d6db835875b4eaf7c9b694783f5a3f353c4b58a28
 ARG SOURCE_REVISION
-LABEL org.opencontainers.image.version="0.12.29" \
+LABEL org.opencontainers.image.version="0.12.29-sglang-pd-r1" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 ENV NVIDIA_VISIBLE_DEVICES=all
 COPY --from=go-build /out/phala-inference-guard /phala-inference-guard

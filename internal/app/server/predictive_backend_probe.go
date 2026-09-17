@@ -155,7 +155,7 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 	return predictiveBackendStartup{
 		BackendKind:         sample.BackendKind,
 		modelName:           sample.ModelName,
-		ModelIdentitySHA256: predictiveModelIdentitySHA256(sample.ModelName),
+		ModelIdentitySHA256: predictiveSampleIdentitySHA256(sample),
 		Running:             sample.Running,
 		Waiting:             sample.Waiting,
 		Preemptions:         sample.Preemptions,
@@ -163,6 +163,15 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 		RuntimeStartTime:    sample.RuntimeStartTime,
 		ObservedAt:          observedAt,
 	}, nil
+}
+
+// Preserve existing unified/vLLM identities. PD Decode has a distinct identity
+// so a same-model role switch cannot reuse the original controller's history.
+func predictiveSampleIdentitySHA256(sample telemetry.Sample) string {
+	if sample.BackendKind == "sglang" && sample.BackendRole == "decode" {
+		return predictiveModelIdentitySHA256(sample.ModelName + "\x00sglang-decode")
+	}
+	return predictiveModelIdentitySHA256(sample.ModelName)
 }
 
 func predictiveModelIdentitySHA256(model string) string {

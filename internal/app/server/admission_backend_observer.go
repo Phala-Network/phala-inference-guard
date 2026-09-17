@@ -134,7 +134,7 @@ func (o *admissionBackendObserver) observation(
 		sample.Running > maximumInt-sample.Waiting || observedAt.IsZero() {
 		return coreadmission.BackendObservation{}, admissionSampleTransient
 	}
-	identity := predictiveModelIdentitySHA256(sample.ModelName)
+	identity := predictiveSampleIdentitySHA256(sample)
 	disposition := admissionSampleUsable
 	if sample.BackendKind != o.backendKind || identity != o.runtimeIdentity {
 		disposition = admissionSampleIdentityDrift

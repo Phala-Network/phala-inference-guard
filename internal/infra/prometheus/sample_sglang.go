@@ -20,6 +20,8 @@ var sglangAdmissionIdentityMetrics = []string{
 	"sglang:kv_used_tokens",
 	"sglang:num_running_reqs",
 	"sglang:num_queue_reqs",
+	"sglang:num_decode_prealloc_queue_reqs",
+	"sglang:num_decode_transfer_queue_reqs",
 	"sglang:realtime_tokens_total",
 	"sglang:num_retracted_requests_total",
 }
@@ -40,13 +42,31 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 	observedEngine, allEnginesValid := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "engine_type", false)
 	admissionDPRank, singleDPReplica := index.uniqueLabelAcrossPresent(sglangAdmissionIdentityMetrics, "dp_rank", true)
 	modelNameValid := staticModelValid && allModelsValid && modelName == observedModel &&
-		staticEngineValid && allEnginesValid && engineType == "unified" && engineType == observedEngine &&
+		staticEngineValid && allEnginesValid && (engineType == "unified" || engineType == "decode") && engineType == observedEngine &&
 		singleDPReplica
 	running, runningValid := parseSGLangRequestGauge(index, "sglang:num_running_reqs", runningValue, runningPresent)
 	waiting, waitingValid := parseSGLangRequestGauge(index, "sglang:num_queue_reqs", waitingValue, waitingPresent)
 	if runningPresent != waitingPresent {
 		runningValid = false
 		waitingValid = false
+	}
+	if engineType == "decode" {
+		// PD requests move through disjoint prealloc, transfer and scheduler
+		// waiting queues. Deduplicate TP replicas within each stage, then sum
+		// stages; a missing lazy metric is the exact cold-start zero.
+		for _, name := range []string{"sglang:num_decode_prealloc_queue_reqs", "sglang:num_decode_transfer_queue_reqs"} {
+			value, present := index.maximum(name, totalPriority)
+			count, valid := parseSGLangRequestGauge(index, name, value, present)
+			for _, item := range index.samples[name] {
+				_, itemValid := exactNonNegativeMetricInt64(item.value, item.valueValid && item.labelsValid)
+				valid = valid && itemValid
+			}
+			if !valid || count < 0 || waiting > int(^uint(0)>>1)-count {
+				waitingValid = false
+				break
+			}
+			waiting += count
+		}
 	}
 	generation := uint64(0)
 	generationValid := !index.has(sglangRealtimeTokenCounter)
@@ -70,6 +90,7 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 
 	sample := telemetry.Sample{
 		BackendKind:      "sglang",
+		BackendRole:      engineType,
 		ModelName:        modelName,
 		ModelNameValid:   modelNameValid,
 		Running:          running,
@@ -82,7 +103,10 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 		GenerationValid:  generationValid,
 	}
 	adaptSGLangKV(index, &sample)
-	adaptSGLangCache(index, modelName, admissionDPRank, &sample)
+	if engineType == "unified" {
+		// Decode does not own authoritative Prefill hit accounting.
+		adaptSGLangCache(index, modelName, admissionDPRank, &sample)
+	}
 	return sample
 }
 
