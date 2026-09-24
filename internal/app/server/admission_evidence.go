@@ -35,6 +35,8 @@ const (
 	admissionEvidenceReasonObservationStale
 	admissionEvidenceReasonInvalidRequest
 	admissionEvidenceReasonTPSReference
+	admissionEvidenceReasonRunningLimit
+	admissionEvidenceReasonWindowConcurrency
 	admissionEvidenceReasonRuntimeIdentityDrift
 	admissionEvidenceReasonResourceExhausted
 	admissionEvidenceReasonPriorityQueueFull
@@ -53,6 +55,8 @@ var admissionEvidenceProtectionReasonLabels = [...]string{
 	"observation_stale",
 	"invalid_request",
 	"tps_reference",
+	"running_limit",
+	"window_concurrency",
 	"runtime_identity_drift",
 	"resource_exhausted",
 	"priority_queue_full",
@@ -205,6 +209,10 @@ func admissionEvidenceReasonFor(reason coreadmission.Reason) admissionEvidencePr
 		return admissionEvidenceReasonInvalidRequest
 	case coreadmission.ReasonTPSReference:
 		return admissionEvidenceReasonTPSReference
+	case coreadmission.ReasonRunningLimit:
+		return admissionEvidenceReasonRunningLimit
+	case coreadmission.ReasonWindowConcurrency:
+		return admissionEvidenceReasonWindowConcurrency
 	case coreadmission.ReasonRuntimeIdentityDrift:
 		return admissionEvidenceReasonRuntimeIdentityDrift
 	case coreadmission.ReasonResourceExhausted:
