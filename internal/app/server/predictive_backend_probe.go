@@ -24,6 +24,7 @@ type predictiveBackendStartupProbeConfig struct {
 
 type predictiveBackendStartup struct {
 	BackendKind         string
+	PDDecode            bool
 	modelName           string
 	ModelIdentitySHA256 string
 	Running             int
@@ -153,6 +154,7 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 	}
 	return predictiveBackendStartup{
 		BackendKind:         sample.BackendKind,
+		PDDecode:            sample.BackendKind == "sglang" && sample.BackendRole == "decode",
 		modelName:           sample.ModelName,
 		ModelIdentitySHA256: predictiveSampleIdentitySHA256(sample),
 		Running:             sample.Running,

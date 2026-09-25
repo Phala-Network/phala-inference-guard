@@ -100,6 +100,8 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 		return nil, fmt.Errorf("admission running and window bounds are invalid")
 	}
 	policy := newAdmissionPolicy()
+	tpsWindow := newTPSWindow(config.TPS.Reference)
+	tpsWindow.pdDecode = config.PDDecode
 	now := config.Now
 	if now == nil {
 		now = time.Now
@@ -107,7 +109,7 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 	return &AdmissionController{
 		runtimeIdentity:               config.RuntimeIdentity,
 		policy:                        policy,
-		tpsWindow:                     newTPSWindow(config.TPS.Reference),
+		tpsWindow:                     tpsWindow,
 		windowConcurrency:             config.WindowConcurrency,
 		runningLimit:                  config.RunningLimit,
 		runningLimitSource:            config.RunningLimitSource,

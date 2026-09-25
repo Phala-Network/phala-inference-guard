@@ -190,6 +190,7 @@ func (s RunningLimitSource) valid() bool {
 type ControllerConfig struct {
 	RuntimeIdentity               string
 	TPS                           TPSPolicyConfig
+	PDDecode                      bool
 	WindowConcurrency             int64
 	RunningLimit                  int64
 	RunningLimitSource            RunningLimitSource

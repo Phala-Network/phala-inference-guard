@@ -146,6 +146,7 @@ func incrementTPSDenominatorSelection(value *uint64) {
 
 type tpsWindow struct {
 	reference   float64
+	pdDecode    bool
 	buckets     [tpsWindowBucketCount]tpsBucket
 	latest      TPSIntervalSnapshot
 	denominator tpsDenominatorEvidence
@@ -207,9 +208,12 @@ func (w *tpsWindow) observe(sample tpsSample) bool {
 	}
 	sequenceSecondsTotal := maximumFloat64(
 		endpointSequenceSeconds,
-		sample.localForwardedSequenceSeconds,
 		sample.localResponseSequenceSeconds,
 	)
+	// In PD, forwarded requests can still be in Prefill or KV transfer.
+	if !w.pdDecode {
+		sequenceSecondsTotal = maximumFloat64(sequenceSecondsTotal, sample.localForwardedSequenceSeconds)
+	}
 	fallbackSequenceSeconds := float64(0)
 	if !sample.localExposureMeasured && sample.localForwardedSequenceSeconds == 0 &&
 		sample.localResponseSequenceSeconds == 0 {

@@ -44,6 +44,7 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
 		RuntimeIdentity:               startup.ModelIdentitySHA256,
 		TPS:                           coreadmission.TPSPolicyConfig{Reference: cfg.PredictiveTPSReference},
+		PDDecode:                      startup.PDDecode,
 		WindowConcurrency:             cfg.PredictiveWindowConcurrency,
 		RunningLimit:                  runningLimit.Value,
 		RunningLimitSource:            runningLimit.Source,

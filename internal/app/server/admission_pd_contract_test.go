@@ -27,6 +27,9 @@ func TestAdmissionPDDecodeStartupAndRoleDrift(t *testing.T) {
 	if u.ModelIdentitySHA256 == d.ModelIdentitySHA256 {
 		t.Fatal("PD role must be part of the runtime observation identity")
 	}
+	if u.PDDecode || !d.PDDecode {
+		t.Fatalf("PD decode mode was not derived from the backend role: unified=%t decode=%t", u.PDDecode, d.PDDecode)
+	}
 	for _, tc := range []struct {
 		name    string
 		startup predictiveBackendStartup
