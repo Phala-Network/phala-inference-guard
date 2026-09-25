@@ -63,6 +63,7 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 		MaximumAge:            cfg.PredictiveMaximumMetricsAge,
 		Running:               int64(startup.Running),
 		Waiting:               int64(startup.Waiting),
+		DecodePending:         int64(startup.DecodePending),
 		GenerationTokensTotal: startup.Generation,
 		PreemptionsTotal:      startup.Preemptions,
 		RuntimeStartTime:      startup.RuntimeStartTime,

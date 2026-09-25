@@ -13,7 +13,7 @@ func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
 		level = "warn"
 	}
 	return fmt.Sprintf(
-		"level=%s component=admission event=protection mode=%s enforced=%t priority=%s action=%s reason=%s scope=%s tps_result=%s tps_subreason=%s backend=%d/%d tps=%.3f/%.3f ready=%t projected_running=%d running_limit=%d running_limit_source=%s projected_window=%d window_concurrency=%d policy_revision=%d suppressed=%d",
+		"level=%s component=admission event=protection mode=%s enforced=%t priority=%s action=%s reason=%s scope=%s tps_result=%s tps_subreason=%s backend=%d/%d pd_pending=%d tps=%.3f/%.3f ready=%t projected_running=%d running_limit=%d running_limit_source=%s projected_window=%d window_concurrency=%d policy_revision=%d suppressed=%d",
 		level,
 		event.Mode,
 		event.Enforced,
@@ -25,6 +25,7 @@ func admissionDecisionLogLine(event admissionDecisionLogEvent) string {
 		decision.TPSDecisionSubreason,
 		decision.State.RawRunning,
 		decision.State.RawWaiting,
+		decision.State.RawDecodePending,
 		decision.State.TPS.MeanActiveTPS,
 		decision.State.TPS.Reference,
 		decision.State.TPS.Ready,

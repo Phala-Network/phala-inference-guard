@@ -50,10 +50,11 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 		runningValid = false
 		waitingValid = false
 	}
+	decodePending := 0
+	decodePendingValid := true
 	if engineType == "decode" {
-		// PD requests move through disjoint prealloc, transfer and scheduler
-		// waiting queues. Deduplicate TP replicas within each stage, then sum
-		// stages; a missing lazy metric is the exact cold-start zero.
+		// PD transfer stages own capacity but are not scheduler waiting.
+		// Deduplicate TP replicas within each disjoint stage.
 		for _, name := range []string{"sglang:num_decode_prealloc_queue_reqs", "sglang:num_decode_transfer_queue_reqs"} {
 			value, present := index.maximum(name, totalPriority)
 			count, valid := parseSGLangRequestGauge(index, name, value, present)
@@ -61,11 +62,11 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 				_, itemValid := exactNonNegativeMetricInt64(item.value, item.valueValid && item.labelsValid)
 				valid = valid && itemValid
 			}
-			if !valid || count < 0 || waiting > int(^uint(0)>>1)-count {
-				waitingValid = false
+			if !valid || count < 0 || decodePending > int(^uint(0)>>1)-count {
+				decodePendingValid = false
 				break
 			}
-			waiting += count
+			decodePending += count
 		}
 	}
 	generation := uint64(0)
@@ -89,18 +90,20 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 	}
 
 	sample := telemetry.Sample{
-		BackendKind:      "sglang",
-		BackendRole:      engineType,
-		ModelName:        modelName,
-		ModelNameValid:   modelNameValid,
-		Running:          running,
-		RunningValid:     runningValid,
-		Waiting:          waiting,
-		WaitingValid:     waitingValid,
-		Preemptions:      preemptions,
-		PreemptionsValid: preemptionsValid,
-		Generation:       generation,
-		GenerationValid:  generationValid,
+		BackendKind:        "sglang",
+		BackendRole:        engineType,
+		ModelName:          modelName,
+		ModelNameValid:     modelNameValid,
+		Running:            running,
+		RunningValid:       runningValid,
+		Waiting:            waiting,
+		WaitingValid:       waitingValid,
+		DecodePending:      decodePending,
+		DecodePendingValid: decodePendingValid,
+		Preemptions:        preemptions,
+		PreemptionsValid:   preemptionsValid,
+		Generation:         generation,
+		GenerationValid:    generationValid,
 	}
 	adaptSGLangKV(index, &sample)
 	if engineType == "unified" {

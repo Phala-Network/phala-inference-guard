@@ -20,6 +20,9 @@ func (b admissionBounds) evaluate(state ProjectedState, demand TPSRequestDemand)
 	}
 	raw, ok := addNonnegativeInt64(state.RawRunning, state.RawWaiting)
 	if ok {
+		raw, ok = addNonnegativeInt64(raw, state.RawDecodePending)
+	}
+	if ok {
 		raw, ok = addNonnegativeInt64(raw, state.UnobservedSequences)
 	}
 	if ok {

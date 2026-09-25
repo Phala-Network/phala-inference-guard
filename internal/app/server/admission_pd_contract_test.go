@@ -58,3 +58,38 @@ func TestAdmissionPDDecodeStartupAndRoleDrift(t *testing.T) {
 		})
 	}
 }
+
+func TestAdmissionPDDecodePendingReachesControllerObservation(t *testing.T) {
+	r := httptest.NewRecorder()
+	writeAdmissionSGLangMetrics(r, "vendor/pd-model", 100, 0)
+	text := strings.ReplaceAll(r.Body.String(), `engine_type="unified"`, `engine_type="decode"`)
+	text += "# TYPE sglang:num_decode_transfer_queue_reqs gauge\n" +
+		"sglang:num_decode_transfer_queue_reqs{engine_type=\"decode\",model_name=\"vendor/pd-model\",tp_rank=\"0\"} 124\n"
+	sample := prometheus.ParseSample(text)
+	at := time.Unix(500, 0)
+	startup, err := predictiveBackendStartupFromSample(sample, at)
+	if err != nil || startup.Waiting != 0 || startup.DecodePending != 124 {
+		t.Fatalf("PD startup lost pending debt: startup=%+v err=%v", startup, err)
+	}
+	observer := &admissionBackendObserver{backendKind: "sglang", runtimeIdentity: startup.ModelIdentitySHA256, maximumAge: time.Second}
+	observation, disposition := observer.observation(sample, at.Add(time.Second))
+	if disposition != admissionSampleUsable || observation.Waiting != 0 || observation.DecodePending != 124 {
+		t.Fatalf("PD observer lost pending debt: observation=%+v disposition=%v", observation, disposition)
+	}
+	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
+		RuntimeIdentity:    startup.ModelIdentitySHA256,
+		RunningLimit:       128,
+		RunningLimitSource: coreadmission.RunningLimitSourceAdmin,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer controller.Close()
+	window, ok := controller.StartSampleWindow()
+	if !ok || !controller.PublishObservation(window, observation).Accepted {
+		t.Fatal("PD observation was not published")
+	}
+	if state := controller.Snapshot(at.Add(time.Second)).State; state.RawWaiting != 0 || state.RawDecodePending != 124 {
+		t.Fatalf("controller lost split PD observation: %+v", state)
+	}
+}

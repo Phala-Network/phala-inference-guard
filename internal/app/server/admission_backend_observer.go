@@ -127,11 +127,9 @@ func (o *admissionBackendObserver) observation(
 	sample telemetry.Sample,
 	observedAt time.Time,
 ) (coreadmission.BackendObservation, admissionSampleDisposition) {
-	maximumInt := int(^uint(0) >> 1)
 	if sample.BackendKind == "" || !sample.ModelNameValid || strings.TrimSpace(sample.ModelName) == "" ||
-		!sample.RunningValid || !sample.WaitingValid || !sample.PreemptionsValid || !sample.GenerationValid ||
-		sample.Running < 0 || sample.Waiting < 0 ||
-		sample.Running > maximumInt-sample.Waiting || observedAt.IsZero() {
+		!validPredictiveSampleRequestCounts(sample) || !sample.PreemptionsValid || !sample.GenerationValid ||
+		observedAt.IsZero() {
 		return coreadmission.BackendObservation{}, admissionSampleTransient
 	}
 	identity := predictiveSampleIdentitySHA256(sample)
@@ -148,6 +146,7 @@ func (o *admissionBackendObserver) observation(
 		MaximumAge:            o.maximumAge,
 		Running:               int64(sample.Running),
 		Waiting:               int64(sample.Waiting),
+		DecodePending:         int64(sample.DecodePending),
 		GenerationTokensTotal: sample.Generation,
 		PreemptionsTotal:      sample.Preemptions,
 		RuntimeStartTime:      sample.RuntimeStartTime,

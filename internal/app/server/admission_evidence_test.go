@@ -53,6 +53,21 @@ func TestAdmissionEvidenceNormalizesInvalidEnumsAndKeepsFixedCardinality(t *test
 	}
 }
 
+func TestAdmissionEvidenceLabelsBoundProtections(t *testing.T) {
+	for reason, label := range map[coreadmission.Reason]string{
+		coreadmission.ReasonRunningLimit:      "running_limit",
+		coreadmission.ReasonWindowConcurrency: "window_concurrency",
+	} {
+		var evidence admissionEvidence
+		evidence.Record(coreadmission.DecisionRecord{Action: coreadmission.ActionProtect, Reason: reason, Scope: coreadmission.ProtectionLoad})
+		var output bytes.Buffer
+		writeAdmissionEvidenceMetrics(&output, evidence.Snapshot())
+		if !strings.Contains(output.String(), `pig_predictive_admission_protections_total{reason="`+label+`",scope="load"} 1`) {
+			t.Fatalf("missing %s protection label", label)
+		}
+	}
+}
+
 func TestAdmissionEvidenceSnapshotAndMetricsScrapeAreReadOnly(t *testing.T) {
 	var evidence admissionEvidence
 	for _, decision := range []coreadmission.DecisionRecord{

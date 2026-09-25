@@ -29,6 +29,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 		ResidualDebts:            overlay.residualDebts,
 		RawRunning:               observed.observation.Running,
 		RawWaiting:               observed.observation.Waiting,
+		RawDecodePending:         observed.observation.DecodePending,
 		PreviousRawRunning:       observed.previousRunning,
 		PreviousRawWaiting:       observed.previousWaiting,
 		GenerationDelta:          observed.generationDelta,
@@ -46,7 +47,7 @@ func validProjectedState(state ProjectedState) bool {
 	return state.UnobservedSequences >= 0 &&
 		state.SequenceLiabilities >= 0 && state.UnobservedSequences <= state.SequenceLiabilities &&
 		state.LiveReservations >= 0 && state.ResidualDebts >= 0 &&
-		state.RawRunning >= 0 && state.RawWaiting >= 0 && state.PreviousRawRunning >= 0 &&
+		state.RawRunning >= 0 && state.RawWaiting >= 0 && state.RawDecodePending >= 0 && state.PreviousRawRunning >= 0 &&
 		state.PreviousRawWaiting >= 0 &&
 		state.ObservationInterval >= 0 &&
 		(!state.ObservationIntervalValid || state.ObservationInterval > 0) &&

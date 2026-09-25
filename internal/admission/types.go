@@ -48,6 +48,7 @@ type ProjectedState struct {
 	ResidualDebts            int64
 	RawRunning               int64
 	RawWaiting               int64
+	RawDecodePending         int64
 	PreviousRawRunning       int64
 	PreviousRawWaiting       int64
 	GenerationDelta          uint64
@@ -226,6 +227,7 @@ type BackendObservation struct {
 	MaximumAge            time.Duration
 	Running               int64
 	Waiting               int64
+	DecodePending         int64
 	GenerationTokensTotal uint64
 	PreemptionsTotal      uint64
 	RuntimeStartTime      float64

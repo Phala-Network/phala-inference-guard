@@ -69,6 +69,7 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	policy := snapshot.Capacity.Policy
 	fmt.Fprintf(w, "pig_predictive_policy_revision %d\n", policy.Revision)
 	fmt.Fprintf(w, "pig_predictive_backend_runtime_epoch %d\n", snapshot.Capacity.RuntimeEpoch)
+	fmt.Fprintf(w, "pig_predictive_pd_decode_pending %d\n", snapshot.Capacity.State.RawDecodePending)
 	fmt.Fprintf(w, "pig_predictive_policy_last_updated_at_seconds %.6f\n", predictivePolicyUnixSeconds(policy.UpdatedAt))
 	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "applied", s.policyUpdates.applied.Load())
 	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "invalid", s.policyUpdates.invalid.Load())
@@ -245,6 +246,9 @@ func admissionGenerationTPS(state coreadmission.ProjectedState) (aggregate, mean
 
 func projectedDecodeSequences(state coreadmission.ProjectedState) int {
 	rawDemand, ok := addNonnegativeForMetrics(state.RawRunning, state.RawWaiting)
+	if ok {
+		rawDemand, ok = addNonnegativeForMetrics(rawDemand, state.RawDecodePending)
+	}
 	if !ok {
 		return int(^uint(0) >> 1)
 	}

@@ -122,15 +122,18 @@ OUTPUT_TOKEN_FIELD_NAMES
 
 ### SGLang PD Decode observation
 
-The `v0.12.29-sglang-pd-r1` derivative supports one coherent SGLang
+The `v0.12.29-sglang-pd-r2` derivative supports one coherent SGLang
 `engine_type="decode"` metrics endpoint alongside the unchanged unified path.
 Set `UPSTREAM` to the PD gateway and `PREDICTIVE_METRICS_URL` to the single
 Decode worker group's internal `/metrics`. Keep this metrics origin private.
 Running-limit discovery uses `/server_info` on that same Decode origin.
 
-Decode waiting is the scheduler waiting queue plus preallocation and transfer
-queues, deduplicated across TP ranks within each stage. Mixed model/engine/DP
-identities and invalid counters are not usable observations. A Decode/unified
+Decode waiting is only the scheduler waiting queue. Preallocation and transfer
+queues are deduplicated across TP ranks and counted separately as Decode pending
+capacity debt; they do not trigger the scheduler-waiting TPS protection. Both
+pending stages count toward the running limit and keep the first-byte reservation
+until they drain. Mixed model/engine/DP identities and invalid counters are not
+usable observations. A Decode/unified
 role switch invalidates the running controller even when the model name is
 unchanged. Decode observations do not fabricate Prefill cache-hit accounting.
 

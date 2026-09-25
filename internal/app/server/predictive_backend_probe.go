@@ -28,6 +28,7 @@ type predictiveBackendStartup struct {
 	ModelIdentitySHA256 string
 	Running             int
 	Waiting             int
+	DecodePending       int
 	Preemptions         uint64
 	Generation          uint64
 	RuntimeStartTime    float64
@@ -138,15 +139,13 @@ func predictiveBackendStartupProbeError(contextErr, validationErr, fetchErr erro
 }
 
 func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time.Time) (predictiveBackendStartup, error) {
-	maximumInt := int(^uint(0) >> 1)
 	if sample.BackendKind != "vllm" && sample.BackendKind != "sglang" {
 		return predictiveBackendStartup{}, fmt.Errorf("predictive startup metrics backend is unsupported or ambiguous")
 	}
 	if !sample.ModelNameValid || strings.TrimSpace(sample.ModelName) == "" {
 		return predictiveBackendStartup{}, fmt.Errorf("predictive startup model identity is missing or ambiguous")
 	}
-	if !sample.RunningValid || !sample.WaitingValid || !sample.PreemptionsValid || !sample.GenerationValid ||
-		sample.Running < 0 || sample.Waiting < 0 || sample.Running > maximumInt-sample.Waiting {
+	if !validPredictiveSampleRequestCounts(sample) || !sample.PreemptionsValid || !sample.GenerationValid {
 		return predictiveBackendStartup{}, fmt.Errorf("predictive startup request or generation counters are invalid")
 	}
 	if observedAt.IsZero() {
@@ -158,11 +157,25 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 		ModelIdentitySHA256: predictiveSampleIdentitySHA256(sample),
 		Running:             sample.Running,
 		Waiting:             sample.Waiting,
+		DecodePending:       sample.DecodePending,
 		Preemptions:         sample.Preemptions,
 		Generation:          sample.Generation,
 		RuntimeStartTime:    sample.RuntimeStartTime,
 		ObservedAt:          observedAt,
 	}, nil
+}
+
+func validPredictiveSampleRequestCounts(sample telemetry.Sample) bool {
+	if !sample.RunningValid || !sample.WaitingValid || sample.Running < 0 || sample.Waiting < 0 ||
+		sample.DecodePending < 0 || (sample.BackendRole == "decode" && !sample.DecodePendingValid) ||
+		(sample.BackendRole != "decode" && sample.DecodePending != 0) {
+		return false
+	}
+	maximumInt := int(^uint(0) >> 1)
+	if sample.Running > maximumInt-sample.Waiting {
+		return false
+	}
+	return sample.DecodePending <= maximumInt-sample.Running-sample.Waiting
 }
 
 // Preserve existing unified/vLLM identities. PD Decode has a distinct identity

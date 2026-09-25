@@ -16,6 +16,8 @@ type Sample struct {
 	RunningValid          bool
 	Waiting               int
 	WaitingValid          bool
+	DecodePending         int
+	DecodePendingValid    bool
 	KVCacheUsage          float64
 	Preemptions           uint64
 	PreemptionsValid      bool

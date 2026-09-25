@@ -721,7 +721,7 @@ func pendingFirstByteLeaseExpired(
 	reconciliationAt time.Time,
 	duration time.Duration,
 ) bool {
-	return duration > 0 && observation.Waiting == 0 && !item.forwardedAt.IsZero() &&
+	return duration > 0 && observation.Waiting == 0 && observation.DecodePending == 0 && !item.forwardedAt.IsZero() &&
 		!reconciliationAt.IsZero() && !reconciliationAt.Before(observation.ObservedAt) &&
 		reconciliationAt.Sub(observation.ObservedAt) <= observation.MaximumAge &&
 		!observation.ObservedAt.Before(item.forwardedAt) &&
@@ -746,7 +746,7 @@ func (c *AdmissionController) slowOverlayLocked() (reservationOverlay, bool) {
 func validBackendObservation(observation BackendObservation) bool {
 	if observation.RuntimeIdentity == "" ||
 		observation.ObservedAt.IsZero() || observation.MaximumAge <= 0 ||
-		observation.Running < 0 || observation.Waiting < 0 {
+		observation.Running < 0 || observation.Waiting < 0 || observation.DecodePending < 0 {
 		return false
 	}
 	if observation.RuntimeStartTime < 0 || math.IsNaN(observation.RuntimeStartTime) ||
@@ -754,5 +754,8 @@ func validBackendObservation(observation BackendObservation) bool {
 		return false
 	}
 	_, ok := addNonnegativeInt64(observation.Running, observation.Waiting)
+	if ok {
+		_, ok = addNonnegativeInt64(observation.Running+observation.Waiting, observation.DecodePending)
+	}
 	return ok
 }

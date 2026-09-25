@@ -14,7 +14,7 @@ func (s *proxyServer) statusLogLine() string {
 	decision := snapshot.Capacity.MinimumDecision
 	report := snapshot.Report
 	return fmt.Sprintf(
-		"level=info component=controller event=status version=%s mode=%s policy=%d/%s counts=%d/%d/%d/%d/%d rejects=%d reservations=%d residual_debts=%d last=%s/%s capacity=%s/%s tps=%.3f/%.3f ready=%t latest=%t/%.3f tps_result=%s tps_subreason=%s running=%d/%d/%s waiting=%d projected_running=%d window=%d/%d unobserved=%d liabilities=%d router=%t/%s/%d observer=%t/%t",
+		"level=info component=controller event=status version=%s mode=%s policy=%d/%s counts=%d/%d/%d/%d/%d rejects=%d reservations=%d residual_debts=%d last=%s/%s capacity=%s/%s tps=%.3f/%.3f ready=%t latest=%t/%.3f tps_result=%s tps_subreason=%s running=%d/%d/%s waiting=%d pd_pending=%d projected_running=%d window=%d/%d unobserved=%d liabilities=%d router=%t/%s/%d observer=%t/%t",
 		version,
 		input.Mode,
 		snapshot.Capacity.Policy.Revision,
@@ -42,6 +42,7 @@ func (s *proxyServer) statusLogLine() string {
 		decision.RunningLimit,
 		decision.RunningLimitSource,
 		snapshot.Capacity.State.RawWaiting,
+		snapshot.Capacity.State.RawDecodePending,
 		decision.ProjectedRunning,
 		decision.ProjectedWindowSequences,
 		decision.WindowConcurrency,

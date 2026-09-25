@@ -134,6 +134,13 @@ func TestTPSReferenceShadowProtectionDoesNotReduceRouterCapacity(t *testing.T) {
 	}
 }
 
+func TestProjectedDecodeSequencesIncludesPDTransferDebt(t *testing.T) {
+	state := coreadmission.ProjectedState{RawRunning: 3, RawDecodePending: 124, UnobservedSequences: 1}
+	if got := projectedDecodeSequences(state); got != 128 {
+		t.Fatalf("projected Decode sequences=%d want=128", got)
+	}
+}
+
 func TestAdmissionUpstreamStatusUsesCurrentProtectionScope(t *testing.T) {
 	tests := []struct {
 		name      string

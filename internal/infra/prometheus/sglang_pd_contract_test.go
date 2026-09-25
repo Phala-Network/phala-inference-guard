@@ -22,7 +22,8 @@ func TestSGLangPDDecodeCountsDisjointQueuesAndDeduplicatesTP(t *testing.T) {
 		pdQueue("num_decode_transfer_queue_reqs", `tp_rank="1"`, "3")
 	text += "sglang:realtime_tokens_total{engine_type=\"decode\",model_name=\"meta/test-model\",mode=\"decode\",tp_rank=\"1\"} 100\n"
 	s := ParseSample(text)
-	if !s.ModelNameValid || !s.RunningValid || !s.WaitingValid || s.Waiting != 5 || !s.GenerationValid || s.Generation != 100 {
+	if !s.ModelNameValid || !s.RunningValid || !s.WaitingValid || s.Waiting != 0 ||
+		!s.DecodePendingValid || s.DecodePending != 5 || !s.GenerationValid || s.Generation != 100 {
 		t.Fatalf("PD decode observation is not coherent/deduplicated: %#v", s)
 	}
 	if s.CacheTokensValid {
@@ -36,7 +37,7 @@ func TestSGLangPDDecodeColdQueueAndRoleContract(t *testing.T) {
 		if s.ModelNameValid != (role != "prefill") {
 			t.Fatalf("role=%s sample=%#v", role, s)
 		}
-		if role == "decode" && (!s.WaitingValid || s.Waiting != 0) {
+		if role == "decode" && (!s.WaitingValid || s.Waiting != 0 || !s.DecodePendingValid || s.DecodePending != 0) {
 			t.Fatalf("cold decode queue %#v", s)
 		}
 	}
@@ -57,9 +58,16 @@ func TestSGLangPDDecodeRejectsInvalidQueueSamples(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := ParseSample(pdDecodeFixture() + extra)
-			if s.ModelNameValid && s.WaitingValid {
+			if s.ModelNameValid && s.DecodePendingValid {
 				t.Fatalf("unsafe PD queue accepted: %#v", s)
 			}
 		})
+	}
+}
+
+func TestSGLangPDDecodeTransferBurstDoesNotBecomeSchedulerWaiting(t *testing.T) {
+	s := ParseSample(pdDecodeFixture() + pdQueue("num_decode_transfer_queue_reqs", `tp_rank="0"`, "124"))
+	if !s.ModelNameValid || !s.WaitingValid || s.Waiting != 0 || !s.DecodePendingValid || s.DecodePending != 124 {
+		t.Fatalf("PD transfer burst conflated with scheduler waiting: %#v", s)
 	}
 }
