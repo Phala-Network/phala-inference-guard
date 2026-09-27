@@ -36,7 +36,7 @@ func initializePredictiveRunningLimit(
 	ctx context.Context,
 	cfg config,
 	startup predictiveBackendStartup,
-	metricsURL string,
+	metricsURLs []string,
 ) predictiveRunningLimit {
 	if cfg.PredictiveRunningLimitConfigured || cfg.PredictiveRunningLimit > 0 {
 		return predictiveRunningLimit{
@@ -47,8 +47,12 @@ func initializePredictiveRunningLimit(
 	if startup.BackendKind != "sglang" {
 		return predictiveRunningLimit{Source: coreadmission.RunningLimitSourceUnknown}
 	}
+	if len(metricsURLs) != 1 {
+		log.Printf("level=warn component=tps_controller event=running_limit_discovery backend_kind=sglang result=unavailable source=unknown reason=multi_endpoint_explicit_limit_required")
+		return predictiveRunningLimit{Source: coreadmission.RunningLimitSourceUnknown}
+	}
 	limit, err := probeSGLangRunningLimit(ctx, sglangRunningLimitProbeConfig{
-		MetricsURL: metricsURL, RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
+		MetricsURL: metricsURLs[0], RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 	})
 	if err != nil {
 		log.Printf("level=warn component=tps_controller event=running_limit_discovery backend_kind=sglang result=unavailable source=unknown")

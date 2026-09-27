@@ -1,6 +1,7 @@
 package admission
 
 import (
+	"encoding/hex"
 	"fmt"
 	"math"
 	"sync"
@@ -22,25 +23,24 @@ type SampleWindow struct {
 }
 
 type ReservationHandle struct {
-	controller   *AdmissionController
-	runtimeEpoch uint64
-	id           uint64
+	controller *AdmissionController
+	id         uint64
 }
 
 func (h ReservationHandle) usable() bool {
-	return h.controller != nil && h.runtimeEpoch != 0 && h.id != 0
+	return h.controller != nil && h.id != 0
 }
 
 func (h ReservationHandle) MarkForwarded() bool {
-	return h.usable() && h.controller.markForwarded(h.runtimeEpoch, h.id)
+	return h.usable() && h.controller.markForwarded(h.id)
 }
 
 func (h ReservationHandle) MarkFirstByte() bool {
-	return h.usable() && h.controller.markFirstByte(h.runtimeEpoch, h.id)
+	return h.usable() && h.controller.markFirstByte(h.id)
 }
 
 func (h ReservationHandle) Terminate(cause TerminalCause) bool {
-	return h.usable() && cause.valid() && h.controller.terminate(h.runtimeEpoch, h.id, cause)
+	return h.usable() && cause.valid() && h.controller.terminate(h.id, cause)
 }
 
 type AdmissionController struct {
@@ -166,9 +166,17 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 		!validBackendObservation(observation) {
 		return PublicationResult{Reason: ReasonObservationInvalid, RuntimeEpoch: c.runtimeEpoch}
 	}
-	runtimeIdentityChanged := c.hasObservation &&
-		observation.RuntimeStartTime > 0 && c.observation.observation.RuntimeStartTime > 0 &&
-		observation.RuntimeStartTime != c.observation.observation.RuntimeStartTime
+	runtimeEpochIdentityChanged := false
+	if c.hasObservation {
+		previousEpochIdentity := c.observation.observation.RuntimeEpochIdentity
+		currentEpochIdentity := observation.RuntimeEpochIdentity
+		if previousEpochIdentity != "" && currentEpochIdentity == "" {
+			return PublicationResult{Reason: ReasonObservationInvalid, RuntimeEpoch: c.runtimeEpoch}
+		}
+		runtimeEpochIdentityChanged = previousEpochIdentity != currentEpochIdentity
+	}
+	runtimeIdentityChanged := c.hasObservation && (observation.RuntimeStartTime > 0 && c.observation.observation.RuntimeStartTime > 0 &&
+		observation.RuntimeStartTime != c.observation.observation.RuntimeStartTime || runtimeEpochIdentityChanged)
 	if observation.RuntimeIdentity != c.runtimeIdentity {
 		c.failClosedLocked(ReasonRuntimeIdentityDrift)
 		return PublicationResult{
@@ -204,12 +212,21 @@ func (c *AdmissionController) PublishObservation(window SampleWindow, observatio
 			return PublicationResult{Reason: ReasonCounterOverflow, RuntimeEpoch: c.runtimeEpoch}
 		}
 		c.runtimeEpoch++
-		clear(c.reservations)
-		c.overlay = reservationOverlay{}
+		if observation.RuntimeEpochIdentity != "" {
+			// Aggregate restarts cannot invalidate in-flight work; reservation IDs are never reused.
+			for id, item := range c.reservations {
+				item.runtimeEpoch = c.runtimeEpoch
+				c.reservations[id] = item
+			}
+			c.lastExposure = window.exposure
+		} else {
+			clear(c.reservations)
+			c.overlay = reservationOverlay{}
+			c.lastExposure = sequenceExposureSnapshot{}
+			c.exposure.reset()
+		}
 		c.sampleSequence = 0
 		c.lastPublishedSample = 0
-		c.lastExposure = sequenceExposureSnapshot{}
-		c.exposure.reset()
 		c.tpsWindow.reset()
 	} else {
 		if c.hasObservation {
@@ -351,7 +368,7 @@ func (c *AdmissionController) Admit(now time.Time, demand TPSRequestDemand) Admi
 	decision.RuntimeEpoch = c.runtimeEpoch
 	return AdmissionResult{
 		Decision: decision,
-		Handle:   ReservationHandle{controller: c, runtimeEpoch: c.runtimeEpoch, id: reservationID},
+		Handle:   ReservationHandle{controller: c, id: reservationID},
 	}
 }
 
@@ -412,14 +429,14 @@ func (c *AdmissionController) Close() {
 	c.failClosedLocked(ReasonClosed)
 }
 
-func (c *AdmissionController) markForwarded(epoch, id uint64) bool {
+func (c *AdmissionController) markForwarded(id uint64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closedReason != "" || epoch != c.runtimeEpoch {
+	if c.closedReason != "" {
 		return false
 	}
 	item, ok := c.reservations[id]
-	if !ok || item.runtimeEpoch != epoch || item.phase != reservationReserved {
+	if !ok || item.runtimeEpoch != c.runtimeEpoch || item.phase != reservationReserved {
 		return false
 	}
 	sequence, ok := c.nextEventSequenceLocked()
@@ -439,14 +456,14 @@ func (c *AdmissionController) markForwarded(epoch, id uint64) bool {
 	return true
 }
 
-func (c *AdmissionController) markFirstByte(epoch, id uint64) bool {
+func (c *AdmissionController) markFirstByte(id uint64) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closedReason != "" || epoch != c.runtimeEpoch {
+	if c.closedReason != "" {
 		return false
 	}
 	item, ok := c.reservations[id]
-	if !ok || item.runtimeEpoch != epoch || item.phase != reservationForwarded {
+	if !ok || item.runtimeEpoch != c.runtimeEpoch || item.phase != reservationForwarded {
 		return false
 	}
 	oldContribution, oldValid := item.contribution()
@@ -472,14 +489,14 @@ func (c *AdmissionController) markFirstByte(epoch, id uint64) bool {
 	return true
 }
 
-func (c *AdmissionController) terminate(epoch, id uint64, cause TerminalCause) bool {
+func (c *AdmissionController) terminate(id uint64, cause TerminalCause) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closedReason != "" || epoch != c.runtimeEpoch || !cause.valid() {
+	if c.closedReason != "" || !cause.valid() {
 		return false
 	}
 	item, ok := c.reservations[id]
-	if !ok || item.runtimeEpoch != epoch || item.phase == reservationResidualDebt {
+	if !ok || item.runtimeEpoch != c.runtimeEpoch || item.phase == reservationResidualDebt {
 		return false
 	}
 	oldContribution, oldValid := item.contribution()
@@ -754,6 +771,12 @@ func validBackendObservation(observation BackendObservation) bool {
 	if observation.RuntimeStartTime < 0 || math.IsNaN(observation.RuntimeStartTime) ||
 		math.IsInf(observation.RuntimeStartTime, 0) {
 		return false
+	}
+	if observation.RuntimeEpochIdentity != "" {
+		decoded, err := hex.DecodeString(observation.RuntimeEpochIdentity)
+		if err != nil || len(decoded) != 32 || hex.EncodeToString(decoded) != observation.RuntimeEpochIdentity {
+			return false
+		}
 	}
 	_, ok := addNonnegativeInt64(observation.Running, observation.Waiting)
 	if ok {

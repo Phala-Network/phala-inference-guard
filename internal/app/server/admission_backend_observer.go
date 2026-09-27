@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +16,7 @@ import (
 type admissionBackendObserverConfig struct {
 	BackendKind     string
 	MetricsURL      string
+	MetricsURLs     []string
 	RuntimeIdentity string
 	PollInterval    time.Duration
 	MaximumAge      time.Duration
@@ -28,7 +28,7 @@ type admissionBackendObserverConfig struct {
 type admissionBackendObserver struct {
 	pollMu          sync.Mutex
 	backendKind     string
-	metricsURL      string
+	metricsURLs     []string
 	runtimeIdentity string
 	pollInterval    time.Duration
 	maximumAge      time.Duration
@@ -49,9 +49,8 @@ const (
 )
 
 func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admissionBackendObserver, error) {
-	parsed, err := url.Parse(config.MetricsURL)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
-		parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+	metricsURLs, err := predictiveMetricsURLSet(config.MetricsURL, config.MetricsURLs)
+	if err != nil {
 		return nil, fmt.Errorf("admission backend metrics URL is invalid")
 	}
 	backendKind := strings.TrimSpace(config.BackendKind)
@@ -69,7 +68,7 @@ func newAdmissionBackendObserver(config admissionBackendObserverConfig) (*admiss
 	transport.Proxy = nil
 	observer := &admissionBackendObserver{
 		backendKind:     backendKind,
-		metricsURL:      config.MetricsURL,
+		metricsURLs:     metricsURLs,
 		runtimeIdentity: identity,
 		pollInterval:    config.PollInterval,
 		maximumAge:      config.MaximumAge,
@@ -109,7 +108,7 @@ func (o *admissionBackendObserver) poll(ctx context.Context) {
 	if !ok {
 		return
 	}
-	sample, err := prometheus.FetchSampleContext(ctx, o.client, o.metricsURL)
+	sample, err := prometheus.FetchAggregateSampleContext(ctx, o.client, o.metricsURLs)
 	if err != nil {
 		return
 	}
@@ -150,6 +149,7 @@ func (o *admissionBackendObserver) observation(
 		GenerationTokensTotal: sample.Generation,
 		PreemptionsTotal:      sample.Preemptions,
 		RuntimeStartTime:      sample.RuntimeStartTime,
+		RuntimeEpochIdentity:  sample.RuntimeEpochIdentity,
 	}, disposition
 }
 

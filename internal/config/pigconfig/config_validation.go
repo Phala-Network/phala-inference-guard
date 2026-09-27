@@ -14,7 +14,22 @@ func Validate(cfg Config) error {
 	if err := validateHTTPURL("UPSTREAM", cfg.Upstream); err != nil {
 		return err
 	}
-	if err := validateHTTPURL("PREDICTIVE_METRICS_URL", cfg.PredictiveMetricsURL); err != nil {
+	metricsURLs := cfg.PredictiveMetricsURLs
+	if len(metricsURLs) == 0 {
+		metricsURLs = []string{cfg.PredictiveMetricsURL}
+	}
+	if len(metricsURLs) > maximumPredictiveMetricsURLs {
+		return fmt.Errorf("PREDICTIVE_METRICS_URLS must contain at most %d endpoints", maximumPredictiveMetricsURLs)
+	}
+	if cfg.PredictiveMetricsURL != "" && strings.TrimRight(cfg.PredictiveMetricsURL, "/") != strings.TrimRight(metricsURLs[0], "/") {
+		return fmt.Errorf("PREDICTIVE_METRICS_URL must match the first PREDICTIVE_METRICS_URLS endpoint")
+	}
+	for _, metricsURL := range metricsURLs {
+		if err := validateHTTPURL("PREDICTIVE_METRICS_URLS", metricsURL); err != nil {
+			return err
+		}
+	}
+	if err := validatePredictiveMetricsURLUniqueness(metricsURLs); err != nil {
 		return err
 	}
 	if cfg.APIAuthEnabled && cfg.Token == "" {
@@ -33,6 +48,44 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("ATTESTATION_NVIDIA_COMMAND_TIMEOUT_SECONDS must be > 0 when ATTESTATION_ENABLED=true")
 	}
 	return validatePredictiveAdmissionConfig(cfg)
+}
+
+func parsePredictiveMetricsURLs(raw string) ([]string, error) {
+	parts := strings.Split(raw, ",")
+	if len(parts) > maximumPredictiveMetricsURLs {
+		return nil, fmt.Errorf("PREDICTIVE_METRICS_URLS must contain at most %d endpoints", maximumPredictiveMetricsURLs)
+	}
+	metricsURLs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		metricsURL := strings.TrimRight(strings.TrimSpace(part), "/")
+		if metricsURL == "" {
+			return nil, fmt.Errorf("PREDICTIVE_METRICS_URLS must not contain empty endpoints")
+		}
+		if err := validateHTTPURL("PREDICTIVE_METRICS_URLS", metricsURL); err != nil {
+			return nil, err
+		}
+		metricsURLs = append(metricsURLs, metricsURL)
+	}
+	if err := validatePredictiveMetricsURLUniqueness(metricsURLs); err != nil {
+		return nil, err
+	}
+	return metricsURLs, nil
+}
+
+func validatePredictiveMetricsURLUniqueness(metricsURLs []string) error {
+	seen := make(map[string]struct{}, len(metricsURLs))
+	for _, metricsURL := range metricsURLs {
+		parsed, err := url.Parse(metricsURL)
+		if err != nil {
+			return fmt.Errorf("PREDICTIVE_METRICS_URLS endpoint is invalid")
+		}
+		key := strings.ToLower(parsed.Scheme+"://"+parsed.Host) + parsed.EscapedPath()
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("PREDICTIVE_METRICS_URLS must not contain duplicate endpoints")
+		}
+		seen[key] = struct{}{}
+	}
+	return nil
 }
 
 func validatePredictiveAdmissionConfig(cfg Config) error {

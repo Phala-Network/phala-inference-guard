@@ -145,6 +145,7 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	t.Setenv("UPSTREAM", "http://backend:8000/v1")
 	t.Setenv("PREDICTIVE_ADMISSION_MODE", "")
 	t.Setenv("PREDICTIVE_METRICS_URL", "")
+	t.Setenv("PREDICTIVE_METRICS_URLS", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load minimal production config: %v", err)
@@ -172,6 +173,43 @@ func TestProductionDefaultsNeedNoPredictiveComposeOverrides(t *testing.T) {
 	}
 	if cfg.PredictiveScannerBodyBytes != defaultPredictiveScannerBodyBytes {
 		t.Fatalf("production scanner ceiling=%d want=%d", cfg.PredictiveScannerBodyBytes, defaultPredictiveScannerBodyBytes)
+	}
+}
+
+func TestPredictiveMetricsURLsOverrideLegacySingleURL(t *testing.T) {
+	t.Setenv("PREDICTIVE_METRICS_URL", "http://legacy:32000/metrics")
+	t.Setenv("PREDICTIVE_METRICS_URLS", " http://decode-0:32000/metrics, http://decode-1:32000/metrics ,http://decode-2:32000/metrics ")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load multi-endpoint metrics config: %v", err)
+	}
+	if err := Validate(cfg); err != nil {
+		t.Fatalf("Validate multi-endpoint metrics config: %v", err)
+	}
+	want := []string{
+		"http://decode-0:32000/metrics",
+		"http://decode-1:32000/metrics",
+		"http://decode-2:32000/metrics",
+	}
+	if !reflect.DeepEqual(cfg.PredictiveMetricsURLs, want) || cfg.PredictiveMetricsURL != want[0] {
+		t.Fatalf("multi metrics urls=%q legacy=%q, want %q / %q", cfg.PredictiveMetricsURLs, cfg.PredictiveMetricsURL, want, want[0])
+	}
+}
+
+func TestPredictiveMetricsURLsRejectAmbiguousLists(t *testing.T) {
+	for _, raw := range []string{
+		",http://decode-0:32000/metrics",
+		"http://decode-0:32000/metrics,",
+		"http://decode-0:32000/metrics,,http://decode-1:32000/metrics",
+		"http://decode-0:32000/metrics,http://decode-0:32000/metrics",
+		"file:///metrics,http://decode-1:32000/metrics",
+	} {
+		t.Run(strings.ReplaceAll(raw, "://", "_"), func(t *testing.T) {
+			t.Setenv("PREDICTIVE_METRICS_URLS", raw)
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load accepted ambiguous metrics URL list %q", raw)
+			}
+		})
 	}
 }
 

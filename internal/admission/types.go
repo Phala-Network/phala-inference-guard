@@ -232,6 +232,7 @@ type BackendObservation struct {
 	GenerationTokensTotal uint64
 	PreemptionsTotal      uint64
 	RuntimeStartTime      float64
+	RuntimeEpochIdentity  string
 }
 
 type AdmissionResult struct {

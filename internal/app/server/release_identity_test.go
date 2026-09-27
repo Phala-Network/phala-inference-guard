@@ -11,8 +11,8 @@ import (
 func TestReleaseVersionIsAssignedV01229SGLangPDR3(t *testing.T) {
 	t.Parallel()
 
-	if version != "PIG-v0.12.29-sglang-pd-r3" {
-		t.Fatalf("runtime version = %q, want the assigned PIG-v0.12.29-sglang-pd-r3 identity", version)
+	if version != "PIG-v0.12.29-sglang-pd-r4" {
+		t.Fatalf("runtime version = %q, want the assigned PIG-v0.12.29-sglang-pd-r4 identity", version)
 	}
 }
 

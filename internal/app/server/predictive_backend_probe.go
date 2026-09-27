@@ -17,35 +17,65 @@ import (
 
 type predictiveBackendStartupProbeConfig struct {
 	MetricsURL     string
+	MetricsURLs    []string
 	StartupTimeout time.Duration
 	RequestTimeout time.Duration
 	RetryInterval  time.Duration
 }
 
 type predictiveBackendStartup struct {
-	BackendKind         string
-	PDDecode            bool
-	modelName           string
-	ModelIdentitySHA256 string
-	Running             int
-	Waiting             int
-	DecodePending       int
-	Preemptions         uint64
-	Generation          uint64
-	RuntimeStartTime    float64
-	ObservedAt          time.Time
+	BackendKind          string
+	PDDecode             bool
+	modelName            string
+	ModelIdentitySHA256  string
+	Running              int
+	Waiting              int
+	DecodePending        int
+	Preemptions          uint64
+	Generation           uint64
+	RuntimeStartTime     float64
+	RuntimeEpochIdentity string
+	ObservedAt           time.Time
 }
 
 func validatePredictiveBackendStartupProbe(config predictiveBackendStartupProbeConfig) error {
-	if strings.TrimSpace(config.MetricsURL) == "" || config.StartupTimeout <= 0 || config.RequestTimeout <= 0 ||
+	if _, err := predictiveMetricsURLSet(config.MetricsURL, config.MetricsURLs); err != nil {
+		return fmt.Errorf("predictive backend startup probe configuration is invalid")
+	}
+	if config.StartupTimeout <= 0 || config.RequestTimeout <= 0 ||
 		config.RequestTimeout > config.StartupTimeout || config.RetryInterval <= 0 {
 		return fmt.Errorf("predictive backend startup probe configuration is invalid")
 	}
-	endpoint, err := url.Parse(config.MetricsURL)
-	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" {
-		return fmt.Errorf("predictive backend startup metrics URL is invalid")
-	}
 	return nil
+}
+
+const maximumPredictiveMetricsURLCount = 16
+
+func predictiveMetricsURLSet(single string, multiple []string) ([]string, error) {
+	metricsURLs := multiple
+	if len(metricsURLs) == 0 && strings.TrimSpace(single) != "" {
+		metricsURLs = []string{single}
+	}
+	if len(metricsURLs) == 0 || len(metricsURLs) > maximumPredictiveMetricsURLCount {
+		return nil, fmt.Errorf("predictive metrics URL set is invalid")
+	}
+	seen := make(map[string]struct{}, len(metricsURLs))
+	validated := make([]string, len(metricsURLs))
+	for i, raw := range metricsURLs {
+		value := strings.TrimSpace(raw)
+		endpoint, err := url.Parse(value)
+		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") ||
+			endpoint.Host == "" || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+			return nil, fmt.Errorf("predictive backend metrics URL is invalid")
+		}
+		key := strings.ToLower(endpoint.Scheme+"://"+endpoint.Host) + endpoint.EscapedPath()
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("predictive metrics URL set contains duplicate endpoints")
+		}
+		seen[key] = struct{}{}
+		validated[i] = value
+	}
+	return validated, nil
 }
 
 // StartupTimeout bounds one diagnostic attempt, not the backend's loading time.
@@ -86,6 +116,10 @@ func probePredictiveBackendStartup(parent context.Context, config predictiveBack
 	}
 	ctx, cancel := context.WithTimeout(parent, config.StartupTimeout)
 	defer cancel()
+	metricsURLs, err := predictiveMetricsURLSet(config.MetricsURL, config.MetricsURLs)
+	if err != nil {
+		return predictiveBackendStartup{}, err
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	defer transport.CloseIdleConnections()
 	client := &http.Client{Timeout: config.RequestTimeout, Transport: transport}
@@ -99,7 +133,7 @@ func probePredictiveBackendStartup(parent context.Context, config predictiveBack
 		if err := ctx.Err(); err != nil {
 			return predictiveBackendStartup{}, predictiveBackendStartupProbeError(err, lastValidationErr, lastFetchErr)
 		}
-		sample, fetchErr := prometheus.FetchSampleContext(ctx, client, config.MetricsURL)
+		sample, fetchErr := prometheus.FetchAggregateSampleContext(ctx, client, metricsURLs)
 		if fetchErr == nil {
 			startup, validateErr := predictiveBackendStartupFromSample(sample, time.Now())
 			if validateErr == nil {
@@ -153,17 +187,18 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 		return predictiveBackendStartup{}, fmt.Errorf("predictive startup observation time is invalid")
 	}
 	return predictiveBackendStartup{
-		BackendKind:         sample.BackendKind,
-		PDDecode:            sample.BackendKind == "sglang" && sample.BackendRole == "decode",
-		modelName:           sample.ModelName,
-		ModelIdentitySHA256: predictiveSampleIdentitySHA256(sample),
-		Running:             sample.Running,
-		Waiting:             sample.Waiting,
-		DecodePending:       sample.DecodePending,
-		Preemptions:         sample.Preemptions,
-		Generation:          sample.Generation,
-		RuntimeStartTime:    sample.RuntimeStartTime,
-		ObservedAt:          observedAt,
+		BackendKind:          sample.BackendKind,
+		PDDecode:             sample.BackendKind == "sglang" && sample.BackendRole == "decode",
+		modelName:            sample.ModelName,
+		ModelIdentitySHA256:  predictiveSampleIdentitySHA256(sample),
+		Running:              sample.Running,
+		Waiting:              sample.Waiting,
+		DecodePending:        sample.DecodePending,
+		Preemptions:          sample.Preemptions,
+		Generation:           sample.Generation,
+		RuntimeStartTime:     sample.RuntimeStartTime,
+		RuntimeEpochIdentity: sample.RuntimeEpochIdentity,
+		ObservedAt:           observedAt,
 	}, nil
 }
 

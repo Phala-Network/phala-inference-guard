@@ -75,7 +75,7 @@ func TestV01223RunningLimitInitializationHonorsExplicitAndBackendContracts(t *te
 
 	explicit := base
 	explicit.PredictiveRunningLimit = 192
-	got := initializePredictiveRunningLimit(context.Background(), explicit, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
+	got := initializePredictiveRunningLimit(context.Background(), explicit, predictiveBackendStartup{BackendKind: "sglang"}, []string{server.URL + "/metrics"})
 	if got.Value != 192 || got.Source != coreadmission.RunningLimitSourceEnvironment || calls.Load() != 0 {
 		t.Fatalf("explicit initialization=%+v calls=%d", got, calls.Load())
 	}
@@ -86,19 +86,30 @@ func TestV01223RunningLimitInitializationHonorsExplicitAndBackendContracts(t *te
 		t.Fatalf("load explicit zero running limit: %v", err)
 	}
 	disabled.PredictiveMetricsRequestTimeout = time.Second
-	got = initializePredictiveRunningLimit(context.Background(), disabled, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
+	got = initializePredictiveRunningLimit(context.Background(), disabled, predictiveBackendStartup{BackendKind: "sglang"}, []string{server.URL + "/metrics"})
 	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceEnvironment || calls.Load() != 0 {
 		t.Fatalf("explicit zero initialization=%+v calls=%d", got, calls.Load())
 	}
 
-	got = initializePredictiveRunningLimit(context.Background(), base, predictiveBackendStartup{BackendKind: "vllm"}, server.URL+"/metrics")
+	got = initializePredictiveRunningLimit(context.Background(), base, predictiveBackendStartup{BackendKind: "vllm"}, []string{server.URL + "/metrics"})
 	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceUnknown || calls.Load() != 0 {
 		t.Fatalf("vLLM initialization=%+v calls=%d", got, calls.Load())
 	}
 
-	got = initializePredictiveRunningLimit(context.Background(), base, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
+	got = initializePredictiveRunningLimit(context.Background(), base, predictiveBackendStartup{BackendKind: "sglang"}, []string{server.URL + "/metrics"})
 	if got.Value != 256 || got.Source != coreadmission.RunningLimitSourceSGLangServerInfo || calls.Load() != 1 {
 		t.Fatalf("SGLang initialization=%+v calls=%d", got, calls.Load())
+	}
+
+	got = initializePredictiveRunningLimit(context.Background(), base, predictiveBackendStartup{BackendKind: "sglang"}, []string{server.URL + "/metrics", server.URL + "/metrics-d1"})
+	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceUnknown || calls.Load() != 1 {
+		t.Fatalf("multi-endpoint SGLang initialization reused Decode-0 limit=%+v calls=%d", got, calls.Load())
+	}
+
+	explicit.PredictiveRunningLimit = 128
+	got = initializePredictiveRunningLimit(context.Background(), explicit, predictiveBackendStartup{BackendKind: "sglang"}, []string{server.URL + "/metrics", server.URL + "/metrics-d1"})
+	if got.Value != 128 || got.Source != coreadmission.RunningLimitSourceEnvironment || calls.Load() != 1 {
+		t.Fatalf("explicit multi-endpoint limit was not honored=%+v calls=%d", got, calls.Load())
 	}
 }
 
@@ -109,7 +120,7 @@ func TestV01223SGLangRunningLimitDiscoveryFailureRemainsUnknown(t *testing.T) {
 	t.Cleanup(server.Close)
 	cfg := testProxyConfig("http://backend.invalid/v1")
 	cfg.PredictiveMetricsRequestTimeout = time.Second
-	got := initializePredictiveRunningLimit(context.Background(), cfg, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
+	got := initializePredictiveRunningLimit(context.Background(), cfg, predictiveBackendStartup{BackendKind: "sglang"}, []string{server.URL + "/metrics"})
 	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceUnknown {
 		t.Fatalf("failed SGLang discovery guessed a limit: %+v", got)
 	}

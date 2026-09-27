@@ -32,6 +32,7 @@ type Sample struct {
 	CacheTokensValid      bool
 	RuntimeStartTime      float64
 	RuntimeStartTimeValid bool
+	RuntimeEpochIdentity  string
 }
 
 func AggregateSamples(samples []Sample) Sample {

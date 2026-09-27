@@ -16,11 +16,22 @@ const (
 	defaultPredictiveScannerConcurrency  = 64
 	defaultPredictiveWindowConcurrency   = 32
 	maximumPredictiveSequenceBound       = 1 << 20
+	maximumPredictiveMetricsURLs         = 16
 )
 
 func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveAdmissionMode = strings.ToLower(strings.TrimSpace(env.String("PREDICTIVE_ADMISSION_MODE", "enforce")))
 	metricsURL := strings.TrimRight(strings.TrimSpace(env.String("PREDICTIVE_METRICS_URL", cfg.PredictiveMetricsURL)), "/")
+	metricsURLsRaw := strings.TrimSpace(env.String("PREDICTIVE_METRICS_URLS", ""))
+	metricsURLs := []string{metricsURL}
+	if metricsURLsRaw != "" {
+		parsedMetricsURLs, parseErr := parsePredictiveMetricsURLs(metricsURLsRaw)
+		if parseErr != nil {
+			return parseErr
+		}
+		metricsURLs = parsedMetricsURLs
+		metricsURL = metricsURLs[0]
+	}
 	startupTimeoutMS, err := env.Int("PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS", 10_000)
 	if err != nil {
 		return err
@@ -74,6 +85,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 		return fmt.Errorf("PREDICTIVE_METRICS_REQUEST_TIMEOUT_MS must not exceed PREDICTIVE_STARTUP_PROBE_TIMEOUT_MS")
 	}
 	cfg.PredictiveMetricsURL = metricsURL
+	cfg.PredictiveMetricsURLs = metricsURLs
 	cfg.PredictiveScannerBodyBytes = defaultPredictiveScannerBodyBytes
 	cfg.PredictiveScannerConcurrency = defaultPredictiveScannerConcurrency
 	cfg.PredictiveStartupProbeTimeout = time.Duration(startupTimeoutMS) * time.Millisecond

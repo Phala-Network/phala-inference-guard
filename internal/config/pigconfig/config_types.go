@@ -11,6 +11,7 @@ type Config struct {
 	Listen                             string
 	Upstream                           string
 	PredictiveMetricsURL               string
+	PredictiveMetricsURLs              []string
 	Token                              string
 	APIAuthEnabled                     bool
 	ProxyTimeout                       time.Duration

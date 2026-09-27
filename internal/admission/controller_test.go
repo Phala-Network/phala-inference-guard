@@ -200,6 +200,64 @@ func TestControllerCounterResetClearsWindowAndFencesHandles(t *testing.T) {
 	}
 }
 
+func TestControllerDecodeWorkerRestartPreservesInflightReservations(t *testing.T) {
+	now := time.Unix(10_250, 0)
+	controller, err := NewAdmissionController(ControllerConfig{
+		RuntimeIdentity:    testRuntimeIdentity,
+		PDDecode:           true,
+		WindowConcurrency:  4,
+		RunningLimit:       2,
+		RunningLimitSource: RunningLimitSourceEnvironment,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := testObservation(now, 0, 0, 100, 0)
+	initial.RuntimeStartTime = 1_000
+	initial.RuntimeEpochIdentity = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	publishObservation(t, controller, initial)
+
+	healthyDecodeRequest := controller.Admit(now.Add(time.Millisecond), testDemand(1))
+	if !healthyDecodeRequest.Decision.Admitted() || !healthyDecodeRequest.Handle.MarkForwarded() ||
+		!healthyDecodeRequest.Handle.MarkFirstByte() {
+		t.Fatalf("healthy Decode reservation did not enter response lifecycle: %+v", healthyDecodeRequest.Decision)
+	}
+	pendingDecodeRequest := controller.Admit(now.Add(2*time.Millisecond), testDemand(1))
+	if !pendingDecodeRequest.Decision.Admitted() || !pendingDecodeRequest.Handle.MarkForwarded() {
+		t.Fatalf("pending Decode reservation did not forward: %+v", pendingDecodeRequest.Decision)
+	}
+	staleWindow, ok := controller.StartSampleWindow()
+	if !ok {
+		t.Fatal("pre-reset sample window unavailable")
+	}
+
+	reset := testObservation(now.Add(time.Second), 1, 0, 1, 0)
+	reset.RuntimeStartTime = 1_000
+	reset.RuntimeEpochIdentity = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	publication := publishObservation(t, controller, reset)
+	if !publication.RuntimeReset || publication.RuntimeEpoch == healthyDecodeRequest.Decision.RuntimeEpoch {
+		t.Fatalf("partial Decode restart did not advance runtime epoch: %+v", publication)
+	}
+	if stale := controller.PublishObservation(staleWindow, reset); stale.Accepted || stale.Reason != ReasonObservationInvalid {
+		t.Fatalf("pre-reset sample window crossed the new runtime epoch: %+v", stale)
+	}
+
+	after := controller.Snapshot(now.Add(time.Second + time.Millisecond))
+	if after.State.RawRunning != 1 || after.State.UnobservedSequences != 1 || after.State.LiveReservations != 2 {
+		t.Fatalf("partial Decode restart dropped in-flight reservation liability: %+v", after.State)
+	}
+	if after.MinimumDecision.Reason != ReasonRunningLimit || after.MinimumDecision.ProjectedRunning != 3 {
+		t.Fatalf("partial Decode restart admitted against forgotten in-flight demand: %+v", after.MinimumDecision)
+	}
+	if !pendingDecodeRequest.Handle.MarkFirstByte() {
+		t.Fatal("pre-reset in-flight handle could not publish its first byte after partial restart")
+	}
+	if !healthyDecodeRequest.Handle.Terminate(TerminalSuccess) || !pendingDecodeRequest.Handle.Terminate(TerminalSuccess) {
+		t.Fatal("pre-reset in-flight handles could not terminate after partial restart")
+	}
+	assertAggregateMatchesSlow(t, controller)
+}
+
 func TestControllerRuntimeIdentityDriftFailsClosed(t *testing.T) {
 	now := time.Unix(10_500, 0)
 	controller := testControllerWithObservation(t, testObservation(now, 0, 0, 1, 0))

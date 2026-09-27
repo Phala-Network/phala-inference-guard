@@ -13,7 +13,7 @@ import (
 )
 
 // Keep the last released identity until a separate release step assigns a new version.
-const version = "PIG-v0.12.29-sglang-pd-r3"
+const version = "PIG-v0.12.29-sglang-pd-r4"
 
 var durationBucketsSeconds = histogram.DurationBucketsSeconds
 

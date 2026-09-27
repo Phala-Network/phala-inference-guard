@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 )
@@ -14,12 +13,12 @@ func newDefaultAdmissionService(cfg config) (admissionService, error) {
 }
 
 func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissionService, error) {
-	metricsURL, err := predictiveBackendMetricsURL(cfg)
+	metricsURLs, err := predictiveBackendMetricsURLs(cfg)
 	if err != nil {
 		return nil, err
 	}
 	startup, err := waitPredictiveBackendStartup(ctx, predictiveBackendStartupProbeConfig{
-		MetricsURL:     metricsURL,
+		MetricsURLs:    metricsURLs,
 		StartupTimeout: cfg.PredictiveStartupProbeTimeout,
 		RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 		RetryInterval:  cfg.PredictiveObservationPollInterval,
@@ -27,7 +26,7 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 	if err != nil {
 		return nil, err
 	}
-	runningLimit := initializePredictiveRunningLimit(ctx, cfg, startup, metricsURL)
+	runningLimit := initializePredictiveRunningLimit(ctx, cfg, startup, metricsURLs)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -68,6 +67,7 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 		GenerationTokensTotal: startup.Generation,
 		PreemptionsTotal:      startup.Preemptions,
 		RuntimeStartTime:      startup.RuntimeStartTime,
+		RuntimeEpochIdentity:  startup.RuntimeEpochIdentity,
 	})
 	if !publication.Accepted {
 		controller.Close()
@@ -86,7 +86,7 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 	}
 	observer, err := newAdmissionBackendObserver(admissionBackendObserverConfig{
 		BackendKind:     startup.BackendKind,
-		MetricsURL:      metricsURL,
+		MetricsURLs:     metricsURLs,
 		RuntimeIdentity: startup.ModelIdentitySHA256,
 		PollInterval:    cfg.PredictiveObservationPollInterval,
 		MaximumAge:      cfg.PredictiveMaximumMetricsAge,
@@ -101,10 +101,10 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 	return runtime, nil
 }
 
-func predictiveBackendMetricsURL(cfg config) (string, error) {
-	metricsURL := strings.TrimSpace(cfg.PredictiveMetricsURL)
-	if metricsURL == "" {
-		return "", fmt.Errorf("predictive backend metrics URL is empty")
+func predictiveBackendMetricsURLs(cfg config) ([]string, error) {
+	metricsURLs, err := predictiveMetricsURLSet(cfg.PredictiveMetricsURL, cfg.PredictiveMetricsURLs)
+	if err != nil {
+		return nil, fmt.Errorf("predictive backend metrics URL set is invalid")
 	}
-	return metricsURL, nil
+	return metricsURLs, nil
 }
