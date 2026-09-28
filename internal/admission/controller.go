@@ -52,6 +52,7 @@ type AdmissionController struct {
 	tpsWindow                     tpsWindow
 	windowConcurrency             int64
 	runningLimit                  int64
+	waitingAllowance              int64
 	runningLimitSource            RunningLimitSource
 	pendingFirstByteLeaseDuration time.Duration
 	now                           func() time.Time
@@ -110,6 +111,7 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 		tpsWindow:                     newTPSWindow(config.TPS.Reference),
 		windowConcurrency:             config.WindowConcurrency,
 		runningLimit:                  config.RunningLimit,
+		waitingAllowance:              DefaultWaitingAllowance,
 		runningLimitSource:            config.RunningLimitSource,
 		pendingFirstByteLeaseDuration: config.PendingFirstByteLeaseDuration,
 		now:                           now,
@@ -306,6 +308,7 @@ func (c *AdmissionController) Admit(now time.Time, demand TPSRequestDemand) Admi
 	policy := c.policy.evaluateDemand(state, demand, admissionBounds{
 		windowConcurrency: c.windowConcurrency,
 		runningLimit:      c.runningLimit,
+		waitingAllowance:  c.waitingAllowance,
 	})
 	decision := c.decisionLocked(policy, demand, state)
 	if policy.action != ActionAdmit {
@@ -382,6 +385,7 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 		c.policy.evaluateDemand(state, minimumDemand, admissionBounds{
 			windowConcurrency: c.windowConcurrency,
 			runningLimit:      c.runningLimit,
+			waitingAllowance:  c.waitingAllowance,
 		}),
 		minimumDemand,
 		state,

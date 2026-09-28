@@ -5,41 +5,41 @@ import (
 	"time"
 )
 
-func TestWaitingRequiresConfirmationWhenTPSReferenceIsDisabled(t *testing.T) {
+func TestWaitingAllowanceAppliesWhenTPSReferenceIsDisabled(t *testing.T) {
 	now := time.Unix(20_000, 0)
-	controller := testControllerWithObservation(t, testObservation(now, 2, 1, 1, 0))
+	controller := testControllerWithObservation(t, testObservation(now, 2, 3, 1, 0))
 
-	transient := controller.Admit(now.Add(time.Millisecond), testDemand(1))
-	if !transient.Decision.Admitted() ||
-		transient.Decision.TPSDecisionSubreason == TPSDecisionSubreasonWaiting {
-		t.Fatalf("first waiting observation was not treated as transient: %+v", transient.Decision)
+	allowed := controller.Admit(now.Add(time.Millisecond), testDemand(1))
+	if !allowed.Decision.Admitted() ||
+		allowed.Decision.TPSDecisionSubreason == TPSDecisionSubreasonWaiting {
+		t.Fatalf("waiting at allowance was protected: %+v", allowed.Decision)
 	}
-	if !transient.Handle.Terminate(TerminalCancel) {
-		t.Fatal("transient waiting admission cleanup failed")
+	if !allowed.Handle.Terminate(TerminalCancel) {
+		t.Fatal("allowed waiting admission cleanup failed")
 	}
 
-	confirmedAt := now.Add(500 * time.Millisecond)
-	publishObservation(t, controller, testObservation(confirmedAt, 2, 1, 2, 0))
-	confirmed := controller.Admit(confirmedAt.Add(time.Millisecond), testDemand(1)).Decision
-	if confirmed.Admitted() || confirmed.Reason != ReasonTPSReference ||
-		confirmed.TPSDecisionResult != TPSDecisionResultProtect ||
-		confirmed.TPSDecisionSubreason != TPSDecisionSubreasonWaiting ||
-		confirmed.ReservationID != 0 {
-		t.Fatalf("confirmed waiting decision=%+v", confirmed)
+	exceededAt := now.Add(500 * time.Millisecond)
+	publishObservation(t, controller, testObservation(exceededAt, 2, 4, 2, 0))
+	exceeded := controller.Admit(exceededAt.Add(time.Millisecond), testDemand(1)).Decision
+	if exceeded.Admitted() || exceeded.Reason != ReasonTPSReference ||
+		exceeded.TPSDecisionResult != TPSDecisionResultProtect ||
+		exceeded.TPSDecisionSubreason != TPSDecisionSubreasonWaiting ||
+		exceeded.ReservationID != 0 {
+		t.Fatalf("excess waiting decision=%+v", exceeded)
 	}
 
 	clearedAt := now.Add(time.Second)
-	publishObservation(t, controller, testObservation(clearedAt, 2, 0, 3, 0))
+	publishObservation(t, controller, testObservation(clearedAt, 2, 3, 3, 0))
 	cleared := controller.Admit(clearedAt.Add(time.Millisecond), testDemand(1))
 	if !cleared.Decision.Admitted() {
-		t.Fatalf("first zero-waiting observation did not reopen intake: %+v", cleared.Decision)
+		t.Fatalf("first waiting-at-allowance observation did not reopen intake: %+v", cleared.Decision)
 	}
 	if !cleared.Handle.Terminate(TerminalCancel) {
 		t.Fatal("cleared waiting admission cleanup failed")
 	}
 }
 
-func TestWaitingAtWindowConcurrencyProtectsImmediately(t *testing.T) {
+func TestWaitingAboveAllowanceProtectsImmediately(t *testing.T) {
 	now := time.Unix(20_250, 0)
 	controller, err := NewAdmissionController(ControllerConfig{
 		RuntimeIdentity:   testRuntimeIdentity,
@@ -53,11 +53,11 @@ func TestWaitingAtWindowConcurrencyProtectsImmediately(t *testing.T) {
 	decision := controller.Admit(now.Add(time.Millisecond), testDemand(1)).Decision
 	if decision.Admitted() || decision.Reason != ReasonTPSReference ||
 		decision.TPSDecisionSubreason != TPSDecisionSubreasonWaiting {
-		t.Fatalf("window-sized waiting burst did not protect immediately: %+v", decision)
+		t.Fatalf("excess waiting burst did not protect immediately: %+v", decision)
 	}
 }
 
-func TestWaitingConfirmationResetsAcrossBackendRuntimeReset(t *testing.T) {
+func TestWaitingPressureClearsAcrossBackendRuntimeReset(t *testing.T) {
 	now := time.Unix(20_375, 0)
 	controller, err := NewAdmissionController(ControllerConfig{
 		RuntimeIdentity:   testRuntimeIdentity,
@@ -66,7 +66,7 @@ func TestWaitingConfirmationResetsAcrossBackendRuntimeReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := testObservation(now, 1, 1, 10, 0)
+	first := testObservation(now, 1, 4, 10, 0)
 	first.RuntimeStartTime = 100
 	publishObservation(t, controller, first)
 
@@ -83,14 +83,14 @@ func TestWaitingConfirmationResetsAcrossBackendRuntimeReset(t *testing.T) {
 	}
 	decision := controller.Admit(resetAt.Add(time.Millisecond), testDemand(1))
 	if !decision.Decision.Admitted() || decision.Decision.State.PreviousRawWaiting != 0 {
-		t.Fatalf("runtime reset retained waiting confirmation: %+v", decision.Decision)
+		t.Fatalf("runtime reset retained waiting pressure: %+v", decision.Decision)
 	}
 	if !decision.Handle.Terminate(TerminalCancel) {
 		t.Fatal("runtime-reset admission cleanup failed")
 	}
 }
 
-func TestWaitingConfirmationRequiresAdjacentFreshObservations(t *testing.T) {
+func TestWaitingAllowanceUsesFreshCurrentObservation(t *testing.T) {
 	now := time.Unix(20_437, 0)
 	controller, err := NewAdmissionController(ControllerConfig{
 		RuntimeIdentity:   testRuntimeIdentity,
@@ -99,29 +99,29 @@ func TestWaitingConfirmationRequiresAdjacentFreshObservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := testObservation(now, 1, 1, 1, 0)
+	first := testObservation(now, 1, 4, 1, 0)
 	first.MaximumAge = 500 * time.Millisecond
 	publishObservation(t, controller, first)
 
 	afterGap := now.Add(2 * time.Second)
-	second := testObservation(afterGap, 1, 1, 2, 0)
+	second := testObservation(afterGap, 1, 3, 2, 0)
 	second.MaximumAge = 500 * time.Millisecond
 	publishObservation(t, controller, second)
-	transient := controller.Admit(afterGap.Add(time.Millisecond), testDemand(1))
-	if !transient.Decision.Admitted() || transient.Decision.State.ObservationIntervalValid {
-		t.Fatalf("non-adjacent waiting observations confirmed pressure: %+v", transient.Decision)
+	allowed := controller.Admit(afterGap.Add(time.Millisecond), testDemand(1))
+	if !allowed.Decision.Admitted() || allowed.Decision.State.ObservationIntervalValid {
+		t.Fatalf("fresh waiting at allowance was protected: %+v", allowed.Decision)
 	}
-	if !transient.Handle.Terminate(TerminalCancel) {
+	if !allowed.Handle.Terminate(TerminalCancel) {
 		t.Fatal("non-adjacent admission cleanup failed")
 	}
 
 	confirmedAt := afterGap.Add(500 * time.Millisecond)
-	third := testObservation(confirmedAt, 1, 1, 3, 0)
+	third := testObservation(confirmedAt, 1, 4, 3, 0)
 	third.MaximumAge = 500 * time.Millisecond
 	publishObservation(t, controller, third)
-	confirmed := controller.Admit(confirmedAt.Add(time.Millisecond), testDemand(1)).Decision
-	if confirmed.Admitted() || confirmed.TPSDecisionSubreason != TPSDecisionSubreasonWaiting {
-		t.Fatalf("adjacent fresh waiting observation did not confirm pressure: %+v", confirmed)
+	exceeded := controller.Admit(confirmedAt.Add(time.Millisecond), testDemand(1)).Decision
+	if exceeded.Admitted() || exceeded.TPSDecisionSubreason != TPSDecisionSubreasonWaiting {
+		t.Fatalf("fresh excess waiting did not protect: %+v", exceeded)
 	}
 }
 
@@ -193,7 +193,7 @@ func TestPendingFirstByteLeaseExpiresOnlyWithFreshZeroWaiting(t *testing.T) {
 	publishObservation(t, controller, testObservation(now.Add(2*time.Second), 0, 1, 2, 0))
 	underWaiting := controller.Snapshot(now.Add(2*time.Second + time.Millisecond))
 	if underWaiting.State.UnobservedSequences != 1 || underWaiting.Available ||
-		underWaiting.MinimumDecision.TPSDecisionSubreason != TPSDecisionSubreasonWaiting {
+		underWaiting.MinimumDecision.Reason != ReasonWindowConcurrency {
 		t.Fatalf("waiting expired or opened pending lease: %+v", underWaiting)
 	}
 

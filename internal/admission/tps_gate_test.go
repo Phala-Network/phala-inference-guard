@@ -24,21 +24,21 @@ func TestTPSHealthGateRejectsInvalidEnabledSnapshot(t *testing.T) {
 	}
 }
 
-func TestTPSHealthGateTreatsConfirmedWaitingAndPreemptionAsPressure(t *testing.T) {
+func TestTPSHealthGateTreatsExcessWaitingAndPreemptionAsPressure(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		state     ProjectedState
 		subreason TPSDecisionSubreason
 	}{
 		{name: "waiting", state: ProjectedState{
-			RawWaiting: 1, PreviousRawWaiting: 1, ObservationIntervalValid: true,
+			RawWaiting: 4, PreviousRawWaiting: 1, ObservationIntervalValid: true,
 		}, subreason: TPSDecisionSubreasonWaiting},
 		{name: "preemption", state: ProjectedState{PreemptionDelta: 1}, subreason: TPSDecisionSubreasonPreemption},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state := test.state
 			state.TPS = healthyTPSSnapshot(25, 30, 30)
-			decision := (tpsGate{}).evaluate(state, DefaultWindowConcurrency, RequestPriorityBasic)
+			decision := (tpsGate{}).evaluate(state, DefaultWaitingAllowance, RequestPriorityBasic)
 			if decision.fits || decision.reason != ReasonTPSReference ||
 				decision.result != TPSDecisionResultProtect || decision.subreason != test.subreason {
 				t.Fatalf("pressure decision=%+v", decision)
@@ -49,7 +49,7 @@ func TestTPSHealthGateTreatsConfirmedWaitingAndPreemptionAsPressure(t *testing.T
 
 func TestTPSHealthGatePremiumIgnoresWaitingAndPreemptionPressure(t *testing.T) {
 	for _, state := range []ProjectedState{
-		{RawWaiting: 2, PreviousRawWaiting: 2, ObservationIntervalValid: true},
+		{RawWaiting: 4, PreviousRawWaiting: 4, ObservationIntervalValid: true},
 		{PreemptionDelta: 1},
 	} {
 		state.TPS = healthyTPSSnapshot(25, 30, 30)
@@ -60,34 +60,34 @@ func TestTPSHealthGatePremiumIgnoresWaitingAndPreemptionPressure(t *testing.T) {
 	}
 }
 
-func TestTPSHealthGateKeepsOneSubWindowWaitingSampleOpen(t *testing.T) {
-	decision := (tpsGate{}).evaluate(ProjectedState{RawWaiting: 1}, 4, RequestPriorityBasic)
+func TestTPSHealthGateAllowsWaitingAtAllowance(t *testing.T) {
+	decision := (tpsGate{}).evaluate(ProjectedState{RawWaiting: 3, PreviousRawWaiting: 3}, 3, RequestPriorityBasic)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.result != TPSDecisionResultDisabled ||
 		decision.subreason != TPSDecisionSubreasonDisabled {
-		t.Fatalf("transient waiting decision=%+v", decision)
+		t.Fatalf("allowed waiting decision=%+v", decision)
 	}
 }
 
-func TestTPSHealthGateProtectsWindowSizedWaitingImmediately(t *testing.T) {
-	decision := (tpsGate{}).evaluate(ProjectedState{RawWaiting: 4}, 4, RequestPriorityBasic)
+func TestTPSHealthGateProtectsWaitingAboveAllowanceImmediately(t *testing.T) {
+	decision := (tpsGate{}).evaluate(ProjectedState{RawWaiting: 4}, 3, RequestPriorityBasic)
 	if decision.fits || decision.reason != ReasonTPSReference ||
 		decision.result != TPSDecisionResultProtect ||
 		decision.subreason != TPSDecisionSubreasonWaiting {
-		t.Fatalf("window-sized waiting decision=%+v", decision)
+		t.Fatalf("excess waiting decision=%+v", decision)
 	}
 }
 
-func TestTPSHealthGateDoesNotConfirmWaitingAcrossInvalidInterval(t *testing.T) {
+func TestTPSHealthGateUsesCurrentWaitingOnly(t *testing.T) {
 	decision := (tpsGate{}).evaluate(ProjectedState{
-		RawWaiting:               1,
-		PreviousRawWaiting:       1,
+		RawWaiting:               3,
+		PreviousRawWaiting:       4,
 		ObservationIntervalValid: false,
-	}, 4, RequestPriorityBasic)
+	}, 3, RequestPriorityBasic)
 	if !decision.fits || decision.reason != ReasonOpen ||
 		decision.result != TPSDecisionResultDisabled ||
 		decision.subreason != TPSDecisionSubreasonDisabled {
-		t.Fatalf("non-adjacent waiting decision=%+v", decision)
+		t.Fatalf("historical waiting decision=%+v", decision)
 	}
 }
 

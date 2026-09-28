@@ -17,6 +17,7 @@ type PolicySnapshot struct {
 	TPSReference       float64
 	WindowConcurrency  int64
 	RunningLimit       int64
+	WaitingAllowance   int64
 	RunningLimitSource RunningLimitSource
 	UpdatedAt          time.Time
 }
@@ -26,6 +27,7 @@ type PolicyUpdate struct {
 	TPSReference      *float64
 	WindowConcurrency *int64
 	RunningLimit      *int64
+	WaitingAllowance  *int64
 	UpdatedAt         time.Time
 }
 
@@ -64,11 +66,15 @@ func (c *AdmissionController) UpdatePolicy(update PolicyUpdate) (PolicyUpdateRes
 		next.RunningLimit = *update.RunningLimit
 		next.RunningLimitSource = RunningLimitSourceAdmin
 	}
+	if update.WaitingAllowance != nil {
+		next.WaitingAllowance = *update.WaitingAllowance
+	}
 	result.TPSWindowReset = next.TPSReference != current.TPSReference
 	c.policyRevision++
 	c.policyUpdatedAt = update.UpdatedAt
 	c.windowConcurrency = next.WindowConcurrency
 	c.runningLimit = next.RunningLimit
+	c.waitingAllowance = next.WaitingAllowance
 	c.runningLimitSource = next.RunningLimitSource
 	if result.TPSWindowReset {
 		c.tpsPolicyEpoch++
@@ -82,7 +88,7 @@ func (c *AdmissionController) UpdatePolicy(update PolicyUpdate) (PolicyUpdateRes
 
 func validPolicyUpdate(update PolicyUpdate) bool {
 	if update.ExpectedRevision == 0 || update.UpdatedAt.IsZero() ||
-		(update.TPSReference == nil && update.WindowConcurrency == nil && update.RunningLimit == nil) {
+		(update.TPSReference == nil && update.WindowConcurrency == nil && update.RunningLimit == nil && update.WaitingAllowance == nil) {
 		return false
 	}
 	if update.TPSReference != nil &&
@@ -95,8 +101,11 @@ func validPolicyUpdate(update PolicyUpdate) bool {
 	if update.WindowConcurrency != nil && *update.WindowConcurrency > maximumTPSReservations {
 		return false
 	}
-	return update.RunningLimit == nil ||
-		(*update.RunningLimit >= 0 && *update.RunningLimit <= maximumTPSReservations)
+	if update.RunningLimit != nil && (*update.RunningLimit < 0 || *update.RunningLimit > maximumTPSReservations) {
+		return false
+	}
+	return update.WaitingAllowance == nil ||
+		(*update.WaitingAllowance >= 0 && *update.WaitingAllowance <= maximumTPSReservations)
 }
 
 func (c *AdmissionController) policySnapshotLocked() PolicySnapshot {
@@ -108,6 +117,7 @@ func (c *AdmissionController) policySnapshotLocked() PolicySnapshot {
 		TPSReference:       c.tpsWindow.reference,
 		WindowConcurrency:  c.windowConcurrency,
 		RunningLimit:       c.runningLimit,
+		WaitingAllowance:   c.waitingAllowance,
 		RunningLimitSource: c.runningLimitSource,
 		UpdatedAt:          c.policyUpdatedAt,
 	}

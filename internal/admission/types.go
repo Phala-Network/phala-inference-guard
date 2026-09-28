@@ -165,7 +165,10 @@ type TPSPolicyConfig struct {
 	Reference float64
 }
 
-const DefaultWindowConcurrency int64 = 32
+const (
+	DefaultWindowConcurrency int64 = 32
+	DefaultWaitingAllowance  int64 = 3
+)
 
 type RunningLimitSource string
 

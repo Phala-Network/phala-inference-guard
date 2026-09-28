@@ -56,11 +56,11 @@ Attestation variables do not alter admission policy.
 | `PREDICTIVE_RUNNING_LIMIT` | `0` | Backend running ceiling in `[0,1048576]`; `0` means unknown/disabled |
 
 TPS is a health signal, not a capacity formula. Waiting protection remains
-independent of TPS reference: a second adjacent fresh nonzero sample confirms it,
-and a first sample at or above `window_concurrency` protects immediately. One
-smaller waiting sample remains open and the first zero-waiting sample clears
-waiting confirmation; independent guards may still protect. With TPS health
-enabled, the gate stays open while warming or
+independent of TPS reference. Basic requests are admitted while observed backend
+waiting is at or below the mutable `waiting_allowance` (default `3`), subject to
+the other guards. A fresh observation above that value protects immediately;
+one back at or below it reopens intake. Premium retains its existing waiting
+bypass. With TPS health enabled, the gate stays open while warming or
 when the latest interval has no reliable Decode denominator. It protects on a
 fresh preemption or when both the ready rolling mean and latest qualified mean
 are below the reference. One low interval does not close a healthy rolling
@@ -121,7 +121,8 @@ PATCH supplies `expected_revision` and at least one mutable field:
   "expected_revision": 7,
   "tps_reference": 25,
   "window_concurrency": 40,
-  "running_limit": 256
+  "running_limit": 256,
+  "waiting_allowance": 3
 }
 ```
 
@@ -131,6 +132,8 @@ without a partial change. Only a changed TPS reference clears the TPS window.
 Changing either bound does not rewrite TPS evidence. An admin running-limit
 change reports source `admin`; setting it to zero disables that gate. Restart
 restores the validated initialization policy and revision 1.
+`waiting_allowance` accepts integers in `[0,1048576]`; zero protects basic
+requests whenever backend waiting is positive. The startup value is always 3.
 
 ## Failure semantics
 

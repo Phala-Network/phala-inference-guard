@@ -27,6 +27,7 @@ type predictivePolicyPatch struct {
 	TPSReference      *float64 `json:"tps_reference"`
 	WindowConcurrency *int64   `json:"window_concurrency"`
 	RunningLimit      *int64   `json:"running_limit"`
+	WaitingAllowance  *int64   `json:"waiting_allowance"`
 }
 
 type predictivePolicyDocument struct {
@@ -43,6 +44,7 @@ type predictivePolicyMutable struct {
 	TPSReference      float64 `json:"tps_reference"`
 	WindowConcurrency int64   `json:"window_concurrency"`
 	RunningLimit      int64   `json:"running_limit"`
+	WaitingAllowance  int64   `json:"waiting_allowance"`
 }
 
 type predictivePolicyEffective struct {
@@ -106,6 +108,7 @@ func (s *proxyServer) patchPredictivePolicy(w http.ResponseWriter, r *http.Reque
 		TPSReference:      patch.TPSReference,
 		WindowConcurrency: patch.WindowConcurrency,
 		RunningLimit:      patch.RunningLimit,
+		WaitingAllowance:  patch.WaitingAllowance,
 		UpdatedAt:         time.Now(),
 	})
 	if updateErr != nil {
@@ -185,7 +188,7 @@ func decodePredictivePolicyPatch(w http.ResponseWriter, r *http.Request) (predic
 		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("request body must contain exactly one policy object")
 	}
 	if patch.ExpectedRevision == nil || *patch.ExpectedRevision == 0 ||
-		(patch.TPSReference == nil && patch.WindowConcurrency == nil && patch.RunningLimit == nil) {
+		(patch.TPSReference == nil && patch.WindowConcurrency == nil && patch.RunningLimit == nil && patch.WaitingAllowance == nil) {
 		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("expected_revision and at least one mutable policy field are required")
 	}
 	if patch.TPSReference != nil && (math.IsNaN(*patch.TPSReference) || math.IsInf(*patch.TPSReference, 0) ||
@@ -197,6 +200,9 @@ func decodePredictivePolicyPatch(w http.ResponseWriter, r *http.Request) (predic
 	}
 	if patch.RunningLimit != nil && (*patch.RunningLimit < 0 || *patch.RunningLimit > maximumPredictiveSequenceBound) {
 		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("running_limit must be in [0, %d]", maximumPredictiveSequenceBound)
+	}
+	if patch.WaitingAllowance != nil && (*patch.WaitingAllowance < 0 || *patch.WaitingAllowance > maximumPredictiveSequenceBound) {
+		return predictivePolicyPatch{}, http.StatusBadRequest, fmt.Errorf("waiting_allowance must be in [0, %d]", maximumPredictiveSequenceBound)
 	}
 	return patch, 0, nil
 }
@@ -214,6 +220,7 @@ func predictivePolicyDocumentFrom(
 			TPSReference:      policy.TPSReference,
 			WindowConcurrency: policy.WindowConcurrency,
 			RunningLimit:      policy.RunningLimit,
+			WaitingAllowance:  policy.WaitingAllowance,
 		},
 		Effective: predictivePolicyEffective{
 			AdmissionMode:             cfg.PredictiveAdmissionMode,
@@ -260,13 +267,14 @@ func logPredictivePolicyUpdate(
 	windowReset bool,
 ) {
 	log.Printf(
-		"level=info component=policy event=update result=%s expected_revision=%d revision=%d tps_reference=%.6f window_concurrency=%d running_limit=%d running_limit_source=%s tps_window_reset=%t",
+		"level=info component=policy event=update result=%s expected_revision=%d revision=%d tps_reference=%.6f window_concurrency=%d running_limit=%d waiting_allowance=%d running_limit_source=%s tps_window_reset=%t",
 		result,
 		expectedRevision,
 		policy.Revision,
 		policy.TPSReference,
 		policy.WindowConcurrency,
 		policy.RunningLimit,
+		policy.WaitingAllowance,
 		policy.RunningLimitSource,
 		windowReset,
 	)

@@ -15,7 +15,7 @@ type tpsGate struct{}
 
 func (g tpsGate) evaluate(
 	state ProjectedState,
-	waitingImmediateThreshold int64,
+	waitingAllowance int64,
 	priority RequestPriority,
 ) tpsGateDecision {
 	decision := tpsGateDecision{
@@ -23,13 +23,7 @@ func (g tpsGate) evaluate(
 		result:       TPSDecisionResultDisabled,
 		subreason:    TPSDecisionSubreasonDisabled,
 	}
-	confirmedWaiting := priority == RequestPriorityBasic &&
-		state.RawWaiting > 0 && state.PreviousRawWaiting > 0 &&
-		state.ObservationIntervalValid
-	immediateWaiting := priority == RequestPriorityBasic &&
-		state.RawWaiting > 0 && waitingImmediateThreshold > 0 &&
-		state.RawWaiting >= waitingImmediateThreshold
-	if confirmedWaiting || immediateWaiting {
+	if priority == RequestPriorityBasic && state.RawWaiting > waitingAllowance {
 		decision.fits = false
 		decision.reason = ReasonTPSReference
 		decision.result = TPSDecisionResultProtect

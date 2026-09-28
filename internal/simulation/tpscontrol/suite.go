@@ -318,13 +318,13 @@ func pressureRecoveryScenario(name string, waiting bool) scenario {
 	if waiting {
 		generation += 50
 		events = append(events,
-			observation(4_500, 3, 1, generation, 0, 1),
+			observation(4_500, 3, 3, generation, 0, 1),
 			arrival(4_550, name+"-transient", 1),
 			terminal(4_600, name+"-transient", coreadmission.TerminalCancel),
 		)
 		generation += 50
 		events = append(events,
-			observation(5_000, 3, 1, generation, 0, 1),
+			observation(5_000, 3, 4, generation, 0, 1),
 			arrival(5_050, name+"-protected", 1),
 		)
 		generation += 50
