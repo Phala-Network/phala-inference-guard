@@ -1,201 +1,94 @@
 # Phala Inference Guard
 
-Phala Inference Guard (PIG) is a single-upstream admission proxy for
-OpenAI-compatible vLLM and SGLang services. Its current development direction
-is intentionally narrow: protect a configurable long-run per-user Decode TPS
-reference while admitting as much total work as the observed service quality
-supports.
+Phala Inference Guard (PIG) is an admission proxy for OpenAI-compatible
+**vLLM and SGLang** services. It forwards requests to one backend and protects
+service quality using backend telemetry, a configurable Decode TPS target,
+and atomic running/window bounds. Requests that do not fit receive HTTP 429.
 
-PIG makes the decision before forwarding. Backend feedback updates the next
-prediction; it is not a second post-response limiter. The controller does not
-route between backends and does not use request input size, KV occupancy,
-prefix-cache hit rate, Prefill classes, long-input bands, or TTFT as independent
-admission gates.
+PIG does not route between backends or queue requests. It preserves supported
+request bodies and application headers. It is a separate component from
+[Phala Inference Governor](https://github.com/Phala-Network/phala-inference-governor).
 
-Source, builder tests, published images, deployment, and live observations are
-separate evidence layers. This README describes the source contract and does
-not identify what any CVM currently runs.
+## Quick start
 
-## Request path
+You need Docker and a running vLLM or SGLang backend with coherent `/metrics`
+telemetry accessible from the container. This Bash example exposes PIG on
+localhost; replace the upstream URL with your backend's reachable address.
 
-```text
-canonical method + exact-path public policy
-  -> public bearer authentication
-  -> bounded request-shape scan for Decode sequence demand
-  -> fresh backend identity/running/waiting/generation/preemption observation
-  -> rolling and latest qualified TPS health
-  -> projected running and same-observation window bounds
-  -> one atomic decision and sequence reservation
-  -> unchanged request forwarded to the single upstream
-  -> first-response and terminal lifecycle reconciliation
+```bash
+export TOKEN='replace-with-a-strong-token'
+export UPSTREAM='http://your-backend:8000'
+docker run --rm --name pig -p 127.0.0.1:8000:8000 \
+  -e TOKEN -e UPSTREAM \
+  ghcr.io/phala-network/phala-inference-guard:v0.12.31@sha256:fa25aef18395a828d3c5fc0317d324b5a2ac9c8294e1b5247e93352a9907ff45
 ```
 
-`PREDICTIVE_TPS_REFERENCE` is a long-run mean output-TPS target per active
-Decode sequence. It is not an instantaneous threshold. Occasional low samples
-are acceptable and become evidence for later predictions; they do not create a
-cooldown, consecutive-clear requirement, sticky recovery timer, or learned low
-cap.
+From another terminal with the same `TOKEN`, check readiness and model discovery:
 
-For basic requests, backend waiting up to the default allowance of three stays
-open, even when TPS reference protection is disabled. A fresh observation above
-the allowance protects immediately; the first observation back at or below it
-reopens intake if other guards fit. Premium requests retain their existing
-waiting bypass. The allowance is mutable through the admin policy API.
-A fresh preemption pauses intake when TPS health is enabled. Same-snapshot
-reservations remain atomic so concurrent arrivals cannot spend the same
-apparent headroom. TPS never derives a concurrency ceiling. The default window
-bound allows 32 Decode sequences that are still pending first byte. A normal
-metrics poll does not release that budget. First byte or terminal lifecycle
-releases it immediately; after three polling intervals, a fresh zero-waiting
-observation may release a long-TTFT lease. A separate backend running limit is
-enforced only when explicitly configured or safely discovered.
-
-## Production configuration
-
-Production Compose should be small and should not repeat source defaults:
-
-```yaml
-services:
-  pig:
-    image: ghcr.io/phala-network/phala-inference-guard:<released-version>
-    environment:
-      - UPSTREAM=http://backend:8000
-      - TOKEN=${PIG_TOKEN}
-      - PREDICTIVE_TPS_REFERENCE=${PIG_TPS_REFERENCE}
-      - TLS_CERT_PATH=/etc/pig/tls/tls.crt
-      - ATTESTATION_DSTACK_ENDPOINT=${DSTACK_ENDPOINT}
+```bash
+curl --fail http://127.0.0.1:8000/healthz
+curl --fail -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/models
 ```
 
-`UPSTREAM` is one absolute HTTP URL. PIG derives `/metrics` from that origin,
-defaults to `enforce`, polls every 500 ms, and defaults observation freshness to
-three polls. The pending-first-byte lease is also three polls and is derived,
-not configured. Omit `PREDICTIVE_TPS_REFERENCE` or set it to `0` when no
-business TPS target exists; waiting protection remains active.
+The HTTP listener opens only after backend initialization succeeds. While the
+model loads, PIG retries unavailable or incoherent metrics without exiting;
+connection refusal during this wait is expected. After readiness, `/healthz`
+is a liveness check, not proof of current backend admission capacity.
 
-Starting with v0.12.29, PIG waits for coherent upstream metrics for as long as
-SGLang/vLLM needs to load or recover. A failed startup probe retries; it no longer
-terminates PIG after a fixed timeout. Invalid local configuration still fails
-immediately. The HTTP listener starts only after initialization: a running
-process during this wait is **not yet ready**, and must not receive traffic.
-Readiness checks should not be used by an external watchdog to restart PIG
-repeatedly while the model is loading. SIGTERM/SIGINT cancels startup promptly;
-after readiness, shutdown drains HTTP requests for at most five seconds.
+This example uses the published **v0.12.31** image. `main` is the integration
+branch and may contain later changes. See [source tags](https://github.com/Phala-Network/phala-inference-guard/tags)
+and [release guidance](docs/RELEASING.md) for version selection.
 
-`PREDICTIVE_WINDOW_CONCURRENCY` defaults to `32` and normally stays implicit.
-`PREDICTIVE_RUNNING_LIMIT=0` means unknown/disabled. SGLang can initialize its
-running limit from a coherent top-level integer `max_running_requests` in
-`/server_info`; vLLM does not expose a trusted production maximum, so its limit
-remains disabled unless an operator sets it. These are initialized or
-administered bounds, not learned values.
+## Admission behavior
 
-For SGLang, auto-discovery runs only when `PREDICTIVE_RUNNING_LIMIT` is absent.
-Setting it explicitly to `0` disables discovery and the running-limit gate;
-setting a positive value uses that value without probing `/server_info`.
+- `PREDICTIVE_TPS_REFERENCE` sets a long-run mean output tokens/s target per
+  active Decode sequence. Its default `0` disables TPS health protection.
+- Basic requests allow up to three observed waiting sequences by default;
+  the admin API can change `waiting_allowance`. Premium requests retain their
+  waiting bypass. Waiting protection remains active with TPS protection off.
+- `PREDICTIVE_WINDOW_CONCURRENCY` defaults to 32 sequences pending first byte.
+  A separate running limit applies when configured or safely discovered.
+- Missing, stale or inconsistent backend observations fail closed in enforce
+  mode. `shadow` is available for controlled policy evaluation.
 
-PIG startup requires coherent backend identity, running, waiting, generation,
-preemption, and runtime-epoch telemetry. It does not require KV/cache metrics or
-model context metadata and does not probe `/v1/models` to construct admission
-policy.
+These are telemetry-based admission controls, not a throughput guarantee.
+Standard releases support a single upstream; historical DP/PD image variants
+have their own topology requirements and are not interchangeable defaults.
 
-These retired settings are ignored and should be removed from Compose:
+## HTTP interface
 
-```text
-GLOBAL_LIMIT
-DYNAMIC_*
-QOS_QUEUE_*
-KV_ADMISSION_*
-BACKEND_PRIORITY_*
-CLASSIFY_OUTPUT_TOKENS
-ADAPTIVE_OUTPUT_*
-PREDICTIVE_KV_TARGET_RATIO
-PREDICTIVE_KV_HARD_RATIO
-PREDICTIVE_MAX_MODEL_LEN_TOKENS
-PREDICTIVE_PREEMPTION_COOLDOWN_SECONDS
-PREDICTIVE_PREFILL_REGULAR_TOKENS
-PREDICTIVE_PREFILL_EXCLUSIVE_TOKENS
-PREDICTIVE_PREFILL_QUIESCENT_TOKENS
-PREDICTIVE_PREFILL_AGGREGATE_BUDGET_TOKENS
-OUTPUT_TOKEN_FIELD_NAMES
-```
-
-## Test configuration
-
-Controlled tests may explicitly set cadence, freshness, metrics URL, TPS
-reference, window concurrency, running limit, and:
-
-```text
-PREDICTIVE_ADMISSION_MODE=shadow
-```
-
-Shadow reports the counterfactual policy result but does not return a TPS 429
-or reduce Router-visible capacity. Enforce is the production default. Test
-overrides are not copied unchanged into production Compose.
-
-## HTTP behavior
-
-- Forwarded public routes are `POST /v1/chat/completions`,
-  `POST /v1/completions`, `POST /v1/responses`, and `GET /v1/models`.
-- All public routes use the configured bearer policy. Model discovery does not
-  create a sequence reservation.
-- Unknown paths, method mismatches, encoded aliases, prefixes, suffixes,
-  trailing slashes, repeated slashes, and backend-native routes terminate
-  locally with a generic OpenAI-shaped HTTP 404 and no backend call.
-- Malformed JSON on a generation path returns a bounded OpenAI-shaped HTTP 400
-  before admission and forwarding.
-- If bounded request inspection cannot prove fanout because of its byte/depth
-  limit, content type, read failure, or scanner saturation, PIG charges one
-  explicitly labelled fallback sequence through the normal atomic TPS path.
-  Scanner limits do not independently return 429; ambiguous, conflicting, or
-  overflowing fanout still receives request-scoped protection.
-- An admission protection returns HTTP 429 before forwarding and is reflected in
-  structured low-cardinality logs and metrics.
-- Supported request bodies and application headers are forwarded unchanged.
-- A missing, stale, identity-invalid, or internally inconsistent observation
-  fails closed in enforce. One failed scrape retains the last coherent snapshot
-  until its freshness deadline.
-
-## Runtime policy API
-
-The authenticated process-local API is:
-
-```text
-GET   /admin/v1/predictive-policy
-PATCH /admin/v1/predictive-policy
-```
-
-`tps_reference`, `window_concurrency`, and `running_limit` are independently
-mutable. PATCH includes one or more fields plus `expected_revision` and applies
-them atomically with compare-and-swap. Only a TPS-reference change resets the
-TPS window. An admin running-limit update becomes source `admin`; zero disables
-that gate. Restart restores validated initialization values. Responses do not
-expose credentials, endpoint URLs, request content, KV geometry, or model
-identity.
-
-## Local endpoints
-
-| Endpoint | Purpose |
+| Route | Purpose |
 | --- | --- |
-| `/healthz` | Process liveness |
-| `/pig/metrics` | Minimal five-gauge Router capacity contract |
-| `/v1/metrics` | Full PIG diagnostics plus a bounded upstream metrics copy |
-| `/v1/upstream-status` | Router-facing admission status |
-| `/admin/v1/predictive-policy` | Read or atomically update TPS and admission bounds |
-| `/v1/attestation/report` | Attestation report |
+| `POST /v1/chat/completions`, `/v1/completions`, `/v1/responses` | Authenticated generation through admission |
+| `GET /v1/models` | Authenticated model discovery |
+| `GET /healthz` | Local liveness after initialization |
+| `GET /pig/metrics` | Minimal Router capacity metrics |
+| `GET /v1/metrics`, `/v1/upstream-status` | Diagnostics and admission status |
+| `GET/PATCH /admin/v1/predictive-policy` | Authenticated, revision-checked policy updates |
+| `GET /v1/attestation/report` | Attestation with separately configured infrastructure |
 
-Metrics, management, and attestation endpoints preserve their route-specific
-authentication semantics and are handled locally rather than forwarded by the
-public proxy policy.
+Unknown or non-canonical public routes return local HTTP 404. The admin API
+updates `tps_reference`, `window_concurrency`, `running_limit`, and
+`waiting_allowance` atomically using `expected_revision`; restart restores
+startup values. See [configuration and API details](docs/ADVANCED.md) and
+[observability](docs/OBSERVABILITY.md) for authentication and failure semantics.
 
-## Development evidence
+## Development and documentation
 
-Executable Go tests, race checks, simulations, benchmarks, and build checks run
-on an approved isolated builder. Correctness, atomicity, lifecycle, protocol,
-and build checks are required before an image is considered. Historical
-production windows and benchmark comparisons are optimization evidence, not
-universal numeric hard gates.
+Use Go 1.24 or later. Production images use the pinned Linux/amd64 CGO toolchain
+in the [Dockerfile](Dockerfile); GPU attestation additionally needs the NVIDIA
+runtime and its native libraries.
 
-- [Documentation map](docs/README.md)
-- [Current TPS health-gate plan](docs/PIG_V0_12_23_TPS_HEALTH_GATE_PLAN.md)
-- [Advanced configuration](docs/ADVANCED.md)
-- [Observability](docs/OBSERVABILITY.md)
-- [Internal algorithm flow](docs/PIG_INTERNAL_COMPONENT_ALGORITHM_FLOW.md)
+```bash
+go test ./... -p=1 -parallel=1
+go vet ./...
+go build ./cmd/phala-inference-guard
+```
+
+See [contributing](CONTRIBUTING.md) for race checks and change guidelines,
+[the documentation map](docs/README.md) for current references, and
+[historical evidence](docs/HISTORY.md) for prior release investigations.
+
+## License
+
+[GNU General Public License v3.0](LICENSE).

@@ -1,27 +1,14 @@
-# Local scratch files are kept out of this release repository.
+# Local scratch, evidence and generated output
 /tmp/
-
-# Ad hoc test scripts and generated test artifacts must stay out of git.
-[Tt]est*
-*_[Tt]est*
-*-[Tt]est*
-*.[Tt]est
-*.[Tt]est.*
-
-# Go unit test source belongs in the repository.
-!**/*_test.go
-
-# Durable observer unit tests belong with the operator analysis tool.
-!tools/observe/*_tests.py
-
-# The committed v0.12.18 oracle contains only pinned counts and provenance, not
-# tokenizer assets or generated model files.
-!internal/domain/kvadmission/testdata/
-!internal/domain/kvadmission/testdata/v01218_cross_tokenizer_oracle.json
-
-# Local go build outputs from the repository root.
+/dist/
+/coverage.out
+/coverage.html
+*.test
+*.exe
 /phala-inference-guard
-/phala-inference-guard.exe
-
-# Native tokenizer build output is generated only on the remote builder.
-/native/tokenizer/target/
+/pig-tps-controller-sim
+__pycache__/
+*.py[cod]
+.env
+.env.*
+!.env.example
