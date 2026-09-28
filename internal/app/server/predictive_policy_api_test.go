@@ -24,6 +24,7 @@ type predictivePolicyAPIDocument struct {
 		TPSReference      float64 `json:"tps_reference"`
 		WindowConcurrency int64   `json:"window_concurrency"`
 		RunningLimit      int64   `json:"running_limit"`
+		WaitingAllowance  int64   `json:"waiting_allowance"`
 	} `json:"mutable"`
 	Effective struct {
 		AdmissionMode             string `json:"admission_mode"`
@@ -64,7 +65,8 @@ func TestV01215PredictivePolicyAPIRequiresAuthDoesNotProxyAndReturnsEffectivePol
 	if document.SchemaVersion != "pig.predictive-policy.v1" || document.Revision != 1 ||
 		document.Source != "startup" || document.Persistence != "restart_restores_startup" ||
 		document.UpdatedAt != nil || document.Mutable.TPSReference != 20 ||
-		document.Mutable.WindowConcurrency != 32 || document.Mutable.RunningLimit != 0 {
+		document.Mutable.WindowConcurrency != 32 || document.Mutable.RunningLimit != 0 ||
+		document.Mutable.WaitingAllowance != 3 {
 		t.Fatalf("initial policy=%+v", document)
 	}
 	if document.Effective.AdmissionMode != "enforce" ||
@@ -116,6 +118,8 @@ func TestV01215PredictivePolicyAPIRejectsInvalidPatchAtomically(t *testing.T) {
 		{name: "too large", body: `{"expected_revision":1,"tps_reference":1000001}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "zero window", body: `{"expected_revision":1,"window_concurrency":0}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "negative running", body: `{"expected_revision":1,"running_limit":-1}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "negative waiting allowance", body: `{"expected_revision":1,"waiting_allowance":-1}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
+		{name: "excessive waiting allowance", body: `{"expected_revision":1,"waiting_allowance":1048577}`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 		{name: "syntax", body: `{"expected_revision":1,`, contentType: "application/json", wantStatus: http.StatusBadRequest},
 	}
 	for _, test := range tests {
@@ -152,13 +156,14 @@ func TestV01215PredictivePolicyAPIAppliesCASAndExportsMetricsAndStatus(t *testin
 	srv, _, backendCalls := newPredictivePolicyAPIFixture(t, admissionRuntimeTestConfig{TPSReference: 20})
 	applied := servePredictivePolicyAPI(
 		t, srv, http.MethodPatch,
-		[]byte(`{"expected_revision":1,"tps_reference":25,"window_concurrency":48,"running_limit":192}`),
+		[]byte(`{"expected_revision":1,"tps_reference":25,"window_concurrency":48,"running_limit":192,"waiting_allowance":4}`),
 		"application/json",
 	)
 	document := decodePredictivePolicyDocument(t, applied, http.StatusOK)
 	if document.Revision != 2 || document.Source != "runtime_api" ||
 		document.UpdatedAt == nil || document.Mutable.TPSReference != 25 ||
 		document.Mutable.WindowConcurrency != 48 || document.Mutable.RunningLimit != 192 ||
+		document.Mutable.WaitingAllowance != 4 ||
 		document.Effective.RunningLimitSource != "admin" ||
 		applied.Header().Get("ETag") != `"2"` {
 		t.Fatalf("applied policy=%+v headers=%v", document, applied.Header())
@@ -189,6 +194,7 @@ func TestV01215PredictivePolicyAPIAppliesCASAndExportsMetricsAndStatus(t *testin
 	metricsBody := metricsResponse.Body.String()
 	if requirePrometheusMetric(t, metricsBody, "pig_predictive_policy_revision") != 2 ||
 		requirePrometheusMetric(t, metricsBody, "pig_predictive_tps_reference") != 25 ||
+		requirePrometheusMetric(t, metricsBody, "pig_predictive_waiting_allowance") != 4 ||
 		!strings.Contains(metricsBody, `pig_predictive_policy_updates_total{result="applied"} 1`) ||
 		!strings.Contains(metricsBody, `pig_predictive_policy_updates_total{result="conflict"} 1`) ||
 		!strings.Contains(metricsBody, `pig_predictive_policy_updates_total{result="invalid"} 0`) ||
@@ -300,6 +306,34 @@ func TestV01215PredictivePolicyUpdateChangesNextPreForwardDecision(t *testing.T)
 	if last.Reason != coreadmission.ReasonRunningLimit || last.RunningLimit != 3 ||
 		last.RunningLimitSource != coreadmission.RunningLimitSourceAdmin || last.PolicyRevision != 2 {
 		t.Fatalf("post-update decision=%+v", last)
+	}
+}
+
+func TestV01231WaitingAllowanceAdminUpdateChangesHTTPAdmission(t *testing.T) {
+	srv, runtime, backendCalls := newPredictivePolicyAPIFixture(t, admissionRuntimeTestConfig{Waiting: 4})
+	initial := decodePredictivePolicyDocument(t, servePredictivePolicyAPI(t, srv, http.MethodGet, nil, ""), http.StatusOK)
+	if initial.Mutable.WaitingAllowance != 3 {
+		t.Fatalf("initial waiting allowance=%d", initial.Mutable.WaitingAllowance)
+	}
+	if response := serveAdmissionRequest(t, srv, "before update"); response.Code != http.StatusTooManyRequests || backendCalls.Load() != 0 {
+		t.Fatalf("before update status=%d backend_calls=%d", response.Code, backendCalls.Load())
+	}
+	updated := decodePredictivePolicyDocument(t, servePredictivePolicyAPI(
+		t, srv, http.MethodPatch, []byte(`{"expected_revision":1,"waiting_allowance":4}`), "application/json",
+	), http.StatusOK)
+	if updated.Revision != 2 || updated.Mutable.WaitingAllowance != 4 {
+		t.Fatalf("updated policy=%+v", updated)
+	}
+	if response := serveAdmissionRequest(t, srv, "after update"); response.Code != http.StatusOK || backendCalls.Load() != 1 {
+		t.Fatalf("after update status=%d backend_calls=%d", response.Code, backendCalls.Load())
+	}
+	if decision := runtime.Snapshot(time.Now()).Report.LastDecision; !decision.Admitted() || decision.PolicyRevision != 2 {
+		t.Fatalf("updated waiting allowance did not reach HTTP admission: %+v", decision)
+	}
+	if response := servePredictivePolicyAPI(
+		t, srv, http.MethodPatch, []byte(`{"expected_revision":1,"waiting_allowance":0}`), "application/json",
+	); response.Code != http.StatusConflict {
+		t.Fatalf("stale policy update status=%d", response.Code)
 	}
 }
 

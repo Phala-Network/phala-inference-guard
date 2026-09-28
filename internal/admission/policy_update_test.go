@@ -151,4 +151,63 @@ func TestPolicyUpdatePreservesReservationLifecycle(t *testing.T) {
 	}
 }
 
+func TestWaitingAllowanceDefaultAndRuntimeUpdate(t *testing.T) {
+	start := time.Unix(74_000, 0)
+	controller := testControllerWithObservation(t, testObservation(start, 2, 3, 0, 0))
+	if policy := controller.Snapshot(start.Add(time.Millisecond)).Policy; policy.WaitingAllowance != 3 {
+		t.Fatalf("default waiting allowance=%d, want 3", policy.WaitingAllowance)
+	}
+	allowed := controller.Admit(start.Add(time.Millisecond), testDemand(1))
+	if !allowed.Decision.Admitted() || !allowed.Handle.Terminate(TerminalCancel) {
+		t.Fatalf("waiting=3 should be allowed: %+v", allowed.Decision)
+	}
+
+	blockedAt := start.Add(500 * time.Millisecond)
+	publishObservation(t, controller, testObservation(blockedAt, 2, 4, 0, 0))
+	blocked := controller.Admit(blockedAt.Add(time.Millisecond), testDemand(1)).Decision
+	if blocked.Admitted() || blocked.TPSDecisionSubreason != TPSDecisionSubreasonWaiting || blocked.ReservationID != 0 {
+		t.Fatalf("waiting=4 should block immediately: %+v", blocked)
+	}
+
+	allowFour := int64(4)
+	updated, err := controller.UpdatePolicy(PolicyUpdate{
+		ExpectedRevision: 1, WaitingAllowance: &allowFour, UpdatedAt: blockedAt.Add(time.Millisecond),
+	})
+	if err != nil || updated.TPSWindowReset || updated.Policy.WaitingAllowance != 4 {
+		t.Fatalf("waiting allowance update=%+v err=%v", updated, err)
+	}
+	allowed = controller.Admit(blockedAt.Add(2*time.Millisecond), testDemand(1))
+	if !allowed.Decision.Admitted() || allowed.Decision.PolicyRevision != 2 || !allowed.Handle.Terminate(TerminalCancel) {
+		t.Fatalf("updated waiting allowance did not reach admission: %+v", allowed.Decision)
+	}
+
+	negative := int64(-1)
+	if _, err := controller.UpdatePolicy(PolicyUpdate{
+		ExpectedRevision: 2, WaitingAllowance: &negative, UpdatedAt: blockedAt.Add(3 * time.Millisecond),
+	}); !errors.Is(err, ErrPolicyInvalid) {
+		t.Fatalf("negative waiting allowance error=%v", err)
+	}
+	if policy := controller.Snapshot(blockedAt.Add(3 * time.Millisecond)).Policy; policy.Revision != 2 || policy.WaitingAllowance != 4 {
+		t.Fatalf("invalid update changed policy: %+v", policy)
+	}
+	zero := int64(0)
+	updated, err = controller.UpdatePolicy(PolicyUpdate{
+		ExpectedRevision: 2, WaitingAllowance: &zero, UpdatedAt: blockedAt.Add(4 * time.Millisecond),
+	})
+	if err != nil || updated.Policy.WaitingAllowance != 0 {
+		t.Fatalf("zero waiting allowance update=%+v err=%v", updated, err)
+	}
+	oneAt := start.Add(time.Second)
+	publishObservation(t, controller, testObservation(oneAt, 2, 1, 0, 0))
+	if decision := controller.Admit(oneAt.Add(time.Millisecond), testDemand(1)).Decision; decision.Admitted() ||
+		decision.TPSDecisionSubreason != TPSDecisionSubreasonWaiting || decision.PolicyRevision != 3 {
+		t.Fatalf("zero waiting allowance did not protect: %+v", decision)
+	}
+	if _, err := controller.UpdatePolicy(PolicyUpdate{
+		ExpectedRevision: 2, WaitingAllowance: &allowFour, UpdatedAt: oneAt.Add(2 * time.Millisecond),
+	}); !errors.Is(err, ErrPolicyRevisionConflict) {
+		t.Fatalf("stale waiting allowance update error=%v", err)
+	}
+}
+
 func floatPointer(value float64) *float64 { return &value }

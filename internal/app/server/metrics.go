@@ -68,6 +68,7 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	fmt.Fprintf(w, "pig_route_not_allowed_total %d\n", s.routeNotAllowed.Load())
 	policy := snapshot.Capacity.Policy
 	fmt.Fprintf(w, "pig_predictive_policy_revision %d\n", policy.Revision)
+	fmt.Fprintf(w, "pig_predictive_waiting_allowance %d\n", policy.WaitingAllowance)
 	fmt.Fprintf(w, "pig_predictive_backend_runtime_epoch %d\n", snapshot.Capacity.RuntimeEpoch)
 	fmt.Fprintf(w, "pig_predictive_policy_last_updated_at_seconds %.6f\n", predictivePolicyUnixSeconds(policy.UpdatedAt))
 	fmt.Fprintf(w, "pig_predictive_policy_updates_total{result=%q} %d\n", "applied", s.policyUpdates.applied.Load())

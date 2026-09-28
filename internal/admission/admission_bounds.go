@@ -9,6 +9,7 @@ type admissionBoundsDecision struct {
 type admissionBounds struct {
 	windowConcurrency int64
 	runningLimit      int64
+	waitingAllowance  int64
 }
 
 func (b admissionBounds) evaluate(state ProjectedState, demand TPSRequestDemand) admissionBoundsDecision {

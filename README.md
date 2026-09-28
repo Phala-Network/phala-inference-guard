@@ -36,11 +36,11 @@ are acceptable and become evidence for later predictions; they do not create a
 cooldown, consecutive-clear requirement, sticky recovery timer, or learned low
 cap.
 
-Waiting pauses marginal intake even when TPS reference protection is disabled.
-One sub-window nonzero sample is treated as transient; a second adjacent fresh
-sample confirms waiting, while a first sample at or above the current window
-bound protects immediately. The first zero-waiting sample clears waiting
-protection immediately; independent guards may still protect.
+For basic requests, backend waiting up to the default allowance of three stays
+open, even when TPS reference protection is disabled. A fresh observation above
+the allowance protects immediately; the first observation back at or below it
+reopens intake if other guards fit. Premium requests retain their existing
+waiting bypass. The allowance is mutable through the admin policy API.
 A fresh preemption pauses intake when TPS health is enabled. Same-snapshot
 reservations remain atomic so concurrent arrivals cannot spend the same
 apparent headroom. TPS never derives a concurrency ceiling. The default window

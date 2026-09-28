@@ -10,7 +10,7 @@ snapshots. Reading them never reruns policy or changes admission.
   upstream metrics.
 - `/v1/upstream-status` returns Router-facing admission status.
 - `GET/PATCH /admin/v1/predictive-policy` reads or atomically updates the
-  TPS reference, window concurrency, and running limit.
+  TPS reference, window concurrency, running limit, and waiting allowance.
 
 The authenticated `/pig/metrics` response is exactly these five lines, in this
 order:
@@ -135,6 +135,7 @@ exposure, fallback liability, ties, and no usable denominator.
 
 ```text
 pig_predictive_running_limit
+pig_predictive_waiting_allowance
 pig_predictive_running_limit_info{source}
 pig_predictive_window_concurrency_limit
 pig_predictive_admission_last_projected_running
