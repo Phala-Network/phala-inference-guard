@@ -72,6 +72,7 @@ epoch tracking.
 | `POST /v1/chat/completions`, `/v1/completions`, `/v1/responses` | Authenticated generation through admission |
 | `GET /v1/models` | Authenticated model discovery |
 | `GET /healthz` | Local liveness after initialization |
+| `GET /readyz` | Unauthenticated backend observation readiness (development source; v0.12.32+) |
 | `GET /pig/metrics` | Minimal Router capacity metrics |
 | `GET /v1/metrics`, `/v1/upstream-status` | Diagnostics and admission status |
 | `GET/PATCH /admin/v1/predictive-policy` | Authenticated, revision-checked policy updates |
@@ -82,6 +83,17 @@ updates `tps_reference`, `window_concurrency`, `running_limit`, and
 `waiting_allowance` atomically using `expected_revision`; restart restores
 startup values. See [configuration and API details](docs/ADVANCED.md) and
 [observability](docs/OBSERVABILITY.md) for authentication and failure semantics.
+
+Use `/readyz` for Router worker eligibility and container readiness, and
+`/healthz` for PIG liveness and diagnostic management backends. Readiness returns
+200 only while the admission controller has a valid, fresh backend observation
+and a direct backend `GET /health` returns exactly 200 within one second;
+missing, expired or unavailable observations and failed health checks return 503. Failed metric polls stop
+refreshing the observation, so failure detection is bounded by its configured
+maximum age plus health-check scheduling. Busy or TPS-protected backends remain
+ready and retain normal admission protection. Health checks run only on readiness
+requests, reuse the backend transport, do not follow redirects or forward caller
+headers, and add no inference or synthetic process epoch.
 
 ## Development and documentation
 

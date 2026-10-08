@@ -75,6 +75,7 @@ type localManagementHandler uint8
 
 const (
 	localManagementHealth localManagementHandler = iota + 1
+	localManagementReady
 	localManagementPIGMetrics
 	localManagementCombinedMetrics
 	localManagementUpstreamStatus
@@ -93,6 +94,8 @@ func (LocalManagementRoutePolicy) Match(r *http.Request) (localManagementHandler
 	switch path {
 	case "/healthz":
 		return localManagementHealth, true
+	case "/readyz":
+		return localManagementReady, r.Method == http.MethodGet
 	case "/pig/metrics":
 		return localManagementPIGMetrics, true
 	case "/v1/metrics":
@@ -116,6 +119,8 @@ func (s *proxyServer) serveLocalManagement(
 	switch handler {
 	case localManagementHealth:
 		_, _ = w.Write([]byte("ok\n"))
+	case localManagementReady:
+		s.readiness(w, r)
 	case localManagementPIGMetrics:
 		s.metrics(w, r)
 	case localManagementCombinedMetrics:
