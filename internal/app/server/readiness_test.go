@@ -115,3 +115,54 @@ func TestReadinessMissingRuntimeAndCanonicalRoute(t *testing.T) {
 		t.Fatal("accepted POST readiness")
 	}
 }
+
+func TestHealthAliasUsesRealReadiness(t *testing.T) {
+	for _, healthy := range []bool{true, false} {
+		backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/health" || r.Header.Get("Authorization") != "" {
+				t.Error("unexpected health request or forwarded authorization")
+			}
+			if !healthy {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		}))
+		proxies, _, _, err := infrabackend.Build([]infrabackend.Config{{Upstream: backend.URL}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fresh := range []bool{true, false} {
+			capacity := coreadmission.CapacitySnapshot{
+				IntakeOpen: true, HasObservation: fresh, Available: true,
+				Observation:     coreadmission.BackendObservation{ObservedAt: time.Now(), MaximumAge: time.Minute},
+				MinimumDecision: coreadmission.DecisionRecord{Action: coreadmission.ActionAdmit, Reason: coreadmission.ReasonOpen},
+			}
+			srv := &proxyServer{backend: proxies[0], authentication: AuthenticationPolicy{enabled: true}, admission: &staticAdmissionTelemetryService{snapshot: admissionTelemetrySnapshot{Capacity: capacity}}}
+			for _, path := range []string{"/readyz", "/health"} {
+				for _, token := range []string{"", "Bearer test-only-secret"} {
+					request := httptest.NewRequest(http.MethodGet, path, nil)
+					request.Header.Set("Authorization", token)
+					response := httptest.NewRecorder()
+					srv.ServeHTTP(response, request)
+					want := http.StatusServiceUnavailable
+					if healthy && fresh {
+						want = http.StatusOK
+					}
+					if response.Code != want {
+						t.Fatalf("path=%s healthy=%t fresh=%t status=%d want=%d", path, healthy, fresh, response.Code, want)
+					}
+				}
+			}
+		}
+		backend.Close()
+	}
+	for _, method := range []string{http.MethodHead, http.MethodPost, http.MethodDelete} {
+		if _, ok := (LocalManagementRoutePolicy{}).Match(httptest.NewRequest(method, "/health", nil)); ok {
+			t.Fatalf("accepted health alias method %s", method)
+		}
+	}
+	for _, path := range []string{"/health/", "/%68ealth", "//health"} {
+		if _, ok := (LocalManagementRoutePolicy{}).Match(httptest.NewRequest(http.MethodGet, path, nil)); ok {
+			t.Fatalf("accepted noncanonical health alias %s", path)
+		}
+	}
+}

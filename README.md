@@ -72,6 +72,7 @@ epoch tracking.
 | `GET /v1/models` | Authenticated model discovery |
 | `GET /healthz` | Local liveness after initialization |
 | `GET /readyz` | Unauthenticated backend observation readiness |
+| `GET /health` | Same real readiness, for Router startup compatibility (v0.12.33+) |
 | `GET /pig/metrics` | Minimal Router capacity metrics |
 | `GET /v1/metrics`, `/v1/upstream-status` | Diagnostics and admission status |
 | `GET/PATCH /admin/v1/predictive-policy` | Authenticated, revision-checked policy updates |
@@ -93,6 +94,12 @@ maximum age plus health-check scheduling. Busy or TPS-protected backends remain
 ready and retain normal admission protection. Health checks run only on readiness
 requests, reuse the backend transport, do not follow redirects or forward caller
 headers, and add no inference or synthetic process epoch.
+
+The development source also exposes the same handler as `GET /health` because
+vLLM Router 0.1.15 hardcodes that path during initial worker discovery even when
+its periodic health-check endpoint is configured separately. The published
+v0.12.32 example above predates this alias; Router-to-PIG startup requires
+v0.12.33 or later. `/health` does not provide a liveness-only shortcut.
 
 ## Development and documentation
 

@@ -94,7 +94,7 @@ func (LocalManagementRoutePolicy) Match(r *http.Request) (localManagementHandler
 	switch path {
 	case "/healthz":
 		return localManagementHealth, true
-	case "/readyz":
+	case "/readyz", "/health":
 		return localManagementReady, r.Method == http.MethodGet
 	case "/pig/metrics":
 		return localManagementPIGMetrics, true
