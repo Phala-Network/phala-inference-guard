@@ -27,7 +27,15 @@ func newMetricIndex(text string, wanted map[string]struct{}) metricIndex {
 			fields := strings.Fields(line)
 			if len(fields) == 4 && fields[0] == "#" && fields[1] == "TYPE" {
 				if _, ok := wanted[fields[2]]; ok {
-					index.types[fields[2]] = fields[3]
+					index.recordType(fields[2], fields[3])
+				}
+				// OpenMetrics declares a counter's family without the _total
+				// sample suffix. Keep sample names/values unchanged and only
+				// associate that declaration with an explicitly wanted total.
+				if fields[3] == "counter" && !strings.HasSuffix(fields[2], "_total") {
+					if _, ok := wanted[fields[2]+"_total"]; ok {
+						index.recordType(fields[2]+"_total", fields[3])
+					}
 				}
 			}
 			return
@@ -55,6 +63,16 @@ func newMetricIndex(text string, wanted map[string]struct{}) metricIndex {
 		index.samples[name] = append(index.samples[name], sample)
 	})
 	return index
+}
+
+func (i metricIndex) recordType(name, metricType string) {
+	if previous, ok := i.types[name]; ok && previous != metricType {
+		// Conflicting direct/family declarations must fail closed regardless
+		// of their order; a later declaration cannot repair the conflict.
+		i.types[name] = "invalid"
+		return
+	}
+	i.types[name] = metricType
 }
 
 func forEachPrometheusLine(text string, visit func(string)) {

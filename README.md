@@ -55,6 +55,16 @@ These are telemetry-based admission controls, not a throughput guarantee.
 Standard releases support a single upstream; historical DP/PD image variants
 have their own topology requirements and are not interchangeable defaults.
 
+The development source accepts both Prometheus counter declarations and
+OpenMetrics counter-family declarations with `_total` samples, as emitted by
+the vLLM 0.31 Rust frontend. The published v0.12.31 image above predates that
+compatibility fix. No counter values or process timestamps are synthesized.
+`process_start_time_seconds` is optional while absent: counter resets still
+identify backend restarts, but a restart without an observed counter decrease
+cannot be distinguished. Once a positive process start time has been observed,
+its disappearance invalidates that observation instead of silently dropping
+epoch tracking.
+
 ## HTTP interface
 
 | Route | Purpose |
