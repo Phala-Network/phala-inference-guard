@@ -20,7 +20,7 @@ export TOKEN='replace-with-a-strong-token'
 export UPSTREAM='http://your-backend:8000'
 docker run --rm --name pig -p 127.0.0.1:8000:8000 \
   -e TOKEN -e UPSTREAM \
-  ghcr.io/phala-network/phala-inference-guard:v0.12.33@sha256:236f1e6e3e31a784944f94c0aaed5a950f1ae490b365929145ac295a0dd6f4f6
+  ghcr.io/phala-network/phala-inference-guard:v0.12.34@sha256:a341ce65a42ea0d942f7b74780ebda7bc89040b633683165ff9bd20dacbe706c
 ```
 
 From another terminal with the same `TOKEN`, check readiness and model discovery:
@@ -35,7 +35,7 @@ model loads, PIG retries unavailable or incoherent metrics without exiting;
 connection refusal during this wait is expected. After readiness, `/healthz`
 is a liveness check, not proof of current backend admission capacity.
 
-This example uses the published **v0.12.33** image. `main` is the integration
+This example uses the published **v0.12.34** image. `main` is the integration
 branch and may contain later changes. See [source tags](https://github.com/Phala-Network/phala-inference-guard/tags)
 and [release guidance](docs/RELEASING.md) for version selection.
 
@@ -87,8 +87,9 @@ startup values. See [configuration and API details](docs/ADVANCED.md) and
 Use `/readyz` for Router worker eligibility and container readiness, and
 `/healthz` for PIG liveness and diagnostic management backends. Readiness returns
 200 only while the admission controller has a valid, fresh backend observation
-and a direct backend readiness probe returns exactly 200 within one second. From v0.12.34, detected SGLang uses `GET /ready`; vLLM uses `GET /health`;
-missing, expired or unavailable observations and failed health checks return 503. Failed metric polls stop
+and a direct backend readiness probe returns exactly 200 within one second.
+From v0.12.34, detected SGLang uses `GET /ready`; vLLM uses `GET /health`.
+Missing, expired or unavailable observations and failed health checks return 503. Failed metric polls stop
 refreshing the observation, so failure detection is bounded by its configured
 maximum age plus health-check scheduling. Busy or TPS-protected backends remain
 ready and retain normal admission protection. Health checks run only on readiness
