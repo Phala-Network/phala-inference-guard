@@ -20,13 +20,13 @@ export TOKEN='replace-with-a-strong-token'
 export UPSTREAM='http://your-backend:8000'
 docker run --rm --name pig -p 127.0.0.1:8000:8000 \
   -e TOKEN -e UPSTREAM \
-  ghcr.io/phala-network/phala-inference-guard:v0.12.31@sha256:fa25aef18395a828d3c5fc0317d324b5a2ac9c8294e1b5247e93352a9907ff45
+  ghcr.io/phala-network/phala-inference-guard:v0.12.32@sha256:d91391a1904bea09d2a75a296613541d09f6910c9cb454de9791bc539e2cf107
 ```
 
 From another terminal with the same `TOKEN`, check readiness and model discovery:
 
 ```bash
-curl --fail http://127.0.0.1:8000/healthz
+curl --fail http://127.0.0.1:8000/readyz
 curl --fail -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8000/v1/models
 ```
 
@@ -35,7 +35,7 @@ model loads, PIG retries unavailable or incoherent metrics without exiting;
 connection refusal during this wait is expected. After readiness, `/healthz`
 is a liveness check, not proof of current backend admission capacity.
 
-This example uses the published **v0.12.31** image. `main` is the integration
+This example uses the published **v0.12.32** image. `main` is the integration
 branch and may contain later changes. See [source tags](https://github.com/Phala-Network/phala-inference-guard/tags)
 and [release guidance](docs/RELEASING.md) for version selection.
 
@@ -55,10 +55,9 @@ These are telemetry-based admission controls, not a throughput guarantee.
 Standard releases support a single upstream; historical DP/PD image variants
 have their own topology requirements and are not interchangeable defaults.
 
-The development source accepts both Prometheus counter declarations and
+PIG accepts both Prometheus counter declarations and
 OpenMetrics counter-family declarations with `_total` samples, as emitted by
-the vLLM 0.31 Rust frontend. The published v0.12.31 image above predates that
-compatibility fix. No counter values or process timestamps are synthesized.
+the vLLM 0.31 Rust frontend. No counter values or process timestamps are synthesized.
 `process_start_time_seconds` is optional while absent: counter resets still
 identify backend restarts, but a restart without an observed counter decrease
 cannot be distinguished. Once a positive process start time has been observed,
@@ -72,7 +71,7 @@ epoch tracking.
 | `POST /v1/chat/completions`, `/v1/completions`, `/v1/responses` | Authenticated generation through admission |
 | `GET /v1/models` | Authenticated model discovery |
 | `GET /healthz` | Local liveness after initialization |
-| `GET /readyz` | Unauthenticated backend observation readiness (development source; v0.12.32+) |
+| `GET /readyz` | Unauthenticated backend observation readiness |
 | `GET /pig/metrics` | Minimal Router capacity metrics |
 | `GET /v1/metrics`, `/v1/upstream-status` | Diagnostics and admission status |
 | `GET/PATCH /admin/v1/predictive-policy` | Authenticated, revision-checked policy updates |
