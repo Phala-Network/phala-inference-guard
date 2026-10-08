@@ -20,7 +20,7 @@ export TOKEN='replace-with-a-strong-token'
 export UPSTREAM='http://your-backend:8000'
 docker run --rm --name pig -p 127.0.0.1:8000:8000 \
   -e TOKEN -e UPSTREAM \
-  ghcr.io/phala-network/phala-inference-guard:v0.12.32@sha256:d91391a1904bea09d2a75a296613541d09f6910c9cb454de9791bc539e2cf107
+  ghcr.io/phala-network/phala-inference-guard:v0.12.33@sha256:236f1e6e3e31a784944f94c0aaed5a950f1ae490b365929145ac295a0dd6f4f6
 ```
 
 From another terminal with the same `TOKEN`, check readiness and model discovery:
@@ -35,7 +35,7 @@ model loads, PIG retries unavailable or incoherent metrics without exiting;
 connection refusal during this wait is expected. After readiness, `/healthz`
 is a liveness check, not proof of current backend admission capacity.
 
-This example uses the published **v0.12.32** image. `main` is the integration
+This example uses the published **v0.12.33** image. `main` is the integration
 branch and may contain later changes. See [source tags](https://github.com/Phala-Network/phala-inference-guard/tags)
 and [release guidance](docs/RELEASING.md) for version selection.
 
@@ -95,11 +95,9 @@ ready and retain normal admission protection. Health checks run only on readines
 requests, reuse the backend transport, do not follow redirects or forward caller
 headers, and add no inference or synthetic process epoch.
 
-The development source also exposes the same handler as `GET /health` because
+PIG also exposes the same handler as `GET /health` because
 vLLM Router 0.1.15 hardcodes that path during initial worker discovery even when
-its periodic health-check endpoint is configured separately. The published
-v0.12.32 example above predates this alias; Router-to-PIG startup requires
-v0.12.33 or later. `/health` does not provide a liveness-only shortcut.
+its periodic health-check endpoint is configured separately. Router-to-PIG startup requires v0.12.33 or later. `/health` does not provide a liveness-only shortcut.
 
 ## Development and documentation
 
