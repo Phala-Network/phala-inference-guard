@@ -166,3 +166,60 @@ func TestHealthAliasUsesRealReadiness(t *testing.T) {
 		}
 	}
 }
+
+// A ready SGLang engine need not complete its generation-based /health within
+// one second. The detected backend kind must select its immediate /ready probe.
+func TestReadinessSelectsDetectedBackendProbe(t *testing.T) {
+	for _, kind := range []string{"sglang", "vllm", ""} {
+		for _, status := range []int{200, 503, 307, 204, 0} {
+			t.Run(kind+"/"+http.StatusText(status), func(t *testing.T) {
+				wantPath := "/health"
+				if kind == "sglang" {
+					wantPath = "/ready"
+				}
+				backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path != wantPath || r.URL.RawQuery != "" || r.Method != http.MethodGet || r.Header.Get("Authorization") != "" || r.Header.Get("X-Caller-Private") != "" {
+						t.Errorf("unexpected readiness request: %s %s", r.Method, r.URL.Path)
+						<-r.Context().Done()
+						return
+					}
+					if status == 0 {
+						<-r.Context().Done()
+						return
+					}
+					w.Header().Set("Location", "/redirect-must-not-be-followed")
+					w.WriteHeader(status)
+				}))
+				defer backend.Close()
+				proxies, _, _, err := infrabackend.Build([]infrabackend.Config{{Upstream: backend.URL}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				capacity := coreadmission.CapacitySnapshot{
+					IntakeOpen: true, HasObservation: true, Available: true,
+					Observation:     coreadmission.BackendObservation{ObservedAt: time.Now(), MaximumAge: time.Minute},
+					MinimumDecision: coreadmission.DecisionRecord{Action: coreadmission.ActionAdmit, Reason: coreadmission.ReasonOpen},
+				}
+				srv := &proxyServer{backend: proxies[0], admission: &staticAdmissionTelemetryService{snapshot: admissionTelemetrySnapshot{BackendKind: kind, Capacity: capacity}}}
+				for _, path := range []string{"/readyz", "/health"} {
+					response := httptest.NewRecorder()
+					request := httptest.NewRequest(http.MethodGet, path, nil)
+					request.Header.Set("Authorization", "Bearer test-only-secret")
+					request.Header.Set("X-Caller-Private", "test-only-value")
+					started := time.Now()
+					srv.ServeHTTP(response, request)
+					want := http.StatusServiceUnavailable
+					if status == http.StatusOK {
+						want = http.StatusOK
+					}
+					if response.Code != want {
+						t.Fatalf("path=%s status=%d want=%d", path, response.Code, want)
+					}
+					if status == 0 && time.Since(started) > 2*time.Second {
+						t.Fatal("backend probe did not honor its one-second deadline")
+					}
+				}
+			})
+		}
+	}
+}

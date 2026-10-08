@@ -13,11 +13,12 @@ import (
 // It is unauthenticated so Router health checks can use its HTTP status.
 func (s *proxyServer) readiness(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
-	capacity := s.admissionTelemetry(now).Capacity
+	snapshot := s.admissionTelemetry(now)
+	capacity := snapshot.Capacity
 	decision := capacity.MinimumDecision
 	validDecision := decision.Admitted() ||
 		(decision.Action == coreadmission.ActionProtect && decision.Scope == coreadmission.ProtectionLoad)
-	if !capacityObservationFresh(capacity, now) || !validDecision || !s.backendHealthy(r.Context()) {
+	if !capacityObservationFresh(capacity, now) || !validDecision || !s.backendHealthy(r.Context(), snapshot.BackendKind) {
 		http.Error(w, "not ready", http.StatusServiceUnavailable)
 		return
 	}
@@ -25,7 +26,7 @@ func (s *proxyServer) readiness(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-func (s *proxyServer) backendHealthy(ctx context.Context) bool {
+func (s *proxyServer) backendHealthy(ctx context.Context, backendKind string) bool {
 	if s == nil || s.backend == nil {
 		return false
 	}
@@ -33,7 +34,12 @@ func (s *proxyServer) backendHealthy(ctx context.Context) bool {
 	if err != nil {
 		return false
 	}
-	target.Path, target.RawPath, target.RawQuery, target.Fragment = "/health", "", "", ""
+	path := "/health"
+	if backendKind == "sglang" {
+		// SGLang /health generates a token and can exceed this probe's deadline.
+		path = "/ready"
+	}
+	target.Path, target.RawPath, target.RawQuery, target.Fragment = path, "", "", ""
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)

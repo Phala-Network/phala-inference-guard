@@ -87,7 +87,7 @@ startup values. See [configuration and API details](docs/ADVANCED.md) and
 Use `/readyz` for Router worker eligibility and container readiness, and
 `/healthz` for PIG liveness and diagnostic management backends. Readiness returns
 200 only while the admission controller has a valid, fresh backend observation
-and a direct backend `GET /health` returns exactly 200 within one second;
+and a direct backend readiness probe returns exactly 200 within one second. From v0.12.34, detected SGLang uses `GET /ready`; vLLM uses `GET /health`;
 missing, expired or unavailable observations and failed health checks return 503. Failed metric polls stop
 refreshing the observation, so failure detection is bounded by its configured
 maximum age plus health-check scheduling. Busy or TPS-protected backends remain
