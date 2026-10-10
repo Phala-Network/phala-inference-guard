@@ -1,9 +1,12 @@
 package server
 
 import (
+	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"time"
 
@@ -37,10 +40,16 @@ func (s *proxyServer) combinedMetrics(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
+	backend, status := s.fetchBackendMetrics(r.Context())
+	if status != http.StatusOK {
+		// Do not expose upstream URLs, credentials, response bodies or errors.
+		http.Error(w, "backend metrics unavailable", status)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 	s.writeLocalMetrics(w)
 	_, _ = io.WriteString(w, "\n# --- Backend Metrics ---\n")
-	s.writeBackendMetricsRaw(w)
+	_, _ = w.Write(backend)
 }
 
 func (s *proxyServer) writeRouterMetricsContract(w io.Writer) {
@@ -364,17 +373,37 @@ func (s *proxyServer) backendMetricsInput(
 	}}
 }
 
-func (s *proxyServer) writeBackendMetricsRaw(w io.Writer) {
-	client := &http.Client{Timeout: s.cfg.PredictiveMetricsRequestTimeout}
-	response, err := client.Get(s.cfg.PredictiveMetricsURL)
+const maximumBackendMetricsBytes = 16 * 1024 * 1024
+
+func (s *proxyServer) fetchBackendMetrics(ctx context.Context) ([]byte, int) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, s.cfg.PredictiveMetricsURL, nil)
 	if err != nil {
-		_, _ = fmt.Fprintf(w, "# failed to fetch backend metrics: %v\n", err)
-		return
+		return nil, http.StatusBadGateway
+	}
+	client := &http.Client{Timeout: s.cfg.PredictiveMetricsRequestTimeout}
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, backendMetricsErrorStatus(err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		_, _ = fmt.Fprintf(w, "# backend metrics status %d\n", response.StatusCode)
-		return
+		return nil, http.StatusBadGateway
 	}
-	_, _ = io.Copy(w, io.LimitReader(response.Body, 16*1024*1024))
+	// Read one extra byte so a bounded response is never silently truncated.
+	body, err := io.ReadAll(io.LimitReader(response.Body, maximumBackendMetricsBytes+1))
+	if err != nil {
+		return nil, backendMetricsErrorStatus(err)
+	}
+	if len(body) > maximumBackendMetricsBytes {
+		return nil, http.StatusBadGateway
+	}
+	return body, http.StatusOK
+}
+
+func backendMetricsErrorStatus(err error) int {
+	var timeout net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &timeout) && timeout.Timeout() {
+		return http.StatusGatewayTimeout
+	}
+	return http.StatusBadGateway
 }

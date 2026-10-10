@@ -119,3 +119,8 @@ See [contributing](CONTRIBUTING.md) for race checks and change guidelines,
 ## License
 
 [GNU General Public License v3.0](LICENSE).
+
+Combined `/metrics` and `/v1/metrics` scrapes return HTTP 502 when backend metrics
+are unavailable, incomplete, or exceed 16 MiB, and HTTP 504 on a backend timeout.
+They return the combined metrics only after a complete backend read. The
+authenticated `/pig/metrics` local router contract remains available independently.
