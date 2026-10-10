@@ -20,7 +20,7 @@ export TOKEN='replace-with-a-strong-token'
 export UPSTREAM='http://your-backend:8000'
 docker run --rm --name pig -p 127.0.0.1:8000:8000 \
   -e TOKEN -e UPSTREAM \
-  ghcr.io/phala-network/phala-inference-guard:v0.12.34@sha256:a341ce65a42ea0d942f7b74780ebda7bc89040b633683165ff9bd20dacbe706c
+  ghcr.io/phala-network/phala-inference-guard:v0.12.35@sha256:30945c4c6d9a85123a7ea6d5fbc4c3c316d279326d88d786953c2d0de5e2b916
 ```
 
 From another terminal with the same `TOKEN`, check readiness and model discovery:
@@ -35,7 +35,7 @@ model loads, PIG retries unavailable or incoherent metrics without exiting;
 connection refusal during this wait is expected. After readiness, `/healthz`
 is a liveness check, not proof of current backend admission capacity.
 
-This example uses the published **v0.12.34** image. `main` is the integration
+This example uses the published **v0.12.35** image. `main` is the integration
 branch and may contain later changes. See [source tags](https://github.com/Phala-Network/phala-inference-guard/tags)
 and [release guidance](docs/RELEASING.md) for version selection.
 
