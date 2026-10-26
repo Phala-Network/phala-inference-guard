@@ -54,18 +54,84 @@ Attestation variables do not alter admission policy.
 | `PREDICTIVE_TPS_REFERENCE` | `0` | Finite Decode tokens/s/active sequence in `[0,1000000]`; `0` disables TPS health |
 | `PREDICTIVE_WINDOW_CONCURRENCY` | `32` | Decode sequences pending first byte in `[1,1048576]` |
 | `PREDICTIVE_RUNNING_LIMIT` | `0` | Backend running ceiling in `[0,1048576]`; `0` means unknown/disabled |
+| `PREDICTIVE_PREFIX_INDEX_TOKENS` | `0` | `[0,1073741824]`; Prompt tokens the prefix mirror holds; `0` sizes it to the backend KV capacity when known |
 
 TPS is a health signal, not a capacity formula. Waiting protection remains
-independent of TPS reference. Basic requests are admitted while observed backend
+independent of TPS reference. Flex requests are admitted while observed backend
 waiting is at or below the mutable `waiting_allowance` (default `3`), subject to
 the other guards. A fresh observation above that value protects immediately;
-one back at or below it reopens intake. Premium retains its existing waiting
-bypass. With TPS health enabled, the gate stays open while warming or
+one back at or below it reopens intake. Priority requests bypass waiting,
+preemption, the running limit, the window bound and TPS health, because the
+backend schedules them ahead of every waiting default and flex request
+(below); a warm Prompt passes a default or flex request on a recovered
+interval (below).
+The tier comes from one `X-User-Tier` value: `priority`, `default` or `flex`;
+anything else, including a missing or repeated header, is `default`. Default
+and flex are protected alike and differ only in order: default is served first
+in the local queue and, with backend tier scheduling, in the backend's. With
+TPS health enabled, the gate stays open while warming or
 when the latest interval has no reliable Decode denominator. It protects on a
 fresh preemption or when both the ready rolling mean and latest qualified mean
 are below the reference. One low interval does not close a healthy rolling
 window, and one qualified recovered interval reopens a low rolling window
 immediately.
+
+**Backend tier scheduling.** On an SGLang backend PIG appends
+`"priority": N` as the last member of every admitted JSON body it buffered
+(`priority` 2, `default` 1, `flex` 0). On any other backend (vLLM reads the
+field the other way round, smaller values first) PIG leaves the body alone and
+TPS health protects every tier as before; `pig_predictive_backend_tier_scheduling_enabled`
+reports which. The backend keeps the last of duplicate
+keys, so the value replaces any priority the client sent; the body length is
+updated and a body PIG did not buffer whole is forwarded unchanged. **The
+backend must order its waiting queue by that value**: run SGLang with
+`--enable-priority-scheduling` (larger values first, the SGLang default), whose
+`fcfs` and `lof` schedule policies sort by priority, and with
+`--disable-priority-preemption`, since adjacent tiers differ by 1, below
+SGLang's preemption threshold, and preempting a running sequence only
+recomputes it, and with `--default-priority-value 1`: a body larger than the
+scanner buffer (`PREDICTIVE_SCANNER_BODY_BYTES`, 4 MiB) is forwarded without a
+priority, and SGLang otherwise places such a request below every labelled one;
+`pig_predictive_backend_tier_scheduling_requests_total{result="skipped"}` counts
+them. A policy that ignores the field (such as `hrrn`) needs a tier-aware
+variant. This is a node prerequisite, not a PIG switch: a backend
+without priority scheduling ignores the field, and the priority tier then
+queues behind default and flex while PIG, as described next, no longer holds
+it at the TPS reference. Because priority Prefill runs ahead of every waiting
+default and flex request, the rolling Decode mean no longer describes the
+service it receives, and TPS health does not protect the priority tier (subreason
+`backend_scheduled`). Availability protection (missing, stale or invalid
+observations, fail-closed) still applies to every tier. A Prefill chunk the
+backend has already started is not interrupted, so a priority request can
+still wait for one long cold Prompt in progress.
+
+**Warm and cold Prompts.** PIG keeps an LRU mirror of the Prompt prefixes it
+admitted and estimates each request's uncached Prompt tokens from it,
+corrected by the cached-token counts the backend reports. At startup PIG reads
+the backend's Prefill chunk size (`chunked_prefill_size` in SGLang
+`/server_info`, the same probe that discovers the running limit; reported as
+`pig_predictive_tps_warm_prompt_tokens`) and, when the backend reports one, TPS
+health treats default and flex requests by that estimate while the rolling
+window is below the reference; a backend that reports none keeps the plain
+reference gate for every tier. A warm Prompt (estimate at most the threshold)
+passes on a recovered latest interval (subreason `warm_prompt`): it costs at
+most the one-step stall any chunk costs, while turning a continuing
+conversation away sends it to another node and brings it back later as a cold
+Prefill. A cold Prompt (estimate above the threshold, or none) passes only
+while the rolling window mean is at the reference, because a recovered latest
+interval is the moment a Prefill chunk ended and says nothing about absorbing
+several more chunks (refusal subreason `cold_prompt`), and it is admitted only
+while no other default or flex cold Prompt is pending first byte (subreason
+`cold_prompt_pending`): the window mean lags the load it admits, so for the
+few seconds after it reaches the reference every cold Prompt that arrived
+would pass, all Prefill at once, and each one's first byte would wait for all
+of them. The backend still Prefills one chunk per step, so admitting cold
+Prompts in turn changes their order, not Prefill throughput. When both the
+window and the latest interval are below the reference nothing in those tiers
+passes. Priority requests are unaffected; waiting, preemption, running and
+window protection are unchanged. The estimate can be wrong;
+`pig_predictive_warm_prompt_*` reports how many warm admissions the backend
+then computed above the threshold.
 
 The independent admission bounds are:
 
@@ -132,7 +198,7 @@ without a partial change. Only a changed TPS reference clears the TPS window.
 Changing either bound does not rewrite TPS evidence. An admin running-limit
 change reports source `admin`; setting it to zero disables that gate. Restart
 restores the validated initialization policy and revision 1.
-`waiting_allowance` accepts integers in `[0,1048576]`; zero protects basic
+`waiting_allowance` accepts integers in `[0,1048576]`; zero protects flex
 requests whenever backend waiting is positive. The startup value is always 3.
 
 ## Failure semantics
@@ -149,8 +215,8 @@ Router backpressure.
 
 ## Retired settings
 
-Context/KV/cache/Prefill/input-size/TTFT gates, tiers, priority injection,
-request rewriting, queue waits, learned capacity, and the old TPS-derived
+Context/KV/cache/Prefill/input-size/TTFT gates, tier reservations, header-based
+backend priority injection, queue waits, learned capacity, and the old TPS-derived
 sequence-limit/QoS-budget controller are removed. Historical variables such as
 `GLOBAL_LIMIT`, `DYNAMIC_*`, `QOS_QUEUE_*`, `KV_ADMISSION_*`,
 `BACKEND_PRIORITY_*`, `PREDICTIVE_KV_*`, and `PREDICTIVE_PREFILL_*` are ignored

@@ -42,6 +42,8 @@ const (
 	admissionEvidenceReasonPriorityQueueCanceled
 	admissionEvidenceReasonCounterOverflow
 	admissionEvidenceReasonClosed
+	admissionEvidenceReasonRunningLimit
+	admissionEvidenceReasonWindowConcurrency
 	admissionEvidenceProtectionReasonCount
 )
 
@@ -60,6 +62,8 @@ var admissionEvidenceProtectionReasonLabels = [...]string{
 	"priority_queue_canceled",
 	"counter_overflow",
 	"closed",
+	"running_limit",
+	"window_concurrency",
 }
 
 type admissionEvidenceProtectionScope uint8
@@ -102,16 +106,33 @@ var admissionEvidenceFanoutBucketLabels = [...]string{
 	">16",
 }
 
+const admissionEvidenceTierCount = len(coreadmission.RequestTiers)
+
 type admissionEvidence struct {
-	outcomes     [admissionEvidenceOutcomeCount]atomic.Uint64
-	protections  [admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]atomic.Uint64
-	decodeFanout [admissionEvidenceFanoutBucketCount][admissionEvidenceOutcomeCount]atomic.Uint64
+	outcomes        [admissionEvidenceOutcomeCount]atomic.Uint64
+	protections     [admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]atomic.Uint64
+	decodeFanout    [admissionEvidenceFanoutBucketCount][admissionEvidenceOutcomeCount]atomic.Uint64
+	tierOutcomes    [admissionEvidenceTierCount][admissionEvidenceOutcomeCount]atomic.Uint64
+	tierProtections [admissionEvidenceTierCount][admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]atomic.Uint64
 }
 
 type admissionEvidenceSnapshot struct {
-	outcomes     [admissionEvidenceOutcomeCount]uint64
-	protections  [admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]uint64
-	decodeFanout [admissionEvidenceFanoutBucketCount][admissionEvidenceOutcomeCount]uint64
+	outcomes        [admissionEvidenceOutcomeCount]uint64
+	protections     [admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]uint64
+	decodeFanout    [admissionEvidenceFanoutBucketCount][admissionEvidenceOutcomeCount]uint64
+	tierOutcomes    [admissionEvidenceTierCount][admissionEvidenceOutcomeCount]uint64
+	tierProtections [admissionEvidenceTierCount][admissionEvidenceProtectionReasonCount][admissionEvidenceProtectionScopeCount]uint64
+}
+
+// admissionEvidenceTierIndex is the position of tier in RequestTiers; an
+// invalid tier counts as default, as admission treats it.
+func admissionEvidenceTierIndex(tier coreadmission.RequestTier) int {
+	for index, candidate := range coreadmission.RequestTiers {
+		if candidate == tier {
+			return index
+		}
+	}
+	return admissionEvidenceTierIndex(coreadmission.TierDefault)
 }
 
 func (e *admissionEvidence) Record(decision coreadmission.DecisionRecord) {
@@ -119,11 +140,14 @@ func (e *admissionEvidence) Record(decision coreadmission.DecisionRecord) {
 		return
 	}
 	outcome := admissionEvidenceOutcomeFor(decision)
+	tier := admissionEvidenceTierIndex(decision.Demand.Tier)
 	e.outcomes[outcome].Add(1)
+	e.tierOutcomes[tier][outcome].Add(1)
 	if !decision.Admitted() {
 		reason := admissionEvidenceReasonFor(decision.Reason)
 		scope := admissionEvidenceScopeFor(decision.Scope)
 		e.protections[reason][scope].Add(1)
+		e.tierProtections[tier][reason][scope].Add(1)
 	}
 	e.decodeFanout[admissionEvidenceFanoutFor(decision.Demand.DecodeSequences)][outcome].Add(1)
 }
@@ -144,6 +168,16 @@ func (e *admissionEvidence) Snapshot() admissionEvidenceSnapshot {
 	for fanout := admissionEvidenceFanoutBucket(0); fanout < admissionEvidenceFanoutBucketCount; fanout++ {
 		for outcome := admissionEvidenceOutcome(0); outcome < admissionEvidenceOutcomeCount; outcome++ {
 			snapshot.decodeFanout[fanout][outcome] = e.decodeFanout[fanout][outcome].Load()
+		}
+	}
+	for tier := 0; tier < admissionEvidenceTierCount; tier++ {
+		for outcome := admissionEvidenceOutcome(0); outcome < admissionEvidenceOutcomeCount; outcome++ {
+			snapshot.tierOutcomes[tier][outcome] = e.tierOutcomes[tier][outcome].Load()
+		}
+		for reason := admissionEvidenceProtectionReason(0); reason < admissionEvidenceProtectionReasonCount; reason++ {
+			for scope := admissionEvidenceProtectionScope(0); scope < admissionEvidenceProtectionScopeCount; scope++ {
+				snapshot.tierProtections[tier][reason][scope] = e.tierProtections[tier][reason][scope].Load()
+			}
 		}
 	}
 	return snapshot
@@ -173,6 +207,29 @@ func writeAdmissionEvidenceMetrics(w io.Writer, snapshot admissionEvidenceSnapsh
 				outcomeLabel,
 				snapshot.decodeFanout[fanout][outcome],
 			)
+		}
+	}
+	for tierIndex, tier := range coreadmission.RequestTiers {
+		for outcome, outcomeLabel := range admissionEvidenceOutcomeLabels {
+			fmt.Fprintf(
+				w,
+				"pig_predictive_admission_tier_outcomes_total{tier=%q,outcome=%q} %d\n",
+				tier.String(),
+				outcomeLabel,
+				snapshot.tierOutcomes[tierIndex][outcome],
+			)
+		}
+		for reason, reasonLabel := range admissionEvidenceProtectionReasonLabels {
+			for scope, scopeLabel := range admissionEvidenceProtectionScopeLabels {
+				fmt.Fprintf(
+					w,
+					"pig_predictive_admission_tier_protections_total{tier=%q,reason=%q,scope=%q} %d\n",
+					tier.String(),
+					reasonLabel,
+					scopeLabel,
+					snapshot.tierProtections[tierIndex][reason][scope],
+				)
+			}
 		}
 	}
 }
@@ -219,6 +276,10 @@ func admissionEvidenceReasonFor(reason coreadmission.Reason) admissionEvidencePr
 		return admissionEvidenceReasonCounterOverflow
 	case coreadmission.ReasonClosed:
 		return admissionEvidenceReasonClosed
+	case coreadmission.ReasonRunningLimit:
+		return admissionEvidenceReasonRunningLimit
+	case coreadmission.ReasonWindowConcurrency:
+		return admissionEvidenceReasonWindowConcurrency
 	default:
 		return admissionEvidenceReasonUnknown
 	}

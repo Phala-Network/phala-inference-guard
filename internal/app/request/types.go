@@ -32,6 +32,7 @@ type Classification struct {
 	Streaming              bool
 	BasePromptCount        int64
 	DecodeSequences        int64
+	Prompt                 PromptFingerprint
 }
 
 type ClassificationTiming struct {

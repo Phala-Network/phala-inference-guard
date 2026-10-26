@@ -192,6 +192,8 @@ applies Router backpressure. Response usage is goodput observability only.
 | `internal/app/server/proxy.go` | Mode mapping, forwarding, terminal transaction |
 | `internal/app/server/metrics.go` | Snapshot formatting and Router compatibility |
 
-No component owns backend routing, customer tiers, request rewriting,
-tokenizer/model profiles, KV/Prefill/input admission, TTFT protection, queueing,
-or online learning.
+No component owns backend routing, customer tiers, tokenizer/model profiles,
+KV/Prefill/input admission, TTFT protection, or queueing. The only request
+rewrite is the backend scheduling `priority` member; the only learned
+state is the Prompt prefix mirror and its two usage-fitted ratios, which feed
+the optional Prompt-aware TPS health for default and flex.

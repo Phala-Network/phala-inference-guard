@@ -598,3 +598,20 @@ func (r *errorReadCloser) Read(buffer []byte) (int, error) {
 }
 
 func (*errorReadCloser) Close() error { return nil }
+
+func TestCompletionUsageReadsCachedPromptTokens(t *testing.T) {
+	chat := []byte(`{"choices":[],"usage":{"prompt_tokens":1000,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":920}}}`)
+	usage, outcome := decodeCompletionUsageEvidence(chat, true, CompletionUsageFormatCompletions)
+	if outcome != CompletionUsageAvailable || !usage.CachedTokensKnown || usage.CachedTokens != 920 || usage.PromptTokens != 1000 {
+		t.Fatalf("chat usage=%+v outcome=%v", usage, outcome)
+	}
+	responses := []byte(`{"usage":{"input_tokens":800,"output_tokens":3,"input_tokens_details":{"cached_tokens":640}}}`)
+	usage, outcome = decodeCompletionUsageEvidence(responses, false, CompletionUsageFormatResponses)
+	if outcome != CompletionUsageAvailable || !usage.CachedTokensKnown || usage.CachedTokens != 640 {
+		t.Fatalf("responses usage=%+v outcome=%v", usage, outcome)
+	}
+	plain := []byte(`{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1}}`)
+	if usage, _ := decodeCompletionUsageEvidence(plain, true, CompletionUsageFormatCompletions); usage.CachedTokensKnown {
+		t.Fatalf("absent cached_tokens reported as known: %+v", usage)
+	}
+}

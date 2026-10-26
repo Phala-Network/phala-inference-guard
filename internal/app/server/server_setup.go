@@ -42,6 +42,18 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 	if admission == nil {
 		return nil, fmt.Errorf("admission service constructor returned nil")
 	}
+	promptIndexTokens := cfg.PredictivePrefixIndexTokens
+	if sized, ok := admission.(interface{ PromptIndexTokens() int64 }); ok && promptIndexTokens == 0 {
+		promptIndexTokens = sized.PromptIndexTokens()
+	}
+	var warmPromptTokens int64
+	if sized, ok := admission.(interface{ WarmPromptTokens() int64 }); ok {
+		warmPromptTokens = sized.WarmPromptTokens()
+	}
+	var backendTierScheduling bool
+	if scheduled, ok := admission.(interface{ BackendTierScheduling() bool }); ok {
+		backendTierScheduling = scheduled.BackendTierScheduling()
+	}
 	if cfg.PredictiveAdmissionMode == "enforce" {
 		admission = newPriorityAdmissionService(admission)
 	}
@@ -65,6 +77,8 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 		backend:               backends[0],
 		attestation:           attestationService,
 		admission:             admission,
+		warmPromptTokens:      warmPromptTokens,
+		backendTierScheduling: backendTierScheduling,
 		publicRoutes:          PublicRoutePolicy{},
 		admissionRoutes:       AdmissionRoutePolicy{},
 		authentication:        AuthenticationPolicy{enabled: cfg.APIAuthEnabled},
@@ -77,6 +91,7 @@ func newProxyServerWithDependencies(cfg config, dependencies serverDependencies)
 		proxyTotal:            newDurationHistogram(),
 		internalOverhead:      newDurationHistogram(),
 	}
+	srv.promptCost = newPromptCostEstimator(promptIndexTokens)
 	srv.requestClassifier = request.New(request.Config{
 		MaximumBodyBytes:  cfg.PredictiveScannerBodyBytes,
 		MaximumConcurrent: cfg.PredictiveScannerConcurrency,

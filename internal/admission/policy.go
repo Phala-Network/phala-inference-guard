@@ -14,8 +14,11 @@ type policyDecision struct {
 	tpsDecisionSubreason     TPSDecisionSubreason
 }
 
-func newAdmissionPolicy() admissionPolicy {
-	return admissionPolicy{tpsGate: tpsGate{}}
+func newAdmissionPolicy(backendTierScheduling bool, warmPromptTokens int64) admissionPolicy {
+	return admissionPolicy{tpsGate: tpsGate{
+		backendTierScheduling: backendTierScheduling,
+		warmPromptTokens:      warmPromptTokens,
+	}}
 }
 
 func (p admissionPolicy) evaluateDemand(
@@ -23,7 +26,7 @@ func (p admissionPolicy) evaluateDemand(
 	demand TPSRequestDemand,
 	bounds admissionBounds,
 ) policyDecision {
-	tps := p.tpsGate.evaluate(state, bounds.waitingAllowance, demand.Priority)
+	tps := p.tpsGate.evaluateDemand(state, bounds.waitingAllowance, demand)
 	decision := policyDecision{
 		action:               ActionAdmit,
 		reason:               ReasonOpen,
@@ -40,11 +43,12 @@ func (p admissionPolicy) evaluateDemand(
 		}
 		return decision
 	}
-	if demand.Priority == RequestPriorityPremium {
-		// Premium is still subject to the TPS gate above, but non-TPS load
-		// protections are intentionally soft for this priority. The controller
+	if !demand.Tier.Sheddable() {
+		// Priority is subject to the TPS gate above unless the backend
+		// schedules by tier, and non-TPS load protections are intentionally
+		// soft for it. The controller
 		// continues to create a normal reservation so lifecycle accounting and
-		// terminal cleanup remain identical to basic traffic.
+		// terminal cleanup remain identical to the other tiers.
 		var runningOK, windowOK bool
 		decision.projectedRunning, runningOK = addNonnegativeInt64(
 			state.RawRunning,

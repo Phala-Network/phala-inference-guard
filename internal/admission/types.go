@@ -42,7 +42,10 @@ const (
 )
 
 type ProjectedState struct {
-	UnobservedSequences      int64
+	UnobservedSequences int64
+	// ColdSheddablePending is the number of admitted default or flex requests
+	// with a cold or unknown uncached Prompt still pending first byte.
+	ColdSheddablePending     int64
 	SequenceLiabilities      int64
 	LiveReservations         int64
 	ResidualDebts            int64
@@ -134,6 +137,10 @@ const (
 	TPSDecisionSubreasonHealthyWindow
 	TPSDecisionSubreasonRecoveredCurrent
 	TPSDecisionSubreasonBelowReference
+	TPSDecisionSubreasonBackendScheduled
+	TPSDecisionSubreasonWarmPrompt
+	TPSDecisionSubreasonColdPrompt
+	TPSDecisionSubreasonColdPromptPending
 )
 
 func (r TPSDecisionSubreason) String() string {
@@ -156,6 +163,14 @@ func (r TPSDecisionSubreason) String() string {
 		return "recovered_current"
 	case TPSDecisionSubreasonBelowReference:
 		return "below_reference"
+	case TPSDecisionSubreasonBackendScheduled:
+		return "backend_scheduled"
+	case TPSDecisionSubreasonWarmPrompt:
+		return "warm_prompt"
+	case TPSDecisionSubreasonColdPrompt:
+		return "cold_prompt"
+	case TPSDecisionSubreasonColdPromptPending:
+		return "cold_prompt_pending"
 	default:
 		return "unknown"
 	}
@@ -196,7 +211,27 @@ type ControllerConfig struct {
 	RunningLimit                  int64
 	RunningLimitSource            RunningLimitSource
 	PendingFirstByteLeaseDuration time.Duration
-	Now                           func() time.Time
+	// BackendTierScheduling states that the backend orders its waiting queue
+	// by the tier PIG writes into each request (SGLang with priority
+	// scheduling), so priority Prefill runs ahead of every queued default and
+	// flex request and the TPS reference stops protecting the priority tier.
+	// It follows the backend kind discovered at startup; it is not
+	// configuration.
+	BackendTierScheduling bool
+	// WarmPromptTokens, when positive, makes TPS health Prompt-aware for the
+	// default and flex tiers while the window is below the reference. Set it
+	// to the backend's chunked Prefill size. A request whose estimated
+	// uncached Prompt fits one chunk passes on a recovered latest sample: the
+	// backend interleaves Prefill with Decode one chunk at a time, so it costs
+	// at most the one-step stall every chunk costs, and such requests are
+	// conversations continuing on this node, which turned away come back
+	// later as a cold Prefill. A larger or unknown Prompt waits for the
+	// window mean and is admitted one at a time: a recovered sample is the
+	// moment a chunk ended and says nothing about absorbing several more, and
+	// cold Prompts admitted together all Prefill at once and each waits for
+	// all of them. Zero keeps the plain reference gate.
+	WarmPromptTokens int64
+	Now              func() time.Time
 }
 
 type DecisionRecord struct {
@@ -232,6 +267,10 @@ type BackendObservation struct {
 	GenerationTokensTotal uint64
 	PreemptionsTotal      uint64
 	RuntimeStartTime      float64
+	// PrefillTokensTotal counts uncached Prompt tokens the backend computed.
+	// It is optional; without it the Prefill budget stays unmeasured and open.
+	PrefillTokensTotal uint64
+	PrefillTokensValid bool
 }
 
 type AdmissionResult struct {

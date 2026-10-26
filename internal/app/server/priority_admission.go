@@ -289,11 +289,11 @@ func (s *priorityAdmissionService) chooseIndex(now time.Time) int {
 		return selected
 	}
 
-	// Promote a basic request after half the deadline to prevent a continuous
-	// premium stream from starving ordinary traffic.
+	// Promote a sheddable request after half the deadline to prevent a
+	// continuous stream of higher tiers from starving it.
 	agingThreshold := s.maxWait / 2
 	for index, item := range s.queue {
-		if item.demand.Priority == coreadmission.RequestPriorityBasic &&
+		if item.demand.Tier.Sheddable() &&
 			now.Sub(item.enqueuedAt) >= agingThreshold &&
 			(selected < 0 || item.enqueuedAt.Before(s.queue[selected].enqueuedAt)) {
 			selected = index
@@ -304,8 +304,8 @@ func (s *priorityAdmissionService) chooseIndex(now time.Time) int {
 	}
 
 	for index, item := range s.queue {
-		if selected < 0 || item.demand.Priority > s.queue[selected].demand.Priority ||
-			(item.demand.Priority == s.queue[selected].demand.Priority &&
+		if selected < 0 || item.demand.Tier.Rank() > s.queue[selected].demand.Tier.Rank() ||
+			(item.demand.Tier.Rank() == s.queue[selected].demand.Tier.Rank() &&
 				item.enqueuedAt.Before(s.queue[selected].enqueuedAt)) {
 			selected = index
 		}

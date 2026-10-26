@@ -34,7 +34,8 @@ These routes are handled locally and preserve their configured authentication
 semantics. They never enter the public inference proxy.
 
 `/v1/upstream-status` returns `0` for open, `1` for load protection where the
-canonical inspect demand still fits, `2` for closed enforce intake, and `3` for
+canonical inspect demand (one flex sequence, the tier every load protection
+applies to) still fits, `2` for closed enforce intake, and `3` for
 shadow-unavailable or unknown state.
 
 ## Decisions
@@ -44,6 +45,8 @@ pig_predictive_admission_attempts_total
 pig_predictive_admission_decisions_total{decision="fit|risk|unknown"}
 pig_predictive_admission_outcomes_total{outcome}
 pig_predictive_admission_protections_total{reason,scope}
+pig_predictive_admission_tier_outcomes_total{tier,outcome}
+pig_predictive_admission_tier_protections_total{tier,reason,scope}
 pig_predictive_admission_enforced_rejects_total
 pig_rejected_total
 ```
@@ -53,6 +56,9 @@ The bounded reasons are `open`, `controller_unavailable`,
 `invalid_request`, `tps_reference`, `running_limit`, `window_concurrency`,
 `runtime_identity_drift`, `resource_exhausted`, `counter_overflow`, and
 `closed`.
+
+The `tier_*` families split the same decisions by `tier` (`priority`,
+`default`, `flex`); summed over tiers they equal the untiered families.
 
 `enforced_rejects_total` counts only enforce-mode pre-forward predictive 429s.
 `pig_rejected_total` is the broader local 429 counter. Shadow protection is
@@ -120,8 +126,15 @@ pig_predictive_tps_decisions_total{result,subreason}
 ```
 
 Subreasons are `disabled`, `invalid_state`, `waiting`, `preemption`, `warming`,
-`no_current_evidence`, `healthy_window`, `recovered_current`, and
-`below_reference`. Denominator selection is auditable through:
+`no_current_evidence`, `healthy_window`, `recovered_current`,
+`below_reference`, `backend_scheduled` (a priority request passed because the
+backend schedules by tier), and, with Prompt-aware TPS health, `warm_prompt`
+(a default or flex request passed on a recovered latest interval because its
+estimated uncached Prompt fit the warm threshold), `cold_prompt` (a default or
+flex request with a larger or unknown uncached Prompt was refused on a
+recovered latest interval because the window mean was still below the
+reference) and `cold_prompt_pending` (such a request was refused because
+another one was still pending first byte). Denominator selection is auditable through:
 
 ```text
 pig_predictive_tps_denominator_selections_total{source}
@@ -192,9 +205,37 @@ failure deltas warrant investigation.
 
 ```text
 pig_predictive_successful_completion_tokens_total
+pig_predictive_tier_successful_completion_tokens_total{tier}
 pig_predictive_response_usage_outcomes_total{outcome}
 pig_predictive_response_completion_tokens_total{bucket}
 ```
+
+Backend tier scheduling and the Prompt cost estimate:
+
+```text
+pig_predictive_backend_tier_scheduling_enabled
+pig_predictive_backend_tier_scheduling_requests_total{tier,result="written|skipped"}
+pig_predictive_tps_warm_prompt_tokens
+pig_predictive_prompt_cost_estimates_total{tier}
+pig_predictive_prompt_cost_estimated_tokens_total{tier}
+pig_predictive_prompt_cost_learned_requests_total
+pig_predictive_prompt_cost_learned_estimated_tokens_total
+pig_predictive_prompt_cost_learned_uncached_tokens_total
+pig_predictive_prompt_cost_bytes_per_token
+pig_predictive_prompt_cost_correction
+pig_predictive_prompt_index_{blocks,capacity_blocks}
+pig_predictive_prompt_index_{matched,considered,inserted,evicted}_blocks_total
+pig_predictive_warm_prompt_learned_requests_total
+pig_predictive_warm_prompt_learned_uncached_tokens_total
+pig_predictive_warm_prompt_over_limit_total
+```
+
+`skipped` counts admitted requests whose body PIG could not rewrite. The
+`learned_*` totals compare the estimate with the uncached tokens the backend
+reported; their ratio is the estimate's bias. The `warm_prompt_*` families
+cover only requests admitted because of the warm threshold: `over_limit` counts
+those the backend actually computed above it, i.e. cold Prompts the estimate
+let through.
 
 The token counter includes exact successful final usage only. Missing,
 malformed, censored, non-2xx, timed-out, or disconnected responses add no

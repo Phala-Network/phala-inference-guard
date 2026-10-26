@@ -12,9 +12,13 @@ const (
 )
 
 type reservation struct {
-	id                       uint64
-	runtimeEpoch             uint64
-	demand                   TPSRequestDemand
+	id           uint64
+	runtimeEpoch uint64
+	demand       TPSRequestDemand
+	// coldSheddable marks a default or flex request whose estimated uncached
+	// Prompt exceeds the warm size or is unknown; while it is pending first
+	// byte it counts toward the overlay's coldSheddablePending.
+	coldSheddable            bool
 	phase                    reservationPhase
 	pendingFirstByteReleased bool
 	forwardedAt              time.Time
@@ -32,6 +36,9 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 	case reservationReserved, reservationForwarded:
 		if !r.pendingFirstByteReleased {
 			contribution.unobservedSequences = r.demand.DecodeSequences
+			if r.coldSheddable {
+				contribution.coldSheddablePending = 1
+			}
 		}
 		contribution.liveReservations = 1
 	case reservationActiveDecode:
@@ -66,6 +73,9 @@ func addOverlay(left, right reservationOverlay) (reservationOverlay, bool) {
 	if result.residualDebts, ok = addNonnegativeInt64(left.residualDebts, right.residualDebts); !ok {
 		return reservationOverlay{}, false
 	}
+	if result.coldSheddablePending, ok = addNonnegativeInt64(left.coldSheddablePending, right.coldSheddablePending); !ok {
+		return reservationOverlay{}, false
+	}
 	return result, result.valid()
 }
 
@@ -74,14 +84,16 @@ func subtractOverlay(left, right reservationOverlay) (reservationOverlay, bool) 
 		left.unobservedSequences < right.unobservedSequences ||
 		left.sequenceLiabilities < right.sequenceLiabilities ||
 		left.liveReservations < right.liveReservations ||
-		left.residualDebts < right.residualDebts {
+		left.residualDebts < right.residualDebts ||
+		left.coldSheddablePending < right.coldSheddablePending {
 		return reservationOverlay{}, false
 	}
 	result := reservationOverlay{
-		unobservedSequences: left.unobservedSequences - right.unobservedSequences,
-		sequenceLiabilities: left.sequenceLiabilities - right.sequenceLiabilities,
-		liveReservations:    left.liveReservations - right.liveReservations,
-		residualDebts:       left.residualDebts - right.residualDebts,
+		unobservedSequences:  left.unobservedSequences - right.unobservedSequences,
+		sequenceLiabilities:  left.sequenceLiabilities - right.sequenceLiabilities,
+		liveReservations:     left.liveReservations - right.liveReservations,
+		residualDebts:        left.residualDebts - right.residualDebts,
+		coldSheddablePending: left.coldSheddablePending - right.coldSheddablePending,
 	}
 	return result, result.valid()
 }
@@ -97,5 +109,6 @@ func replaceOverlay(current, oldContribution, newContribution reservationOverlay
 func (o reservationOverlay) valid() bool {
 	return o.unobservedSequences >= 0 && o.sequenceLiabilities >= 0 &&
 		o.unobservedSequences <= o.sequenceLiabilities &&
-		o.liveReservations >= 0 && o.residualDebts >= 0
+		o.liveReservations >= 0 && o.residualDebts >= 0 &&
+		o.coldSheddablePending >= 0 && o.coldSheddablePending <= o.unobservedSequences
 }

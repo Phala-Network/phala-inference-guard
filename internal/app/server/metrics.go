@@ -91,6 +91,8 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	s.writePriorityQueueMetrics(w)
 	writeRequestEvidenceMetrics(w, s.requestEvidence.Snapshot())
 	writeResponseUsageEvidenceMetrics(w, s.responseUsageEvidence.Snapshot())
+	writePromptCostMetrics(w, s.promptCost.Snapshot())
+	s.writeSchedulingPriorityMetrics(w)
 	metrics.WriteBackends(w, s.backendMetricsInput(snapshot, now))
 	metrics.WritePredictiveAdmission(w, input)
 	writeAdmissionEvidenceMetrics(w, snapshot.Report.Evidence)

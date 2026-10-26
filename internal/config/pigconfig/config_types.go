@@ -42,4 +42,5 @@ type Config struct {
 	PredictiveWindowConcurrency       int64
 	PredictiveRunningLimit            int64
 	PredictiveRunningLimitConfigured  bool
+	PredictivePrefixIndexTokens       int64
 }

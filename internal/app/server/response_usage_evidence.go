@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sync"
 
+	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 	apprequest "github.com/Phala-Network/phala-inference-guard/internal/app/request"
 	"github.com/Phala-Network/phala-inference-guard/internal/infra/openai"
 )
@@ -56,24 +57,31 @@ var actualOutputTokenBucketLabels = [...]string{
 }
 
 type responseUsageEvidence struct {
-	mu                         sync.Mutex
-	outcomes                   [responseUsageEvidenceOutcomeCount]uint64
-	actuals                    [actualOutputTokenBucketCount]uint64
-	successfulCompletionTokens uint64
+	mu                             sync.Mutex
+	outcomes                       [responseUsageEvidenceOutcomeCount]uint64
+	actuals                        [actualOutputTokenBucketCount]uint64
+	successfulCompletionTokens     uint64
+	tierSuccessfulCompletionTokens [admissionEvidenceTierCount]uint64
 }
 
 type responseUsageEvidenceSnapshot struct {
-	outcomes                   [responseUsageEvidenceOutcomeCount]uint64
-	actuals                    [actualOutputTokenBucketCount]uint64
-	successfulCompletionTokens uint64
+	outcomes                       [responseUsageEvidenceOutcomeCount]uint64
+	actuals                        [actualOutputTokenBucketCount]uint64
+	successfulCompletionTokens     uint64
+	tierSuccessfulCompletionTokens [admissionEvidenceTierCount]uint64
 }
 
 type responseUsageRequestEvidence struct {
 	owner          *responseUsageEvidence
+	tier           int
 	streamingKnown bool
 	streaming      bool
 	formatKnown    bool
 	format         openai.CompletionUsageFormat
+
+	promptCost       *promptCostEstimator
+	prompt           apprequest.PromptFingerprint
+	promptCostResult promptCost
 
 	mu             sync.Mutex
 	parserAttached bool
@@ -87,10 +95,12 @@ type responseUsageRequestEvidenceContextKey struct{}
 func (e *responseUsageEvidence) Begin(
 	classification apprequest.Classification,
 	path string,
+	tier coreadmission.RequestTier,
 ) *responseUsageRequestEvidence {
 	format, formatKnown := responseUsageFormatForPath(path)
 	return &responseUsageRequestEvidence{
 		owner: e,
+		tier:  admissionEvidenceTierIndex(tier),
 		streamingKnown: classification.JSONFieldsKnown &&
 			(!classification.StreamingPresent || classification.StreamingKnown),
 		streaming:   classification.Streaming,
@@ -100,6 +110,7 @@ func (e *responseUsageEvidence) Begin(
 }
 
 func (e *responseUsageEvidence) record(
+	tier int,
 	outcome responseUsageEvidenceOutcome,
 	actual actualOutputTokenBucket,
 	successfulCompletionTokens uint64,
@@ -117,6 +128,9 @@ func (e *responseUsageEvidence) record(
 	e.outcomes[outcome]++
 	e.actuals[actual]++
 	e.successfulCompletionTokens += successfulCompletionTokens
+	if tier >= 0 && tier < admissionEvidenceTierCount {
+		e.tierSuccessfulCompletionTokens[tier] += successfulCompletionTokens
+	}
 	e.mu.Unlock()
 }
 
@@ -126,9 +140,10 @@ func (e *responseUsageEvidence) Snapshot() responseUsageEvidenceSnapshot {
 	}
 	e.mu.Lock()
 	snapshot := responseUsageEvidenceSnapshot{
-		outcomes:                   e.outcomes,
-		actuals:                    e.actuals,
-		successfulCompletionTokens: e.successfulCompletionTokens,
+		outcomes:                       e.outcomes,
+		actuals:                        e.actuals,
+		successfulCompletionTokens:     e.successfulCompletionTokens,
+		tierSuccessfulCompletionTokens: e.tierSuccessfulCompletionTokens,
 	}
 	e.mu.Unlock()
 	return snapshot
@@ -136,6 +151,14 @@ func (e *responseUsageEvidence) Snapshot() responseUsageEvidenceSnapshot {
 
 func writeResponseUsageEvidenceMetrics(w io.Writer, snapshot responseUsageEvidenceSnapshot) {
 	fmt.Fprintf(w, "pig_predictive_successful_completion_tokens_total %d\n", snapshot.successfulCompletionTokens)
+	for tierIndex, tier := range coreadmission.RequestTiers {
+		fmt.Fprintf(
+			w,
+			"pig_predictive_tier_successful_completion_tokens_total{tier=%q} %d\n",
+			tier.String(),
+			snapshot.tierSuccessfulCompletionTokens[tierIndex],
+		)
+	}
 	for outcome, label := range responseUsageEvidenceOutcomeLabels {
 		fmt.Fprintf(w, "pig_predictive_response_usage_outcomes_total{outcome=%q} %d\n", label, snapshot.outcomes[outcome])
 	}
@@ -165,6 +188,21 @@ func (r *responseUsageRequestEvidence) WrapResponse(response *http.Response) {
 		response.ContentLength,
 		r.observe,
 	)
+}
+
+// TrackPromptCost asks Complete to feed the reported Prompt usage back to the
+// estimator that priced this request.
+func (r *responseUsageRequestEvidence) TrackPromptCost(
+	estimator *promptCostEstimator,
+	prompt apprequest.PromptFingerprint,
+	cost promptCost,
+) {
+	if r == nil || estimator == nil || !cost.known {
+		return
+	}
+	r.promptCost = estimator
+	r.prompt = prompt
+	r.promptCostResult = cost
 }
 
 func (r *responseUsageRequestEvidence) observe(observation openai.CompletionUsageEvidence) {
@@ -202,8 +240,14 @@ func (r *responseUsageRequestEvidence) Complete(result proxyResult) {
 	}
 	r.completed = true
 	owner := r.owner
+	tier := r.tier
+	learn := r.observed && outcome == responseUsageEvidenceAvailable
+	usage := r.observation.Usage
 	r.mu.Unlock()
-	owner.record(outcome, actual, successfulCompletionTokens)
+	owner.record(tier, outcome, actual, successfulCompletionTokens)
+	if learn && usage.CachedTokensKnown {
+		r.promptCost.Learn(r.prompt, r.promptCostResult, usage.PromptTokens, usage.CachedTokens)
+	}
 }
 
 func (r *responseUsageRequestEvidence) Censor() {
@@ -217,8 +261,9 @@ func (r *responseUsageRequestEvidence) Censor() {
 	}
 	r.completed = true
 	owner := r.owner
+	tier := r.tier
 	r.mu.Unlock()
-	owner.record(responseUsageEvidenceCensored, actualOutputTokensCensored, 0)
+	owner.record(tier, responseUsageEvidenceCensored, actualOutputTokensCensored, 0)
 }
 
 func responseUsageEvidenceForObservation(

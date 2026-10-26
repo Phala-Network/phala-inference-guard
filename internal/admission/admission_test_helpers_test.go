@@ -65,8 +65,9 @@ func testObservation(
 	}
 }
 
+// testDemand is a flex demand: the tier the load protections apply to.
 func testDemand(sequences int64) TPSRequestDemand {
-	return NewTPSRequestDemand(sequences)
+	return NewTPSRequestDemand(sequences).WithTier(TierFlex)
 }
 
 func assertAggregateMatchesSlow(t *testing.T, controller *AdmissionController) {

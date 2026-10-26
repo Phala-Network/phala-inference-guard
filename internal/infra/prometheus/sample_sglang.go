@@ -68,6 +68,14 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 		generationValid = index.declaredType(sglangRealtimeTokenCounter, "counter")
 	}
 
+	prefillValue, prefillPresent := index.maximum(sglangRealtimeTokenCounter, func(labels map[string]string) bool {
+		return labels["mode"] == "prefill_compute" && labels["priority"] == ""
+	})
+	prefillCompute, prefillComputeValid := exactNonNegativeMetricUint64(
+		prefillValue,
+		prefillPresent && index.declaredType(sglangRealtimeTokenCounter, "counter"),
+	)
+
 	sample := telemetry.Sample{
 		BackendKind:      "sglang",
 		ModelName:        modelName,
@@ -80,6 +88,10 @@ func parseSGLangSample(index metricIndex) telemetry.Sample {
 		PreemptionsValid: preemptionsValid,
 		Generation:       generation,
 		GenerationValid:  generationValid,
+		// Uncached prompt tokens the scheduler has computed, bumped once per
+		// Prefill batch. Optional: absent on backends that do not report it.
+		PrefillCompute:      prefillCompute,
+		PrefillComputeValid: prefillComputeValid,
 	}
 	adaptSGLangKV(index, &sample)
 	adaptSGLangCache(index, modelName, admissionDPRank, &sample)

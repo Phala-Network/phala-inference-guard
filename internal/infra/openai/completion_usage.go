@@ -19,11 +19,14 @@ const (
 )
 
 type CompletionUsage struct {
-	PromptTokens     int64
-	CompletionTokens int64
-	MeanITL          time.Duration
-	GenerationTime   time.Duration
-	ObservedAt       time.Time
+	PromptTokens int64
+	// CachedTokens is the Prompt prefix the backend served from its cache.
+	CachedTokens      int64
+	CachedTokensKnown bool
+	CompletionTokens  int64
+	MeanITL           time.Duration
+	GenerationTime    time.Duration
+	ObservedAt        time.Time
 }
 
 type CompletionUsageEvidenceOutcome uint8
@@ -450,8 +453,20 @@ func (c *completionUsageChoices) UnmarshalJSON(payload []byte) error {
 }
 
 type completionUsageValue struct {
-	PromptTokens     *int64 `json:"prompt_tokens"`
-	CompletionTokens *int64 `json:"completion_tokens"`
+	PromptTokens        *int64              `json:"prompt_tokens"`
+	CompletionTokens    *int64              `json:"completion_tokens"`
+	PromptTokensDetails *usageTokensDetails `json:"prompt_tokens_details"`
+}
+
+type usageTokensDetails struct {
+	CachedTokens *int64 `json:"cached_tokens"`
+}
+
+func (d *usageTokensDetails) apply(usage *CompletionUsage) {
+	if d != nil && d.CachedTokens != nil && *d.CachedTokens >= 0 {
+		usage.CachedTokens = *d.CachedTokens
+		usage.CachedTokensKnown = true
+	}
 }
 
 type completionMetrics struct {
@@ -469,8 +484,9 @@ type responsesUsageEvent struct {
 }
 
 type responsesUsageValue struct {
-	InputTokens  *int64 `json:"input_tokens"`
-	OutputTokens *int64 `json:"output_tokens"`
+	InputTokens        *int64              `json:"input_tokens"`
+	OutputTokens       *int64              `json:"output_tokens"`
+	InputTokensDetails *usageTokensDetails `json:"input_tokens_details"`
 }
 
 func decodeCompletionUsage(payload []byte, streaming bool) (CompletionUsage, bool) {
@@ -516,6 +532,7 @@ func decodeCompletionsUsageEvidence(payload []byte, streaming bool) (CompletionU
 	if envelope.Usage.PromptTokens != nil && *envelope.Usage.PromptTokens > 0 {
 		usage.PromptTokens = *envelope.Usage.PromptTokens
 	}
+	envelope.Usage.PromptTokensDetails.apply(&usage)
 	if envelope.Metrics != nil {
 		var ok bool
 		if envelope.Metrics.MeanITLMilliseconds != nil {
@@ -561,6 +578,7 @@ func decodeResponsesUsageEvidence(payload []byte, streaming bool) (CompletionUsa
 	if envelope.Usage.InputTokens != nil && *envelope.Usage.InputTokens > 0 {
 		usage.PromptTokens = *envelope.Usage.InputTokens
 	}
+	envelope.Usage.InputTokensDetails.apply(&usage)
 	return usage, CompletionUsageAvailable
 }
 

@@ -151,6 +151,8 @@ func (o *admissionBackendObserver) observation(
 		GenerationTokensTotal: sample.Generation,
 		PreemptionsTotal:      sample.Preemptions,
 		RuntimeStartTime:      sample.RuntimeStartTime,
+		PrefillTokensTotal:    sample.PrefillCompute,
+		PrefillTokensValid:    sample.PrefillComputeValid,
 	}, disposition
 }
 

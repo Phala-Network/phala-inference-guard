@@ -19,11 +19,8 @@ func tpsDemandForClassification(classification apprequest.Classification) coread
 	return coreadmission.TPSRequestDemand{}
 }
 
-func priorityForRequest(r *http.Request) coreadmission.RequestPriority {
-	if apprequest.IsPremiumTier(r) {
-		return coreadmission.RequestPriorityPremium
-	}
-	return coreadmission.RequestPriorityBasic
+func tierForRequest(r *http.Request) coreadmission.RequestTier {
+	return coreadmission.ParseRequestTier(apprequest.TierValue(r))
 }
 
 func (s *proxyServer) decideAdmission(

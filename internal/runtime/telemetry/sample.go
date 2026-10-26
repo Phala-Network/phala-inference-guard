@@ -24,6 +24,8 @@ type Sample struct {
 	GenerationValid       bool
 	GenerationTPS         float64
 	GenerationTPSDirect   bool
+	PrefillCompute        uint64
+	PrefillComputeValid   bool
 	CacheQueryTokens      uint64
 	CacheHitTokens        uint64
 	CacheTokensValid      bool
@@ -39,11 +41,12 @@ func AggregateSamples(samples []Sample) Sample {
 		return samples[0]
 	}
 	aggregated := Sample{
-		RunningValid:     true,
-		WaitingValid:     true,
-		PreemptionsValid: true,
-		GenerationValid:  true,
-		CacheTokensValid: true,
+		RunningValid:        true,
+		WaitingValid:        true,
+		PreemptionsValid:    true,
+		GenerationValid:     true,
+		CacheTokensValid:    true,
+		PrefillComputeValid: true,
 	}
 	for _, sample := range samples {
 		aggregated.Running += sample.Running
@@ -61,6 +64,8 @@ func AggregateSamples(samples []Sample) Sample {
 		}
 		aggregated.Generation += sample.Generation
 		aggregated.GenerationValid = aggregated.GenerationValid && sample.GenerationValid
+		aggregated.PrefillCompute += sample.PrefillCompute
+		aggregated.PrefillComputeValid = aggregated.PrefillComputeValid && sample.PrefillComputeValid
 		if aggregated.CacheQueryTokens > ^uint64(0)-sample.CacheQueryTokens ||
 			aggregated.CacheHitTokens > ^uint64(0)-sample.CacheHitTokens {
 			aggregated.CacheTokensValid = false

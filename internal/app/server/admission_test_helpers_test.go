@@ -43,11 +43,12 @@ func newAdmissionRuntimeForTest(
 		config.MaximumAge = time.Hour
 	}
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
-		RuntimeIdentity:    testAdmissionRuntimeIdentity,
-		TPS:                coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
-		WindowConcurrency:  config.WindowConcurrency,
-		RunningLimit:       config.RunningLimit,
-		RunningLimitSource: config.RunningLimitSource,
+		RuntimeIdentity:       testAdmissionRuntimeIdentity,
+		TPS:                   coreadmission.TPSPolicyConfig{Reference: config.TPSReference},
+		WindowConcurrency:     config.WindowConcurrency,
+		RunningLimit:          config.RunningLimit,
+		RunningLimitSource:    config.RunningLimitSource,
+		BackendTierScheduling: config.BackendKind == "sglang",
 	})
 	if err != nil {
 		t.Fatalf("construct admission test Controller: %v", err)
@@ -121,6 +122,7 @@ func serveAdmissionRequest(t testing.TB, srv *proxyServer, content string) *http
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer secret")
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-User-Tier", "flex") // the tier the load protections apply to
 	response := httptest.NewRecorder()
 	srv.ServeHTTP(response, request)
 	return response

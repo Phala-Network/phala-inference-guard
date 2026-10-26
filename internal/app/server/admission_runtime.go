@@ -68,8 +68,14 @@ type admissionRuntime struct {
 	mode        string
 	now         func() time.Time
 	prediction  durationHistogram
-	closeOnce   sync.Once
-	closeErr    error
+	// kvCapacityTokens is the backend KV pool size reported at startup; it
+	// sizes the Prompt prefix mirror.
+	kvCapacityTokens int64
+	// warmPromptTokens is the backend's Prefill chunk size discovered at
+	// startup; the TPS gate's warm Prompt size.
+	warmPromptTokens int64
+	closeOnce        sync.Once
+	closeErr         error
 }
 
 func newAdmissionRuntime(
@@ -139,6 +145,26 @@ func (r *admissionRuntime) Snapshot(now time.Time) admissionTelemetrySnapshot {
 		Report:             r.reporter.Snapshot(),
 		PredictionDuration: &r.prediction,
 	}
+}
+
+func (r *admissionRuntime) PromptIndexTokens() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.kvCapacityTokens
+}
+
+func (r *admissionRuntime) WarmPromptTokens() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.warmPromptTokens
+}
+
+// BackendTierScheduling reports whether the backend orders its waiting queue
+// by the priority PIG writes into each request; only SGLang does.
+func (r *admissionRuntime) BackendTierScheduling() bool {
+	return r != nil && r.backendKind == "sglang"
 }
 
 func (r *admissionRuntime) UpdatePolicy(

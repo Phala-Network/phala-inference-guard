@@ -49,6 +49,10 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	if err != nil {
 		return err
 	}
+	prefixIndexTokens, err := env.Int("PREDICTIVE_PREFIX_INDEX_TOKENS", 0)
+	if err != nil {
+		return err
+	}
 	runningLimitRaw, runningLimitConfigured := os.LookupEnv("PREDICTIVE_RUNNING_LIMIT")
 	runningLimitConfigured = runningLimitConfigured && runningLimitRaw != ""
 
@@ -64,6 +68,7 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 		{"PREDICTIVE_MAX_METRICS_AGE_MS", maximumAgeMS, 1, int(predictiveMaximumMetricsRequestTime / time.Millisecond)},
 		{"PREDICTIVE_WINDOW_CONCURRENCY", windowConcurrency, 1, maximumPredictiveSequenceBound},
 		{"PREDICTIVE_RUNNING_LIMIT", runningLimit, 0, maximumPredictiveSequenceBound},
+		{"PREDICTIVE_PREFIX_INDEX_TOKENS", prefixIndexTokens, 0, 1 << 30},
 	}
 	for _, bound := range integerBounds {
 		if bound.value < bound.minimum || bound.value > bound.maximum {
@@ -84,5 +89,6 @@ func loadPredictiveAdmissionConfig(cfg *Config) error {
 	cfg.PredictiveWindowConcurrency = int64(windowConcurrency)
 	cfg.PredictiveRunningLimit = int64(runningLimit)
 	cfg.PredictiveRunningLimitConfigured = runningLimitConfigured
+	cfg.PredictivePrefixIndexTokens = int64(prefixIndexTokens)
 	return nil
 }

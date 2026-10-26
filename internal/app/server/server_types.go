@@ -48,11 +48,18 @@ func loadConfig() (config, error)     { return pigconfig.Load() }
 func validateConfig(cfg config) error { return pigconfig.Validate(cfg) }
 
 type proxyServer struct {
-	cfg                       config
-	backend                   *backendProxy
-	requestClassifier         *request.Classifier
-	attestation               *attestation.Service
-	admission                 admissionService
+	cfg               config
+	backend           *backendProxy
+	requestClassifier *request.Classifier
+	promptCost        *promptCostEstimator
+	attestation       *attestation.Service
+	admission         admissionService
+	// warmPromptTokens is the backend's Prefill chunk size discovered at
+	// startup, the warm Prompt size the admission runtime gates by.
+	warmPromptTokens int64
+	// backendTierScheduling is true when the backend orders its queue by the
+	// tier PIG writes; PIG writes the scheduling priority only then.
+	backendTierScheduling     bool
 	publicRoutes              PublicRoutePolicy
 	admissionRoutes           AdmissionRoutePolicy
 	authentication            AuthenticationPolicy
@@ -65,6 +72,7 @@ type proxyServer struct {
 	backendUnavailable        atomic.Uint64
 	routeNotAllowed           atomic.Uint64
 	predictiveEnforcedRejects atomic.Uint64
+	schedulingPriority        schedulingPriorityCounters
 	admissionFailures         admissionFailureCounters
 	requestEvidence           requestEvidence
 	responseUsageEvidence     responseUsageEvidence

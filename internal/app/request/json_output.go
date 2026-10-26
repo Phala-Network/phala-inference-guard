@@ -128,6 +128,7 @@ func (c *Classifier) classifyJSONFields(r *http.Request) (Classification, *Proto
 		return classification, &ProtocolError{Reason: "invalid_json"}
 	}
 	classification.JSONFieldsKnown = true
+	classification.Prompt = fingerprintPrompt(body)
 	classification.StreamingPresent = shape.StreamingPresent
 	classification.StreamingKnown = shape.StreamingKnown
 	classification.Streaming = shape.Streaming
