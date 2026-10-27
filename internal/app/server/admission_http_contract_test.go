@@ -15,8 +15,11 @@ import (
 	coreadmission "github.com/Phala-Network/phala-inference-guard/internal/admission"
 )
 
-func TestAdmissionHTTPForwardsRequestAndResponseBytesUnchanged(t *testing.T) {
+func TestAdmissionHTTPForwardsBytesUnchangedExceptTheSchedulingPriority(t *testing.T) {
 	requestBody := []byte(`{"model":"model-agnostic","messages":[{"role":"user","content":"hello"}],"max_tokens":8}`)
+	// The only rewrite, on an SGLang backend: the tier (default, no header)
+	// appended as the backend scheduling priority.
+	forwardedBody := []byte(`{"model":"model-agnostic","messages":[{"role":"user","content":"hello"}],"max_tokens":8,"priority":1}`)
 	responseBody := []byte(`{"id":"completion","choices":[{"message":{"content":"ok"}}]}`)
 	var received []byte
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -25,7 +28,7 @@ func TestAdmissionHTTPForwardsRequestAndResponseBytesUnchanged(t *testing.T) {
 		_, _ = w.Write(responseBody)
 	}))
 	defer backend.Close()
-	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{Mode: "enforce"})
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{Mode: "enforce", BackendKind: "sglang"})
 	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(requestBody))
 	request.Header.Set("Authorization", "Bearer secret")
@@ -35,7 +38,7 @@ func TestAdmissionHTTPForwardsRequestAndResponseBytesUnchanged(t *testing.T) {
 	srv.ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK ||
-		!bytes.Equal(received, requestBody) ||
+		!bytes.Equal(received, forwardedBody) ||
 		!bytes.Equal(response.Body.Bytes(), responseBody) {
 		t.Fatalf(
 			"proxy bytes changed: status=%d request=%q response=%q",
@@ -95,6 +98,7 @@ func TestAdmissionHTTPChargesCompleteFanoutBeforeForward(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer secret")
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-User-Tier", "flex")
 	response := httptest.NewRecorder()
 
 	srv.ServeHTTP(response, request)
@@ -132,6 +136,7 @@ func TestAdmissionHTTPEnforceProtectionIsOpenAICompatibleAndObservable(t *testin
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer secret")
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-User-Tier", "flex")
 	response := httptest.NewRecorder()
 
 	srv.ServeHTTP(response, request)
@@ -172,6 +177,7 @@ func TestAdmissionHTTPShadowProtectionForwardsWithoutReservation(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer secret")
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("X-User-Tier", "flex")
 	response := httptest.NewRecorder()
 
 	srv.ServeHTTP(response, request)
@@ -364,12 +370,13 @@ func TestAdmissionDecisionLogContainsOnlyBoundedTPSDiagnostics(t *testing.T) {
 		"running_limit_source=admin",
 		"projected_window=2",
 		"window_concurrency=48",
+		"prefill_cost=0",
 	} {
 		if !strings.Contains(line, required) {
 			t.Fatalf("admission log missing %q: %s", required, line)
 		}
 	}
-	for _, retired := range []string{"prefill", "kv_tokens", "cache_", "input_tokens", "sequences=", "leases="} {
+	for _, retired := range []string{"kv_tokens", "cache_", "input_tokens", "sequences=", "leases="} {
 		if strings.Contains(line, retired) {
 			t.Fatalf("admission log retained retired field %q: %s", retired, line)
 		}

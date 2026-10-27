@@ -100,7 +100,7 @@ func NewAdmissionController(config ControllerConfig) (*AdmissionController, erro
 		(config.RunningLimit > 0 && config.RunningLimitSource == RunningLimitSourceUnknown) {
 		return nil, fmt.Errorf("admission running and window bounds are invalid")
 	}
-	policy := newAdmissionPolicy()
+	policy := newAdmissionPolicy(config.BackendTierScheduling, config.WarmPromptTokens)
 	now := config.Now
 	if now == nil {
 		now = time.Now
@@ -324,10 +324,11 @@ func (c *AdmissionController) Admit(now time.Time, demand TPSRequestDemand) Admi
 	}
 	reservationID := c.nextReservationID + 1
 	item := reservation{
-		id:           reservationID,
-		runtimeEpoch: c.runtimeEpoch,
-		demand:       demand,
-		phase:        reservationReserved,
+		id:            reservationID,
+		runtimeEpoch:  c.runtimeEpoch,
+		demand:        demand,
+		coldSheddable: c.policy.tpsGate.coldSheddable(demand),
+		phase:         reservationReserved,
 	}
 	contribution, valid := item.contribution()
 	if !valid {
@@ -380,7 +381,9 @@ func (c *AdmissionController) Snapshot(now time.Time) CapacitySnapshot {
 			WindowConcurrencyHistogram: c.windowHistogram.snapshot(),
 		}
 	}
-	minimumDemand := TPSRequestDemand{DecodeSequences: 1, Source: TPSDemandSourceFallback}
+	// The snapshot's availability is the most restricted intake: one flex
+	// sequence, the tier every load protection applies to.
+	minimumDemand := TPSRequestDemand{DecodeSequences: 1, Source: TPSDemandSourceFallback, Tier: TierFlex}
 	decision := c.decisionLocked(
 		c.policy.evaluateDemand(state, minimumDemand, admissionBounds{
 			windowConcurrency: c.windowConcurrency,

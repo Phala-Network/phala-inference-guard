@@ -32,6 +32,9 @@ func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
 		t.Fatalf("newProxyServer: %v", err)
 	}
 	body := `{"model":"m","messages":[{"role":"user","content":"plain"}]}`
+	// The test admission service is not a tier-scheduling backend, so the
+	// body is forwarded byte for byte.
+	wantBody := body
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
 	request.Header.Set("Authorization", "Bearer secret")
 	request.Header.Set("Content-Type", "application/json")
@@ -43,8 +46,8 @@ func TestTrustedGatewayHeadersAreForwardedWithoutRequestMutation(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if seenBody != body {
-		t.Fatalf("backend body=%s want %s", seenBody, body)
+	if seenBody != wantBody {
+		t.Fatalf("backend body=%s want %s", seenBody, wantBody)
 	}
 	if seenGatewayTrace != "trace-123" {
 		t.Fatalf("gateway trace header = %q, want forwarded trace", seenGatewayTrace)
@@ -354,10 +357,13 @@ func TestCompletionAndResponsesProxyWithoutApplicationBodyRewrite(t *testing.T) 
 			}
 
 			body := `{"model":"m","messages":[{"role":"assistant","tool_calls":[]}],"priority":100}`
+			// Not a tier-scheduling backend: the client's body, priority included,
+			// is forwarded unchanged.
+			wantBody := body
 			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 			request.Header.Set("Authorization", "Bearer secret")
 			request.Header.Set("Content-Type", "application/json")
-			request.Header.Set("X-User-Tier", "premium")
+			request.Header.Set("X-User-Tier", "priority")
 			recorder := httptest.NewRecorder()
 
 			srv.ServeHTTP(recorder, request)
@@ -368,8 +374,8 @@ func TestCompletionAndResponsesProxyWithoutApplicationBodyRewrite(t *testing.T) 
 			if seenPath != path {
 				t.Fatalf("backend path=%q want %q", seenPath, path)
 			}
-			if seenBody != body {
-				t.Fatalf("application body mutated: got=%s want=%s", seenBody, body)
+			if seenBody != wantBody {
+				t.Fatalf("application body: got=%s want=%s", seenBody, wantBody)
 			}
 		})
 	}

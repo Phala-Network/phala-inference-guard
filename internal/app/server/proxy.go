@@ -34,7 +34,8 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer r.Body.Close()
 	}
 	s.requestEvidence.Record(classification)
-	responseEvidence := s.responseUsageEvidence.Begin(classification, r.URL.Path)
+	tier := tierForRequest(r)
+	responseEvidence := s.responseUsageEvidence.Begin(classification, r.URL.Path, tier)
 	defer responseEvidence.Censor()
 	if classification.Timing.BodyReadMeasured {
 		s.bodyReadDuration.Observe(classification.Timing.BodyRead)
@@ -52,9 +53,11 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		openai.WriteInvalidJSON(w)
 		return
 	}
-	demand := tpsDemandForClassification(classification).WithPriority(
-		priorityForRequest(r),
-	)
+	demand := tpsDemandForClassification(classification).WithTier(tier)
+	promptCost := s.promptCost.Estimate(classification.Prompt, admissionEvidenceTierIndex(tier))
+	if promptCost.known {
+		demand = demand.WithPrefillTokens(promptCost.uncachedTokens)
+	}
 	decision := s.decideAdmission(r.Context(), demand)
 	reservation := decision.Reservation
 	if s.cfg.PredictiveAdmissionMode == "enforce" && !decision.Record.Admitted() {
@@ -80,6 +83,12 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		r = r.WithContext(attachAdmissionReservation(r.Context(), reservation))
 	}
+	s.writeSchedulingPriority(r, tier)
+	s.promptCost.Admitted(classification.Prompt)
+	if decision.Record.TPSDecisionSubreason == coreadmission.TPSDecisionSubreasonWarmPrompt {
+		promptCost = promptCost.AdmittedAsWarm(s.warmPromptTokens)
+	}
+	responseEvidence.TrackPromptCost(s.promptCost, classification.Prompt, promptCost)
 	r = r.WithContext(attachResponseUsageRequestEvidence(r.Context(), responseEvidence))
 	s.decisionDuration.Observe(time.Since(decisionStart))
 	result := s.proxyRequest(s.backend, w, r)

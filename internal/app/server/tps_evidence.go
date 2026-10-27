@@ -40,6 +40,10 @@ const (
 	tpsEvidenceSubreasonHealthyWindow
 	tpsEvidenceSubreasonRecoveredCurrent
 	tpsEvidenceSubreasonBelowReference
+	tpsEvidenceSubreasonBackendScheduled
+	tpsEvidenceSubreasonWarmPrompt
+	tpsEvidenceSubreasonColdPrompt
+	tpsEvidenceSubreasonColdPromptPending
 	tpsEvidenceSubreasonCount
 )
 
@@ -54,6 +58,10 @@ var tpsEvidenceSubreasonLabels = [...]string{
 	"healthy_window",
 	"recovered_current",
 	"below_reference",
+	"backend_scheduled",
+	"warm_prompt",
+	"cold_prompt",
+	"cold_prompt_pending",
 }
 
 type tpsDecisionEvidence struct {
@@ -175,6 +183,14 @@ func tpsEvidenceSubreasonFor(subreason coreadmission.TPSDecisionSubreason) tpsEv
 		return tpsEvidenceSubreasonRecoveredCurrent
 	case coreadmission.TPSDecisionSubreasonBelowReference:
 		return tpsEvidenceSubreasonBelowReference
+	case coreadmission.TPSDecisionSubreasonBackendScheduled:
+		return tpsEvidenceSubreasonBackendScheduled
+	case coreadmission.TPSDecisionSubreasonWarmPrompt:
+		return tpsEvidenceSubreasonWarmPrompt
+	case coreadmission.TPSDecisionSubreasonColdPrompt:
+		return tpsEvidenceSubreasonColdPrompt
+	case coreadmission.TPSDecisionSubreasonColdPromptPending:
+		return tpsEvidenceSubreasonColdPromptPending
 	default:
 		return tpsEvidenceSubreasonUnknown
 	}

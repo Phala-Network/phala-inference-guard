@@ -43,9 +43,23 @@ and [release guidance](docs/RELEASING.md) for version selection.
 
 - `PREDICTIVE_TPS_REFERENCE` sets a long-run mean output tokens/s target per
   active Decode sequence. Its default `0` disables TPS health protection.
-- Basic requests allow up to three observed waiting sequences by default;
-  the admin API can change `waiting_allowance`. Premium requests retain their
-  waiting bypass. Waiting protection remains active with TPS protection off.
+- `X-User-Tier` carries the request's tier: `priority`, `default` or `flex`.
+  A missing, repeated or unrecognized value is `default`. Default and flex
+  requests allow up to three observed waiting sequences by default; the admin
+  API can change `waiting_allowance`. Priority requests bypass the waiting,
+  preemption, running and window bounds and, on SGLang, TPS health: PIG writes
+  each tier into the request as the backend scheduling priority, and the node
+  must run `--enable-priority-scheduling --disable-priority-preemption
+  --default-priority-value 1`. On other backends TPS health protects every
+  tier. Default and
+  flex are protected alike and differ only in order, default first. Waiting
+  protection remains active with TPS protection off.
+- TPS health is Prompt-aware for default and flex: PIG reads the backend's
+  Prefill chunk size at startup (SGLang `/server_info`); a request whose
+  estimated uncached Prompt fits one chunk passes on a recovered latest sample,
+  a larger or unknown one waits for the TPS window mean and is admitted one at
+  a time. See
+  [ADVANCED](docs/ADVANCED.md#admission-policy).
 - `PREDICTIVE_WINDOW_CONCURRENCY` defaults to 32 sequences pending first byte.
   A separate running limit applies when configured or safely discovered.
 - Missing, stale or inconsistent backend observations fail closed in enforce

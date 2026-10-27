@@ -32,6 +32,9 @@ type predictiveBackendStartup struct {
 	Generation          uint64
 	RuntimeStartTime    float64
 	ObservedAt          time.Time
+	KVCapacityTokens    int64
+	PrefillCompute      uint64
+	PrefillComputeValid bool
 }
 
 func validatePredictiveBackendStartupProbe(config predictiveBackendStartupProbeConfig) error {
@@ -160,6 +163,9 @@ func predictiveBackendStartupFromSample(sample telemetry.Sample, observedAt time
 		Waiting:             sample.Waiting,
 		Preemptions:         sample.Preemptions,
 		Generation:          sample.Generation,
+		KVCapacityTokens:    sample.KVCapacityTokens,
+		PrefillCompute:      sample.PrefillCompute,
+		PrefillComputeValid: sample.PrefillComputeValid,
 		RuntimeStartTime:    sample.RuntimeStartTime,
 		ObservedAt:          observedAt,
 	}, nil

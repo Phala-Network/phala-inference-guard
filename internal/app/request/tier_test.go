@@ -6,18 +6,16 @@ import (
 	"testing"
 )
 
-func TestIsPremiumTierRequiresOneUnambiguousValue(t *testing.T) {
+func TestTierValueRequiresOneHeader(t *testing.T) {
 	tests := []struct {
 		name   string
 		values []string
-		want   bool
+		want   string
 	}{
-		{name: "canonical", values: []string{"premium"}, want: true},
-		{name: "case and whitespace", values: []string{"  PrEmIuM  "}, want: true},
-		{name: "missing", want: false},
-		{name: "basic", values: []string{"basic"}, want: false},
-		{name: "unknown", values: []string{"premiumish"}, want: false},
-		{name: "duplicate", values: []string{"premium", "basic"}, want: false},
+		{name: "single", values: []string{"priority"}, want: "priority"},
+		{name: "trimmed", values: []string{"  flex  "}, want: "flex"},
+		{name: "missing", want: ""},
+		{name: "duplicate", values: []string{"priority", "default"}, want: ""},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -25,15 +23,15 @@ func TestIsPremiumTierRequiresOneUnambiguousValue(t *testing.T) {
 			for _, value := range test.values {
 				r.Header.Add(UserTierHeader, value)
 			}
-			if got := IsPremiumTier(r); got != test.want {
-				t.Fatalf("IsPremiumTier=%t want %t", got, test.want)
+			if got := TierValue(r); got != test.want {
+				t.Fatalf("TierValue=%q want %q", got, test.want)
 			}
 		})
 	}
 }
 
-func TestIsPremiumTierNilRequestIsFalse(t *testing.T) {
-	if IsPremiumTier(nil) {
-		t.Fatal("nil request was classified as premium")
+func TestTierValueNilRequestIsEmpty(t *testing.T) {
+	if got := TierValue(nil); got != "" {
+		t.Fatalf("nil request tier=%q", got)
 	}
 }

@@ -159,6 +159,10 @@ func WritePredictiveAdmission(w io.Writer, input PredictiveAdmissionInput) {
 			"healthy_window",
 			"recovered_current",
 			"below_reference",
+			"backend_scheduled",
+			"warm_prompt",
+			"cold_prompt",
+			"cold_prompt_pending",
 		},
 		"unknown",
 	)

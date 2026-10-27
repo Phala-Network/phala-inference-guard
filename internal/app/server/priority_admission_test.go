@@ -11,7 +11,7 @@ import (
 
 type priorityTestAdmissionService struct {
 	mu          sync.Mutex
-	priorities  []coreadmission.RequestPriority
+	priorities  []coreadmission.RequestTier
 	recorded    []coreadmission.DecisionRecord
 	decision    admissionDecision
 	decideBlock <-chan struct{}
@@ -23,7 +23,7 @@ func (s *priorityTestAdmissionService) Decide(
 	demand coreadmission.TPSRequestDemand,
 ) admissionDecision {
 	s.mu.Lock()
-	s.priorities = append(s.priorities, demand.Priority)
+	s.priorities = append(s.priorities, demand.Tier)
 	decision := s.decision
 	if decision.Record.Demand.DecodeSequences == 0 {
 		decision.Record.Demand = demand
@@ -59,10 +59,10 @@ func (s *priorityTestAdmissionService) Close() error {
 	return nil
 }
 
-func (s *priorityTestAdmissionService) order() []coreadmission.RequestPriority {
+func (s *priorityTestAdmissionService) order() []coreadmission.RequestTier {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]coreadmission.RequestPriority(nil), s.priorities...)
+	return append([]coreadmission.RequestTier(nil), s.priorities...)
 }
 
 func (s *priorityTestAdmissionService) records() []coreadmission.DecisionRecord {
@@ -89,7 +89,7 @@ func (*priorityTestReservation) Terminate(coreadmission.TerminalCause) bool {
 	return true
 }
 
-func TestPriorityAdmissionDispatchesPremiumBeforeBasicWithinBatch(t *testing.T) {
+func TestPriorityAdmissionDispatchesPriorityBeforeDefaultWithinBatch(t *testing.T) {
 	delegate := &priorityTestAdmissionService{decision: admittedPriorityDecision()}
 	service := newPriorityAdmissionServiceWithConfig(delegate, 8, 5*time.Millisecond, 100*time.Millisecond, time.Now)
 	defer service.Close()
@@ -97,15 +97,15 @@ func TestPriorityAdmissionDispatchesPremiumBeforeBasicWithinBatch(t *testing.T) 
 	start := make(chan struct{})
 	var group sync.WaitGroup
 	results := make(chan admissionDecision, 2)
-	for _, priority := range []coreadmission.RequestPriority{
-		coreadmission.RequestPriorityBasic,
-		coreadmission.RequestPriorityPremium,
+	for _, priority := range []coreadmission.RequestTier{
+		coreadmission.TierDefault,
+		coreadmission.TierPriority,
 	} {
 		group.Add(1)
-		go func(priority coreadmission.RequestPriority) {
+		go func(priority coreadmission.RequestTier) {
 			defer group.Done()
 			<-start
-			results <- service.Decide(context.Background(), coreadmission.NewTPSRequestDemand(1).WithPriority(priority))
+			results <- service.Decide(context.Background(), coreadmission.NewTPSRequestDemand(1).WithTier(priority))
 		}(priority)
 	}
 	close(start)
@@ -115,9 +115,9 @@ func TestPriorityAdmissionDispatchesPremiumBeforeBasicWithinBatch(t *testing.T) 
 	}
 
 	order := delegate.order()
-	if len(order) != 2 || order[0] != coreadmission.RequestPriorityPremium ||
-		order[1] != coreadmission.RequestPriorityBasic {
-		t.Fatalf("dispatch order=%v want [premium basic]", order)
+	if len(order) != 2 || order[0] != coreadmission.TierPriority ||
+		order[1] != coreadmission.TierDefault {
+		t.Fatalf("dispatch order=%v want [priority default]", order)
 	}
 }
 
@@ -131,8 +131,8 @@ func TestPriorityAdmissionStillReturnsDelegateTPSProtection(t *testing.T) {
 	}}
 	service := newPriorityAdmissionServiceWithConfig(delegate, 8, 0, 100*time.Millisecond, time.Now)
 	defer service.Close()
-	result := service.Decide(context.Background(), coreadmission.NewTPSRequestDemand(1).WithPriority(
-		coreadmission.RequestPriorityPremium,
+	result := service.Decide(context.Background(), coreadmission.NewTPSRequestDemand(1).WithTier(
+		coreadmission.TierPriority,
 	))
 	if result.Record.Admitted() || result.Record.Reason != coreadmission.ReasonTPSReference {
 		t.Fatalf("delegate TPS protection was bypassed: %+v", result.Record)
@@ -223,11 +223,11 @@ func TestPriorityAdmissionCloseDrainsQueue(t *testing.T) {
 
 func TestPriorityQueueDecisionIsOpenAIProtection(t *testing.T) {
 	decision := priorityQueueDecision(
-		coreadmission.NewTPSRequestDemand(1).WithPriority(coreadmission.RequestPriorityPremium),
+		coreadmission.NewTPSRequestDemand(1).WithTier(coreadmission.TierPriority),
 		coreadmission.ReasonPriorityQueueTimeout,
 	)
 	if decision.Record.Admitted() || decision.Record.Reason != coreadmission.ReasonPriorityQueueTimeout ||
-		decision.Record.Scope != coreadmission.ProtectionLoad || decision.Record.Demand.Priority != coreadmission.RequestPriorityPremium {
+		decision.Record.Scope != coreadmission.ProtectionLoad || decision.Record.Demand.Tier != coreadmission.TierPriority {
 		t.Fatalf("queue timeout decision=%+v", decision.Record)
 	}
 }

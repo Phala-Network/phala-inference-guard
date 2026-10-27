@@ -76,7 +76,9 @@ func TestV01223RunningLimitInitializationHonorsExplicitAndBackendContracts(t *te
 	explicit := base
 	explicit.PredictiveRunningLimit = 192
 	got := initializePredictiveRunningLimit(context.Background(), explicit, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
-	if got.Value != 192 || got.Source != coreadmission.RunningLimitSourceEnvironment || calls.Load() != 0 {
+	// An explicit limit is kept, but server_info is still read once for the
+	// warm Prompt size.
+	if got.Value != 192 || got.Source != coreadmission.RunningLimitSourceEnvironment || calls.Load() != 1 {
 		t.Fatalf("explicit initialization=%+v calls=%d", got, calls.Load())
 	}
 
@@ -87,18 +89,59 @@ func TestV01223RunningLimitInitializationHonorsExplicitAndBackendContracts(t *te
 	}
 	disabled.PredictiveMetricsRequestTimeout = time.Second
 	got = initializePredictiveRunningLimit(context.Background(), disabled, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
-	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceEnvironment || calls.Load() != 0 {
+	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceEnvironment || calls.Load() != 2 {
 		t.Fatalf("explicit zero initialization=%+v calls=%d", got, calls.Load())
 	}
 
 	got = initializePredictiveRunningLimit(context.Background(), base, predictiveBackendStartup{BackendKind: "vllm"}, server.URL+"/metrics")
-	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceUnknown || calls.Load() != 0 {
+	if got.Value != 0 || got.Source != coreadmission.RunningLimitSourceUnknown || calls.Load() != 2 {
 		t.Fatalf("vLLM initialization=%+v calls=%d", got, calls.Load())
 	}
 
 	got = initializePredictiveRunningLimit(context.Background(), base, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
-	if got.Value != 256 || got.Source != coreadmission.RunningLimitSourceSGLangServerInfo || calls.Load() != 1 {
+	if got.Value != 256 || got.Source != coreadmission.RunningLimitSourceSGLangServerInfo || calls.Load() != 3 {
 		t.Fatalf("SGLang initialization=%+v calls=%d", got, calls.Load())
+	}
+}
+
+func TestSGLangServerInfoDiscoversTheWarmPromptSize(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+		want int64
+		err  bool
+	}{
+		{name: "chunked", body: `{"max_running_requests":64,"chunked_prefill_size":8192}`, want: 8192},
+		{name: "absent", body: `{"max_running_requests":64}`, want: 0},
+		{name: "unchunked", body: `{"max_running_requests":64,"chunked_prefill_size":-1}`, want: 0},
+		{name: "string", body: `{"max_running_requests":64,"chunked_prefill_size":"8192"}`, err: true},
+		{name: "duplicate inconsistent", body: `{"max_running_requests":64,"chunked_prefill_size":8192,"chunked_prefill_size":4096}`, err: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, test.body)
+			}))
+			t.Cleanup(server.Close)
+			cfg := testProxyConfig("http://backend.invalid/v1")
+			cfg.PredictiveMetricsRequestTimeout = time.Second
+			cfg.PredictiveRunningLimit = 192
+			got := discoverPredictiveBackend(context.Background(), cfg, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
+			if test.err {
+				if got.WarmPromptTokens != 0 || got.RunningLimit.Value != 192 {
+					t.Fatalf("untrusted server_info must leave the warm size unset: %+v", got)
+				}
+				return
+			}
+			if got.WarmPromptTokens != test.want || got.RunningLimit.Value != 192 ||
+				got.RunningLimit.Source != coreadmission.RunningLimitSourceEnvironment {
+				t.Fatalf("discovery=%+v want warm=%d", got, test.want)
+			}
+		})
+	}
+	got := discoverPredictiveBackend(context.Background(), testProxyConfig("http://backend.invalid/v1"), predictiveBackendStartup{BackendKind: "vllm"}, "http://backend.invalid/metrics")
+	if got.WarmPromptTokens != 0 {
+		t.Fatalf("vLLM has no warm Prompt size: %+v", got)
 	}
 }
 

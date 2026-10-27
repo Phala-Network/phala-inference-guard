@@ -27,12 +27,13 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 	if err != nil {
 		return nil, err
 	}
-	runningLimit := initializePredictiveRunningLimit(ctx, cfg, startup, metricsURL)
+	discovery := discoverPredictiveBackend(ctx, cfg, startup, metricsURL)
+	runningLimit := discovery.RunningLimit
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	log.Printf(
-		"level=info component=tps_controller event=initialized backend_kind=%s model_identity=%s tps_reference=%.6f observation_poll_ms=%d window_concurrency=%d running_limit=%d running_limit_source=%s",
+		"level=info component=tps_controller event=initialized backend_kind=%s model_identity=%s tps_reference=%.6f observation_poll_ms=%d window_concurrency=%d running_limit=%d running_limit_source=%s backend_tier_scheduling=%t warm_prompt_tokens=%d",
 		startup.BackendKind,
 		startup.ModelIdentitySHA256,
 		cfg.PredictiveTPSReference,
@@ -40,6 +41,8 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 		cfg.PredictiveWindowConcurrency,
 		runningLimit.Value,
 		runningLimit.Source,
+		discovery.BackendTierScheduling,
+		discovery.WarmPromptTokens,
 	)
 	controller, err := coreadmission.NewAdmissionController(coreadmission.ControllerConfig{
 		RuntimeIdentity:               startup.ModelIdentitySHA256,
@@ -48,6 +51,8 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 		RunningLimit:                  runningLimit.Value,
 		RunningLimitSource:            runningLimit.Source,
 		PendingFirstByteLeaseDuration: 3 * cfg.PredictiveObservationPollInterval,
+		BackendTierScheduling:         discovery.BackendTierScheduling,
+		WarmPromptTokens:              discovery.WarmPromptTokens,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("construct admission Controller: %w", err)
@@ -66,6 +71,8 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 		GenerationTokensTotal: startup.Generation,
 		PreemptionsTotal:      startup.Preemptions,
 		RuntimeStartTime:      startup.RuntimeStartTime,
+		PrefillTokensTotal:    startup.PrefillCompute,
+		PrefillTokensValid:    startup.PrefillComputeValid,
 	})
 	if !publication.Accepted {
 		controller.Close()
@@ -96,6 +103,8 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 		return nil, fmt.Errorf("construct admission backend observer: %w", err)
 	}
 	runtime.observer = observer
+	runtime.kvCapacityTokens = startup.KVCapacityTokens
+	runtime.warmPromptTokens = discovery.WarmPromptTokens
 	return runtime, nil
 }
 

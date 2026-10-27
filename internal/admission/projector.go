@@ -17,6 +17,9 @@ type reservationOverlay struct {
 	sequenceLiabilities int64
 	liveReservations    int64
 	residualDebts       int64
+	// coldSheddablePending counts admitted default or flex requests with a
+	// cold or unknown uncached Prompt that have not produced a first byte.
+	coldSheddablePending int64
 }
 
 type stateProjector struct{}
@@ -24,6 +27,7 @@ type stateProjector struct{}
 func (stateProjector) project(observed observedState, overlay reservationOverlay) (ProjectedState, bool) {
 	state := ProjectedState{
 		UnobservedSequences:      overlay.unobservedSequences,
+		ColdSheddablePending:     overlay.coldSheddablePending,
 		SequenceLiabilities:      overlay.sequenceLiabilities,
 		LiveReservations:         overlay.liveReservations,
 		ResidualDebts:            overlay.residualDebts,
@@ -44,6 +48,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 
 func validProjectedState(state ProjectedState) bool {
 	return state.UnobservedSequences >= 0 &&
+		state.ColdSheddablePending >= 0 && state.ColdSheddablePending <= state.UnobservedSequences &&
 		state.SequenceLiabilities >= 0 && state.UnobservedSequences <= state.SequenceLiabilities &&
 		state.LiveReservations >= 0 && state.ResidualDebts >= 0 &&
 		state.RawRunning >= 0 && state.RawWaiting >= 0 && state.PreviousRawRunning >= 0 &&

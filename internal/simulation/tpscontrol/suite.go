@@ -208,7 +208,8 @@ func applyEvent(
 		if _, exists := handles[event.RequestID]; exists {
 			return StepResult{}, fmt.Errorf("request %s already has a live handle", event.RequestID)
 		}
-		admission := controller.Admit(now, coreadmission.NewTPSRequestDemand(event.DecodeSequences))
+		// Arrivals are flex: the tier the load protections apply to.
+		admission := controller.Admit(now, coreadmission.NewTPSRequestDemand(event.DecodeSequences).WithTier(coreadmission.TierFlex))
 		decision := admission.Decision
 		step.Applied = decision.Admitted()
 		step.Action = string(decision.Action)

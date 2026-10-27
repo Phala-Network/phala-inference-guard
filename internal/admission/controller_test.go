@@ -64,7 +64,7 @@ func TestControllerTPSReferenceChangesPreForwardDecision(t *testing.T) {
 	}
 }
 
-func TestControllerPremiumUsesTPSOnlyAndKeepsReservationAccounting(t *testing.T) {
+func TestControllerPriorityUsesTPSOnlyAndKeepsReservationAccounting(t *testing.T) {
 	now := time.Unix(9_250, 0)
 	controller := testControllerWithBounds(t, ControllerConfig{
 		RuntimeIdentity:    testRuntimeIdentity,
@@ -74,35 +74,109 @@ func TestControllerPremiumUsesTPSOnlyAndKeepsReservationAccounting(t *testing.T)
 		RunningLimitSource: RunningLimitSourceAdmin,
 	}, testObservation(now, 1, 1, 0, 0))
 
-	demand := testDemand(1).WithPriority(RequestPriorityPremium)
+	demand := testDemand(1).WithTier(TierPriority)
 	result := controller.Admit(now.Add(time.Millisecond), demand)
-	if !result.Decision.Admitted() || result.Decision.Demand.Priority != RequestPriorityPremium ||
+	if !result.Decision.Admitted() || result.Decision.Demand.Tier != TierPriority ||
 		result.Decision.ProjectedRunning != 2 || result.Decision.ProjectedWindowSequences != 1 {
-		t.Fatalf("premium was blocked by a non-TPS gate: %+v", result.Decision)
+		t.Fatalf("priority was blocked by a non-TPS gate: %+v", result.Decision)
 	}
 	if !result.Handle.Terminate(TerminalCancel) {
-		t.Fatal("premium reservation did not terminate")
+		t.Fatal("priority reservation did not terminate")
 	}
 	state := controller.Snapshot(now.Add(time.Millisecond)).State
 	if state.LiveReservations != 0 || state.ResidualDebts != 0 {
-		t.Fatalf("premium reservation accounting leaked: %+v", state)
+		t.Fatalf("priority reservation accounting leaked: %+v", state)
 	}
 }
 
-func TestControllerPremiumStillRespectsTPSReference(t *testing.T) {
-	now := time.Unix(9_350, 0)
-	controller := testControllerWithTPSObservation(t, 25, testObservation(now, 0, 0, 0, 0))
+func TestControllerColdSheddablePendingFollowsReservationLifecycle(t *testing.T) {
+	now := time.Unix(9_300, 0)
+	controller := testControllerWithBounds(t, ControllerConfig{
+		TPS:                TPSPolicyConfig{Reference: 25},
+		WindowConcurrency:  8,
+		RunningLimit:       64,
+		RunningLimitSource: RunningLimitSourceAdmin,
+		WarmPromptTokens:   8192,
+	}, testObservation(now, 5, 0, 0, 0))
 	for step := 1; step <= 4; step++ {
 		publishObservation(t, controller, testObservation(
-			now.Add(time.Duration(step)*time.Second),
-			2, 0, uint64(step*10), 0,
+			now.Add(time.Duration(step)*time.Second), 5, 0, uint64(step*1_000), 0,
 		))
 	}
-	result := controller.Admit(now.Add(4*time.Second+time.Millisecond),
-		testDemand(1).WithPriority(RequestPriorityPremium))
-	if result.Decision.Admitted() || result.Decision.Reason != ReasonTPSReference ||
-		result.Decision.TPSDecisionSubreason != TPSDecisionSubreasonBelowReference {
-		t.Fatalf("premium bypassed TPS reference: %+v", result.Decision)
+	at := now.Add(4*time.Second + time.Millisecond)
+	cold := NewTPSRequestDemand(1).WithTier(TierDefault).WithPrefillTokens(100_000)
+	first := controller.Admit(at, cold)
+	if !first.Decision.Admitted() || first.Decision.TPSDecisionSubreason != TPSDecisionSubreasonHealthyWindow {
+		t.Fatalf("first cold Prompt=%+v", first.Decision)
+	}
+	if state := controller.Snapshot(at).State; state.ColdSheddablePending != 1 || state.UnobservedSequences != 1 {
+		t.Fatalf("after first cold admit state=%+v", state)
+	}
+	second := controller.Admit(at, cold)
+	if second.Decision.Admitted() || second.Decision.Reason != ReasonTPSReference ||
+		second.Decision.TPSDecisionSubreason != TPSDecisionSubreasonColdPromptPending {
+		t.Fatalf("second cold Prompt while the first is pending=%+v", second.Decision)
+	}
+	warm := controller.Admit(at, NewTPSRequestDemand(1).WithTier(TierDefault).WithPrefillTokens(8192))
+	if !warm.Decision.Admitted() {
+		t.Fatalf("warm Prompt while a cold Prompt is pending=%+v", warm.Decision)
+	}
+	priority := controller.Admit(at, NewTPSRequestDemand(1).WithTier(TierPriority).WithPrefillTokens(100_000))
+	if !priority.Decision.Admitted() {
+		t.Fatalf("priority cold Prompt while a cold Prompt is pending=%+v", priority.Decision)
+	}
+	if state := controller.Snapshot(at).State; state.ColdSheddablePending != 1 || state.UnobservedSequences != 3 {
+		t.Fatalf("warm and priority admits changed the cold count: %+v", state)
+	}
+	if !first.Handle.MarkForwarded() || !first.Handle.MarkFirstByte() {
+		t.Fatal("first cold Prompt did not reach first byte")
+	}
+	if state := controller.Snapshot(at).State; state.ColdSheddablePending != 0 || state.UnobservedSequences != 2 {
+		t.Fatalf("first byte did not release the cold count: %+v", state)
+	}
+	third := controller.Admit(at, cold)
+	if !third.Decision.Admitted() {
+		t.Fatalf("cold Prompt after the first produced output=%+v", third.Decision)
+	}
+	if !third.Handle.Terminate(TerminalCancel) {
+		t.Fatal("reserved cold Prompt did not terminate")
+	}
+	if state := controller.Snapshot(at).State; state.ColdSheddablePending != 0 {
+		t.Fatalf("cancel before forwarding did not release the cold count: %+v", state)
+	}
+	assertAggregateMatchesSlow(t, controller)
+}
+
+func TestControllerPriorityPassesTPSReferenceOnlyWhenBackendSchedulesByTier(t *testing.T) {
+	now := time.Unix(9_350, 0)
+	for _, schedules := range []bool{false, true} {
+		controller, err := NewAdmissionController(ControllerConfig{
+			RuntimeIdentity:       testRuntimeIdentity,
+			TPS:                   TPSPolicyConfig{Reference: 25},
+			BackendTierScheduling: schedules,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		publishObservation(t, controller, testObservation(now, 0, 0, 0, 0))
+		for step := 1; step <= 4; step++ {
+			publishObservation(t, controller, testObservation(
+				now.Add(time.Duration(step)*time.Second),
+				2, 0, uint64(step*10), 0,
+			))
+		}
+		result := controller.Admit(now.Add(4*time.Second+time.Millisecond),
+			testDemand(1).WithTier(TierPriority))
+		if schedules {
+			if !result.Decision.Admitted() || result.Decision.Reason != ReasonOpen ||
+				result.Decision.TPSDecisionSubreason != TPSDecisionSubreasonBackendScheduled {
+				t.Fatalf("priority below reference must pass when the backend schedules by tier: %+v", result.Decision)
+			}
+		} else if result.Decision.Admitted() || result.Decision.Reason != ReasonTPSReference ||
+			result.Decision.TPSDecisionSubreason != TPSDecisionSubreasonBelowReference {
+			t.Fatalf("priority bypassed TPS reference on a backend that does not schedule by tier: %+v", result.Decision)
+		}
+		controller.Close()
 	}
 }
 
