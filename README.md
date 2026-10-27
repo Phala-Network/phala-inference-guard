@@ -20,7 +20,7 @@ export TOKEN='replace-with-a-strong-token'
 export UPSTREAM='http://your-backend:8000'
 docker run --rm --name pig -p 127.0.0.1:8000:8000 \
   -e TOKEN -e UPSTREAM \
-  ghcr.io/phala-network/phala-inference-guard:v0.12.35@sha256:30945c4c6d9a85123a7ea6d5fbc4c3c316d279326d88d786953c2d0de5e2b916
+  ghcr.io/phala-network/phala-inference-guard:v0.12.36@sha256:266d1ffe6f8635c20af1155f499ba0419a537a525c243da3712090be3592d2ae
 ```
 
 From another terminal with the same `TOKEN`, check readiness and model discovery:
@@ -35,7 +35,7 @@ model loads, PIG retries unavailable or incoherent metrics without exiting;
 connection refusal during this wait is expected. After readiness, `/healthz`
 is a liveness check, not proof of current backend admission capacity.
 
-This example uses the published **v0.12.35** image. `main` is the integration
+This example uses the published **v0.12.36** image. `main` is the integration
 branch and may contain later changes. See [source tags](https://github.com/Phala-Network/phala-inference-guard/tags)
 and [release guidance](docs/RELEASING.md) for version selection.
 
@@ -47,7 +47,8 @@ and [release guidance](docs/RELEASING.md) for version selection.
   A missing, repeated or unrecognized value is `default`. Default and flex
   requests allow up to three observed waiting sequences by default; the admin
   API can change `waiting_allowance`. Priority requests bypass the waiting,
-  preemption, running and window bounds and, on SGLang, TPS health: PIG writes
+  preemption, running and window bounds and, on SGLang with verified priority
+  scheduling, TPS health: PIG writes
   each tier into the request as the backend scheduling priority, and the node
   must run `--enable-priority-scheduling --disable-priority-preemption
   --default-priority-value 1`. On other backends TPS health protects every
