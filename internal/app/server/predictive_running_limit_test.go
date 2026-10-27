@@ -145,6 +145,38 @@ func TestSGLangServerInfoDiscoversTheWarmPromptSize(t *testing.T) {
 	}
 }
 
+func TestSGLangTierSchedulingRequiresVerifiedBackendFlags(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		fields string
+		want   bool
+	}{
+		{name: "enabled", fields: `,"enable_priority_scheduling":true,"schedule_low_priority_values_first":false`, want: true},
+		{name: "disabled", fields: `,"enable_priority_scheduling":false,"schedule_low_priority_values_first":false`},
+		{name: "reversed", fields: `,"enable_priority_scheduling":true,"schedule_low_priority_values_first":true`},
+		{name: "missing both"},
+		{name: "missing direction", fields: `,"enable_priority_scheduling":true`},
+		{name: "missing enabled", fields: `,"schedule_low_priority_values_first":false`},
+		{name: "null direction", fields: `,"enable_priority_scheduling":true,"schedule_low_priority_values_first":null`},
+		{name: "string enabled", fields: `,"enable_priority_scheduling":"true","schedule_low_priority_values_first":false`},
+		{name: "inconsistent enabled", fields: `,"enable_priority_scheduling":false,"enable_priority_scheduling":true,"schedule_low_priority_values_first":false`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprint(w, `{"max_running_requests":64`+test.fields+`}`)
+			}))
+			defer server.Close()
+			cfg := testProxyConfig("http://backend.invalid/v1")
+			cfg.PredictiveMetricsRequestTimeout = time.Second
+			got := discoverPredictiveBackend(context.Background(), cfg, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
+			if got.BackendTierScheduling != test.want {
+				t.Fatalf("tier scheduling=%t want %t for %s", got.BackendTierScheduling, test.want, test.name)
+			}
+		})
+	}
+}
+
 func TestV01223SGLangRunningLimitDiscoveryFailureRemainsUnknown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)

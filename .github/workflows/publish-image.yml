@@ -1,16 +1,21 @@
 name: Publish Image
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published source release tag
+        required: true
+        type: string
 
 permissions:
   contents: read
   packages: write
 
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 env:
@@ -23,16 +28,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ github.event.release.tag_name || inputs.tag }}
       - name: Verify release source and unused image version
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          [[ "$RELEASE_TAG" == v* ]] || { echo 'A versioned source tag is required.' >&2; exit 1; }
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" |
+            jq -e '.draft == false and .published_at != null and .tag_name == env.RELEASE_TAG' >/dev/null
+          echo "RELEASE_TAG=$RELEASE_TAG" >> "$GITHUB_ENV"
           git fetch origin main
           revision=$(git rev-parse HEAD)
+          [ "$(git rev-parse "refs/tags/$RELEASE_TAG^{commit}")" = "$revision" ]
           git merge-base --is-ancestor "$revision" origin/main
           echo "SOURCE_REVISION=$revision" >> "$GITHUB_ENV"
           token=$(curl --fail --silent --show-error 'https://ghcr.io/token?service=ghcr.io&scope=repository:phala-network/phala-inference-guard:pull' | jq -er '.token')
-          for tag in "$GITHUB_REF_NAME" "${GITHUB_REF_NAME}-${revision:0:12}"; do
+          for tag in "$RELEASE_TAG" "${RELEASE_TAG}-${revision:0:12}"; do
             status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
               -H "Authorization: Bearer $token" \
               -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
@@ -49,15 +63,15 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and validate the release image
         env:
-          EXPECTED_VERSION: ${{ github.ref_name }}
+          EXPECTED_VERSION: ${{ env.RELEASE_TAG }}
           EXPECTED_REVISION: ${{ env.SOURCE_REVISION }}
         run: tools/validate-production-image-contract.sh
       - name: Publish the validated image
         shell: bash
         run: |
           set -euo pipefail
-          revision_tag="${GITHUB_REF_NAME}-${SOURCE_REVISION:0:12}"
-          docker tag pig-production-contract:local "$IMAGE_NAME:$GITHUB_REF_NAME"
+          revision_tag="${RELEASE_TAG}-${SOURCE_REVISION:0:12}"
+          docker tag pig-production-contract:local "$IMAGE_NAME:$RELEASE_TAG"
           docker tag pig-production-contract:local "$IMAGE_NAME:$revision_tag"
-          docker push "$IMAGE_NAME:$GITHUB_REF_NAME"
+          docker push "$IMAGE_NAME:$RELEASE_TAG"
           docker push "$IMAGE_NAME:$revision_tag"

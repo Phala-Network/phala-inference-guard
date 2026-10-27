@@ -76,28 +76,28 @@ are below the reference. One low interval does not close a healthy rolling
 window, and one qualified recovered interval reopens a low rolling window
 immediately.
 
-**Backend tier scheduling.** On an SGLang backend PIG appends
-`"priority": N` as the last member of every admitted JSON body it buffered
+**Backend tier scheduling.** When SGLang `/server_info` confirms
+`enable_priority_scheduling=true` and `schedule_low_priority_values_first=false`, PIG appends
+`"priority": N` as the last member of every admitted JSON body
 (`priority` 2, `default` 1, `flex` 0). On any other backend (vLLM reads the
 field the other way round, smaller values first) PIG leaves the body alone and
 TPS health protects every tier as before; `pig_predictive_backend_tier_scheduling_enabled`
 reports which. The backend keeps the last of duplicate
 keys, so the value replaces any priority the client sent; the body length is
-updated and a body PIG did not buffer whole is forwarded unchanged. **The
+updated; an unbuffered JSON body uses a constant-memory streaming rewrite and
+chunked forwarding, including oversized and scanner-saturated requests. **The
 backend must order its waiting queue by that value**: run SGLang with
 `--enable-priority-scheduling` (larger values first, the SGLang default), whose
 `fcfs` and `lof` schedule policies sort by priority, and with
 `--disable-priority-preemption`, since adjacent tiers differ by 1, below
 SGLang's preemption threshold, and preempting a running sequence only
-recomputes it, and with `--default-priority-value 1`: a body larger than the
-scanner buffer (`PREDICTIVE_SCANNER_BODY_BYTES`, 4 MiB) is forwarded without a
-priority, and SGLang otherwise places such a request below every labelled one;
+recomputes it, and with `--default-priority-value 1` for requests that enter
+the backend directly. Non-JSON and unknown-endpoint bodies are left alone;
 `pig_predictive_backend_tier_scheduling_requests_total{result="skipped"}` counts
 them. A policy that ignores the field (such as `hrrn`) needs a tier-aware
-variant. This is a node prerequisite, not a PIG switch: a backend
-without priority scheduling ignores the field, and the priority tier then
-queues behind default and flex while PIG, as described next, no longer holds
-it at the TPS reference. Because priority Prefill runs ahead of every waiting
+variant. If the backend flags are missing, reversed, disabled or unavailable,
+PIG keeps TPS protection for every tier and does not write a priority. With
+verified scheduling, priority Prefill runs ahead of every waiting
 default and flex request, the rolling Decode mean no longer describes the
 service it receives, and TPS health does not protect the priority tier (subreason
 `backend_scheduled`). Availability protection (missing, stale or invalid
@@ -105,8 +105,8 @@ observations, fail-closed) still applies to every tier. A Prefill chunk the
 backend has already started is not interrupted, so a priority request can
 still wait for one long cold Prompt in progress.
 
-**Warm and cold Prompts.** PIG keeps an LRU mirror of the Prompt prefixes it
-admitted and estimates each request's uncached Prompt tokens from it,
+**Warm and cold Prompts.** PIG keeps an LRU mirror of Prompt prefixes from
+completed successful responses with qualified Prompt/cache usage and estimates each request's uncached Prompt tokens from it,
 corrected by the cached-token counts the backend reports. At startup PIG reads
 the backend's Prefill chunk size (`chunked_prefill_size` in SGLang
 `/server_info`, the same probe that discovers the running limit; reported as
@@ -132,6 +132,14 @@ passes. Priority requests are unaffected; waiting, preemption, running and
 window protection are unchanged. The estimate can be wrong;
 `pig_predictive_warm_prompt_*` reports how many warm admissions the backend
 then computed above the threshold.
+
+The mirror stores no prefixes when its backend-derived or explicit capacity
+is unavailable or too small for a block. All non-Prompt request fields seed
+every prefix hash, so changing tools, model or rendering options cannot reuse
+a different context's prefix even when those fields follow the messages.
+Sampling changes may conservatively miss. Pending cold Prompts retain their
+serialization slot until first byte or termination, independently of the
+sequence-capacity reconciliation lease.
 
 The independent admission bounds are:
 

@@ -60,10 +60,11 @@ func TestSetSchedulingPriorityEmptyObject(t *testing.T) {
 	}
 }
 
-func TestSetSchedulingPriorityLeavesUnbufferedBodies(t *testing.T) {
+func TestSetSchedulingPriorityLeavesUnknownProtocolsAndPartiallyConsumedBodies(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader([]byte(`{"a":1}`)))
+	request.Header.Set("Content-Type", "application/octet-stream")
 	if SetSchedulingPriority(request, 1) {
-		t.Fatal("a body the classifier did not buffer was rewritten")
+		t.Fatal("a non-JSON body was rewritten")
 	}
 	partially, _, _ := classifiedRequest(t, `{"messages":[]}`)
 	if _, err := partially.Body.Read(make([]byte, 2)); err != nil {

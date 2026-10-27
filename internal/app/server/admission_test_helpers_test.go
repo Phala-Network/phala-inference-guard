@@ -75,6 +75,8 @@ func newAdmissionRuntimeForTest(
 		controller.Close()
 		t.Fatalf("construct admission test runtime: %v", err)
 	}
+	// These fixtures explicitly simulate a backend with matching priority flags.
+	runtime.backendTierScheduling = config.BackendKind == "sglang"
 	t.Cleanup(func() { _ = runtime.Close() })
 	return runtime, controller, clock
 }

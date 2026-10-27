@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -230,5 +231,44 @@ func TestBackendTierSchedulingWritesTierPriorityIntoForwardedBody(t *testing.T) 
 	srv.writeSchedulingPriorityMetrics(metrics)
 	if !strings.Contains(metrics.Body.String(), `pig_predictive_backend_tier_scheduling_requests_total{tier="priority",result="written"} 1`) {
 		t.Fatalf("metrics=%s", metrics.Body.String())
+	}
+}
+
+func TestBackendTierSchedulingOverridesUnbufferedClientPriority(t *testing.T) {
+	type seen struct {
+		priority int
+		chunked  bool
+		valid    bool
+	}
+	var last atomic.Value
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Priority int `json:"priority"`
+		}
+		err := json.NewDecoder(r.Body).Decode(&body)
+		last.Store(seen{priority: body.Priority, chunked: r.ContentLength == -1 && len(r.TransferEncoding) == 1 && r.TransferEncoding[0] == "chunked", valid: err == nil})
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	runtime, _, _ := newAdmissionRuntimeForTest(t, admissionRuntimeTestConfig{BackendKind: "sglang"})
+	srv := newProxyServerWithAdmissionForTest(t, backend.URL, "enforce", runtime)
+	body := `{` + strings.Repeat(" ", 4*1024*1024) + `"messages":[{"role":"user","content":"hi"}],"priority":99}`
+	for _, unknownLength := range []bool{false, true} {
+		request := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		request.Header.Set("Authorization", "Bearer secret")
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("X-User-Tier", "flex")
+		if unknownLength {
+			request.ContentLength = -1
+		}
+		response := httptest.NewRecorder()
+		srv.ServeHTTP(response, request)
+		got, _ := last.Load().(seen)
+		if response.Code != http.StatusOK || !got.valid || !got.chunked || got.priority != 0 {
+			t.Fatalf("unbuffered priority was not safely forwarded: unknown_length=%t status=%d result=%+v", unknownLength, response.Code, got)
+		}
+		if srv.requestClassifier.ReservedBodyBytes() != 0 {
+			t.Fatal("streamed HTTP request leaked its scanner lease")
+		}
 	}
 }

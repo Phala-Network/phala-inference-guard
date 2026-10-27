@@ -73,9 +73,10 @@ type admissionRuntime struct {
 	kvCapacityTokens int64
 	// warmPromptTokens is the backend's Prefill chunk size discovered at
 	// startup; the TPS gate's warm Prompt size.
-	warmPromptTokens int64
-	closeOnce        sync.Once
-	closeErr         error
+	warmPromptTokens      int64
+	backendTierScheduling bool
+	closeOnce             sync.Once
+	closeErr              error
 }
 
 func newAdmissionRuntime(
@@ -164,7 +165,7 @@ func (r *admissionRuntime) WarmPromptTokens() int64 {
 // BackendTierScheduling reports whether the backend orders its waiting queue
 // by the priority PIG writes into each request; only SGLang does.
 func (r *admissionRuntime) BackendTierScheduling() bool {
-	return r != nil && r.backendKind == "sglang"
+	return r != nil && r.backendTierScheduling
 }
 
 func (r *admissionRuntime) UpdatePolicy(

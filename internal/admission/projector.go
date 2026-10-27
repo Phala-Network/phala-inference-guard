@@ -48,7 +48,7 @@ func (stateProjector) project(observed observedState, overlay reservationOverlay
 
 func validProjectedState(state ProjectedState) bool {
 	return state.UnobservedSequences >= 0 &&
-		state.ColdSheddablePending >= 0 && state.ColdSheddablePending <= state.UnobservedSequences &&
+		state.ColdSheddablePending >= 0 && state.ColdSheddablePending <= state.LiveReservations &&
 		state.SequenceLiabilities >= 0 && state.UnobservedSequences <= state.SequenceLiabilities &&
 		state.LiveReservations >= 0 && state.ResidualDebts >= 0 &&
 		state.RawRunning >= 0 && state.RawWaiting >= 0 && state.PreviousRawRunning >= 0 &&

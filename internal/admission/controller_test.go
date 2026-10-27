@@ -147,6 +147,46 @@ func TestControllerColdSheddablePendingFollowsReservationLifecycle(t *testing.T)
 	assertAggregateMatchesSlow(t, controller)
 }
 
+func TestControllerColdPromptSurvivesSequenceLeaseUntilFirstByte(t *testing.T) {
+	now := time.Unix(9_325, 0)
+	clock := &manualAdmissionClock{at: now}
+	controller := testControllerWithBounds(t, ControllerConfig{
+		Now:                           clock.Now,
+		TPS:                           TPSPolicyConfig{Reference: 25},
+		WindowConcurrency:             8,
+		RunningLimit:                  64,
+		RunningLimitSource:            RunningLimitSourceAdmin,
+		WarmPromptTokens:              8192,
+		PendingFirstByteLeaseDuration: time.Second,
+	}, testObservation(now, 5, 0, 0, 0))
+	defer controller.Close()
+	for step := 1; step <= 4; step++ {
+		clock.Set(now.Add(time.Duration(step) * time.Second))
+		publishObservation(t, controller, testObservation(clock.Now(), 5, 0, uint64(step*1_000), 0))
+	}
+	cold := NewTPSRequestDemand(1).WithTier(TierDefault).WithPrefillTokens(100_000)
+	first := controller.Admit(clock.Now(), cold)
+	if !first.Decision.Admitted() || !first.Handle.MarkForwarded() {
+		t.Fatalf("first cold Prompt did not forward: %+v", first.Decision)
+	}
+	clock.Set(now.Add(6 * time.Second))
+	publishObservation(t, controller, testObservation(clock.Now(), 6, 0, 6_000, 0))
+	if state := controller.Snapshot(clock.Now()).State; state.UnobservedSequences != 0 || state.ColdSheddablePending != 1 {
+		t.Fatalf("sequence lease released a cold Prompt still pending first byte: %+v", state)
+	}
+	second := controller.Admit(clock.Now(), cold)
+	if second.Decision.Admitted() || second.Decision.TPSDecisionSubreason != TPSDecisionSubreasonColdPromptPending {
+		t.Fatalf("second cold Prompt passed before the first byte: %+v", second.Decision)
+	}
+	if !first.Handle.MarkFirstByte() {
+		t.Fatal("first byte after sequence lease was rejected")
+	}
+	if state := controller.Snapshot(clock.Now()).State; state.ColdSheddablePending != 0 {
+		t.Fatalf("first byte retained the cold Prompt count: %+v", state)
+	}
+	assertAggregateMatchesSlow(t, controller)
+}
+
 func TestControllerPriorityPassesTPSReferenceOnlyWhenBackendSchedulesByTier(t *testing.T) {
 	now := time.Unix(9_350, 0)
 	for _, schedules := range []bool{false, true} {

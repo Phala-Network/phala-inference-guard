@@ -33,7 +33,8 @@ type sglangServerInfo struct {
 	// ChunkedPrefillSize is the backend's Prefill chunk in tokens, the warm
 	// Prompt size for TPS health; zero when the backend reports none or
 	// Prefill is not chunked.
-	ChunkedPrefillSize int64
+	ChunkedPrefillSize    int64
+	BackendTierScheduling bool
 }
 
 // predictiveBackendDiscovery is what startup learns about the backend beyond
@@ -71,7 +72,6 @@ func discoverPredictiveBackend(
 	if startup.BackendKind != "sglang" {
 		return discovery
 	}
-	discovery.BackendTierScheduling = true
 	info, err := probeSGLangServerInfo(ctx, sglangRunningLimitProbeConfig{
 		MetricsURL: metricsURL, RequestTimeout: cfg.PredictiveMetricsRequestTimeout,
 	})
@@ -88,6 +88,7 @@ func discoverPredictiveBackend(
 		}
 	}
 	discovery.WarmPromptTokens = info.ChunkedPrefillSize
+	discovery.BackendTierScheduling = info.BackendTierScheduling
 	return discovery
 }
 
@@ -169,6 +170,7 @@ func decodeSGLangServerInfo(body []byte) (sglangServerInfo, error) {
 	}
 	found := false
 	chunkFound := false
+	prioritySettings := make(map[string]bool, 2)
 	for decoder.More() {
 		keyToken, err := decoder.Token()
 		if err != nil {
@@ -183,6 +185,15 @@ func decodeSGLangServerInfo(body []byte) (sglangServerInfo, error) {
 			return sglangServerInfo{}, fmt.Errorf("decode SGLang server_info field %q: %w", key, err)
 		}
 		switch key {
+		case "enable_priority_scheduling", "schedule_low_priority_values_first":
+			var candidate *bool
+			if err := json.Unmarshal(raw, &candidate); err != nil || candidate == nil {
+				return sglangServerInfo{}, fmt.Errorf("SGLang %s must be a boolean", key)
+			}
+			if previous, exists := prioritySettings[key]; exists && previous != *candidate {
+				return sglangServerInfo{}, fmt.Errorf("SGLang %s is duplicate and inconsistent", key)
+			}
+			prioritySettings[key] = *candidate
 		case "max_running_requests":
 			var candidate int64
 			if err := json.Unmarshal(raw, &candidate); err != nil ||
@@ -221,5 +232,7 @@ func decodeSGLangServerInfo(body []byte) (sglangServerInfo, error) {
 	if !found {
 		return sglangServerInfo{}, fmt.Errorf("SGLang max_running_requests is missing")
 	}
+	lowValuesFirst, directionKnown := prioritySettings["schedule_low_priority_values_first"]
+	info.BackendTierScheduling = prioritySettings["enable_priority_scheduling"] && directionKnown && !lowValuesFirst
 	return info, nil
 }

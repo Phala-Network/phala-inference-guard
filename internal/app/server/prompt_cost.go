@@ -13,7 +13,7 @@ import (
 
 // promptCostEstimator estimates the uncached Prompt tokens a request will make
 // the backend compute. It mirrors the backend prefix cache with an LRU set of
-// Prompt block hashes for requests this node admitted, so a turn that
+// Prompt block hashes for completed requests with qualified usage, so a turn that
 // continues a conversation already on the node is priced at its new suffix
 // while a cold Prompt is priced in full.
 //
@@ -143,13 +143,18 @@ func (e *promptCostEstimator) Estimate(prompt apprequest.PromptFingerprint, tier
 	return promptCost{known: true, uncachedTokens: int64(math.Round(tokens)), rawUncachedToks: raw}
 }
 
-// Admitted records that the backend will now hold this Prompt's prefix.
+// Admitted records a Prompt only after qualified successful response usage
+// proves that the backend processed it.
 func (e *promptCostEstimator) Admitted(prompt apprequest.PromptFingerprint) {
 	if e == nil || len(prompt.Blocks) == 0 {
 		return
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	capacity := e.capacityBlocksLocked()
+	if capacity <= 0 {
+		return
+	}
 	for _, block := range prompt.Blocks {
 		if element, ok := e.index[block]; ok {
 			e.lru.MoveToFront(element)
@@ -158,8 +163,7 @@ func (e *promptCostEstimator) Admitted(prompt apprequest.PromptFingerprint) {
 		e.index[block] = e.lru.PushFront(block)
 		e.insertedBlockTotal++
 	}
-	capacity := e.capacityBlocksLocked()
-	for capacity > 0 && e.lru.Len() > capacity {
+	for e.lru.Len() > capacity {
 		oldest := e.lru.Back()
 		delete(e.index, oldest.Value.(uint64))
 		e.lru.Remove(oldest)

@@ -20,14 +20,35 @@ func sharedBlocks(a, b PromptFingerprint) int {
 func TestPromptFingerprintMatchesConversationPrefix(t *testing.T) {
 	history := strings.Repeat("earlier turn ", 1000) // about 13 KiB
 	first := fingerprintPrompt(chatBody("100", history))
-	next := fingerprintPrompt(chatBody("4000", history+strings.Repeat("new turn ", 300)))
+	next := fingerprintPrompt(chatBody("100", history+strings.Repeat("new turn ", 300)))
 	if first.Bytes <= 0 || len(first.Blocks) == 0 {
 		t.Fatalf("empty fingerprint: %+v", first)
 	}
-	// Every full block of the earlier Prompt is shared; sampling options
-	// before "messages" do not matter.
+	// Every full block of an unchanged request prefix is shared.
 	if got, want := sharedBlocks(first, next), len(first.Blocks)-1; got < want {
 		t.Fatalf("shared blocks=%d want at least %d", got, want)
+	}
+}
+
+func TestPromptFingerprintIncludesLeadingRenderingFields(t *testing.T) {
+	messages := `"messages":[{"role":"user","content":"` + strings.Repeat("same prompt ", 600) + `"}]}`
+	for _, field := range []string{"tools", "chat_template_kwargs", "model"} {
+		a := fingerprintPrompt([]byte(`{"` + field + `":"first",` + messages))
+		b := fingerprintPrompt([]byte(`{"` + field + `":"other",` + messages))
+		if sharedBlocks(a, b) != 0 {
+			t.Fatalf("changed leading %s retained a warm prefix", field)
+		}
+	}
+}
+
+func TestPromptFingerprintIncludesTrailingRenderingFields(t *testing.T) {
+	messages := `{"messages":[{"role":"user","content":"` + strings.Repeat("same prompt ", 600) + `"}]`
+	for _, field := range []string{"tools", "tool_choice", "chat_template_kwargs", "model"} {
+		a := fingerprintPrompt([]byte(messages + `,"` + field + `":"first"}`))
+		b := fingerprintPrompt([]byte(messages + `,"` + field + `":"other"}`))
+		if sharedBlocks(a, b) != 0 {
+			t.Fatalf("changed trailing %s retained a warm prefix", field)
+		}
 	}
 }
 

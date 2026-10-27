@@ -12,10 +12,14 @@ incompatible behavior solely to simplify branch lists.
    affected checks and the Linux production image contract.
 2. Integrate the validated commit into `main` and create its annotated `vX.Y.Z`
    tag. Confirm tag ancestry and the exact version/revision relationship.
-3. The tag workflow builds once, validates that local image and pushes the same
+3. Publish the GitHub Release for that exact tag before publishing its image.
+   The published-Release workflow builds once, validates that local image and pushes the same
    image. It refuses to overwrite an existing registry version. Read back and
    record the published digest, source commit, validation and known limitations
    in release notes. Deployment acceptance is a separate operation.
+
+The manual publisher accepts an existing release tag and verifies that its
+GitHub Release is already published. A tag push alone never publishes an image.
 
 The image-contract check validates packaging and native library support; it does
 not replace service startup, protocol or target-specific acceptance.

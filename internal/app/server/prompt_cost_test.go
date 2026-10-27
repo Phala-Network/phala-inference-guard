@@ -86,3 +86,18 @@ func TestPromptCostWithoutFingerprintIsUnknown(t *testing.T) {
 		t.Fatal("empty fingerprint produced a cost")
 	}
 }
+
+func TestPromptCostWithoutUsableCapacityDoesNotRetainPrefixes(t *testing.T) {
+	for _, capacity := range []int64{-1, 0, 1} {
+		estimator := newPromptCostEstimator(capacity)
+		for block := uint64(1); block <= 100; block++ {
+			estimator.Admitted(testPrompt(block))
+		}
+		if snapshot := estimator.Snapshot(); snapshot.indexBlocks != 0 {
+			t.Fatalf("capacity=%d retained %d prefixes without a usable bound", capacity, snapshot.indexBlocks)
+		}
+		if cost := estimator.Estimate(testPrompt(100), 0); !cost.known || cost.uncachedTokens != 256 {
+			t.Fatalf("capacity=%d must price an unretained Prompt cold: %+v", capacity, cost)
+		}
+	}
+}

@@ -105,6 +105,7 @@ func newDefaultAdmissionServiceContext(ctx context.Context, cfg config) (admissi
 	runtime.observer = observer
 	runtime.kvCapacityTokens = startup.KVCapacityTokens
 	runtime.warmPromptTokens = discovery.WarmPromptTokens
+	runtime.backendTierScheduling = discovery.BackendTierScheduling
 	return runtime, nil
 }
 

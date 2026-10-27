@@ -84,7 +84,6 @@ func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(attachAdmissionReservation(r.Context(), reservation))
 	}
 	s.writeSchedulingPriority(r, tier)
-	s.promptCost.Admitted(classification.Prompt)
 	if decision.Record.TPSDecisionSubreason == coreadmission.TPSDecisionSubreasonWarmPrompt {
 		promptCost = promptCost.AdmittedAsWarm(s.warmPromptTokens)
 	}

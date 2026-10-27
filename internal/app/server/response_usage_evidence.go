@@ -245,8 +245,12 @@ func (r *responseUsageRequestEvidence) Complete(result proxyResult) {
 	usage := r.observation.Usage
 	r.mu.Unlock()
 	owner.record(tier, outcome, actual, successfulCompletionTokens)
-	if learn && usage.CachedTokensKnown {
+	if learn && usage.PromptTokens > 0 && usage.CachedTokensKnown {
 		r.promptCost.Learn(r.prompt, r.promptCostResult, usage.PromptTokens, usage.CachedTokens)
+		// Only a completed response with qualified usage proves that the
+		// backend processed this Prompt. In-flight, failed and queued
+		// background requests must not create speculative cache hits.
+		r.promptCost.Admitted(r.prompt)
 	}
 }
 

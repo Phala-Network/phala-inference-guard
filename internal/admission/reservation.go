@@ -36,9 +36,11 @@ func (r reservation) contribution() (reservationOverlay, bool) {
 	case reservationReserved, reservationForwarded:
 		if !r.pendingFirstByteReleased {
 			contribution.unobservedSequences = r.demand.DecodeSequences
-			if r.coldSheddable {
-				contribution.coldSheddablePending = 1
-			}
+		}
+		// The sequence lease only reconciles capacity with backend metrics.
+		// It does not prove that this Prompt has finished Prefill.
+		if r.coldSheddable {
+			contribution.coldSheddablePending = 1
 		}
 		contribution.liveReservations = 1
 	case reservationActiveDecode:
@@ -110,5 +112,5 @@ func (o reservationOverlay) valid() bool {
 	return o.unobservedSequences >= 0 && o.sequenceLiabilities >= 0 &&
 		o.unobservedSequences <= o.sequenceLiabilities &&
 		o.liveReservations >= 0 && o.residualDebts >= 0 &&
-		o.coldSheddablePending >= 0 && o.coldSheddablePending <= o.unobservedSequences
+		o.coldSheddablePending >= 0 && o.coldSheddablePending <= o.liveReservations
 }
