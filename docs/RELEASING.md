@@ -21,8 +21,11 @@ incompatible behavior solely to simplify branch lists.
 The manual publisher accepts an existing release tag and verifies that its
 GitHub Release is already published. A tag push alone never publishes an image.
 
-The image-contract check validates packaging and native library support; it does
-not replace service startup, protocol or target-specific acceptance.
+The image-contract check validates packaging and native library support. The
+publisher then runs the final image against a local mock backend to verify
+authentication, tier rewriting, streaming, oversized chunked requests and the
+effective request pool before pushing that same image. These checks do not
+replace target-specific inference or rollout acceptance.
 
 ## Backfilling historical tags
 

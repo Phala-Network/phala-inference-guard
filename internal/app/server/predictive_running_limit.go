@@ -171,6 +171,8 @@ func decodeSGLangServerInfo(body []byte) (sglangServerInfo, error) {
 	found := false
 	chunkFound := false
 	prioritySettings := make(map[string]bool, 2)
+	var effectiveLimit int64
+	effectiveFound := false
 	for decoder.More() {
 		keyToken, err := decoder.Token()
 		if err != nil {
@@ -185,6 +187,15 @@ func decodeSGLangServerInfo(body []byte) (sglangServerInfo, error) {
 			return sglangServerInfo{}, fmt.Errorf("decode SGLang server_info field %q: %w", key, err)
 		}
 		switch key {
+		case "internal_states":
+			candidate, err := decodeSGLangEffectiveRunningLimit(raw)
+			if err != nil {
+				return sglangServerInfo{}, err
+			}
+			if effectiveFound && candidate != effectiveLimit {
+				return sglangServerInfo{}, fmt.Errorf("SGLang internal_states is duplicate and inconsistent")
+			}
+			effectiveLimit, effectiveFound = candidate, true
 		case "enable_priority_scheduling", "schedule_low_priority_values_first":
 			var candidate *bool
 			if err := json.Unmarshal(raw, &candidate); err != nil || candidate == nil {
@@ -232,7 +243,65 @@ func decodeSGLangServerInfo(body []byte) (sglangServerInfo, error) {
 	if !found {
 		return sglangServerInfo{}, fmt.Errorf("SGLang max_running_requests is missing")
 	}
+	if effectiveLimit > 0 && effectiveLimit < info.MaxRunningRequests {
+		info.MaxRunningRequests = effectiveLimit
+	}
 	lowValuesFirst, directionKnown := prioritySettings["schedule_low_priority_values_first"]
 	info.BackendTierScheduling = prioritySettings["enable_priority_scheduling"] && directionKnown && !lowValuesFirst
 	return info, nil
+}
+
+// The engine publishes its configured, static per-DP request-pool capacity,
+// not currently available slots. Use the weakest reported pool conservatively;
+// states do not establish enough rank identity to aggregate DP capacity here.
+func decodeSGLangEffectiveRunningLimit(raw json.RawMessage) (int64, error) {
+	var states []json.RawMessage
+	if err := json.Unmarshal(raw, &states); err != nil {
+		return 0, fmt.Errorf("SGLang internal_states must be an array")
+	}
+	var minimum int64
+	var reported int
+	for _, state := range states {
+		decoder := json.NewDecoder(bytes.NewReader(state))
+		opening, err := decoder.Token()
+		if err != nil || opening != json.Delim('{') {
+			return 0, fmt.Errorf("SGLang internal state must be an object")
+		}
+		var value int64
+		found := false
+		for decoder.More() {
+			key, err := decoder.Token()
+			if err != nil {
+				return 0, fmt.Errorf("decode SGLang internal state key")
+			}
+			var field json.RawMessage
+			if err := decoder.Decode(&field); err != nil {
+				return 0, fmt.Errorf("decode SGLang internal state field")
+			}
+			if key != "effective_max_running_requests_per_dp" {
+				continue
+			}
+			var candidate int64
+			if err := json.Unmarshal(field, &candidate); err != nil || candidate <= 0 || candidate > maximumPredictiveSequenceBound {
+				return 0, fmt.Errorf("SGLang effective request pool must be an integer in [1, %d]", maximumPredictiveSequenceBound)
+			}
+			if found && candidate != value {
+				return 0, fmt.Errorf("SGLang effective request pool is duplicate and inconsistent")
+			}
+			value, found = candidate, true
+		}
+		if closing, err := decoder.Token(); err != nil || closing != json.Delim('}') {
+			return 0, fmt.Errorf("SGLang internal state is incomplete")
+		}
+		if found {
+			reported++
+			if minimum == 0 || value < minimum {
+				minimum = value
+			}
+		}
+	}
+	if reported > 0 && reported != len(states) {
+		return 0, fmt.Errorf("SGLang effective request pools are incomplete")
+	}
+	return minimum, nil
 }

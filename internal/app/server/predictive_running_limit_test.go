@@ -177,6 +177,52 @@ func TestSGLangTierSchedulingRequiresVerifiedBackendFlags(t *testing.T) {
 	}
 }
 
+func TestSGLangRunningLimitUsesEffectiveRequestPool(t *testing.T) {
+	for _, test := range []struct {
+		name, states string
+		want         int64
+		invalid      bool
+	}{
+		{name: "one pool", states: `[{"effective_max_running_requests_per_dp":43}]`, want: 43},
+		{name: "multiple pools conservative minimum", states: `[{"effective_max_running_requests_per_dp":43},{"effective_max_running_requests_per_dp":44}]`, want: 43},
+		{name: "configured maximum still caps", states: `[{"effective_max_running_requests_per_dp":64}]`, want: 48},
+		{name: "legacy states", states: `[{}]`, want: 48},
+		{name: "empty states", states: `[]`, want: 48},
+		{name: "mixed schema", states: `[{"effective_max_running_requests_per_dp":43},{}]`, invalid: true},
+		{name: "zero pool", states: `[{"effective_max_running_requests_per_dp":0}]`, invalid: true},
+		{name: "negative pool", states: `[{"effective_max_running_requests_per_dp":-1}]`, invalid: true},
+		{name: "string pool", states: `[{"effective_max_running_requests_per_dp":"43"}]`, invalid: true},
+		{name: "fraction pool", states: `[{"effective_max_running_requests_per_dp":43.5}]`, invalid: true},
+		{name: "duplicate pool", states: `[{"effective_max_running_requests_per_dp":43,"effective_max_running_requests_per_dp":44}]`, invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			body := []byte(`{"max_running_requests":48,"internal_states":` + test.states + `}`)
+			info, err := decodeSGLangServerInfo(body)
+			if test.invalid {
+				if err == nil {
+					t.Fatal("ambiguous effective pool was accepted")
+				}
+				return
+			}
+			if err != nil || info.MaxRunningRequests != test.want {
+				t.Fatalf("effective running limit=%d want=%d error=%v", info.MaxRunningRequests, test.want, err)
+			}
+		})
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprint(w, `{"max_running_requests":48,"internal_states":[{"effective_max_running_requests_per_dp":43}]}`)
+	}))
+	defer server.Close()
+	cfg := testProxyConfig("http://backend.invalid/v1")
+	cfg.PredictiveMetricsRequestTimeout = time.Second
+	cfg.PredictiveRunningLimit = 192
+	got := discoverPredictiveBackend(context.Background(), cfg, predictiveBackendStartup{BackendKind: "sglang"}, server.URL+"/metrics")
+	if got.RunningLimit.Value != 192 || got.RunningLimit.Source != coreadmission.RunningLimitSourceEnvironment {
+		t.Fatalf("effective pool replaced explicit limit: %+v", got)
+	}
+}
+
 func TestV01223SGLangRunningLimitDiscoveryFailureRemainsUnknown(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "unavailable", http.StatusServiceUnavailable)
