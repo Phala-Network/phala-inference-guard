@@ -67,7 +67,11 @@ jobs:
           EXPECTED_REVISION: ${{ env.SOURCE_REVISION }}
         run: tools/validate-production-image-contract.sh
       - name: Exercise the final image against a local mock backend
-        run: python3 tools/smoke-production-image.py --image pig-production-contract:local --expected-version "$RELEASE_TAG"
+        env:
+          SMOKE_HELPER_COMMIT: ${{ github.workflow_sha }}
+        run: |
+          git show "${SMOKE_HELPER_COMMIT}:tools/smoke-production-image.py" > "$RUNNER_TEMP/pig-image-smoke.py"
+          python3 "$RUNNER_TEMP/pig-image-smoke.py" --image pig-production-contract:local --expected-version "$RELEASE_TAG"
       - name: Publish the validated image
         shell: bash
         run: |

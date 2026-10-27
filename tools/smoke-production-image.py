@@ -167,7 +167,7 @@ def main():
             assert status == 200 and json.loads(payload)["smoke_priority"] == 0 and Backend.saw_chunked
             invalid = b"{" + b" " * (4 * 1024 * 1024) + b'"messages":[],}'
             assert 400 <= request("/v1/chat/completions", invalid, "default")[0] < 500
-            status, payload = request("/pig/metrics")
+            status, payload = request("/v1/metrics")
             metrics = payload.decode()
             expected = args.expected_version.removeprefix("v")
             assert status == 200 and f'pig_info{{version="PIG-v{expected}"}} 1' in metrics
