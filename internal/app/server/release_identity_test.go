@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestReleaseVersionIsAssignedV01236(t *testing.T) {
+func TestReleaseVersionIsAssignedV01237(t *testing.T) {
 	t.Parallel()
 
 	if version != "PIG-v0.12.37" {

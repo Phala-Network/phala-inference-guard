@@ -33,7 +33,7 @@ func startHTTPIOTest(t *testing.T, upstream http.Handler, proxyTimeout time.Dura
 	}
 	t.Cleanup(func() { _ = proxy.Close() })
 	server := newHTTPServer(proxy)
-	closed := make(chan struct{}, 16)
+	closed := make(chan struct{}, 128)
 	previous := server.ConnState
 	server.ConnState = func(conn net.Conn, state http.ConnState) {
 		if previous != nil {
@@ -218,4 +218,31 @@ func TestHTTPIOIdleKeepAliveExpires(t *testing.T) {
 	_, _ = io.Copy(io.Discard, response.Body)
 	_ = response.Body.Close()
 	requireHTTPIOClosed(t, closed, 2500*time.Millisecond)
+}
+
+func TestHTTPIOBeforeHeaderTimeoutPreservesErrorResponse(t *testing.T) {
+	t.Setenv("HTTP_WRITE_IDLE_TIMEOUT_SECONDS", "10")
+	address, _ := startHTTPIOTest(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}), 50*time.Millisecond)
+	client := &http.Client{Timeout: 2 * time.Second}
+	defer client.CloseIdleConnections()
+	// Exercise the race between the proxy ErrorHandler and AfterFunc dispatch,
+	// with an ordinary reading client on a real TCP connection.
+	for i := 0; i < 20; i++ {
+		request, err := http.NewRequest(http.MethodGet, "http://"+address+"/v1/models", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Authorization", "Bearer secret")
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("request %d lost its timeout error response: %v", i, err)
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil || response.StatusCode != http.StatusTooManyRequests || !bytes.Contains(body, []byte("TooManyRequestsError")) {
+			t.Fatalf("request %d changed timeout response: status=%d read=%v body=%q", i, response.StatusCode, err, body)
+		}
+	}
 }

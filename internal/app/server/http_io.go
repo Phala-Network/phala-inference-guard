@@ -17,6 +17,10 @@ type responseDeadlineWriter struct {
 	timeout     time.Duration
 	mu          sync.Mutex
 	interrupted bool
+	ctx         context.Context
+	writing     bool
+	cancelable  bool
+	started     bool
 }
 
 func newResponseDeadlineWriter(w http.ResponseWriter, timeout time.Duration) *responseDeadlineWriter {
@@ -26,6 +30,10 @@ func newResponseDeadlineWriter(w http.ResponseWriter, timeout time.Duration) *re
 func (w *responseDeadlineWriter) setDeadline(active bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.setDeadlineLocked(active)
+}
+
+func (w *responseDeadlineWriter) setDeadlineLocked(active bool) {
 	var deadline time.Time
 	if w.interrupted {
 		deadline = time.Now()
@@ -35,14 +43,47 @@ func (w *responseDeadlineWriter) setDeadline(active bool) {
 	_ = w.controller.SetWriteDeadline(deadline)
 }
 
+func (w *responseDeadlineWriter) beginWrite(final bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	live := w.ctx == nil || w.ctx.Err() == nil
+	w.writing = true
+	w.cancelable = live || w.started
+	if !live && w.started {
+		w.interrupted = true
+	}
+	if final && live {
+		w.started = true
+	}
+	w.setDeadlineLocked(true)
+}
+
+func (w *responseDeadlineWriter) endWrite(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writing, w.cancelable = false, false
+	if err == nil {
+		w.setDeadlineLocked(false)
+	}
+}
+
 func (w *responseDeadlineWriter) interruptOnCancel(ctx context.Context) func() {
+	w.mu.Lock()
+	w.ctx = ctx
+	w.mu.Unlock()
 	done := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
 		defer close(done)
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		w.interrupted = true
-		_ = w.controller.SetWriteDeadline(time.Now())
+		// A timeout before the first response must still permit the proxy's
+		// ordinary error JSON. Only abort a write that was already in progress
+		// while its context was live (or belongs to an established response).
+		// ErrorHandler writes entered after cancellation are not such writes.
+		if w.writing && w.cancelable {
+			w.interrupted = true
+			w.setDeadlineLocked(true)
+		}
 	})
 	return func() {
 		if !stop() {
@@ -52,26 +93,22 @@ func (w *responseDeadlineWriter) interruptOnCancel(ctx context.Context) func() {
 }
 
 func (w *responseDeadlineWriter) WriteHeader(status int) {
-	w.setDeadline(true)
+	w.beginWrite(status >= 200 || status == http.StatusSwitchingProtocols)
 	w.ResponseWriter.WriteHeader(status)
-	w.setDeadline(false)
+	w.endWrite(nil)
 }
 
 func (w *responseDeadlineWriter) Write(body []byte) (int, error) {
-	w.setDeadline(true)
+	w.beginWrite(true)
 	n, err := w.ResponseWriter.Write(body)
-	if err == nil {
-		w.setDeadline(false)
-	}
+	w.endWrite(err)
 	return n, err
 }
 
 func (w *responseDeadlineWriter) FlushError() error {
-	w.setDeadline(true)
+	w.beginWrite(true)
 	err := w.controller.Flush()
-	if err == nil {
-		w.setDeadline(false)
-	}
+	w.endWrite(err)
 	return err
 }
 

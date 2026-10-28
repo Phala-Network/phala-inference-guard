@@ -19,7 +19,9 @@ type blockingDeadlineWriter struct {
 }
 
 func (w *blockingDeadlineWriter) SetWriteDeadline(deadline time.Time) error {
-	w.once.Do(func() { close(w.entered); <-w.release })
+	if !deadline.IsZero() && !deadline.After(time.Now()) {
+		w.once.Do(func() { close(w.entered); <-w.release })
+	}
 	w.deadline = deadline
 	return nil
 }
@@ -29,6 +31,7 @@ func TestHTTPIOCancellationCleanupJoinsCallback(t *testing.T) {
 	writer := newResponseDeadlineWriter(underlying, time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	stop := writer.interruptOnCancel(ctx)
+	writer.beginWrite(true)
 	cancel()
 	<-underlying.entered
 	cleaned := make(chan struct{})
