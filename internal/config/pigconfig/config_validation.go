@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/url"
 	"strings"
+	"time"
 )
 
 func Validate(cfg Config) error {
@@ -22,6 +23,11 @@ func Validate(cfg Config) error {
 	}
 	if cfg.ProxyTimeout <= 0 {
 		return fmt.Errorf("PROXY_TIMEOUT_SECONDS must be > 0")
+	}
+	if cfg.HTTPBodyReadTimeout <= 0 || cfg.HTTPBodyReadTimeout > 24*time.Hour ||
+		cfg.HTTPWriteIdleTimeout <= 0 || cfg.HTTPWriteIdleTimeout > 24*time.Hour ||
+		cfg.HTTPIdleTimeout <= 0 || cfg.HTTPIdleTimeout > 24*time.Hour {
+		return fmt.Errorf("HTTP read, write-idle and idle timeouts must be positive and at most 24 hours")
 	}
 	if cfg.StatusLogInterval < 0 {
 		return fmt.Errorf("PIG_STATUS_LOG_INTERVAL_SECONDS must be >= 0")

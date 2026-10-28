@@ -73,6 +73,11 @@ func (s *proxyServer) writeLocalMetrics(w io.Writer) {
 	applyAdmissionRouterMetrics(&input, projection, compatibility)
 	fmt.Fprintf(w, "pig_info{version=%q} 1\n", version)
 	fmt.Fprintf(w, "pig_uptime_seconds %.6f\n", time.Since(s.started).Seconds())
+	writeProcessFDMetrics(w)
+	connections := s.connections.snapshot()
+	for state, name := range []string{"new", "active", "idle"} {
+		fmt.Fprintf(w, "pig_http_connections{state=%q} %d\n", name, connections[state])
+	}
 	fmt.Fprintf(w, "pig_rejected_total %d\n", s.total429.Load())
 	fmt.Fprintf(w, "pig_route_not_allowed_total %d\n", s.routeNotAllowed.Load())
 	policy := snapshot.Capacity.Policy

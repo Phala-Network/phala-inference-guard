@@ -9,6 +9,17 @@ import (
 )
 
 func (s *proxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.HTTPWriteIdleTimeout > 0 {
+		writer := newResponseDeadlineWriter(w, s.cfg.HTTPWriteIdleTimeout)
+		stop := writer.interruptOnCancel(r.Context())
+		defer func() {
+			// Synchronize before Go's post-handler flush and before the connection
+			// can serve another request. Do not leave a late callback behind.
+			stop()
+			writer.setDeadline(true)
+		}()
+		w = writer
+	}
 	if handler, ok := s.localManagementRoutes.Match(r); ok {
 		s.serveLocalManagement(handler, w, r)
 		return

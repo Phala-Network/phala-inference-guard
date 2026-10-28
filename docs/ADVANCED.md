@@ -35,11 +35,23 @@ backend call.
 | `TOKEN` | empty | Bearer token; setting it enables auth by default |
 | `API_AUTH_ENABLED` | true when `TOKEN` is set | Require bearer auth |
 | `PROXY_TIMEOUT_SECONDS` | `1800` | End-to-end upstream timeout |
+| `HTTP_BODY_READ_TIMEOUT_SECONDS` | `120` | Absolute complete-request read budget, including headers; `1..86400` |
+| `HTTP_WRITE_IDLE_TIMEOUT_SECONDS` | `120` | Maximum duration of a pending downstream Write/Flush; `1..86400` |
+| `HTTP_IDLE_TIMEOUT_SECONDS` | `60` | Inbound keep-alive idle budget; `1..86400` |
 | `PIG_STATUS_LOG_INTERVAL_SECONDS` | `30` | Compact status cadence; `0` disables it |
 | `PIG_LOG_LEVEL` | `info` | `debug` adds bounded decision details |
 | `UPSTREAM_ERROR_CLASSIFICATION_ENABLED` | `true` | Bounded upstream error classification |
 
 Attestation variables do not alter admission policy.
+
+The request read deadline also covers classification before admission and Go's
+automatic drain of an incomplete body on an early local response. It is an
+absolute upload limit, not an inactivity timer; completing the upload clears it
+and does not limit response/SSE lifetime. The existing header timeout is 30 s.
+Write deadlines are active only during writes/flushes and the final server
+flush, so a long prefill or silent SSE interval does not consume a write budget.
+The existing proxy total timeout still applies, and its cancellation interrupts
+an already blocked downstream write. There is no short global `WriteTimeout`.
 
 ## Admission policy
 

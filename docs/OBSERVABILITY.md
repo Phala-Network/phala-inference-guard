@@ -33,6 +33,17 @@ backend metrics remain on `/v1/metrics`; they are intentionally absent from
 These routes are handled locally and preserve their configured authentication
 semantics. They never enter the public inference proxy.
 
+Full diagnostics also expose `pig_process_open_fds`, `pig_process_max_fds`
+(soft limit), `pig_process_hard_max_fds`, and
+`pig_http_connections{state="new|active|idle"}`. FD gauges are collected on
+Linux at the full-metrics scrape, excluding the temporary enumeration FD.
+`pig_process_fd_metrics_available=0` means collection is unavailable; missing FD
+gauges are not a measured zero. Connection states cover only the production
+inbound HTTP server, and terminal connections are removed. FD totals also
+include outbound sockets and non-socket descriptors; admission/scanner gauges
+alone cannot account for the process FD budget. These diagnostics do not add
+lines to the five-gauge `/pig/metrics` contract.
+
 `/v1/upstream-status` returns `0` for open, `1` for load protection where the
 canonical inspect demand (one flex sequence, the tier every load protection
 applies to) still fits, `2` for closed enforce intake, and `3` for

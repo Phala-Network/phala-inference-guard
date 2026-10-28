@@ -46,12 +46,18 @@ func runServer(ctx context.Context, cfg config) (runErr error) {
 	if cfg.StatusLogInterval > 0 {
 		go srv.statusLogLoop(ctx)
 	}
-	httpSrv := &http.Server{
-		Addr:              cfg.Listen,
+	return serveHTTPContext(ctx, newHTTPServer(srv))
+}
+
+func newHTTPServer(srv *proxyServer) *http.Server {
+	return &http.Server{
+		Addr:              srv.cfg.Listen,
 		Handler:           srv,
 		ReadHeaderTimeout: 30 * time.Second,
+		ReadTimeout:       srv.cfg.HTTPBodyReadTimeout,
+		IdleTimeout:       srv.cfg.HTTPIdleTimeout,
+		ConnState:         srv.connections.observe,
 	}
-	return serveHTTPContext(ctx, httpSrv)
 }
 
 // A signal must cancel startup immediately and must not leave a ready server

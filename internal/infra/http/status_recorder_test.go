@@ -2,10 +2,26 @@ package httpx
 
 import (
 	"bytes"
+	"errors"
 	"net/http"
 	"testing"
 	"time"
 )
+
+type failingFlushWriter struct {
+	informationalResponseWriter
+	err error
+}
+
+func (w *failingFlushWriter) FlushError() error { return w.err }
+
+func TestStatusRecorderPreservesFlushError(t *testing.T) {
+	want := errors.New("downstream flush failed")
+	recorder := NewStatusRecorder(&failingFlushWriter{err: want})
+	if err := http.NewResponseController(recorder).Flush(); !errors.Is(err, want) {
+		t.Fatalf("flush error = %v, want %v", err, want)
+	}
+}
 
 type informationalResponseWriter struct {
 	header        http.Header

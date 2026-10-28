@@ -16,6 +16,12 @@ func (s *proxyServer) proxyRequest(backend *backendProxy, w http.ResponseWriter,
 	defer done()
 	ctx, cancel := context.WithTimeout(r.Context(), s.cfg.ProxyTimeout)
 	defer cancel()
+	if writer, ok := w.(*responseDeadlineWriter); ok {
+		// A canceled upstream context alone cannot interrupt a socket Write.
+		// Stop (or join) this callback before deferred cancel runs on success.
+		stop := writer.interruptOnCancel(ctx)
+		defer stop()
+	}
 	ctx = attachClientContext(ctx, r.Context())
 	started := time.Now()
 	recorder := httpx.NewStatusRecorder(w)

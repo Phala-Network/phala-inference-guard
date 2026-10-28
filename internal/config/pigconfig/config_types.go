@@ -14,6 +14,9 @@ type Config struct {
 	Token                              string
 	APIAuthEnabled                     bool
 	ProxyTimeout                       time.Duration
+	HTTPBodyReadTimeout                time.Duration
+	HTTPWriteIdleTimeout               time.Duration
+	HTTPIdleTimeout                    time.Duration
 	StatusLogInterval                  time.Duration
 	LogLevel                           string
 	UpstreamErrorClassificationEnabled bool
