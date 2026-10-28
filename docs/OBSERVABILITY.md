@@ -33,16 +33,30 @@ backend metrics remain on `/v1/metrics`; they are intentionally absent from
 These routes are handled locally and preserve their configured authentication
 semantics. They never enter the public inference proxy.
 
-Full diagnostics also expose `pig_process_open_fds`, `pig_process_max_fds`
+Full diagnostics expose `pig_process_open_fds`, `pig_process_max_fds`
 (soft limit), `pig_process_hard_max_fds`, and
-`pig_http_connections{state="new|active|idle"}`. FD gauges are collected on
-Linux at the full-metrics scrape, excluding the temporary enumeration FD.
+`pig_process_open_fds_by_type{type="socket|device|pipe|anon_inode|regular|other"}`.
+The six fixed classes sum to the same snapshot's total. Linux collection excludes
+its own temporary directory FD; a descriptor that disappears during collection
+remains in the total as `other`. Concurrent scrapes share a five-second process
+cache, with age reported by `pig_process_fd_snapshot_age_seconds`.
 `pig_process_fd_metrics_available=0` means collection is unavailable; missing FD
-gauges are not a measured zero. Connection states cover only the production
+gauges are not a measured zero.
+
+`pig_process_socket_fds_by_tcp_state{state="ESTABLISHED|CLOSE_WAIT|LISTEN|other|unresolved"}`
+matches only socket inodes from that FD snapshot against `/proc/self/net/tcp`
+and `tcp6`, with each table limited to 4 MiB. The five states sum to the socket
+FD count. Unix/UDP sockets and enumeration races remain `unresolved`.
+`pig_process_socket_state_metrics_available=0` signals an unreadable, malformed
+or truncated table: any partial state counts are incomplete, and unresolved
+counts must not be interpreted as proof of a particular TCP state. Paths,
+addresses, ports, inodes and FD identifiers never become metric labels or logs.
+
+`pig_http_connections{state="new|active|idle"}` covers only the production
 inbound HTTP server, and terminal connections are removed. FD totals also
 include outbound sockets and non-socket descriptors; admission/scanner gauges
 alone cannot account for the process FD budget. These diagnostics do not add
-lines to the five-gauge `/pig/metrics` contract.
+lines to the five-gauge `/pig/metrics` contract or introduce an endpoint.
 
 `/v1/upstream-status` returns `0` for open, `1` for load protection where the
 canonical inspect demand (one flex sequence, the tier every load protection
