@@ -4,6 +4,7 @@ package attestation
 
 /*
 #cgo LDFLAGS: -ldl
+#define _GNU_SOURCE
 #include <dlfcn.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -62,7 +63,9 @@ static void* pig_dlsym(void* lib, const char* name, const char** missing) {
 
 static const char* pig_nvml_open(pig_nvml_t* n) {
 	memset(n, 0, sizeof(*n));
-	n->lib = dlopen("libnvidia-ml.so.1", RTLD_LAZY);
+	// Unloading and reinitializing NVML can strand native eventfds. Keep its
+	// mapping and static state resident; each report still calls init/shutdown.
+	n->lib = dlopen("libnvidia-ml.so.1", RTLD_LAZY | RTLD_NODELETE);
 	if (n->lib == NULL) {
 		const char* err = dlerror();
 		return err == NULL ? "dlopen libnvidia-ml.so.1 failed" : err;
