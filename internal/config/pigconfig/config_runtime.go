@@ -40,5 +40,17 @@ func loadRuntimeConfig(cfg *Config) error {
 	cfg.StatusLogInterval = time.Duration(statusLogIntervalSeconds) * time.Second
 	cfg.LogLevel = strings.ToLower(strings.TrimSpace(env.String("PIG_LOG_LEVEL", "info")))
 	cfg.BackendReadinessPath = env.String("BACKEND_READINESS_PATH", "")
-	return validateBackendReadinessPath(cfg.BackendReadinessPath)
+	if err := validateBackendReadinessPath(cfg.BackendReadinessPath); err != nil {
+		return err
+	}
+	readinessSeconds, err := env.Int("BACKEND_READINESS_TIMEOUT_SECONDS", 1)
+	if err != nil {
+		return err
+	}
+	// Check before conversion so an oversized integer cannot wrap a duration.
+	if readinessSeconds < 1 || readinessSeconds > 5 {
+		return fmt.Errorf("BACKEND_READINESS_TIMEOUT_SECONDS must be in [1, 5]")
+	}
+	cfg.BackendReadinessTimeout = time.Duration(readinessSeconds) * time.Second
+	return nil
 }

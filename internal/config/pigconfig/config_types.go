@@ -11,6 +11,7 @@ type Config struct {
 	Listen                             string
 	Upstream                           string
 	BackendReadinessPath               string
+	BackendReadinessTimeout            time.Duration
 	PredictiveMetricsURL               string
 	Token                              string
 	APIAuthEnabled                     bool

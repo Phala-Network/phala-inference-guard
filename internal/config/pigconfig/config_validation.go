@@ -18,6 +18,10 @@ func Validate(cfg Config) error {
 	if err := validateBackendReadinessPath(cfg.BackendReadinessPath); err != nil {
 		return err
 	}
+	if cfg.BackendReadinessTimeout != 0 &&
+		(cfg.BackendReadinessTimeout < time.Second || cfg.BackendReadinessTimeout > 5*time.Second) {
+		return fmt.Errorf("BACKEND_READINESS_TIMEOUT_SECONDS must be in [1, 5]")
+	}
 	if err := validateHTTPURL("PREDICTIVE_METRICS_URL", cfg.PredictiveMetricsURL); err != nil {
 		return err
 	}

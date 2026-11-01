@@ -43,7 +43,12 @@ func (s *proxyServer) backendHealthy(ctx context.Context, backendKind string) bo
 		}
 	}
 	target.Path, target.RawPath, target.RawQuery, target.Fragment = path, "", "", ""
-	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	timeout := s.cfg.BackendReadinessTimeout
+	if timeout == 0 {
+		// Keep the default for callers that construct Config directly.
+		timeout = time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
