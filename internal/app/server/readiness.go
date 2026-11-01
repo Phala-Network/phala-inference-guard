@@ -34,10 +34,13 @@ func (s *proxyServer) backendHealthy(ctx context.Context, backendKind string) bo
 	if err != nil {
 		return false
 	}
-	path := "/health"
-	if backendKind == "sglang" {
-		// SGLang /health generates a token and can exceed this probe's deadline.
-		path = "/ready"
+	path := s.cfg.BackendReadinessPath
+	if path == "" {
+		path = "/health"
+		if backendKind == "sglang" {
+			// SGLang /health generates a token and can exceed this probe's deadline.
+			path = "/ready"
+		}
 	}
 	target.Path, target.RawPath, target.RawQuery, target.Fragment = path, "", "", ""
 	ctx, cancel := context.WithTimeout(ctx, time.Second)

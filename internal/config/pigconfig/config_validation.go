@@ -15,6 +15,9 @@ func Validate(cfg Config) error {
 	if err := validateHTTPURL("UPSTREAM", cfg.Upstream); err != nil {
 		return err
 	}
+	if err := validateBackendReadinessPath(cfg.BackendReadinessPath); err != nil {
+		return err
+	}
 	if err := validateHTTPURL("PREDICTIVE_METRICS_URL", cfg.PredictiveMetricsURL); err != nil {
 		return err
 	}
@@ -39,6 +42,13 @@ func Validate(cfg Config) error {
 		return fmt.Errorf("ATTESTATION_NVIDIA_COMMAND_TIMEOUT_SECONDS must be > 0 when ATTESTATION_ENABLED=true")
 	}
 	return validatePredictiveAdmissionConfig(cfg)
+}
+
+func validateBackendReadinessPath(path string) error {
+	if path != "" && path != "/ready" && path != "/health" {
+		return fmt.Errorf("BACKEND_READINESS_PATH must be empty, /ready or /health")
+	}
+	return nil
 }
 
 func validatePredictiveAdmissionConfig(cfg Config) error {

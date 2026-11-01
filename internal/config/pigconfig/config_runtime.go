@@ -39,5 +39,6 @@ func loadRuntimeConfig(cfg *Config) error {
 	cfg.ProxyTimeout = time.Duration(proxyTimeoutSeconds) * time.Second
 	cfg.StatusLogInterval = time.Duration(statusLogIntervalSeconds) * time.Second
 	cfg.LogLevel = strings.ToLower(strings.TrimSpace(env.String("PIG_LOG_LEVEL", "info")))
-	return nil
+	cfg.BackendReadinessPath = env.String("BACKEND_READINESS_PATH", "")
+	return validateBackendReadinessPath(cfg.BackendReadinessPath)
 }

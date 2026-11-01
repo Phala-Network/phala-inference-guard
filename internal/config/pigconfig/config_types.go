@@ -10,6 +10,7 @@ import (
 type Config struct {
 	Listen                             string
 	Upstream                           string
+	BackendReadinessPath               string
 	PredictiveMetricsURL               string
 	Token                              string
 	APIAuthEnabled                     bool

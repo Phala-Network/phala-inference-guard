@@ -32,6 +32,7 @@ backend call.
 | --- | --- | --- |
 | `LISTEN` | `:8000` | Listen address |
 | `UPSTREAM` | `http://backend:8000` | Exactly one upstream base URL |
+| `BACKEND_READINESS_PATH` | empty | Backend readiness probe: empty selects `/ready` for detected SGLang and `/health` otherwise; explicit `/ready` or `/health` only |
 | `TOKEN` | empty | Bearer token; setting it enables auth by default |
 | `API_AUTH_ENABLED` | true when `TOKEN` is set | Require bearer auth |
 | `PROXY_TIMEOUT_SECONDS` | `1800` | End-to-end upstream timeout |
@@ -43,6 +44,12 @@ backend call.
 | `UPSTREAM_ERROR_CLASSIFICATION_ENABLED` | `true` | Bounded upstream error classification |
 
 Attestation variables do not alter admission policy.
+
+Use `BACKEND_READINESS_PATH=/health` only for a backend that lacks `/ready`,
+such as older SGLang images. The override affects PIG `/readyz` and its
+`/health` alias; it keeps the one-second deadline, exact HTTP 200 requirement,
+no redirects and caller-header isolation. It does not change `/healthz`
+liveness or make a generation-based `/health` probe faster.
 
 The request read deadline also covers classification before admission and Go's
 automatic drain of an incomplete body on an early local response. It is an
