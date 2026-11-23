@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"sync/atomic"
 	"time"
+
+	domainrequest "github.com/Phala-Network/phala-inference-guard/internal/domain/request"
 )
 
 type Config struct {
@@ -33,6 +35,8 @@ type Classification struct {
 	BasePromptCount        int64
 	DecodeSequences        int64
 	Prompt                 PromptFingerprint
+	Endpoint               domainrequest.EndpointKind
+	Features               domainrequest.RequestFeatures
 }
 
 type ClassificationTiming struct {

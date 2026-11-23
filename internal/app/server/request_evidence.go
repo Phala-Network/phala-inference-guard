@@ -62,12 +62,14 @@ type requestEvidence struct {
 	classifierOutcomes [classifierEvidenceOutcomeCount]atomic.Uint64
 	streamingStates    [streamingEvidenceStateCount]atomic.Uint64
 	decodeFanout       [admissionEvidenceFanoutBucketCount]atomic.Uint64
+	features           requestFeatureEvidence
 }
 
 type requestEvidenceSnapshot struct {
 	classifierOutcomes [classifierEvidenceOutcomeCount]uint64
 	streamingStates    [streamingEvidenceStateCount]uint64
 	decodeFanout       [admissionEvidenceFanoutBucketCount]uint64
+	features           requestFeatureEvidenceSnapshot
 }
 
 func (e *requestEvidence) Record(classification apprequest.Classification) {
@@ -77,6 +79,7 @@ func (e *requestEvidence) Record(classification apprequest.Classification) {
 	e.classifierOutcomes[classifierEvidenceOutcomeFor(classification)].Add(1)
 	e.streamingStates[streamingEvidenceStateFor(classification)].Add(1)
 	e.decodeFanout[admissionEvidenceFanoutFor(classification.DecodeSequences)].Add(1)
+	e.features.Record(classification)
 }
 
 func (e *requestEvidence) Snapshot() requestEvidenceSnapshot {
@@ -93,6 +96,7 @@ func (e *requestEvidence) Snapshot() requestEvidenceSnapshot {
 	for bucket := admissionEvidenceFanoutBucket(0); bucket < admissionEvidenceFanoutBucketCount; bucket++ {
 		snapshot.decodeFanout[bucket] = e.decodeFanout[bucket].Load()
 	}
+	snapshot.features = e.features.Snapshot()
 	return snapshot
 }
 
@@ -106,6 +110,7 @@ func writeRequestEvidenceMetrics(w io.Writer, snapshot requestEvidenceSnapshot) 
 	for bucket, label := range admissionEvidenceFanoutBucketLabels {
 		fmt.Fprintf(w, "pig_predictive_request_decode_fanout_total{bucket=%q} %d\n", label, snapshot.decodeFanout[bucket])
 	}
+	writeRequestFeatureEvidenceMetrics(w, snapshot.features)
 }
 
 func classifierEvidenceOutcomeFor(classification apprequest.Classification) classifierEvidenceOutcome {
