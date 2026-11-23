@@ -12,6 +12,7 @@ type TPSRequestShape struct {
 	StreamingPresent  bool
 	StreamingKnown    bool
 	Streaming         bool
+	Features          RequestFeatures
 }
 
 type jsonStringSpan struct {
@@ -61,6 +62,7 @@ func (p *jsonShapeParser) parseRootObject(endpoint EndpointKind) (TPSRequestShap
 	n := fanoutFieldState{valid: true, value: 1}
 	bestOf := fanoutFieldState{valid: true, value: 1}
 	promptSeen := false
+	var features requestFeatureFields
 	if !p.enter('{') {
 		return TPSRequestShape{}, false
 	}
@@ -98,6 +100,7 @@ func (p *jsonShapeParser) parseRootObject(endpoint EndpointKind) (TPSRequestShap
 			return TPSRequestShape{}, false
 		}
 		value := p.body[valueStart:p.index]
+		features.observe(key, value)
 
 		if endpointUsesDecodeFanout(endpoint) && jsonStringSpanEquals(key, "n") {
 			shape.Supported = updatePositiveFanout(&n, value) && shape.Supported
@@ -121,6 +124,7 @@ func (p *jsonShapeParser) parseRootObject(endpoint EndpointKind) (TPSRequestShap
 		p.skipSpace()
 		switch {
 		case p.consume('}'):
+			shape.Features = features.classify(endpoint)
 			return finalizeTPSRequestShape(shape, endpoint, n, bestOf), true
 		case p.consume(','):
 			p.skipSpace()

@@ -116,6 +116,34 @@ pig_predictive_tps_last_decision_info{
 pig_predictive_tps_request_decode_sequences
 ```
 
+## Request features
+
+Requests whose JSON body the classifier scanned also count which generation
+options they use, by `endpoint` (`chat_completions`, `completions`,
+`responses`). Each family counts every scanned request exactly once per
+endpoint, so its sum is the scanned-request denominator:
+
+```text
+pig_request_feature_logprobs_total{endpoint,top_logprobs="none|0|1-5|6-20|>20|invalid"}
+pig_request_feature_tool_choice_total{endpoint,tool_choice="unspecified|none|auto|required|named|other"}
+pig_request_feature_tools_total{endpoint,tools="absent|present"}
+pig_request_feature_response_format_total{endpoint,format="unspecified|text|json_object|json_schema|structural_tag|regex|grammar|choice|other"}
+```
+
+- `logprobs`: chat `logprobs: true` bucketed by `top_logprobs`; completions
+  integer `logprobs`; responses `top_logprobs` or the
+  `message.output_text.logprobs` include.
+- `tool_choice`: an object choosing a `function`/`custom` tool is `named`; tool
+  names are never labels.
+- `tools`: a non-empty `tools` array.
+- `response_format`: chat/completions `response_format.type`, responses
+  `text.format.type`; SGLang/vLLM `json_schema`, `regex`, `ebnf`,
+  `structural_tag` and `guided_*` fields apply when the format is unspecified or
+  `text`.
+
+Labels are fixed enums; unknown values become `other`. Bodies that were not
+scanned (see `pig_predictive_classifier_outcomes_total`) are not counted.
+
 ## TPS health
 
 ```text
