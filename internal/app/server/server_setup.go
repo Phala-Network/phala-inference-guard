@@ -157,5 +157,5 @@ func newAttestationService(cfg config) (*attestation.Service, error) {
 		NVIDIACommandArgs:     cfg.AttestationNVIDIACommandArgs,
 		NVIDIACommandTimeout:  cfg.AttestationNVIDIACommandTimeout,
 		RequireNVIDIAEvidence: cfg.AttestationRequireNVIDIAEvidence,
-	}, attestation.NewDstackClient(cfg.AttestationDstackEndpoint, 3*time.Second))
+	}, attestation.NewDstackClient(cfg.AttestationDstackEndpoint, cfg.AttestationDstackTimeout))
 }

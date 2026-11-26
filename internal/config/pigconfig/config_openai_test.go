@@ -1,6 +1,9 @@
 package pigconfig
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadOpenAIConfigDefaults(t *testing.T) {
 	cfg, err := Load()
@@ -98,5 +101,23 @@ func TestLoadOpenAIConfigLoadsNVIDIAPayloadURL(t *testing.T) {
 	}
 	if cfg.AttestationNVIDIAPayloadAuth != "Bearer secret" {
 		t.Fatalf("AttestationNVIDIAPayloadAuth=%q", cfg.AttestationNVIDIAPayloadAuth)
+	}
+}
+
+func TestLoadOpenAIConfigDstackTimeout(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if cfg.AttestationDstackTimeout != 10*time.Second {
+		t.Fatalf("AttestationDstackTimeout = %s, want 10s", cfg.AttestationDstackTimeout)
+	}
+	t.Setenv("ATTESTATION_DSTACK_TIMEOUT_SECONDS", "0")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("Load returned error: %v", err)
+	}
+	if err := Validate(cfg); err == nil {
+		t.Fatal("ATTESTATION_DSTACK_TIMEOUT_SECONDS=0 accepted")
 	}
 }

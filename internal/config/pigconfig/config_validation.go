@@ -45,6 +45,9 @@ func Validate(cfg Config) error {
 	if cfg.AttestationEnabled && cfg.AttestationNVIDIACommandTimeout <= 0 {
 		return fmt.Errorf("ATTESTATION_NVIDIA_COMMAND_TIMEOUT_SECONDS must be > 0 when ATTESTATION_ENABLED=true")
 	}
+	if cfg.AttestationEnabled && cfg.AttestationDstackTimeout <= 0 {
+		return fmt.Errorf("ATTESTATION_DSTACK_TIMEOUT_SECONDS must be > 0 when ATTESTATION_ENABLED=true")
+	}
 	return validatePredictiveAdmissionConfig(cfg)
 }
 

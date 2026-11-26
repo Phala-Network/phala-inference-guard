@@ -45,6 +45,9 @@ backend call.
 | `UPSTREAM_ERROR_CLASSIFICATION_ENABLED` | `true` | Bounded upstream error classification |
 
 Attestation variables do not alter admission policy.
+`ATTESTATION_DSTACK_TIMEOUT_SECONDS` (default `10`, must be > 0) bounds each
+dstack guest-agent call. PIG sends one quote request to the agent at a time,
+and a waiting request gives up when its own request context ends.
 
 Use `BACKEND_READINESS_PATH=/health` only for a backend that lacks `/ready`,
 such as older SGLang images. The override affects PIG `/readyz` and its

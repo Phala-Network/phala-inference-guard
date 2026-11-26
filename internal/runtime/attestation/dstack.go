@@ -28,8 +28,11 @@ type QuoteResponse struct {
 type DstackClient struct {
 	baseURL string
 	client  *http.Client
+	timeout time.Duration
 }
 
+// NewDstackClient returns a guest-agent client. timeout bounds each RPC and is
+// applied as a deadline on the caller's context, so it never extends it.
 func NewDstackClient(endpoint string, timeout time.Duration) *DstackClient {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
@@ -41,7 +44,8 @@ func NewDstackClient(endpoint string, timeout time.Duration) *DstackClient {
 	if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
 		return &DstackClient{
 			baseURL: strings.TrimRight(endpoint, "/"),
-			client:  &http.Client{Timeout: timeout},
+			client:  &http.Client{},
+			timeout: timeout,
 		}
 	}
 	transport := &http.Transport{
@@ -53,7 +57,8 @@ func NewDstackClient(endpoint string, timeout time.Duration) *DstackClient {
 	}
 	return &DstackClient{
 		baseURL: "http://dstack",
-		client:  &http.Client{Transport: transport, Timeout: timeout},
+		client:  &http.Client{Transport: transport},
+		timeout: timeout,
 	}
 }
 
@@ -82,6 +87,11 @@ func (c *DstackClient) postRPC(ctx context.Context, method string, payload any, 
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return err
+	}
+	if c.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.timeout)
+		defer cancel()
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/"+method, bytes.NewReader(body))
 	if err != nil {
