@@ -25,6 +25,7 @@ type Config struct {
 
 	AttestationEnabled               bool
 	AttestationDstackEndpoint        string
+	AttestationDstackTimeout         time.Duration
 	AttestationTLSCertPath           string
 	AttestationGPUArch               string
 	AttestationNVIDIAPayload         string

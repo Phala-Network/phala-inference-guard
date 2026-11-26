@@ -35,6 +35,10 @@ type Service struct {
 	signers Signers
 	dstack  Dstack
 	nvidia  nvidiaCollector
+
+	// dstackGate admits one guest-agent call sequence at a time; the agent
+	// produces quotes serially, so concurrent calls would queue inside it.
+	dstackGate chan struct{}
 }
 
 type ReportRequest struct {
@@ -54,7 +58,13 @@ func NewService(cfg Config, dstack Dstack) (*Service, error) {
 	if cfg.NVIDIACommandTimeout <= 0 {
 		cfg.NVIDIACommandTimeout = 30 * time.Second
 	}
-	return &Service{cfg: cfg, signers: signers, dstack: dstack, nvidia: newNativeNVIDIACollector()}, nil
+	return &Service{
+		cfg:        cfg,
+		signers:    signers,
+		dstack:     dstack,
+		nvidia:     newNativeNVIDIACollector(),
+		dstackGate: make(chan struct{}, 1),
+	}, nil
 }
 
 func (s *Service) Generate(ctx context.Context, req ReportRequest) (map[string]any, error) {
@@ -83,13 +93,9 @@ func (s *Service) Generate(ctx context.Context, req ReportRequest) (map[string]a
 	if err != nil {
 		return nil, badRequestError(err.Error())
 	}
-	quote, err := s.dstack.GetQuote(ctx, reportData)
+	quote, info, err := s.quoteAndInfo(ctx, reportData)
 	if err != nil {
-		return nil, fmt.Errorf("get dstack quote: %w", err)
-	}
-	info, err := s.dstack.Info(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("get dstack info: %w", err)
+		return nil, err
 	}
 	info = normalizeReportInfo(info)
 	requestNonceHex := hex.EncodeToString(nonce)
@@ -116,6 +122,30 @@ func (s *Service) Generate(ctx context.Context, req ReportRequest) (map[string]a
 	response := cloneMap(attestation)
 	response["all_attestations"] = []map[string]any{attestation}
 	return response, nil
+}
+
+// quoteAndInfo serializes guest-agent calls through dstackGate. A caller that
+// is still waiting when its context ends returns without calling the agent.
+func (s *Service) quoteAndInfo(ctx context.Context, reportData []byte) (QuoteResponse, map[string]any, error) {
+	if err := ctx.Err(); err != nil {
+		return QuoteResponse{}, nil, fmt.Errorf("wait for dstack guest agent: %w", err)
+	}
+	select {
+	case s.dstackGate <- struct{}{}:
+	case <-ctx.Done():
+		return QuoteResponse{}, nil, fmt.Errorf("wait for dstack guest agent: %w", ctx.Err())
+	}
+	defer func() { <-s.dstackGate }()
+
+	quote, err := s.dstack.GetQuote(ctx, reportData)
+	if err != nil {
+		return QuoteResponse{}, nil, fmt.Errorf("get dstack quote: %w", err)
+	}
+	info, err := s.dstack.Info(ctx)
+	if err != nil {
+		return QuoteResponse{}, nil, fmt.Errorf("get dstack info: %w", err)
+	}
+	return quote, info, nil
 }
 
 type HTTPError struct {
